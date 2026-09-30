@@ -180,8 +180,41 @@ static void test_finds_the_single_winning_capture() {
     const MctsEdge& win = mcts.edge(rootEdge(mcts, 23));
     assert(win.visits > 25);
     assert(win.valueSum == static_cast<float>(win.visits));   // every visit was a +1 for Black
+}
+
+static void test_pass_edge_after_opponent_pass_wins_by_komi() {
+    // Black passed on an empty board. White passing ends the game and White
+    // wins by komi: every visit of the pass edge is a +1 for White, who chooses it.
+    Game game(5, 7.5f, defaultMaxMoves(5));
+    game.play(25);
+    UniformEvaluator ev(5, 2, 0.0f);
+    Mcts mcts(serialConfig(64), ev);
+    Rng rng(16);
+    mcts.search(game, rng);
+    assert(mcts.node(0).passes == 1);
     const MctsEdge& pass = mcts.edge(rootEdge(mcts, 25));
-    if (pass.visits > 0) assert(pass.valueSum == -static_cast<float>(pass.visits));
+    assert(pass.visits > 0);
+    assert(pass.valueSum == static_cast<float>(pass.visits));
+}
+
+static void test_stale_pass_count_rebuilds_the_tree() {
+    // Same stones, side to move and ply, but different consecutive passes.
+    Board withStone = boardFromRows({".....", ".....", "..X..", ".....", "....."}, Color::Black);
+    Board empty = boardFromRows({".....", ".....", ".....", ".....", "....."}, Color::Black);
+    Game a(withStone, 7.5f, 50);
+    a.play(25);                 // pass: ply 1, passes 1, White to move
+    Game b(empty, 7.5f, 50);
+    b.play(12);                 // stone at the centre: ply 1, passes 0, White to move
+    assert(a.board() == b.board() && a.moveCount() == b.moveCount());
+    assert(a.consecutivePasses() == 1 && b.consecutivePasses() == 0);
+    UniformEvaluator ev(5, 2);
+    Mcts mcts(serialConfig(10), ev);
+    Rng rng(17);
+    mcts.search(a, rng);
+    assert(mcts.node(0).passes == 1);
+    mcts.search(b, rng);
+    assert(mcts.node(0).passes == 0);
+    assert(mcts.rootTotalVisits() == 10);   // rebuilt, not accumulated
 }
 
 static void test_select_action_temperature_zero_picks_most_visited() {
@@ -235,6 +268,156 @@ static void test_backup_flips_sign_one_ply() {
     assert(mcts.rootValue() == -0.5f);
 }
 
+// Records the batch size of every evaluate() call.
+class RecordingEvaluator : public Evaluator {
+public:
+    explicit RecordingEvaluator(int n) : n_(n) {}
+    int boardSize() const override { return n_; }
+    int history() const override { return 2; }
+    int maxBatch() const override { return 64; }
+    void evaluate(const float*, int B, float* logits, float* values) override {
+        batches.push_back(B);
+        std::fill(logits, logits + static_cast<size_t>(B) * (n_ * n_ + 1), 0.0f);
+        std::fill(values, values + B, 0.0f);
+    }
+    std::vector<int> batches;
+private:
+    int n_;
+};
+
+static Game earlyNineByNine() {
+    Game g(9, 7.5f, defaultMaxMoves(9));
+    g.play(40);   // E5
+    g.play(30);   // D6
+    return g;
+}
+
+static void test_batched_visits_exact_and_virtual_loss_removed() {
+    for (int batch : {1, 3, 8, 16}) {
+        for (int sims : {10, 50}) {
+            Game game = earlyNineByNine();
+            UniformEvaluator ev(9, 2);
+            MctsConfig cfg;
+            cfg.simulations = sims;
+            cfg.batchSize = batch;   // 16 > 10 simulations: the round is cut short
+            Mcts mcts(cfg, ev);
+            Rng rng(11);
+            mcts.search(game, rng);
+            assert(mcts.rootTotalVisits() == sims);
+            assert(mcts.node(0).visits == sims);
+            assert(mcts.totalVirtualLoss() == 0);
+            for (size_t i = 0; i < mcts.nodeCount(); ++i) assert(!mcts.node(static_cast<int>(i)).pending);
+            mcts.search(game, rng);
+            assert(mcts.rootTotalVisits() == 2 * sims);
+            assert(mcts.totalVirtualLoss() == 0);
+        }
+    }
+}
+
+static void test_batch_one_calls_evaluator_once_per_leaf() {
+    // 30 simulations over 80 root edges: every simulation stops one ply down,
+    // so no leaf is terminal and each simulation evaluates exactly one leaf.
+    Game game = earlyNineByNine();
+    UniformEvaluator ev(9, 2);
+    MctsConfig cfg;
+    cfg.simulations = 30;
+    cfg.batchSize = 1;
+    Mcts mcts(cfg, ev);
+    Rng rng(12);
+    mcts.search(game, rng);
+    assert(mcts.evaluatorBatches() == 30 + 1);   // + the root
+    assert(ev.calls() == 31);
+}
+
+static void test_batching_reduces_evaluator_calls() {
+    Game game = earlyNineByNine();
+    UniformEvaluator ev1(9, 2), ev8(9, 2);
+    MctsConfig cfg;
+    cfg.simulations = 64;
+    cfg.batchSize = 1;
+    Mcts serial(cfg, ev1);
+    cfg.batchSize = 8;
+    Mcts batched(cfg, ev8);
+    Rng r1(13), r8(13);
+    serial.search(game, r1);
+    batched.search(game, r8);
+    assert(batched.rootTotalVisits() == 64);
+    assert(batched.evaluatorBatches() < serial.evaluatorBatches());
+    // Virtual loss spreads the 8 descents of a round over 8 different root
+    // edges, so no round collides here: 1 root call + 64 / 8 rounds.
+    assert(batched.evaluatorBatches() == 1 + 8);
+}
+
+static void test_evaluator_never_sees_more_than_batch_size() {
+    // White owns the board with two one-point eyes (A5 = 0, E1 = 24). Black's
+    // only legal action is pass, so every descent of a round funnels into the
+    // same child: collisions are guaranteed. Pass-pass endings also give
+    // terminal leaves inside the rounds.
+    Board start = boardFromRows({".OOOO",
+                                 "OOOOO",
+                                 "OOOOO",
+                                 "OOOOO",
+                                 "OOOO."}, Color::Black);
+    Game game(start, 7.5f, 50);
+    RecordingEvaluator ev(5);
+    MctsConfig cfg;
+    cfg.simulations = 40;
+    cfg.batchSize = 5;
+    Mcts mcts(cfg, ev);
+    Rng rng(14);
+    mcts.search(game, rng);
+
+    assert(mcts.node(0).numEdges == 1);                  // pass only
+    assert(ev.batches.size() >= 2);
+    assert(ev.batches[0] == 1);                          // the root, alone
+    assert(ev.batches[1] == 1);                          // 2nd descent collided with the 1st
+    int evaluated = 0;
+    for (int b : ev.batches) {
+        assert(b >= 1 && b <= 5);
+        evaluated += b;
+    }
+    int expanded = 0, terminal = 0;
+    for (size_t i = 0; i < mcts.nodeCount(); ++i) {
+        const MctsNode& nd = mcts.node(static_cast<int>(i));
+        expanded += nd.expanded ? 1 : 0;
+        terminal += nd.passes >= 2 ? 1 : 0;
+    }
+    assert(terminal > 0);
+    assert(evaluated == expanded);   // every evaluated leaf is expanded exactly once
+    assert(static_cast<long long>(ev.batches.size()) == mcts.evaluatorBatches());
+    assert(mcts.rootTotalVisits() == 40);
+    assert(mcts.totalVirtualLoss() == 0);
+}
+
+static void test_batched_search_is_deterministic() {
+    Game game = earlyNineByNine();
+    MctsConfig cfg;
+    cfg.simulations = 100;
+    cfg.batchSize = 4;
+    UniformEvaluator ev1(9, 2), ev2(9, 2);
+    Mcts a(cfg, ev1), b(cfg, ev2);
+    Rng ra(99), rb(99);
+    a.search(game, ra);
+    b.search(game, rb);
+    assert(a.rootVisits() == b.rootVisits());
+    assert(a.nodeCount() == b.nodeCount());
+}
+
+static void test_batched_search_still_finds_winning_capture() {
+    Game game = winningCaptureGame(1);
+    UniformEvaluator ev(5, 2);
+    MctsConfig cfg;
+    cfg.simulations = 50;
+    cfg.batchSize = 8;
+    Mcts mcts(cfg, ev);
+    Rng rng(15);
+    mcts.search(game, rng);
+    assert(ev.calls() == 1);   // terminal leaves are backed up inside the round
+    assert(mcts.rootTotalVisits() == 50);
+    assert(mcts.totalVirtualLoss() == 0);
+    assert(mcts.selectAction(0.0f, rng) == 23);
+}
+
 int main() {
     test_root_visits_sum_to_simulations_and_tree_is_kept();
     test_only_legal_actions_get_edges();
@@ -244,6 +427,14 @@ int main() {
     test_select_action_temperature_zero_picks_most_visited();
     test_select_action_temperature_one_follows_visit_counts();
     test_backup_flips_sign_one_ply();
+    test_pass_edge_after_opponent_pass_wins_by_komi();
+    test_stale_pass_count_rebuilds_the_tree();
+    test_batched_visits_exact_and_virtual_loss_removed();
+    test_batch_one_calls_evaluator_once_per_leaf();
+    test_batching_reduces_evaluator_calls();
+    test_evaluator_never_sees_more_than_batch_size();
+    test_batched_search_is_deterministic();
+    test_batched_search_still_finds_winning_capture();
     std::printf("test_mcts: all tests passed\n");
     return 0;
 }

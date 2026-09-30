@@ -26,8 +26,10 @@ void Mcts::prepareRoot(const Game& game) {
     assert(game.size() == eval_.boardSize());
     game_ = &game;
     // Keep the tree only if its root is exactly the game's current position
-    // (same stones, same side to move, same move number).
-    if (!nodes_.empty() && nodes_[0].board == game.board() && nodes_[0].ply == game.moveCount())
+    // (same stones, same side to move, same move number, same pass count:
+    // the pass count decides whether a pass child is terminal).
+    if (!nodes_.empty() && nodes_[0].board == game.board() && nodes_[0].ply == game.moveCount() &&
+        nodes_[0].passes == game.consecutivePasses())
         return;
     reset();
     nodes_.push_back(MctsNode{game.board(), -1, game.moveCount(), game.consecutivePasses()});
@@ -185,17 +187,44 @@ void Mcts::search(const Game& game, Rng& rng) {
     // The root needs priors before the first descent; evaluating it is not a simulation.
     if (!nodes_[0].expanded) evaluateLeaves({0});
 
+    std::vector<int> leaves;                  // pending leaves of this round
+    std::vector<std::vector<int>> paths;      // their edge paths
     std::vector<int> path;
-    for (int done = 0; done < cfg_.simulations; ++done) {
-        const int leaf = descend(path);
-        float value;
-        if (isTerminal(nodes_[leaf])) {
-            value = terminalValue(nodes_[leaf]);   // exact, no network call
-        } else {
-            evaluateLeaves({leaf});
-            value = nodes_[leaf].netValue;
+    int done = 0;
+    while (done < cfg_.simulations) {
+        leaves.clear();
+        paths.clear();
+        // One round: up to batchSize descents, never more than the
+        // simulations still owed. Each descent's virtual loss steers the
+        // next one elsewhere.
+        for (int d = 0; d < cfg_.batchSize; ++d) {
+            if (done + static_cast<int>(leaves.size()) >= cfg_.simulations) break;
+            const int leaf = descend(path);
+            addVirtualLoss(leaf, path, +1);
+            if (isTerminal(nodes_[leaf])) {
+                // Exact value, no network needed: finish this simulation now.
+                addVirtualLoss(leaf, path, -1);
+                backup(leaf, path, terminalValue(nodes_[leaf]));
+                ++done;
+            } else if (nodes_[leaf].pending) {
+                // Collision: another descent this round already waits on this
+                // leaf. Undo and evaluate what we have rather than spin.
+                addVirtualLoss(leaf, path, -1);
+                break;
+            } else {
+                nodes_[leaf].pending = true;
+                leaves.push_back(leaf);
+                paths.push_back(path);
+            }
         }
-        backup(leaf, path, value);
+        if (leaves.empty()) continue;
+        evaluateLeaves(leaves);   // one evaluator call for the whole round
+        for (size_t i = 0; i < leaves.size(); ++i) {
+            nodes_[leaves[i]].pending = false;
+            addVirtualLoss(leaves[i], paths[i], -1);
+            backup(leaves[i], paths[i], nodes_[leaves[i]].netValue);
+            ++done;
+        }
     }
     game_ = nullptr;
 }
