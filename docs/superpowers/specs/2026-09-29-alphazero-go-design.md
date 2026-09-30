@@ -165,9 +165,9 @@ network, as in tic-tac-toe. Its momentum buffers are part of the saved
 training state.
 
 **`evaluator`** — seam #2. Interface:
-`evaluate(const std::vector<Position>&) -> {policy_logits[], values[]}`,
-where a `Position` gives access to the current board and its last H−1
-predecessors. v1 ships
+`evaluate(encoded input planes [B][planes][n*n]) -> {policy_logits[], values[]}`;
+MCTS does the encoding, so an evaluator needs to know nothing about Go.
+v1 ships
 `LocalEvaluator`, owned by one worker thread, wrapping a shared
 `Network` and a private `Workspace`. A future batching evaluator could
 gather leaves from all threads for a GPU without touching MCTS.
@@ -221,9 +221,10 @@ uniformly random symmetry. Serializable as part of training state.
 
 **`arena` / `elo`**
 - Every `arena_every` generations (default 1), the new network plays
-  `arena_games` games (default 40, colors balanced) against: the
-  previous generation; a sparse ladder of older generations
-  (g−2, g−4, g−8, …); and generation 0, the Elo anchor fixed at 0.
+  `arena_games` games per opponent (default 20, colors balanced)
+  against: the previous generation; a sparse ladder of older
+  generations (g−2, g−4, g−8, …, the most recent `arena_opponents`
+  of them, default 4); and generation 0, the Elo anchor fixed at 0.
 - Arena search: `arena_simulations` (config), no Dirichlet noise, tree
   reuse on. Opening diversity: temperature-1 sampling for the first
   `arena_temperature_moves` moves (default 2 on 5×5, 4 on larger
@@ -256,10 +257,12 @@ filters, value_hidden) or tunable keys.
   each with its shape; float32 little-endian. Includes BN running
   statistics. Load validates everything and fails with a message
   naming the mismatch.
-- Training state (`state/`): optimizer momentum, replay buffer, RNG
-  states, generation counter, current "best" network pointer, arena
-  results table. Written to a temporary directory and renamed into
-  place so a crash never leaves a partial state.
+- Training state (`state.bin`, one file): optimizer momentum, replay
+  buffer, generation counter, current "best" network pointer, arena
+  results table. RNG state needs no saving because every random stream
+  is seeded from (run seed, generation, phase, index). Written to a
+  temporary file and renamed into place so a crash never leaves a
+  partial state.
 - Resume refuses if any architecture key differs from the saved
   config; tunable keys may be overridden.
 
@@ -313,10 +316,10 @@ config ──► train
             │
             ├─ arena (W threads) ─► results table ─► Bradley-Terry ─► elo.csv
             │
-            └─ checkpoint ─► checkpoints/gen_NNNN.azn, state/ (atomic), log.csv
+            └─ checkpoint ─► checkpoints/gen_NNNN.azn, state.bin (atomic), log.csv
 ```
 
-Run directory `runs/<name>/`: `config.cfg`, `checkpoints/`, `state/`,
+Run directory `runs/<name>/`: `config.cfg`, `checkpoints/`, `state.bin`,
 `log.csv` (per generation: games, average game length, pass rate, Black
 win rate, policy loss, value loss, learning rate, replay ratio, phase
 timings, Elo), `elo.csv` (generation, Elo, interval), `results.csv`
