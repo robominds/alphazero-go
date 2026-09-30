@@ -29,6 +29,7 @@ struct GenerationStats {
     double selfPlaySeconds = 0, trainSeconds = 0, arenaSeconds = 0;
     double elo = 0;             // after refit; previous value if no arena this generation
     double winRateVsPrev = -1;  // -1 when no match vs g-1
+    int distinctVsPrev = -1;    // distinct games in that match; -1 when no match vs g-1
 };
 
 // The generation loop: self-play -> train -> arena/Elo -> checkpoint + state.

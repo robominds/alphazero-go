@@ -127,7 +127,7 @@ static void test_start_new_writes_run_files() {
 
     assert(readFile(dir.file("log.csv")) ==
            "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
-           "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev\n");
+           "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev\n");
     assert(readFile(dir.file("elo.csv")) ==
            "generation,elo,winrate_vs_prev,wr_low,wr_high\n0,0,,,\n");
 }
@@ -149,6 +149,16 @@ static void test_two_generations() {
     assert(std::fabs(st.replayRatio - 64.0 / (4 * st.avgLength)) < 1e-9);
     assert(st.winRateVsPrev >= 0 && st.winRateVsPrev <= 1);   // played generation 0
     assert(std::isfinite(st.elo));
+    assert(st.distinctVsPrev >= 1 && st.distinctVsPrev <= 2);   // arena_games = 2
+
+    {
+        // The log row's last field is the same diversity count.
+        const std::string log = readFile(dir.file("log.csv"));
+        const size_t end = log.find_last_not_of('\n');
+        const std::string row = log.substr(log.find_last_of('\n', end) + 1, end);
+        const std::string last = row.substr(row.find_last_of(',') + 1);
+        assert(!last.empty() && std::stoi(last) == st.distinctVsPrev);
+    }
 
     t->runUntil(2);
     assert(t->generation() == 2);

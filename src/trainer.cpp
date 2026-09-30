@@ -31,7 +31,7 @@ namespace {
 
 const char* const kLogHeader =
     "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
-    "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev\n";
+    "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev\n";
 const char* const kEloHeader = "generation,elo,winrate_vs_prev,wr_low,wr_high\n";
 
 using Clock = std::chrono::steady_clock;
@@ -89,12 +89,14 @@ double ratingAtOrBefore(const ResultsTable& results, int generation) {
 void appendLogRow(const std::string& runDir, const GenerationStats& s) {
     char winRate[32] = "";
     if (s.winRateVsPrev >= 0) std::snprintf(winRate, sizeof winRate, "%.4f", s.winRateVsPrev);
+    char distinct[32] = "";
+    if (s.distinctVsPrev >= 0) std::snprintf(distinct, sizeof distinct, "%d", s.distinctVsPrev);
     char line[512];
     std::snprintf(line, sizeof line,
-                  "%d,%d,%.2f,%.4f,%.4f,%.5f,%.5f,%g,%.3f,%.3f,%.3f,%.3f,%.1f,%s\n",
+                  "%d,%d,%.2f,%.4f,%.4f,%.5f,%.5f,%g,%.3f,%.3f,%.3f,%.3f,%.1f,%s,%s\n",
                   s.generation, s.games, s.avgLength, s.passRate, s.blackWinRate,
                   s.policyLoss, s.valueLoss, s.lr, s.replayRatio, s.selfPlaySeconds,
-                  s.trainSeconds, s.arenaSeconds, s.elo, winRate);
+                  s.trainSeconds, s.arenaSeconds, s.elo, winRate, distinct);
     std::ofstream out(logPath(runDir), std::ios::app | std::ios::binary);
     out << line;
     if (!out) throw std::runtime_error("cannot append to " + logPath(runDir));
@@ -338,7 +340,10 @@ GenerationStats Trainer::runGeneration() {
                                                        kPhaseArena, static_cast<uint64_t>(o)),
                                             workers, cfg_.backend);
             state_.results.addMatch(g, o, r.games, r.scoreA);
-            if (o == g - 1) stats.winRateVsPrev = r.scoreA / r.games;
+            if (o == g - 1) {
+                stats.winRateVsPrev = r.scoreA / r.games;
+                stats.distinctVsPrev = r.distinctGames;
+            }
             if (cfg_.gating && o == state_.bestGeneration &&
                 passesGate(r.scoreA, r.games, cfg_.gatingThreshold))
                 newBest = g;
@@ -371,8 +376,12 @@ GenerationStats Trainer::runGeneration() {
             char vsPrev[32] = "n/a";
             if (stats.winRateVsPrev >= 0)
                 std::snprintf(vsPrev, sizeof vsPrev, "%.2f", stats.winRateVsPrev);
+            char distinct[48] = "";
+            if (stats.distinctVsPrev >= 0)
+                std::snprintf(distinct, sizeof distinct, " (distinct %d/%d)",
+                              stats.distinctVsPrev, cfg_.arenaGames);
             std::snprintf(line + len, sizeof line - static_cast<size_t>(len),
-                          "arena elo %.1f vs-prev %s %.1fs", stats.elo, vsPrev,
+                          "arena elo %.1f vs-prev %s%s %.1fs", stats.elo, vsPrev, distinct,
                           stats.arenaSeconds);
         } else {
             std::snprintf(line + len, sizeof line - static_cast<size_t>(len),
