@@ -8,8 +8,8 @@ idea was already explained there (PUCT, the sign flip, the Monte Carlo
 return), this document recaps it in a few lines and spends its words on
 what Go changes.
 
-*(An illustrated HTML rendering of this document, with the Elo plots,
-lives next to it as `algorithm-explained.html`.)*
+*(An illustrated HTML rendering of this document, with the Elo plots, is
+planned as `docs/algorithm-explained.html`.)*
 
 **Language:** C++17, no dependencies (BLAS optional) · **Network:** a
 ResNet, 3 blocks × 32 filters on 5×5 up to 10 × 128 on 19×19 ·
@@ -393,7 +393,7 @@ This is AlphaGo Zero's architecture, at a size a CPU can train:
 input planes [18][n][n]
    │  stem: 3×3 conv (F filters) → batch norm → ReLU
    ▼
-trunk [F][n][n] ── residual block, B times:
+trunk [F][n][n] ── residual block, repeated `blocks` times:
    │      3×3 conv → BN → ReLU → 3×3 conv → BN → (+ block input) → ReLU
    ▼
 trunk [F][n][n]
@@ -402,8 +402,9 @@ trunk [F][n][n]
                                                 → Linear(V → 1) → tanh → value
 ```
 
-The presets set B (`blocks`), F (`filters`) and V (`value_hidden`) per
-board size: 3 × 32 with V = 32 on 5×5, 6 × 64 with V = 64 on 9×9, and
+The presets set the number of residual blocks (`blocks`), the filter
+count F (`filters`) and the value-head width V (`value_hidden`) per
+board size (in this document B always means the batch size): 3 × 32 with V = 32 on 5×5, 6 × 64 with V = 64 on 9×9, and
 10 × 128 with V = 256 on 19×19 (`configs/*.cfg`). AlphaGo Zero used
 20 or 40 blocks of 256 filters.
 
@@ -459,9 +460,10 @@ column matrix gives all nine outputs at once. With C input planes the
 column matrix has 9C rows, and with F filters the weight matrix has F
 rows, so a whole layer is one [F × 9C] · [9C × n²] product.
 `Backend::im2col`, which builds the columns, is plain memory shuffling,
-and so is its adjoint `col2im`; `gemm` is the one virtual operation that
-matters, implemented with blocked loops by the naive backend and handed
-to `cblas_sgemm` by the BLAS backend (Apple Accelerate on macOS, which
+and so is its adjoint `col2im`; both are virtual with a shared default
+implementation. `gemm` is the one pure-virtual operation, the one each
+backend must supply: blocked loops in the naive backend, a call to
+`cblas_sgemm` in the BLAS backend (Apple Accelerate on macOS, which
 runs it on the CPU's matrix units).
 
 **Channel-major layout.** Every activation in the network is stored as
@@ -584,13 +586,14 @@ trained against.
 
 **What depth and width buy, and what they cost.** Each 3×3 convolution
 widens the window a unit can see by 2 points, so the trunk's receptive
-field is 1 + 2 × (number of 3×3 convs) = 1 + 2(2B + 1) points wide: 15 on
+field is 1 + 2 × (number of 3×3 convs) = 1 + 2(2·blocks + 1) points wide: 15 on
 5×5, 27 on 9×9 and 43 on 19×19. In each preset that is at least
 2n − 1, enough for every point to be influenced by every other, even
 corner to corner. Width (F) is how many distinct features each point can
 carry. A 3×3 layer costs 9 · F² · n² multiply-adds per position, so the
-trunk costs roughly B · F² · n²: 19×19's preset needs about 700 times
-the arithmetic of 5×5's per evaluation. Measured on the M4
+trunk costs roughly blocks · F² · n²: 10 · 128² · 361 ≈ 59.1 million for
+19×19's preset against 3 · 32² · 25 = 76,800 for 5×5's, about 770 times
+the arithmetic per evaluation. Measured on the M4
 (`docs/results/bench.txt`; inference at batch 8 on one thread; a
 training step at batch 128, which the naive backend splits across all
 10 cores while BLAS runs on one thread):
@@ -605,7 +608,7 @@ training step at batch 128, which the naive backend splits across all
 | 19×19 | 10 × 128 | BLAS | 229 | 2,393.5 ms |
 
 Two things stand out. First, the 5×5 → 19×19 slowdown is about 130×
-with BLAS, not 700×: at 5×5 the matrices are so small that fixed costs
+with BLAS, not 770×: at 5×5 the matrices are so small that fixed costs
 per call dominate. Second, the BLAS advantage grows with the matrices,
 from 2.9× on 5×5 to 18× on 19×19 — the matrix unit needs big products to
 pay off. (Even the training step, where the naive gemm gets ten cores
@@ -682,7 +685,7 @@ One memory detail: all 3×3 convolutions share a single `im2col` buffer,
 so by the time the backward pass reaches a convolution its columns have
 been overwritten. The code rebuilds them from the saved input just
 before use (`be.im2col(...)` above) — one extra cheap copy per layer
-instead of keeping 2B + 1 column matrices alive.
+instead of keeping 2·blocks + 1 column matrices alive.
 
 **How do you know it is right? Finite differences.** A backprop bug
 compiles, runs, and often still lowers the loss, just towards a worse
@@ -1022,9 +1025,9 @@ loss for the player choosing it (the `virtualLoss` terms in
 `selectEdge`, chapter 02). That lowers Q along the path and lowers the
 exploration bonus too, so the next descent is pushed towards other
 moves. When the batch comes back, the virtual losses are removed and the
-real values backed up. With batch size K = 1 there is never a descent in
-flight, and the algorithm is exactly serial MCTS; `tests/test_mcts.cpp`
-checks that K = 1 calls the evaluator once per leaf and that batched
+real values backed up. With a batch size of 1 there is never a descent
+in flight, and the algorithm is exactly serial MCTS; `tests/test_mcts.cpp`
+checks that batch size 1 calls the evaluator once per leaf and that batched
 searches leave no virtual loss behind.
 
 ```cpp
@@ -1077,7 +1080,7 @@ twice would waste a slot and double-count it, so the round stops early
 and evaluates the leaves it has. A terminal leaf never waits at all; its
 exact value is backed up on the spot. The cost of batching is a slightly
 different search: descents in a round cannot see each other's results.
-K = 8 (`mcts_batch` in every preset) is a common compromise — small
+A batch size of 8 (`mcts_batch` in every preset) is a common compromise — small
 enough that the tree does not "go wide" much, large enough to fill the
 matrix unit better.
 
@@ -1165,12 +1168,12 @@ void Mcts::setRootPriors(Rng& rng) {
 ```
 *src/mcts.cpp:306 — `Mcts::setRootPriors`*
 
-**Why α scales as 10/n².** A symmetric Dirichlet sample over K moves with
+**Why α scales as 10/n².** A symmetric Dirichlet sample over L moves with
 concentration α is a random probability vector; the smaller α, the more
 of its mass lands on a few moves. What matters for exploration is
-roughly α·K, the total concentration: a sample with α·K ≈ 10 looks like
+roughly α·L, the total concentration: a sample with α·L ≈ 10 looks like
 "a handful of moves get a real boost". The number of legal moves grows
-with the board, about n² early in a game, so keeping α·K constant means
+with the board, about n² early in a game, so keeping α·L constant means
 α = 10/n²: **0.4 on 5×5, 0.12 on 9×9, 0.028 on 19×19**. AlphaZero
 reported the same rule of thumb — α in inverse proportion to the typical
 number of legal moves, 0.3 for chess, 0.15 for shogi and 0.03 for Go.
@@ -1364,8 +1367,9 @@ value is −1.00 for White, and every move searches to −1.00. But if both
 players passed now, those six White stones would count for White, the
 empty points next to them would count for nobody, and Black — who needs
 all 25 points at komi 24.5 — would lose. So the game goes on for 16 more
-plies: White passes eight times while Black captures every White stone
-(A5, A1, A3, E2) and fills the points that would otherwise touch White,
+plies: White passes eight times while Black removes every White stone,
+with captures at A5, A1, A3 and E2, and fills the points that would
+otherwise touch White,
 and the game ends `B+0.5`. This is why Tromp-Taylor games run long and
 contain many passes: on 5×5 the average game grew from 36.3 plies in
 generation 1 to 42.7 in generation 60, and between 14.5% and 33.8% of
@@ -1530,8 +1534,9 @@ evaluates the untransformed board.
 
 **Replay ratio.** Each generation takes `train_steps` SGD steps of
 `batch_size` samples. The *replay ratio* — samples drawn per new
-position generated — says how many times, on average, each new position
-gets trained on while it is fresh. Too low and self-play time is wasted;
+position generated — is, once the window is full and game lengths are
+steady, the expected number of times a position is drawn over its whole
+stay in the window. Too low and self-play time is wasted;
 too high and the network overfits the latest games. `log.csv` records
 it: 2.9 to 4.1 on 5×5 (200 × 128 samples over 200 games of 31–44 plies,
 `docs/results/5x5/log.csv`), 6.4 to 7.0 in the 9×9 pilot and 8.49 in the
@@ -1724,9 +1729,17 @@ on, and the data cannot fully separate them:
 - **Revision, not regression, explains most of the drop in `log.csv`.**
   Peaks in the contemporaneous column are where a generation was
   briefly overrated; the refit, which uses all later evidence, has no
-  such peak. Generation 60 against generation 33 directly: 3 of 4 games
-  in a short check (95% interval 0.30–0.95) — no sign that 60 is weaker,
-  and far too few games to say it is stronger.
+  such peak. Generation 60 against generation 33 directly, in a short
+  check, scores 3 of 4 (95% interval 0.30–0.95) — no sign that 60 is
+  weaker, and far too few games to say it is stronger:
+
+  ```
+  $ ./build-blas/arena --a runs/5x5-seed1/checkpoints/gen_0060.azn \
+        --b runs/5x5-seed1/checkpoints/gen_0033.azn --games 4 --workers 1 \
+        --komi 24.5 --simulations 100 --temperature-moves 2 --backend blas
+  A runs/5x5-seed1/checkpoints/gen_0060.azn vs B runs/5x5-seed1/checkpoints/gen_0033.azn: A scored 3/4 = 0.750 (95% CI 0.301-0.954), distinct games 4
+  A wins 3, B wins 1, draws 0
+  ```
 - **The game became decided by color.** From generation 34 on, Black
   takes the whole board in 85–96% of self-play games. Between two
   players who both win as Black, a color-balanced match is 50%
@@ -2015,7 +2028,7 @@ night is enough to watch it learn.
 |---|---|---|---|
 | State | 9 cells, win check | padded 21×21 array, captures, suicide, positional superko (Zobrist), Tromp-Taylor score, komi | Go's rules; one type for sizes 5–19 |
 | Encoding | 18 floats: mine, theirs | 2H + 2 planes: 8 positions of history plus two color planes | history reveals ko; an all-ones plane shows the edge |
-| Network | MLP 18 → 64 → 64 → {9, 1} | ResNet: 3×3 conv stem, B residual blocks, conv policy and value heads, batch norm | translation-invariant patterns; depth |
+| Network | MLP 18 → 64 → 64 → {9, 1} | ResNet: 3×3 conv stem, `blocks` residual blocks, conv policy and value heads, batch norm | translation-invariant patterns; depth |
 | Arithmetic | loops over arrays | im2col + gemm behind a `Backend` (naive or BLAS) | nearly all time is gemm; BLAS uses the matrix unit |
 | Search | recursive, one leaf per call, fresh tree per move | flat arena, batched descents with virtual loss, tree reuse with compaction | fill the matrix unit; keep work between moves |
 | Legality in search | occupied cells | occupancy, suicide, superko against game and tree path | ko fights |

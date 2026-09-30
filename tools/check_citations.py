@@ -112,9 +112,10 @@ def definition_line(path, symbol):
     for n, line in enumerate(lines, 1):
         if re.search(rf"\b{re.escape(bare)}\s*\(", line) and not line.startswith((" ", "\t")):
             return n
-    # Types are cited by their declaration: `struct MctsEdge {`, `class Evaluator {`.
+    # Types are cited by their definition: `struct MctsEdge {`, `class Evaluator {`,
+    # never a forward declaration such as `class Game;`.
     for n, line in enumerate(lines, 1):
-        if re.match(rf"(?:struct|class)\s+{re.escape(bare)}\b", line):
+        if re.match(rf"(?:struct|class)\s+{re.escape(bare)}\b(?!\s*;)", line):
             return n
     return None
 

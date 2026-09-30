@@ -2,3 +2,4 @@ build*/
 runs/
 .worktrees/
 .DS_Store
+__pycache__/
