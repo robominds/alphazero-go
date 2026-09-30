@@ -823,8 +823,9 @@ int Mcts::selectEdge(int nodeIndex) const {
     for (int i = 0; i < nd.numEdges; ++i) {
         const MctsEdge& e = edges_[nd.firstEdge + i];
         const int n = e.visits + e.virtualLoss;
-        // Each virtual loss adds a -1 result for the chooser; unvisited Q = 0.
-        const float q = n > 0 ? (e.valueSum - static_cast<float>(e.virtualLoss)) / n : 0.0f;
+        // Each virtual loss adds a -1 result for the chooser. An unvisited
+        // edge has Q = e.unvisitedQ: 0, except a known game-ending pass.
+        const float q = n > 0 ? (e.valueSum - static_cast<float>(e.virtualLoss)) / n : e.unvisitedQ;
         const float u = cfg_.cPuct * e.prior * sqrtN / (1 + n);
         if (q + u > bestScore) {   // strict '>': the first index wins ties
             bestScore = q + u;
@@ -834,12 +835,20 @@ int Mcts::selectEdge(int nodeIndex) const {
     return best;
 }
 ```
-*src/mcts.cpp:49 — `Mcts::selectEdge`*
+*src/mcts.cpp:54 — `Mcts::selectEdge`*
 
 Ignore `virtualLoss` for now (it is 0 when batching is off; chapter 03
 explains it). An unvisited edge gets Q = 0, a neutral guess; KataGo-era
 engines tune this "first-play urgency", which this project deliberately
 leaves out.
+
+There is exactly one exception, and it is not first-play-urgency tuning.
+When the previous move was a pass, this node's own pass edge ends the game,
+so its value is known exactly: the Tromp-Taylor score minus komi, from the
+chooser's side. `expand()` stores that value in `unvisitedQ`, and it is used
+while the edge is unvisited. Without it, a game-ending pass with a tiny prior
+is never examined at low simulation counts, and a net that likes passing can
+walk into a lost game. Chapters 07 and 08 tell how the arena exposed this.
 
 **Legal masking and a softmax over legal moves only.** The policy head
 produces a logit for every point, including occupied ones and points
@@ -876,7 +885,7 @@ void Mcts::expand(int nodeIndex, const float* logits, float value) {
     nd.netValue = value;
 }
 ```
-*src/mcts.cpp:127 — `Mcts::expand` (abridged)*
+*src/mcts.cpp:133 — `Mcts::expand` (abridged)*
 
 **Superko inside the tree.** A node deep in the tree is a position that
 has not happened yet. Whether a move from it would repeat a position
@@ -908,7 +917,7 @@ void Mcts::backup(int leaf, const std::vector<int>& pathEdges, float value) {
     for (int x = leaf; x != -1; x = nodes_[x].parent) nodes_[x].visits += 1;
 }
 ```
-*src/mcts.cpp:171 — `Mcts::backup`*
+*src/mcts.cpp:184 — `Mcts::backup`*
 
 This includes **pass**. A pass changes no stones but does hand the move
 to the opponent (`Board::play` flips `toMove_` for a pass too), so a
@@ -929,14 +938,19 @@ bool Mcts::isTerminal(const MctsNode& node) const {
     return node.passes >= 2 || node.ply >= game_->maxMoves();
 }
 
+float Mcts::scoreValue(const Board& board) const {
+    // Tromp-Taylor score minus komi as a result for board's side to move.
+    float margin = static_cast<float>(board.areaScore()) - game_->komi();
+    float blackResult = margin > 0 ? 1.0f : (margin < 0 ? -1.0f : 0.0f);
+    return board.toMove() == Color::Black ? blackResult : -blackResult;
+}
+
 float Mcts::terminalValue(const MctsNode& node) const {
     // The game is over, so no guess is needed: score it with the rules.
-    float margin = static_cast<float>(node.board.areaScore()) - game_->komi();
-    float blackResult = margin > 0 ? 1.0f : (margin < 0 ? -1.0f : 0.0f);
-    return node.board.toMove() == Color::Black ? blackResult : -blackResult;
+    return scoreValue(node.board);
 }
 ```
-*src/mcts.cpp:42 — `Mcts::terminalValue`*
+*src/mcts.cpp:49 — `Mcts::terminalValue`*
 
 `tests/test_mcts.cpp` pins the pass case down: after Black passes on an
 empty board, White's pass edge ends the game with White winning by komi,
@@ -1071,7 +1085,7 @@ void Mcts::search(const Game& game, Rng& rng) {
     game_ = nullptr;
 }
 ```
-*src/mcts.cpp:183 — `Mcts::search` (abridged)*
+*src/mcts.cpp:196 — `Mcts::search` (abridged)*
 
 **Collisions end the round.** Virtual loss discourages repeats but does
 not forbid them: when one move is much better than the rest, a second
@@ -1166,7 +1180,7 @@ void Mcts::setRootPriors(Rng& rng) {
         e[i].prior = (1.0f - eps) * e[i].rawPrior + eps * static_cast<float>(eta[i]);
 }
 ```
-*src/mcts.cpp:306 — `Mcts::setRootPriors`*
+*src/mcts.cpp:319 — `Mcts::setRootPriors`*
 
 **Why α scales as 10/n².** A symmetric Dirichlet sample over L moves with
 concentration α is a random probability vector; the smaller α, the more
@@ -1258,7 +1272,7 @@ void Mcts::advance(int action) {
     edges_.swap(edges);
 }
 ```
-*src/mcts.cpp:323 — `Mcts::advance` (abridged)*
+*src/mcts.cpp:336 — `Mcts::advance` (abridged)*
 
 Without compaction the node vector would only ever grow: a 19×19
 self-play game at 400 simulations per move and several hundred moves

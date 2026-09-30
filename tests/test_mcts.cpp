@@ -221,7 +221,7 @@ static void test_known_terminal_pass_edge_has_exact_unvisited_q() {
     b.play(25);
     assert(passEdgeUnvisitedQ(b) == 0.0f);
 
-    // Black chooses (White passed) and owns 20 points against komi 7.5: +1 for Black.
+    // Black chooses (White passed) and owns 25 points (20 stones + 5 territory) against komi 7.5: +1 for Black.
     Board start = boardFromRows({"XXXXX", "XXXXX", "XXXXX", "XXXXX", "....."}, Color::White);
     Game c(start, 7.5f, 50);
     c.play(25);

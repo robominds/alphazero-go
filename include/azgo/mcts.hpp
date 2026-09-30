@@ -32,6 +32,8 @@ struct MctsConfig {
 // the board, but dead stones still count under Tromp-Taylor) passes into a
 // lost game. Only this one terminal edge gets a non-zero value; every
 // other unvisited edge keeps Q = 0 and the exploration rule is unchanged.
+// Only the pass-after-pass terminal is covered, not the move-cap terminal
+// (the cap is 2n^2 plies and rarely reached).
 //
 // Edge statistics are from the perspective of the player who chooses the
 // edge (the parent's side to move).
@@ -108,6 +110,7 @@ private:
 
     void prepareRoot(const Game& game);   // keep the tree if it matches, else reset + new root
     bool isTerminal(const MctsNode& node) const;
+    float scoreValue(const Board& board) const;        // Tromp-Taylor score - komi, board's side to move
     float terminalValue(const MctsNode& node) const;   // exact result, node's side to move
     int selectEdge(int node) const;       // PUCT argmax over the node's edges
     int descend(std::vector<int>& pathEdges);          // root -> first unexpanded or terminal node

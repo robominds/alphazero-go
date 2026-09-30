@@ -39,11 +39,16 @@ bool Mcts::isTerminal(const MctsNode& node) const {
     return node.passes >= 2 || node.ply >= game_->maxMoves();
 }
 
+float Mcts::scoreValue(const Board& board) const {
+    // Tromp-Taylor score minus komi as a result for board's side to move.
+    float margin = static_cast<float>(board.areaScore()) - game_->komi();
+    float blackResult = margin > 0 ? 1.0f : (margin < 0 ? -1.0f : 0.0f);
+    return board.toMove() == Color::Black ? blackResult : -blackResult;
+}
+
 float Mcts::terminalValue(const MctsNode& node) const {
     // The game is over, so no guess is needed: score it with the rules.
-    float margin = static_cast<float>(node.board.areaScore()) - game_->komi();
-    float blackResult = margin > 0 ? 1.0f : (margin < 0 ? -1.0f : 0.0f);
-    return node.board.toMove() == Color::Black ? blackResult : -blackResult;
+    return scoreValue(node.board);
 }
 
 int Mcts::selectEdge(int nodeIndex) const {
@@ -64,7 +69,8 @@ int Mcts::selectEdge(int nodeIndex) const {
     for (int i = 0; i < nd.numEdges; ++i) {
         const MctsEdge& e = edges_[nd.firstEdge + i];
         const int n = e.visits + e.virtualLoss;
-        // Each virtual loss adds a -1 result for the chooser; unvisited Q = e.unvisitedQ (0 except for a known game-ending pass).
+        // Each virtual loss adds a -1 result for the chooser. An unvisited
+        // edge has Q = e.unvisitedQ: 0, except a known game-ending pass.
         const float q = n > 0 ? (e.valueSum - static_cast<float>(e.virtualLoss)) / n : e.unvisitedQ;
         const float u = cfg_.cPuct * e.prior * sqrtN / (1 + n);
         if (q + u > bestScore) {   // strict '>': the first index wins ties
@@ -165,11 +171,9 @@ void Mcts::expand(int nodeIndex, const float* logits, float value) {
         if (legal[i] == pass && nd.passes >= 1) {
             // Passing now ends the game, so its value is exact: score it
             // here instead of waiting for a visit the prior may never earn.
-            Board after = board;
-            after.play(pass);
-            const float margin = static_cast<float>(after.areaScore()) - game_->komi();
-            const float blackResult = margin > 0 ? 1.0f : (margin < 0 ? -1.0f : 0.0f);
-            e.unvisitedQ = board.toMove() == Color::Black ? blackResult : -blackResult;
+            // A pass changes no stones, so the chooser's result is the
+            // score of this very board.
+            e.unvisitedQ = scoreValue(board);
         }
         edges_.push_back(e);
     }
