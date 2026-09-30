@@ -269,8 +269,8 @@ GenerationStats Trainer::runGeneration() {
             state_.buffer.sample(cfg_.batchSize, cfg_.history, rng, batch);
             const LossStats loss = net_.trainStep(ws, batch.input.data(), batch.pi.data(),
                                                   batch.z.data(), batch.size);
-            // Nothing of generation g has been written yet, so the files on
-            // disk still hold the last good state (generation g-1).
+            // Nothing of generation g is committed yet (state.bin is the
+            // commit point), so the last good state (generation g-1) stays.
             if (!std::isfinite(loss.policyLoss) || !std::isfinite(loss.valueLoss))
                 throw std::runtime_error("non-finite loss at generation " + std::to_string(g) +
                                          " step " + std::to_string(s) +
@@ -283,6 +283,20 @@ GenerationStats Trainer::runGeneration() {
             stats.policyLoss = static_cast<float>(policySum / cfg_.trainSteps);
             stats.valueLoss = static_cast<float>(valueSum / cfg_.trainSteps);
         }
+        // The per-step loss check cannot see the weights written by the last
+        // optimizer step, so scan the parameters and momentum before anything
+        // is saved.
+        auto allFinite = [](const float* v, size_t count) {
+            for (size_t k = 0; k < count; ++k)
+                if (!std::isfinite(v[k])) return false;
+            return true;
+        };
+        bool finite = true;
+        for (const ParamView& p : net_.params()) finite = finite && allFinite(p.value, p.size);
+        for (const std::vector<float>& v : opt.velocity()) finite = finite && allFinite(v.data(), v.size());
+        if (!finite)
+            throw std::runtime_error("non-finite weights after training generation " +
+                                     std::to_string(g) + "; last good state kept");
         state_.velocity = opt.velocity();
     }
     const long long drawn = static_cast<long long>(cfg_.trainSteps) * cfg_.batchSize;

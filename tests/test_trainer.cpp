@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <unistd.h>
@@ -295,6 +296,25 @@ static void test_gating_state_is_consistent() {
     assert(loadTrainingState(statePath(dir.str())).bestGeneration == best);
 }
 
+// A blown-up learning rate must abort the generation before anything of it is
+// committed: state.bin stays at generation 0 and no gen_0001 checkpoint exists.
+static void test_non_finite_weights_keep_last_good_state() {
+    TempDir dir("nonfinite");
+    Config c = tinyConfig();
+    c.lrSchedule = "0:3e38";
+    c.trainSteps = 1;   // only the post-loop check can see the last step's weights
+    std::unique_ptr<Trainer> t = startQuiet(c, dir);
+    bool threw = false;
+    try {
+        t->runGeneration();
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find("last good state kept") != std::string::npos;
+    }
+    assert(threw);
+    assert(loadTrainingState(statePath(dir.str())).generation == 0);
+    assert(!fs::exists(checkpointPath(dir.str(), 1)));
+}
+
 int main() {
     test_start_new_writes_run_files();
     test_two_generations();
@@ -303,6 +323,7 @@ int main() {
     test_resume_overrides();
     test_start_new_refuses_existing_run();
     test_gating_state_is_consistent();
+    test_non_finite_weights_keep_last_good_state();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }

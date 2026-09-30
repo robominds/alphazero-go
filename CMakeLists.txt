@@ -66,8 +66,6 @@ foreach(test_src ${AZGO_TESTS})
 endforeach()
 
 # ---- Apps ------------------------------------------------------------------
-# train is added in Task 21; arena, analyze, bench and the integration smoke
-# test (tests/integration_smoke.sh) in Task 22.
 
 # --- Apps (Tasks 21-22) -------------------------------------------------------
 # apps/cli.hpp is header-only and lives next to the apps that use it rather
