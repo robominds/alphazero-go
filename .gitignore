@@ -1,4 +1,4 @@
-build/
+build*/
 runs/
 .worktrees/
 .DS_Store
