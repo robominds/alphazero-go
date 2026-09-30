@@ -68,3 +68,13 @@ endforeach()
 # ---- Apps ------------------------------------------------------------------
 # train is added in Task 21; arena, analyze, bench and the integration smoke
 # test (tests/integration_smoke.sh) in Task 22.
+
+# --- Apps (Tasks 21-22) -------------------------------------------------------
+# apps/cli.hpp is header-only and lives next to the apps that use it rather
+# than in include/azgo, so test_cli (created by the test glob above) needs
+# apps/ on its include path.
+target_include_directories(test_cli PRIVATE ${CMAKE_SOURCE_DIR}/apps)
+
+add_executable(train apps/train.cpp)
+target_link_libraries(train PRIVATE azgo)
+target_include_directories(train PRIVATE ${CMAKE_SOURCE_DIR}/apps)

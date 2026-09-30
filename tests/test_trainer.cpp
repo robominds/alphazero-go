@@ -1,0 +1,308 @@
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <system_error>
+#include <unistd.h>
+#include <utility>
+#include <vector>
+#include "azgo/checkpoint.hpp"
+#include "azgo/config.hpp"
+#include "azgo/elo.hpp"
+#include "azgo/network.hpp"
+#include "azgo/run_state.hpp"
+#include "azgo/trainer.hpp"
+
+using namespace azgo;
+namespace fs = std::filesystem;
+
+// A 5x5 run small enough that a generation takes a fraction of a second.
+static Config tinyConfig() {
+    Config c;
+    c.boardSize = 5;
+    c.history = 2;
+    c.blocks = 1;
+    c.filters = 8;
+    c.valueHidden = 8;
+    c.gamesPerGeneration = 4;
+    c.simulations = 8;
+    c.mctsBatch = 4;
+    c.temperatureMoves = 4;
+    c.bufferPositions = 1000;
+    c.trainSteps = 4;
+    c.batchSize = 16;
+    c.arenaGames = 2;
+    c.arenaSimulations = 4;
+    c.arenaOpponents = 2;
+    c.workers = 2;
+    c.sgfPerGeneration = 1;
+    c.lrSchedule = "0:0.02";
+    return c;
+}
+
+// A run directory under the system temp dir; removed on construction (stale
+// leftovers from a crashed test) and on destruction.
+struct TempDir {
+    fs::path path;
+    explicit TempDir(const std::string& name)
+        : path(fs::temp_directory_path() /
+               ("azgo_test_trainer_" + std::to_string(getpid()) + "_" + name)) {
+        fs::remove_all(path);
+    }
+    ~TempDir() {
+        std::error_code ec;
+        fs::remove_all(path, ec);
+    }
+    std::string str() const { return path.string(); }
+    std::string file(const std::string& rel) const { return (path / rel).string(); }
+};
+
+static std::string readFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    assert(in && "file should exist");
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+static int countLines(const std::string& s) {
+    return static_cast<int>(std::count(s.begin(), s.end(), '\n'));
+}
+
+static std::vector<std::string> splitLines(const std::string& s) {
+    std::vector<std::string> lines;
+    std::istringstream in(s);
+    for (std::string line; std::getline(in, line);) lines.push_back(line);
+    return lines;
+}
+
+static std::unique_ptr<Trainer> startQuiet(const Config& c, const TempDir& dir) {
+    std::unique_ptr<Trainer> t = Trainer::startNew(c, dir.str());
+    t->setLog(nullptr);
+    return t;
+}
+
+static std::unique_ptr<Trainer> resumeQuiet(const TempDir& dir, const std::vector<std::string>& overrides) {
+    std::unique_ptr<Trainer> t = Trainer::resume(dir.str(), overrides);
+    t->setLog(nullptr);
+    return t;
+}
+
+// (a, b) -> Pair from results.csv.
+static std::map<std::pair<int, int>, ResultsTable::Pair> readResults(const TempDir& dir) {
+    std::map<std::pair<int, int>, ResultsTable::Pair> out;
+    for (const ResultsTable::Pair& p : ResultsTable::fromCsv(readFile(dir.file("results.csv"))).pairs())
+        out[{p.a, p.b}] = p;
+    return out;
+}
+
+static void test_start_new_writes_run_files() {
+    TempDir dir("start");
+    const Config c = tinyConfig();
+    std::unique_ptr<Trainer> t = startQuiet(c, dir);
+    assert(t->generation() == 0);
+
+    assert(fs::is_directory(dir.path / "sgf"));
+    assert(configToString(loadConfigFile(configPath(dir.str()))) == configToString(c));
+    assert(readCheckpointConfig(checkpointPath(dir.str(), 0)) == c.netConfig());
+
+    TrainingState s = loadTrainingState(statePath(dir.str()));
+    assert(s.generation == 0 && s.bestGeneration == 0 && s.samplesTrained == 0);
+    assert(s.buffer.positions() == 0 && s.buffer.capacity() == 1000);
+    // Momentum starts at zero, one buffer per parameter tensor.
+    Network net = loadNetwork(checkpointPath(dir.str(), 0));
+    std::vector<ParamView> params = net.params();
+    assert(s.velocity.size() == params.size());
+    for (size_t i = 0; i < params.size(); ++i) {
+        assert(s.velocity[i].size() == params[i].size);
+        for (float v : s.velocity[i]) assert(v == 0.0f);
+    }
+
+    assert(readFile(dir.file("log.csv")) ==
+           "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
+           "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev\n");
+    assert(readFile(dir.file("elo.csv")) ==
+           "generation,elo,winrate_vs_prev,wr_low,wr_high\n0,0,,,\n");
+}
+
+static void test_two_generations() {
+    TempDir dir("two");
+    std::unique_ptr<Trainer> t = startQuiet(tinyConfig(), dir);
+
+    // Generation 1 by hand, to check the returned statistics.
+    GenerationStats st = t->runGeneration();
+    assert(st.generation == 1 && st.games == 4);
+    assert(st.avgLength >= 1 && st.avgLength <= 2 * 5 * 5);   // move cap 50
+    assert(st.passRate >= 0 && st.passRate <= 1);
+    assert(st.blackWinRate >= 0 && st.blackWinRate <= 1);
+    assert(std::isfinite(st.policyLoss) && st.policyLoss > 0);
+    assert(std::isfinite(st.valueLoss) && st.valueLoss >= 0);
+    assert(st.lr == 0.02f);
+    // 4 steps x 16 samples drawn from 4 games of avgLength plies each.
+    assert(std::fabs(st.replayRatio - 64.0 / (4 * st.avgLength)) < 1e-9);
+    assert(st.winRateVsPrev >= 0 && st.winRateVsPrev <= 1);   // played generation 0
+    assert(std::isfinite(st.elo));
+
+    t->runUntil(2);
+    assert(t->generation() == 2);
+    assert(fs::exists(checkpointPath(dir.str(), 1)));
+    assert(fs::exists(checkpointPath(dir.str(), 2)));
+    assert(!fs::exists(checkpointPath(dir.str(), 3)));
+
+    // sgf_per_generation = 1: exactly one game per generation.
+    const std::string sgf = readFile(dir.file("sgf/gen_0001_game_00.sgf"));
+    assert(sgf.rfind("(;GM[1]", 0) == 0);
+    assert(sgf.find("SZ[5]") != std::string::npos);
+    assert(fs::exists(dir.path / "sgf" / "gen_0002_game_00.sgf"));
+    assert(!fs::exists(dir.path / "sgf" / "gen_0001_game_01.sgf"));
+
+    assert(countLines(readFile(dir.file("log.csv"))) == 3);   // header + 2 rows
+
+    // Generation 1 plays 0; generation 2 plays its ladder {1} plus the anchor 0.
+    std::map<std::pair<int, int>, ResultsTable::Pair> pairs = readResults(dir);
+    assert(pairs.size() == 3);
+    for (std::pair<int, int> key : {std::make_pair(0, 1), std::make_pair(0, 2), std::make_pair(1, 2)}) {
+        assert(pairs.count(key));
+        assert(pairs[key].games == 2);
+    }
+
+    TrainingState s = loadTrainingState(statePath(dir.str()));
+    assert(s.generation == 2);
+    assert(s.bestGeneration == 2);                 // no gating: always the newest
+    assert(s.samplesTrained == 2 * 4 * 16);
+    assert(s.buffer.games() == 8);                 // at most 400 positions < 1000: nothing evicted
+    assert(static_cast<long long>(s.buffer.positions()) == s.buffer.totalPositionsAdded());
+
+    // elo.csv: header plus generations 0, 1, 2. The anchor is exactly 0 with no
+    // predecessor; generations 1 and 2 each played g-1, so all five fields are filled.
+    const std::vector<std::string> rows = splitLines(readFile(dir.file("elo.csv")));
+    assert(rows.size() == 4);
+    assert(rows[1] == "0,0.0,,,");
+    for (int g = 1; g <= 2; ++g) {
+        const std::string& row = rows[static_cast<size_t>(g) + 1];
+        assert(row.rfind(std::to_string(g) + ",", 0) == 0);
+        assert(std::count(row.begin(), row.end(), ',') == 4);
+        assert(row.find(",,") == std::string::npos && row.back() != ',');
+    }
+}
+
+// Review: resume must continue exactly where an uninterrupted run would be.
+static void test_resume_is_byte_identical() {
+    TempDir a("resume_a"), b("resume_b");
+    const Config c = tinyConfig();
+    {
+        std::unique_ptr<Trainer> t = startQuiet(c, a);
+        t->runUntil(4);
+    }
+    {
+        std::unique_ptr<Trainer> t = startQuiet(c, b);
+        t->runUntil(2);
+    }   // destroyed: nothing survives in memory
+    {
+        std::unique_ptr<Trainer> t = resumeQuiet(b, {});
+        assert(t->generation() == 2);
+        t->runUntil(4);
+        assert(t->generation() == 4);
+    }
+    for (const char* f : {"checkpoints/gen_0004.azn", "state.bin", "elo.csv", "results.csv",
+                          "sgf/gen_0004_game_00.sgf"})
+        assert(readFile(a.file(f)) == readFile(b.file(f)));
+}
+
+// Workers change who plays which game and how gemm rows are split, never the result.
+static void test_thread_count_independence() {
+    TempDir one("workers1"), three("workers3");
+    Config c = tinyConfig();
+    c.workers = 1;
+    startQuiet(c, one)->runUntil(2);
+    c.workers = 3;
+    startQuiet(c, three)->runUntil(2);
+    for (const char* f : {"checkpoints/gen_0002.azn", "state.bin", "results.csv"})
+        assert(readFile(one.file(f)) == readFile(three.file(f)));
+}
+
+static void test_resume_overrides() {
+    TempDir dir("overrides");
+    startQuiet(tinyConfig(), dir);   // generation 0 on disk; trainer discarded
+    const std::string before = readFile(configPath(dir.str()));
+
+    // Architecture keys are refused, naming the key, and nothing is rewritten.
+    bool threw = false;
+    try {
+        Trainer::resume(dir.str(), {"filters=16"});
+    } catch (const ConfigError& e) {
+        threw = std::string(e.what()).find("filters") != std::string::npos;
+    }
+    assert(threw);
+    assert(readFile(configPath(dir.str())) == before);
+
+    // Tunable keys are accepted and persisted.
+    std::unique_ptr<Trainer> t = resumeQuiet(dir, {"simulations=12"});
+    assert(t->config().simulations == 12);
+    assert(loadConfigFile(configPath(dir.str())).simulations == 12);
+    assert(readFile(configPath(dir.str())).find("simulations = 12\n") != std::string::npos);
+    t->runUntil(1);
+    assert(t->generation() == 1);
+
+    // Resuming a directory that holds no run is a ConfigError too.
+    TempDir empty("no_run");
+    threw = false;
+    try {
+        Trainer::resume(empty.str(), {});
+    } catch (const ConfigError&) {
+        threw = true;
+    }
+    assert(threw);
+}
+
+static void test_start_new_refuses_existing_run() {
+    TempDir dir("existing");
+    startQuiet(tinyConfig(), dir);
+    bool threw = false;
+    try {
+        Trainer::startNew(tinyConfig(), dir.str());
+    } catch (const ConfigError& e) {
+        threw = std::string(e.what()).find("--resume") != std::string::npos;
+    }
+    assert(threw);
+}
+
+// With threshold 1.0 a new network becomes "best" only by winning every game
+// against the current best. Replaying that rule over results.csv must land on
+// the bestGeneration stored in state.bin.
+static void test_gating_state_is_consistent() {
+    TempDir dir("gating");
+    Config c = tinyConfig();
+    c.gating = true;
+    c.gatingThreshold = 1.0f;
+    startQuiet(c, dir)->runUntil(3);
+
+    std::map<std::pair<int, int>, ResultsTable::Pair> pairs = readResults(dir);
+    int best = 0;
+    for (int g = 1; g <= 3; ++g) {
+        // The current best is always among g's opponents.
+        auto it = pairs.find({best, g});
+        assert(it != pairs.end());
+        // scoreA is the older network's score: 0 means g won every game.
+        if (it->second.scoreA == 0.0) best = g;
+    }
+    assert(loadTrainingState(statePath(dir.str())).bestGeneration == best);
+}
+
+int main() {
+    test_start_new_writes_run_files();
+    test_two_generations();
+    test_resume_is_byte_identical();
+    test_thread_count_independence();
+    test_resume_overrides();
+    test_start_new_refuses_existing_run();
+    test_gating_state_is_consistent();
+    std::printf("test_trainer: all tests passed\n");
+    return 0;
+}
