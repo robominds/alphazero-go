@@ -1,5 +1,8 @@
 #include "azgo/serialize.hpp"
+#include <fcntl.h>
+#include <unistd.h>
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -159,23 +162,69 @@ void BinaryReader::floats(float* p, size_t n) {
 
 // ---------------------------------------------------------------- atomic write
 
+namespace {
+
+// Flushes fd to stable storage. macOS fsync() only reaches the drive cache, so
+// ask for F_FULLFSYNC and fall back to fsync() where that is unsupported.
+bool syncFd(int fd) {
+#ifdef F_FULLFSYNC
+    if (fcntl(fd, F_FULLFSYNC) == 0) return true;
+#endif
+    return fsync(fd) == 0;
+}
+
+std::string errnoText() { return std::strerror(errno); }
+
+} // namespace
+
 void writeFileAtomically(const std::string& path, const std::string& contents) {
     const std::string tmp = path + ".tmp";
-    {
-        // Truncates any leftover .tmp from an earlier crash.
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out) throw std::runtime_error("cannot open " + tmp + " for writing");
-        out.write(contents.data(), static_cast<std::streamsize>(contents.size()));
-        out.flush();
-        if (!out) throw std::runtime_error("error writing " + tmp);
-        out.close();
-        if (out.fail()) throw std::runtime_error("error closing " + tmp);
+    // Truncates any leftover .tmp from an earlier crash.
+    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (fd < 0) throw std::runtime_error("cannot open " + tmp + " for writing: " + errnoText());
+    auto fail = [&](const std::string& what) {
+        const std::string msg = what + ": " + errnoText();
+        ::close(fd);
+        ::unlink(tmp.c_str());
+        throw std::runtime_error(msg);
+    };
+    const char* p = contents.data();
+    size_t left = contents.size();
+    while (left > 0) {
+        const ssize_t n = ::write(fd, p, left);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            fail("error writing " + tmp);
+        }
+        p += n;
+        left -= static_cast<size_t>(n);
+    }
+    // The data must be on disk before the rename makes it visible under path.
+    if (!syncFd(fd)) fail("cannot sync " + tmp);
+    if (::close(fd) != 0) {
+        const std::string msg = "error closing " + tmp + ": " + errnoText();
+        ::unlink(tmp.c_str());
+        throw std::runtime_error(msg);
     }
     // rename() replaces the destination in one step on POSIX file systems:
     // readers see the old file or the new one, never a partial write.
     std::error_code ec;
     std::filesystem::rename(tmp, path, ec);
-    if (ec) throw std::runtime_error("cannot rename " + tmp + " to " + path + ": " + ec.message());
+    if (ec) {
+        ::unlink(tmp.c_str());
+        throw std::runtime_error("cannot rename " + tmp + " to " + path + ": " + ec.message());
+    }
+    // Make the rename itself durable. Some file systems cannot fsync a
+    // directory (EINVAL); that is not an error.
+    std::string dir = std::filesystem::path(path).parent_path().string();
+    if (dir.empty()) dir = ".";
+    const int dfd = ::open(dir.c_str(), O_RDONLY);
+    if (dfd < 0) throw std::runtime_error("cannot open directory " + dir + " to sync " + path +
+                                          ": " + errnoText());
+    const bool ok = syncFd(dfd) || errno == EINVAL || errno == ENOTSUP;
+    const std::string err = errnoText();
+    ::close(dfd);
+    if (!ok) throw std::runtime_error("cannot sync directory " + dir + " for " + path + ": " + err);
 }
 
 } // namespace azgo

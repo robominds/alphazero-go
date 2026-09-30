@@ -128,12 +128,14 @@ static void test_write_file_atomically() {
 
     // Unwritable destination: a directory that does not exist.
     bool threw = false;
+    const std::string bad = (dir / "missing" / "x.bin").string();
     try {
-        writeFileAtomically((dir / "missing" / "x.bin").string(), "x");
-    } catch (const std::runtime_error&) {
-        threw = true;
+        writeFileAtomically(bad, "x");
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find(bad) != std::string::npos;   // names the path
     }
     assert(threw);
+    assert(!fs::exists(dir / "missing"));
     fs::remove_all(dir);
 }
 

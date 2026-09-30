@@ -46,8 +46,11 @@ private:
     std::istream& is_;
 };
 
-// Writes to path + ".tmp", flushes, then renames over path (atomic replace).
-// Throws std::runtime_error on I/O failure.
+// Writes to path + ".tmp", fsyncs it, renames over path (atomic replace), then
+// fsyncs the parent directory, so the result is durable across power loss
+// (the file is never empty or partial afterwards). On macOS the file sync uses
+// F_FULLFSYNC. Throws std::runtime_error naming the path on I/O failure; the
+// .tmp is removed best-effort.
 void writeFileAtomically(const std::string& path, const std::string& contents);
 
 } // namespace azgo
