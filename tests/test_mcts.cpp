@@ -418,6 +418,178 @@ static void test_batched_search_still_finds_winning_capture() {
     assert(mcts.selectAction(0.0f, rng) == 23);
 }
 
+// Nodes reachable from `from` (inclusive) through created children.
+static int reachable(const Mcts& m, int from) {
+    int count = 0;
+    std::vector<int> stack{from};
+    while (!stack.empty()) {
+        const int x = stack.back();
+        stack.pop_back();
+        ++count;
+        const MctsNode& nd = m.node(x);
+        for (int i = 0; i < nd.numEdges; ++i)
+            if (m.edge(nd.firstEdge + i).child >= 0) stack.push_back(m.edge(nd.firstEdge + i).child);
+    }
+    return count;
+}
+
+static void test_noise_changes_root_priors_only() {
+    Game game(5, 7.5f, defaultMaxMoves(5));
+    UniformEvaluator ev(5, 2);
+    MctsConfig cfg;
+    cfg.simulations = 100;
+    cfg.batchSize = 4;
+    cfg.addNoise = true;
+    Mcts mcts(cfg, ev);
+    Rng rng(21);
+    mcts.search(game, rng);
+
+    const MctsNode& root = mcts.node(0);
+    double sum = 0.0;
+    int changed = 0;
+    for (int i = 0; i < root.numEdges; ++i) {
+        const MctsEdge& e = mcts.edge(root.firstEdge + i);
+        assert(near(e.rawPrior, 1.0 / 26));
+        assert(e.prior > 0.0f);
+        sum += e.prior;
+        if (!near(e.prior, e.rawPrior, 1e-4)) ++changed;
+    }
+    assert(near(sum, 1.0));
+    assert(changed > root.numEdges / 2);
+    std::vector<float> priors = mcts.rootPriors();
+    for (int i = 0; i < root.numEdges; ++i)
+        assert(priors[mcts.edge(root.firstEdge + i).action] == mcts.edge(root.firstEdge + i).prior);
+
+    int innerExpanded = 0;
+    for (size_t k = 1; k < mcts.nodeCount(); ++k) {
+        const MctsNode& nd = mcts.node(static_cast<int>(k));
+        innerExpanded += nd.expanded ? 1 : 0;
+        for (int i = 0; i < nd.numEdges; ++i)
+            assert(mcts.edge(nd.firstEdge + i).prior == mcts.edge(nd.firstEdge + i).rawPrior);
+    }
+    assert(innerExpanded > 0);
+}
+
+static void test_no_noise_means_prior_equals_raw_prior() {
+    Game game(5, 7.5f, defaultMaxMoves(5));
+    UniformEvaluator ev(5, 2);
+    MctsConfig cfg;
+    cfg.simulations = 60;
+    cfg.addNoise = false;
+    Mcts mcts(cfg, ev);
+    Rng rng(22);
+    mcts.search(game, rng);
+    for (size_t k = 0; k < mcts.nodeCount(); ++k) {
+        const MctsNode& nd = mcts.node(static_cast<int>(k));
+        for (int i = 0; i < nd.numEdges; ++i)
+            assert(mcts.edge(nd.firstEdge + i).prior == mcts.edge(nd.firstEdge + i).rawPrior);
+    }
+}
+
+static void test_noise_follows_the_rng_stream() {
+    Game game(5, 7.5f, defaultMaxMoves(5));
+    UniformEvaluator ev(5, 2);
+    MctsConfig cfg;
+    cfg.simulations = 30;
+    cfg.addNoise = true;
+    Mcts a(cfg, ev), b(cfg, ev), c(cfg, ev);
+    Rng ra(5), rb(5), rc(6);
+    a.search(game, ra);
+    b.search(game, rb);
+    c.search(game, rc);
+    assert(a.rootPriors() == b.rootPriors() && a.rootVisits() == b.rootVisits());
+    assert(a.rootPriors() != c.rootPriors());
+}
+
+static void test_advance_keeps_the_chosen_subtree() {
+    Game game(5, 7.5f, defaultMaxMoves(5));
+    UniformEvaluator ev(5, 2);
+    MctsConfig cfg;
+    cfg.simulations = 64;
+    cfg.batchSize = 4;
+    Mcts mcts(cfg, ev);
+    Rng rng(23);
+    mcts.search(game, rng);
+
+    const int a = mcts.selectAction(0.0f, rng);
+    const int e = rootEdge(mcts, a);
+    const int oldChild = mcts.edge(e).child;
+    assert(oldChild >= 0);
+    const MctsNode before = mcts.node(oldChild);
+    std::vector<int> oldVisits;
+    std::vector<float> oldValues;
+    for (int i = 0; i < before.numEdges; ++i) {
+        oldVisits.push_back(mcts.edge(before.firstEdge + i).visits);
+        oldValues.push_back(mcts.edge(before.firstEdge + i).valueSum);
+    }
+    const int oldReachable = reachable(mcts, oldChild);
+    const int reused = sum(oldVisits);
+    assert(reused > 0);   // the most visited child has been searched below
+
+    mcts.advance(a);
+    assert(mcts.node(0).board == before.board);
+    assert(mcts.node(0).parent == -1);
+    assert(mcts.node(0).visits == before.visits);
+    assert(mcts.node(0).numEdges == before.numEdges);
+    assert(static_cast<int>(mcts.nodeCount()) == oldReachable);
+    assert(reachable(mcts, 0) == oldReachable);   // compacted: every node is reachable
+    for (int i = 0; i < before.numEdges; ++i) {
+        const MctsEdge& ne = mcts.edge(mcts.node(0).firstEdge + i);
+        assert(ne.visits == oldVisits[i]);
+        assert(ne.valueSum == oldValues[i]);
+        if (ne.child >= 0) assert(mcts.node(ne.child).parent == 0);
+    }
+    assert(mcts.totalVirtualLoss() == 0);
+    assert(mcts.rootTotalVisits() == reused);
+
+    // The next search recognises the position and builds on the kept tree.
+    game.play(a);
+    const long long batchesBefore = mcts.evaluatorBatches();
+    mcts.search(game, rng);
+    assert(mcts.rootTotalVisits() == reused + 64);
+    assert(mcts.node(0).board == game.board());
+    // The root was already expanded, so no extra batch was spent on it:
+    // 64 simulations in rounds of 4 without collisions = 16 batches.
+    assert(mcts.evaluatorBatches() - batchesBefore <= 16);
+}
+
+static void test_advance_to_unexplored_child_resets() {
+    Game game(5, 7.5f, defaultMaxMoves(5));
+    UniformEvaluator ev(5, 2);
+    MctsConfig cfg;
+    cfg.simulations = 5;   // 5 of 26 root edges get a child
+    cfg.batchSize = 1;
+    Mcts mcts(cfg, ev);
+    Rng rng(24);
+    mcts.advance(12);   // empty tree: no-op
+    assert(mcts.nodeCount() == 0);
+    mcts.search(game, rng);
+    int unexplored = -1;
+    const MctsNode& root = mcts.node(0);
+    for (int i = 0; i < root.numEdges; ++i)
+        if (mcts.edge(root.firstEdge + i).child < 0) unexplored = mcts.edge(root.firstEdge + i).action;
+    assert(unexplored >= 0);
+    mcts.advance(unexplored);
+    assert(mcts.nodeCount() == 0);
+    assert(mcts.rootTotalVisits() == 0);
+}
+
+static void test_search_on_a_different_position_resets() {
+    Game game(5, 7.5f, defaultMaxMoves(5));
+    UniformEvaluator ev(5, 2);
+    MctsConfig cfg;
+    cfg.simulations = 30;
+    Mcts mcts(cfg, ev);
+    Rng rng(25);
+    mcts.search(game, rng);
+    game.play(12);   // moved on without advance(): the tree is stale
+    mcts.search(game, rng);
+    assert(mcts.node(0).board == game.board());
+    assert(mcts.node(0).ply == 1);
+    assert(mcts.rootTotalVisits() == 30);
+    assert(rootEdge(mcts, 12) == -1);   // C3 is occupied now
+}
+
 int main() {
     test_root_visits_sum_to_simulations_and_tree_is_kept();
     test_only_legal_actions_get_edges();
@@ -435,6 +607,12 @@ int main() {
     test_evaluator_never_sees_more_than_batch_size();
     test_batched_search_is_deterministic();
     test_batched_search_still_finds_winning_capture();
+    test_noise_changes_root_priors_only();
+    test_no_noise_means_prior_equals_raw_prior();
+    test_noise_follows_the_rng_stream();
+    test_advance_keeps_the_chosen_subtree();
+    test_advance_to_unexplored_child_resets();
+    test_search_on_a_different_position_resets();
     std::printf("test_mcts: all tests passed\n");
     return 0;
 }

@@ -182,10 +182,10 @@ void Mcts::backup(int leaf, const std::vector<int>& pathEdges, float value) {
 
 void Mcts::search(const Game& game, Rng& rng) {
     assert(!game.isTerminal());
-    (void)rng;   // used for root noise from Task 13 on
     prepareRoot(game);
     // The root needs priors before the first descent; evaluating it is not a simulation.
     if (!nodes_[0].expanded) evaluateLeaves({0});
+    setRootPriors(rng);   // fresh noise (or none) for this search
 
     std::vector<int> leaves;                  // pending leaves of this round
     std::vector<std::vector<int>> paths;      // their edge paths
@@ -301,6 +301,61 @@ long long Mcts::totalVirtualLoss() const {
     for (const MctsEdge& e : edges_) total += e.virtualLoss;
     for (const MctsNode& nd : nodes_) total += nd.virtualLoss;
     return total;
+}
+
+void Mcts::setRootPriors(Rng& rng) {
+    MctsNode& root = nodes_[0];
+    MctsEdge* e = edges_.data() + root.firstEdge;
+    // Skip the noise when it would be a no-op (and Dirichlet needs alpha > 0).
+    if (!cfg_.addNoise || cfg_.noiseFraction <= 0.0f || cfg_.dirichletScale <= 0.0f) {
+        for (int i = 0; i < root.numEdges; ++i) e[i].prior = e[i].rawPrior;
+        return;
+    }
+    // alpha shrinks with the board so the total noise "mass" stays about
+    // dirichletScale spread over the legal moves, whatever the board size.
+    const int area = eval_.boardSize() * eval_.boardSize();
+    const std::vector<double> eta = dirichlet(rng, cfg_.dirichletScale / area, root.numEdges);
+    const float eps = cfg_.noiseFraction;
+    for (int i = 0; i < root.numEdges; ++i)
+        e[i].prior = (1.0f - eps) * e[i].rawPrior + eps * static_cast<float>(eta[i]);
+}
+
+void Mcts::advance(int action) {
+    if (nodes_.empty()) return;
+    const MctsNode& root = nodes_[0];
+    int newRoot = -1;
+    for (int i = 0; i < root.numEdges; ++i)
+        if (edges_[root.firstEdge + i].action == action) newRoot = edges_[root.firstEdge + i].child;
+    if (newRoot < 0) {   // never explored (or illegal): nothing worth keeping
+        reset();
+        return;
+    }
+    // Copy only the subtree under newRoot into fresh vectors, so memory stays
+    // bounded by what one move's search built. Explicit-stack DFS; each stack
+    // entry is (old node, its new parent, the new edge that must point to it).
+    std::vector<MctsNode> nodes;
+    std::vector<MctsEdge> edges;
+    struct Item { int oldNode, newParent, newEdge; };
+    std::vector<Item> stack{{newRoot, -1, -1}};
+    while (!stack.empty()) {
+        const Item it = stack.back();
+        stack.pop_back();
+        const int idx = static_cast<int>(nodes.size());
+        MctsNode nd = nodes_[it.oldNode];
+        nd.parent = it.newParent;
+        nd.firstEdge = static_cast<int>(edges.size());
+        if (it.newEdge >= 0) edges[it.newEdge].child = idx;
+        for (int i = 0; i < nd.numEdges; ++i) {
+            MctsEdge e = edges_[nodes_[it.oldNode].firstEdge + i];
+            const int oldChild = e.child;
+            e.child = -1;   // filled in when that child is copied
+            edges.push_back(e);
+            if (oldChild >= 0) stack.push_back({oldChild, idx, static_cast<int>(edges.size()) - 1});
+        }
+        nodes.push_back(nd);
+    }
+    nodes_.swap(nodes);
+    edges_.swap(edges);
 }
 
 } // namespace azgo
