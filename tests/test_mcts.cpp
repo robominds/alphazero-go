@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <numeric>
 #include <vector>
+#include "azgo/encode.hpp"
 #include "azgo/mcts.hpp"
 
 using namespace azgo;
@@ -195,6 +196,108 @@ static void test_pass_edge_after_opponent_pass_wins_by_komi() {
     const MctsEdge& pass = mcts.edge(rootEdge(mcts, 25));
     assert(pass.visits > 0);
     assert(pass.valueSum == static_cast<float>(pass.visits));
+}
+
+// Edge whose Q is used while unvisited, for the pass edge of a node reached
+// by a pass: the exact game result (Tromp-Taylor score minus komi) from the
+// chooser's point of view.
+static float passEdgeUnvisitedQ(const Game& game) {
+    UniformEvaluator ev(5, 2);
+    Mcts mcts(serialConfig(1), ev);
+    Rng rng(31);
+    mcts.search(game, rng);
+    assert(mcts.node(0).passes == 1);
+    return mcts.edge(rootEdge(mcts, 25)).unvisitedQ;
+}
+
+static void test_known_terminal_pass_edge_has_exact_unvisited_q() {
+    // White chooses after Black's pass on an empty board: White wins by komi.
+    Game a(5, 7.5f, defaultMaxMoves(5));
+    a.play(25);
+    assert(passEdgeUnvisitedQ(a) == 1.0f);
+
+    // Integer komi on an empty board: a tie scores 0.
+    Game b(5, 0.0f, defaultMaxMoves(5));
+    b.play(25);
+    assert(passEdgeUnvisitedQ(b) == 0.0f);
+
+    // Black chooses (White passed) and owns 20 points against komi 7.5: +1 for Black.
+    Board start = boardFromRows({"XXXXX", "XXXXX", "XXXXX", "XXXXX", "....."}, Color::White);
+    Game c(start, 7.5f, 50);
+    c.play(25);
+    assert(passEdgeUnvisitedQ(c) == 1.0f);
+    // ... but under a komi of 30.5 passing loses for Black: -1.
+    Game d(start, 30.5f, 50);
+    d.play(25);
+    assert(passEdgeUnvisitedQ(d) == -1.0f);
+
+    // Every other edge, and the pass edge when the last move was not a pass,
+    // keeps the ordinary first-play value 0.
+    Game e(5, 7.5f, defaultMaxMoves(5));
+    UniformEvaluator ev(5, 2);
+    Mcts mcts(serialConfig(1), ev);
+    Rng rng(32);
+    mcts.search(e, rng);
+    for (int i = 0; i < mcts.node(0).numEdges; ++i)
+        assert(mcts.edge(mcts.node(0).firstEdge + i).unvisitedQ == 0.0f);
+}
+
+// Black likes to pass (logit +7) and thinks it is winning (+0.9); White is
+// nearly sure not to pass back (logit -5) and thinks it is losing (-0.9).
+// "Black to move" is read from the encoded planes. 7x7 boards.
+class PassLovingEvaluator : public Evaluator {
+public:
+    int boardSize() const override { return 7; }
+    int history() const override { return 2; }
+    int maxBatch() const override { return 64; }
+    void evaluate(const float* input, int B, float* logits, float* values) override {
+        const int area = 49, stride = numPlanes(2) * area;
+        for (int b = 0; b < B; ++b) {
+            const bool black = input[b * stride + 2 * 2 * area] == 1.0f;
+            std::fill(logits + b * (area + 1), logits + (b + 1) * (area + 1), 0.0f);
+            logits[b * (area + 1) + area] = black ? 7.0f : -5.0f;
+            values[b] = black ? 0.9f : -0.9f;
+        }
+    }
+};
+
+// Black owns the left four columns except one white stone in atari, with
+// three empty columns on the right. Capturing it (point 25) wins the
+// whole board, but passing leaves 27 - 1 = 26 under Tromp-Taylor (the
+// right-hand region touches both colors, so it is neutral). Komi 26.5:
+// passing loses while the capture wins.
+static Game deadStoneGame() {
+    Board start = boardFromRows({"XXXX...",
+                                 "XXXX...",
+                                 "XXXX...",
+                                 "XXXO...",
+                                 "XXXX...",
+                                 "XXXX...",
+                                 "XXXX..."}, Color::Black);
+    return Game(start, 26.5f, 100);
+}
+
+static int mostVisited(const Mcts& m) {
+    const std::vector<int> v = m.rootVisits();
+    return static_cast<int>(std::max_element(v.begin(), v.end()) - v.begin());
+}
+
+static void test_search_does_not_pass_into_a_tromp_taylor_loss() {
+    Game game = deadStoneGame();
+    Board passed = game.board();
+    passed.play(passed.passAction());
+    passed.play(passed.passAction());
+    assert(passed.areaScore() == 26);   // the pass loses: 26 < 26.5
+
+    PassLovingEvaluator ev;
+    MctsConfig cfg;
+    cfg.simulations = 100;   // batchSize 8, as in arena/self-play
+    Mcts mcts(cfg, ev);
+    Rng rng(41);
+    mcts.search(game, rng);
+    assert(mcts.totalVirtualLoss() == 0);
+    assert(sum(mcts.rootVisits()) == 100);
+    assert(mostVisited(mcts) != 49);
 }
 
 static void test_stale_pass_count_rebuilds_the_tree() {
@@ -600,6 +703,8 @@ int main() {
     test_select_action_temperature_one_follows_visit_counts();
     test_backup_flips_sign_one_ply();
     test_pass_edge_after_opponent_pass_wins_by_komi();
+    test_known_terminal_pass_edge_has_exact_unvisited_q();
+    test_search_does_not_pass_into_a_tromp_taylor_loss();
     test_stale_pass_count_rebuilds_the_tree();
     test_batched_visits_exact_and_virtual_loss_removed();
     test_batch_one_calls_evaluator_once_per_leaf();

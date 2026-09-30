@@ -64,8 +64,8 @@ int Mcts::selectEdge(int nodeIndex) const {
     for (int i = 0; i < nd.numEdges; ++i) {
         const MctsEdge& e = edges_[nd.firstEdge + i];
         const int n = e.visits + e.virtualLoss;
-        // Each virtual loss adds a -1 result for the chooser; unvisited Q = 0.
-        const float q = n > 0 ? (e.valueSum - static_cast<float>(e.virtualLoss)) / n : 0.0f;
+        // Each virtual loss adds a -1 result for the chooser; unvisited Q = e.unvisitedQ (0 except for a known game-ending pass).
+        const float q = n > 0 ? (e.valueSum - static_cast<float>(e.virtualLoss)) / n : e.unvisitedQ;
         const float u = cfg_.cPuct * e.prior * sqrtN / (1 + n);
         if (q + u > bestScore) {   // strict '>': the first index wins ties
             bestScore = q + u;
@@ -162,6 +162,15 @@ void Mcts::expand(int nodeIndex, const float* logits, float value) {
         e.action = legal[i];
         e.rawPrior = p[i] / sum;
         e.prior = e.rawPrior;
+        if (legal[i] == pass && nd.passes >= 1) {
+            // Passing now ends the game, so its value is exact: score it
+            // here instead of waiting for a visit the prior may never earn.
+            Board after = board;
+            after.play(pass);
+            const float margin = static_cast<float>(after.areaScore()) - game_->komi();
+            const float blackResult = margin > 0 ? 1.0f : (margin < 0 ? -1.0f : 0.0f);
+            e.unvisitedQ = board.toMove() == Color::Black ? blackResult : -blackResult;
+        }
         edges_.push_back(e);
     }
     nd.expanded = true;

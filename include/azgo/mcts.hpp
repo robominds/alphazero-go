@@ -24,6 +24,15 @@ struct MctsConfig {
     float noiseFraction = 0.25f; // epsilon
 };
 
+// Why unvisitedQ exists (and why it is not first-play-urgency tuning): with
+// unvisited Q = 0, an edge with a tiny prior may stay unvisited for the whole
+// search. That is harmless for unknown moves, but when that edge is the
+// game-ending pass reply to a pass, the search never sees the exact, already
+// known result, and a net that likes passing (its value head is right about
+// the board, but dead stones still count under Tromp-Taylor) passes into a
+// lost game. Only this one terminal edge gets a non-zero value; every
+// other unvisited edge keeps Q = 0 and the exploration rule is unchanged.
+//
 // Edge statistics are from the perspective of the player who chooses the
 // edge (the parent's side to move).
 struct MctsEdge {
@@ -34,6 +43,11 @@ struct MctsEdge {
     float valueSum = 0;
     int virtualLoss = 0;
     int child = -1;       // node index, -1 until created
+    // Q used while the edge has no visits. Normally 0 ("first-play urgency
+    // 0"). Set exactly once, in expand(), for the one edge whose result is
+    // known without search: a pass after a pass ends the game, so its value
+    // is the Tromp-Taylor score minus komi, from the chooser's view.
+    float unvisitedQ = 0;
 };
 
 struct MctsNode {
