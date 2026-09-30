@@ -13,8 +13,9 @@ trap 'rm -rf "$W"' EXIT
 
 fail() { echo "integration_smoke: FAILED: $*" >&2; exit 1; }
 
-# The 5x5 preset shrunk to a network and budget that train in seconds.
-TINY=(--set blocks=1 --set filters=8 --set value_hidden=8 --set history=2
+# The 5x5 preset shrunk to a network and budget that train in seconds, on the
+# naive backend so the test also runs in builds without BLAS.
+TINY=(--set backend=naive --set blocks=1 --set filters=8 --set value_hidden=8 --set history=2
       --set games_per_generation=4 --set simulations=8 --set train_steps=4
       --set batch_size=16 --set arena_games=2 --set arena_simulations=4 --set workers=2
       --set sgf_per_generation=1)

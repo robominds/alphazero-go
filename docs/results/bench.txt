@@ -1,0 +1,15 @@
+size   blocks x filters  backend       evals/s  train-step ms
+5x5    3 x 32            naive           10544           28.0
+5x5    3 x 32            blas            30488           12.1
+9x9    6 x 64            naive             402          490.3
+9x9    6 x 64            blas             3696          149.0
+19x19  10 x 128          naive              13        10649.8
+19x19  10 x 128          blas              229         2393.5
+
+size   random-playout moves/s
+5x5                   1306178
+9x9                    562292
+19x19                  178475
+Apple M4
+10
+25769803776

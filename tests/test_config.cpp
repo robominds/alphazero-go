@@ -72,7 +72,7 @@ static void test_presets_load() {
 
     Config c9 = loadConfigFile(preset("9x9.cfg"));
     assert(c9.boardSize == 9 && c9.blocks == 6 && c9.filters == 64 && c9.valueHidden == 64);
-    assert(c9.lrSchedule == "0:0.02,60:0.002" && c9.temperatureMoves == 20);
+    assert(c9.lrSchedule == "0:0.02,90:0.002" && c9.temperatureMoves == 20);
 
     Config c19 = loadConfigFile(preset("19x19.cfg"));
     assert(c19.boardSize == 19 && c19.blocks == 10 && c19.filters == 128);
