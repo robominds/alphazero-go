@@ -90,7 +90,7 @@ bool allFinite(const std::vector<float>& v) {
 } // namespace
 
 static void test_whole_network_gradient_check() {
-    const NetConfig cfg = makeConfig(5, 1, 1, 4, 8);
+    const NetConfig cfg = makeConfig(5, 1, 2, 4, 8);
     const int B = 3;
     NaiveBackend be;
     Network net(cfg, 42);

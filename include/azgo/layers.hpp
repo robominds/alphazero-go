@@ -44,7 +44,7 @@ struct BatchNorm2d {
     // If updateRunning, updates runMean and runVar (unbiased variance M/(M-1)).
     void forwardTrain(const float* x, int M, float* y, float* xhat, float* invStd,
                       bool updateRunning);
-    // Accumulates ggamma, gbeta; writes dx (overwrite).
+    // Accumulates ggamma, gbeta; writes dx (overwrite); dx may alias dy (Network relies on it).
     void backward(const float* dy, const float* xhat, const float* invStd, int M, float* dx);
 };
 
