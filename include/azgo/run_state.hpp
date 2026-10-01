@@ -1,7 +1,8 @@
 // Resuming a run. A checkpoint holds only the network; continuing training
 // exactly also needs the optimizer's momentum, the replay buffer, the
-// generation counters and the arena results. They go into one binary file
-// that is replaced atomically, so a crash mid-save leaves the old state.
+// generation counters, the arena results and the arena's reference set. They
+// go into one binary file that is replaced atomically, so a crash mid-save
+// leaves the old state.
 #pragma once
 #include <string>
 #include <vector>
@@ -19,11 +20,20 @@ struct TrainingState {
     ReplayBuffer buffer{1};
     std::vector<std::vector<float>> velocity;  // optimizer momentum, params() order
     ResultsTable results;
+    // The frozen players new networks are measured against: bots, generation
+    // 0 and every promoted generation. Sorted ascending, always contains 0.
+    std::vector<int> references{0};
 };
 
-// Binary, magic "AZST" (u32 0x54535A41), version u32 = 1. Atomic replace.
+// The reference set of a new run: every bot (-numBots, ..., -1) and generation 0.
+std::vector<int> initialReferences(int numBots);
+
+// Binary, magic "AZST" (u32 0x54535A41), version u32 = 2. Atomic replace.
 void saveTrainingState(const std::string& path, const TrainingState& state);
-TrainingState loadTrainingState(const std::string& path);   // throws std::runtime_error
+// Reads version 2 and version 1, which predates the reference set: a version-1
+// file gets references = initialReferences(numBots), so pass the number of
+// bots the run's config defines. Throws std::runtime_error naming the path.
+TrainingState loadTrainingState(const std::string& path, int numBots = 0);
 
 // Run-directory paths.
 std::string checkpointPath(const std::string& runDir, int generation);  // runDir/checkpoints/gen_0007.azn

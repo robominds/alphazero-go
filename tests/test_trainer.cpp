@@ -44,6 +44,8 @@ static Config tinyConfig() {
     c.workers = 2;
     c.sgfPerGeneration = 1;
     c.lrSchedule = "0:0.02";
+    c.botSimulations = {8};   // one cheap bot: player -1
+    c.calibrationGames = 2;
     return c;
 }
 
@@ -116,6 +118,7 @@ static void test_start_new_writes_run_files() {
     TrainingState s = loadTrainingState(statePath(dir.str()));
     assert(s.generation == 0 && s.bestGeneration == 0 && s.samplesTrained == 0);
     assert(s.buffer.positions() == 0 && s.buffer.capacity() == 1000);
+    assert((s.references == std::vector<int>{-1, 0}));   // the bot and generation 0
     // Momentum starts at zero, one buffer per parameter tensor.
     Network net = loadNetwork(checkpointPath(dir.str(), 0));
     std::vector<ParamView> params = net.params();

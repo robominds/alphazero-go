@@ -1,18 +1,28 @@
 #include "azgo/run_state.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 #include "azgo/serialize.hpp"
 
 namespace azgo {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x54535A41;   // "AZST" read as little-endian bytes
-constexpr uint32_t kStateVersion = 1;
+constexpr uint32_t kStateVersion = 2;   // 2 added the reference set
 } // namespace
+
+std::vector<int> initialReferences(int numBots) {
+    if (numBots < 0) throw std::invalid_argument("initialReferences: numBots must be >= 0");
+    std::vector<int> refs;
+    for (int k = numBots; k >= 1; --k) refs.push_back(-k);   // ascending: -numBots first
+    refs.push_back(0);
+    return refs;
+}
 
 void saveTrainingState(const std::string& path, const TrainingState& state) {
     // Build the whole file in memory first: writeFileAtomically then either
@@ -31,10 +41,12 @@ void saveTrainingState(const std::string& path, const TrainingState& state) {
         w.floats(v.data(), v.size());
     }
     w.str(state.results.toCsv());
+    w.u32(static_cast<uint32_t>(state.references.size()));
+    for (int r : state.references) w.i32(r);
     writeFileAtomically(path, os.str());
 }
 
-TrainingState loadTrainingState(const std::string& path) {
+TrainingState loadTrainingState(const std::string& path, int numBots) {
     std::ifstream in(path, std::ios::binary);
     if (!in) throw std::runtime_error(path + ": cannot open training state");
     std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -47,7 +59,7 @@ TrainingState loadTrainingState(const std::string& path) {
         BinaryReader r(is);
         if (r.u32() != kStateMagic) throw std::runtime_error("bad magic (not a training state file)");
         uint32_t version = r.u32();
-        if (version != kStateVersion)
+        if (version != 1 && version != kStateVersion)
             throw std::runtime_error("unsupported version " + std::to_string(version));
         TrainingState state;
         state.generation = r.i32();
@@ -64,6 +76,20 @@ TrainingState loadTrainingState(const std::string& path) {
             r.floats(v.data(), v.size());
         }
         state.results = ResultsTable::fromCsv(r.str());
+        if (version == 1) {
+            state.references = initialReferences(numBots);
+        } else {
+            uint32_t count = r.u32();
+            if (count > bytes.size() / sizeof(int32_t)) throw std::runtime_error("truncated reference set");
+            state.references.resize(count);
+            for (int& ref : state.references) ref = r.i32();
+            // Sorted, unique and anchored, or the file is not what we wrote.
+            bool valid = std::find(state.references.begin(), state.references.end(), 0) !=
+                         state.references.end();
+            for (size_t i = 1; valid && i < state.references.size(); ++i)
+                valid = state.references[i - 1] < state.references[i];
+            if (!valid) throw std::runtime_error("invalid reference set (must be ascending and contain 0)");
+        }
         if (is.peek() != std::char_traits<char>::eof())
             throw std::runtime_error("unexpected trailing bytes");
         return state;

@@ -32,7 +32,8 @@ static void writeBytes(const fs::path& p, const std::string& bytes) {
 }
 
 // A state with real content: two short self-play games, momentum buffers,
-// and arena results for two pairs.
+// arena results for three pairs (one with a bot) and a reference set with
+// two bots and a promoted generation.
 static TrainingState makeState() {
     UniformEvaluator eval(5, 2, 0.0f, 8);
     SelfPlayConfig sp;
@@ -51,6 +52,8 @@ static TrainingState makeState() {
     s.velocity = {{0.5f, -1.25f, 3.0f}, {}, {1e-7f}};
     s.results.addMatch(0, 7, 20, 12.5);
     s.results.addMatch(6, 7, 20, 9.0);
+    s.results.addMatch(-1, 0, 8, 3.0);
+    s.references = {-2, -1, 0, 5};
     return s;
 }
 
@@ -71,6 +74,7 @@ static void assertSameState(const TrainingState& x, const TrainingState& y) {
     assert(x.velocity == y.velocity);
     assert(x.results.toCsv() == y.results.toCsv());
     assert(x.results.pairs().size() == y.results.pairs().size());
+    assert(x.references == y.references);
 }
 
 static void test_round_trip() {
@@ -150,7 +154,7 @@ static void test_crash_leftovers() {
 
     // A newer format version.
     std::string newer = bytes;
-    newer[4] = 2;   // version is the u32 after the magic, little-endian
+    newer[4] = 3;   // version is the u32 after the magic, little-endian
     writeBytes(wrong, newer);
     msg = loadError(wrong.string());
     assert(msg.find("version") != std::string::npos);
@@ -159,6 +163,53 @@ static void test_crash_leftovers() {
     writeBytes(wrong, bytes + "x");
     msg = loadError(wrong.string());
     assert(msg.find(wrong.string()) != std::string::npos);
+    fs::remove_all(dir);
+}
+
+static void test_initial_references() {
+    assert((initialReferences(0) == std::vector<int>{0}));
+    assert((initialReferences(2) == std::vector<int>{-2, -1, 0}));
+    assert((TrainingState{}.references == std::vector<int>{0}));
+}
+
+// A version-1 file is a version-2 file without the reference set at the end:
+// the u32 count and one i32 per reference.
+static void test_version1_gets_default_references() {
+    fs::path dir = freshDir("version1");
+    TrainingState original = makeState();
+    saveTrainingState((dir / "v2.bin").string(), original);
+    std::string bytes = readBytes(dir / "v2.bin");
+    std::string v1 = bytes.substr(0, bytes.size() - 4 - 4 * original.references.size());
+    v1[4] = 1;
+    fs::path path = dir / "v1.bin";
+    writeBytes(path, v1);
+
+    TrainingState loaded = loadTrainingState(path.string(), 2);
+    assert((loaded.references == std::vector<int>{-2, -1, 0}));
+    TrainingState expected = original;
+    expected.references = {-2, -1, 0};
+    assertSameState(expected, loaded);
+    assert((loadTrainingState(path.string()).references == std::vector<int>{0}));   // no bots
+
+    // Saving it again writes version 2.
+    saveTrainingState(path.string(), loaded);
+    assert(readBytes(path)[4] == 2);
+    assert((loadTrainingState(path.string()).references == std::vector<int>{-2, -1, 0}));
+    fs::remove_all(dir);
+}
+
+static void test_rejects_bad_references() {
+    fs::path dir = freshDir("badrefs");
+    fs::path path = dir / "state.bin";
+    for (const std::vector<int>& bad : {std::vector<int>{0, -1}, std::vector<int>{-1, 5},
+                                        std::vector<int>{0, 0}, std::vector<int>{}}) {
+        TrainingState s = makeState();
+        s.references = bad;
+        saveTrainingState(path.string(), s);
+        std::string msg = loadError(path.string());
+        assert(msg.find(path.string()) != std::string::npos);
+        assert(msg.find("reference") != std::string::npos);
+    }
     fs::remove_all(dir);
 }
 
@@ -174,6 +225,9 @@ static void test_paths() {
 int main() {
     test_round_trip();
     test_crash_leftovers();
+    test_initial_references();
+    test_version1_gets_default_references();
+    test_rejects_bad_references();
     test_paths();
     std::printf("test_run_state: all tests passed\n");
     return 0;

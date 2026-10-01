@@ -127,6 +127,7 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     TrainingState state;
     state.buffer = ReplayBuffer(static_cast<size_t>(cfg.bufferPositions));
     state.velocity = SgdMomentum(net, cfg.momentum, cfg.weightDecay).velocity();   // all zeros
+    state.references = initialReferences(static_cast<int>(cfg.botSimulations.size()));
 
     writeFileAtomically(logPath(runDir), kLogHeader);
     writeFileAtomically(eloPath(runDir), std::string(kEloHeader) + "0,0,,,\n");
@@ -157,7 +158,10 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
         throw ConfigError("cannot change architecture keys on resume: " + keys);
     }
 
-    TrainingState state = loadTrainingState(statePath(runDir));
+    // A version-1 state.bin (written before bots existed) gets every
+    // configured bot as a reference.
+    TrainingState state =
+        loadTrainingState(statePath(runDir), static_cast<int>(cfg.botSimulations.size()));
     const std::string ckpt = checkpointPath(runDir, state.generation);
     Network net = loadNetwork(ckpt);
     if (net.config() != cfg.netConfig())
