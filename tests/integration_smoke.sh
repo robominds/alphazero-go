@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test of the four executables on a tiny 5x5 run:
-# train -> resume -> arena -> analyze (good and bad input) -> bench, plus the
-# refusal to change the architecture on resume.
+# train -> resume -> arena (checkpoint and bot) -> analyze (good and bad input)
+# -> bench, plus the refusal to change the architecture on resume.
 #
 # usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR
 set -euo pipefail
@@ -36,6 +36,24 @@ echo "== arena =="
 out="$("$BUILD/arena" --a "$CK/gen_0000.azn" --b "$CK/gen_0003.azn" --games 4 --simulations 4 --workers 2)"
 echo "$out"
 echo "$out" | grep -Eq '^A .* scored' || fail "arena did not print a score line"
+
+echo "== arena: against the uniform bot =="
+out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --games 4 --simulations 4 --workers 2)"
+echo "$out"
+echo "$out" | grep -q 'vs B bot(8 simulations): A scored' || fail "arena --b-bot printed no score line"
+
+# B is exactly one of a checkpoint and a bot, and a bot must search.
+expect_arena_error() {
+    local want="$1"; shift
+    local status=0 out
+    out="$("$BUILD/arena" --a "$CK/gen_0003.azn" "$@" 2>&1)" || status=$?
+    [ "$status" -eq 1 ] || fail "arena $* exited $status, expected 1; output: $out"
+    echo "$out" | grep -qF -- "$want" || fail "arena $* printed '$out', expected '$want'"
+    echo "  ok: $want"
+}
+expect_arena_error "give exactly one of --b CKPT and --b-bot SIMS" --b "$CK/gen_0000.azn" --b-bot 8
+expect_arena_error "give exactly one of --b CKPT and --b-bot SIMS"
+expect_arena_error "--b-bot must be in [1, 100000]" --b-bot 0
 
 echo "== analyze: a legal position =="
 out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --simulations 16)"
