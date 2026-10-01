@@ -13,21 +13,22 @@ planned as `docs/algorithm-explained.html`.)*
 
 **Language:** C++17, no dependencies (BLAS optional) · **Network:** a
 ResNet, 3 blocks × 32 filters on 5×5 up to 10 × 128 on 19×19 ·
-**Result:** on 5×5, in both of two runs, the final network wins 20 of 20
-arena games against the untrained one and puts 97% of its prior on the
-center point, the first move of 5×5's known perfect play
+**Result:** on 5×5, in both of two runs, the final network wins 100 of
+100 games against the untrained one and puts 97% of its prior on the
+center point, the first move of 5×5's known perfect play; on 9×9, after
+one night, generation 150 beats generation 50 in 98 of 100 games
 
 **About the numbers.** Everything measured was measured on one Apple M4
 with 10 cores (`docs/results/bench.txt`), and every number names the file
 it came from. The 5×5 numbers come from two complete 60-generation runs,
-seeds 1 and 2. Seed 1's `log.csv`, `elo.csv` and `results.csv` are kept
-in `docs/results/5x5/`; its `log.csv` also matches the pilot
-`docs/results/pilots/5x5-komi24.5.csv` in every column except the timings
-(chapter 08 explains why that is not a coincidence). Seed 2's files stay
-in `runs/5x5-seed2/`, which is not part of the repository. The 9×9 and
-19×19 numbers come from `docs/results/9x9/` (an overnight run),
-`docs/results/19x19/` (a two-generation check) and the short pilots in
-`docs/results/pilots/`.
+seeds 1 and 2, whose `log.csv`, `elo.csv` and `results.csv` are kept in
+`docs/results/5x5/` and `docs/results/5x5-seed2/`. The 9×9 and 19×19
+numbers come from `docs/results/9x9/` (an overnight run) and
+`docs/results/19x19/` (a two-generation check). All of these runs were
+made with the final code. A first set, made before the search fix
+described in chapters 02 and 07, is kept in `docs/results/passbug/`;
+the short pilots in `docs/results/pilots/`, used to size the presets,
+also predate that fix. `docs/results/README.md` summarizes everything.
 
 ## Contents
 
@@ -977,37 +978,38 @@ runs/5x5-seed1/checkpoints/gen_0060.azn: 9 moves played, White to move, komi 24.
    A B C D E
 White to move
 
-Value (side to move): +0.89
+Value (side to move): +0.77
 
 Policy prior, % of legal moves ("." below 1%):
      A  B  C  D  E
- 5   .  7  5 11  X
- 4   .  X  O 13 21
- 3   X  .  X  O  1
- 2   1  X  O  7 10
- 1   .  5  4 10  .
-Pass prior: 1.8%
+ 5   .  3  2  8  X
+ 4   .  X  O 30 17
+ 3   X  .  X  O  .
+ 2   .  X  O 11  8
+ 1   .  3  2 10  .
+Pass prior: 1.2%
 
 Top 10 moves by prior:
-  E4     20.7%
-  D4     12.8%
-  D5     11.4%
+  D4     30.3%
+  E4     17.3%
+  D2     11.3%
+  D1      9.9%
 ...
 
-MCTS value (side to move): +0.61 after 200 simulations
+MCTS value (side to move): +0.64 after 200 simulations
 Top 10 moves by visits:
-  E2        97 visits ( 48.5%)  Q +0.74
-  D1        43 visits ( 21.5%)  Q +0.61
-  E4        42 visits ( 21.0%)  Q +0.65
-  D5         7 visits (  3.5%)  Q +0.28
-  D2         3 visits (  1.5%)  Q -0.02
-  D4         2 visits (  1.0%)  Q -0.49
+  D1       104 visits ( 52.0%)  Q +0.79
+  E4        39 visits ( 19.5%)  Q +0.67
+  E2        32 visits ( 16.0%)  Q +0.60
+  D4         8 visits (  4.0%)  Q -0.15
+  D2         8 visits (  4.0%)  Q +0.15
+  D5         6 visits (  3.0%)  Q +0.24
 ...
 ```
 
-The prior liked E4 best (20.7%); after 200 simulations search puts
-almost half its visits on E2, whose Q is highest, and D4, the prior's
-second choice at 12.8%, ends with 2 visits and a Q of −0.49. B3 prints
+The prior liked D4 best (30.3%); after 200 simulations search has found
+that D4 is bad (8 visits, Q −0.15) and puts more than half its visits on
+D1, only the prior's fourth choice at 9.9%, whose Q is highest. B3 prints
 as "." and is never visited — the superko mask at work (`analyze`
 applies the same legal-move mask to the raw prior). With komi 24.5 White
 wins unless Black ends up owning all 25 points, which is why the value
@@ -1017,7 +1019,14 @@ the prior, is what the game plays and what the network is trained on:
 improvement back into the network.
 
 On 9×9, the final network's top-visited move in the atari test position
-of `docs/results/9x9/analyze-atari.txt` is <!-- RESULTS-PENDING: the top-visited move, its visit share and its rank by prior, from docs/results/9x9/analyze-atari.txt (analyze on the final runs/9x9-main checkpoint) -->.
+of `docs/results/9x9/analyze-atari.txt` (a White stone with one liberty
+left, Black to move) is the capture, E4, with 63 of 200 visits (31.5%);
+it is also the prior's first choice, at 51.4%. Search cannot fix what it
+never looks at, though: in the eye test position
+(`docs/results/9x9/analyze-eye.txt`) the one move that gives a Black group
+two eyes has a prior below 1% and is not among the ten most visited
+moves, and the network's values show it does not know the group dies
+without it (`docs/results/README.md`).
 
 ---
 
@@ -1105,7 +1114,13 @@ offsets). At batch 1 it multiplies a column matrix 25 wide; at batch 8,
 pays the fixed costs — the call itself, packing the operands, starting
 the matrix unit, and all the per-layer bookkeeping around it — once for
 eight positions instead of once for each. Measured on the M4, one
-thread: <!-- RESULTS-PENDING: evaluations/s of the 5x5 (3x32) and 9x9 (6x64) preset networks with the blas backend on one thread at batch 1 and at batch 8, from a one-off timing of Network::infer run after runs/19x19-check finishes (docs/results/bench.txt measures batch 8 only), with the file the numbers are saved in -->.
+thread, BLAS backend (`docs/results/bench.txt`, last table): the 5×5
+network evaluates about 23,000 positions per second at batch 1 and 30,400
+at batch 8; the 9×9 network about 2,750 and 3,700. Batching buys about
+1.3× on this CPU — worth having, but modest: on one CPU thread the
+fixed costs are a small part of each call. Hardware with much higher
+fixed costs per call, such as a GPU, gains more from the same batching;
+this project measured only the CPU.
 `bench` measures inference at the MCTS batch of 8
 (`docs/results/bench.txt`): 30,488 positions per second on 5×5 is
 3,811 network calls per second, each covering a whole batch.
@@ -1238,8 +1253,9 @@ GameRecord playSelfPlayGame(Evaluator& evaluator, const SelfPlayConfig& cfg, Rng
 
 The presets sample 8 plies on 5×5, 20 on 9×9 and 30 on 19×19 (AlphaGo
 Zero's value), roughly the first fifth of a typical game on each board
-(5×5 games average 31 to 44 plies, `docs/results/5x5/log.csv`; the 9×9
-and 19×19 pilots averaged 74–80 and 151, `docs/results/pilots/`).
+(5×5 games average 30 to 44 plies, `docs/results/5x5/log.csv`; 9×9
+games 87 to 116, `docs/results/9x9/log.csv`; the two 19×19 generations
+145 and 365, `docs/results/19x19/log.csv`).
 Tic-tac-toe taught the lesson this number encodes: its default used to
 be 2, and training plateaued because self-play kept replaying the same
 few games — the network can only learn positions self-play reaches. In
@@ -1346,51 +1362,58 @@ them before counting. Tromp-Taylor has no such step — a stone on the
 board at the end counts, however hopeless it is. So the winning side
 must spend moves capturing stones that a human would simply have
 removed. Here is a real self-play game, generation 60 of the 5×5 seed-1
-run (`runs/5x5-seed1/sgf/gen_0060_game_00.sgf`), after 23 moves:
+run (`runs/5x5-seed1/sgf/gen_0060_game_00.sgf`), after 29 moves:
 
 ```
 $ ./build-blas/analyze --checkpoint runs/5x5-seed1/checkpoints/gen_0060.azn --komi 24.5 \
       --simulations 200 \
-      --moves "C3 D3 D4 C2 B3 B1 D2 E2 D1 A2 B2 E3 E4 C4 B4 C5 C1 B5 E1 E3 D3 E5 D5"
-runs/5x5-seed1/checkpoints/gen_0060.azn: 23 moves played, White to move, komi 24.5
+      --moves "C3 D3 C2 C4 D4 B4 D2 E4 D5 C5 E3 B3 B2 A3 A5 A2 B5 A4 B5 A5 E5 B1 C1 E1 A1 E2 B5 C4 C5"
+runs/5x5-seed1/checkpoints/gen_0060.azn: 29 moves played, White to move, komi 24.5
 
    A B C D E
- 5 . O O X .  5
- 4 . X O X X  4
- 3 . X X X O  3
- 2 O X . X .  2
- 1 . O X X X  1
+ 5 . X X X X  5
+ 4 . . O X .  4
+ 3 . . X . X  3
+ 2 . X X X O  2
+ 1 X . X . O  1
    A B C D E
 White to move
 
 Value (side to move): -1.00
 ...
-Pass prior: 40.7%
+Pass prior: 27.1%
 ...
 MCTS value (side to move): -1.00 after 200 simulations
 Top 10 moves by visits:
-  pass      82 visits ( 41.0%)  Q -1.00
-  A4        56 visits ( 28.0%)  Q -1.00
-  A3        29 visits ( 14.5%)  Q -1.00
-  A5        25 visits ( 12.5%)  Q -1.00
-  A1         8 visits (  4.0%)  Q -1.00
+  pass      55 visits ( 27.5%)  Q -1.00
+  A3        41 visits ( 20.5%)  Q -1.00
+  A4        31 visits ( 15.5%)  Q -1.00
+  B3        23 visits ( 11.5%)  Q -1.00
+  A5        18 visits (  9.0%)  Q -1.00
+  B4        18 visits (  9.0%)  Q -1.00
+  A2        14 visits (  7.0%)  Q -1.00
 ```
 
-Every White stone on the board is dead, and the network knows it: the
-value is −1.00 for White, and every move searches to −1.00. But if both
-players passed now, those six White stones would count for White, the
-empty points next to them would count for nobody, and Black — who needs
-all 25 points at komi 24.5 — would lose. So the game goes on for 16 more
-plies: White passes eight times while Black removes every White stone,
-with captures at A5, A1, A3 and E2, and fills the points that would
-otherwise touch White,
-and the game ends `B+0.5`. This is why Tromp-Taylor games run long and
-contain many passes: on 5×5 the average game grew from 36.3 plies in
-generation 1 to 42.7 in generation 60, and between 14.5% and 33.8% of
-all plies in a generation were passes (`docs/results/5x5/log.csv`). The
-9×9 run went from 80.1 plies in generation 1
-(`docs/results/pilots/9x9.csv`) to
-<!-- RESULTS-PENDING: avg_length and pass_rate of the last generation, from docs/results/9x9/log.csv -->.
+Every White stone on the board is dead — C4 and the pair E2–E1 each have
+one liberty left — and the network knows it: the value is −1.00 for
+White, and every move searches to −1.00. But if both players passed now,
+those three White stones would count for White, the empty points next to
+them would count for nobody, and Black — who needs all 25 points at komi
+24.5 — would lose. So the game goes on. White passes; Black captures E2
+and E1 with D1, C4 with B4, and White's two throw-ins at B3 and A2 with
+A3; after ply 35 there is no White stone left. From there Black would
+win by passing, but every move searches to +1.00 and nothing makes Black
+prefer ending the game (`analyze` there spreads the visits, pass
+getting the most at 22%; self-play, with root noise, played B1): it
+keeps filling its own
+points while White
+passes or throws in a stone, and the game stops at the 50-move cap,
+`B+0.5`. This is why Tromp-Taylor games run long and contain many
+passes: the average 5×5 game was 43.1 plies in generation 1 and 43.3 in
+generation 60 (as short as 29.6 in between), and between 13.6% and 31.9%
+of all plies in a generation were passes (`docs/results/5x5/log.csv`).
+The 9×9 run went from 88.6 plies in generation 1 to 93.0 in generation
+150, with 10.3% of the plies passes (`docs/results/9x9/log.csv`).
 The upside is that the rules need no life-and-death oracle, only a flood
 fill, which is exactly what a program learning from nothing needs.
 (Engines like KataGo add tricks to shorten this phase; this project
@@ -1412,13 +1435,13 @@ chapter 07).
 
 At komi 24.5, Black wins only by owning all 25 points, so games stay
 undecided far longer and the arena keeps finding differences. In seed 1
-(whose log is identical to the pilot,
-`docs/results/pilots/5x5-komi24.5.csv`) the self-play Black win rate
-wanders between 0.21 and 0.84 over generations 3–33 while Elo climbs,
-then stays at 0.85 or above once the network plays the perfect line,
-from generation 34 on (seed 2: from generation 30 on). The mean `log.csv`
-rating of the last ten generations is +530 above the first ten's. Komi
-20.5 behaved similarly (+489, `docs/results/pilots/5x5-komi20.5.csv`)
+(`docs/results/5x5/log.csv`) the self-play Black win rate wanders between
+0.16 and 0.845 over generations 3–33 while Elo climbs, then stays above
+0.85 once the network plays the perfect line, from generation 34 on
+(seed 2: from generation 31 on). The mean `log.csv` rating of the last
+ten generations is +470 above the first ten's (+530 in the komi-24.5
+pilot, `docs/results/pilots/5x5-komi24.5.csv`). Komi 20.5 behaved
+similarly in its pilot (+489, `docs/results/pilots/5x5-komi20.5.csv`)
 but saturated sooner.
 And the final network agrees with the known solution — its prior on
 the empty board:
@@ -1427,7 +1450,7 @@ the empty board:
 $ ./build-blas/analyze --checkpoint runs/5x5-seed1/checkpoints/gen_0060.azn --komi 24.5 \
       --simulations 200
 ...
-Value (side to move): +0.87
+Value (side to move): +0.85
 
 Policy prior, % of legal moves ("." below 1%):
      A  B  C  D  E
@@ -1437,17 +1460,17 @@ Policy prior, % of legal moves ("." below 1%):
  2   .  .  .  .  .
  1   .  .  .  .  .
 ...
-MCTS value (side to move): +0.91 after 200 simulations
+MCTS value (side to move): +0.90 after 200 simulations
 Top 10 moves by visits:
-  C3       196 visits ( 98.0%)  Q +0.93
-  B3         2 visits (  1.0%)  Q -0.31
-  D3         1 visits (  0.5%)  Q -0.41
-  C2         1 visits (  0.5%)  Q +0.00
+  C3       196 visits ( 98.0%)  Q +0.92
+  C4         2 visits (  1.0%)  Q +0.22
+  D3         1 visits (  0.5%)  Q +0.10
+  C2         1 visits (  0.5%)  Q +0.17
 ```
 
 The same command on generation 0 prints a value of +0.08 and spreads its
 prior over the board — A2 highest at 17.3%, the center below 1% — and
-search's top ten moves each get 4–13% of the 200 simulations, all with Q
+search's top ten moves each get 3.5–13% of the 200 simulations, all with Q
 between −0.03 and +0.05: the untrained network knows nothing yet.
 
 **The integer-komi draw.** With a half-point komi a tie is impossible.
@@ -1552,9 +1575,9 @@ position generated — is, once the window is full and game lengths are
 steady, the expected number of times a position is drawn over its whole
 stay in the window. Too low and self-play time is wasted;
 too high and the network overfits the latest games. `log.csv` records
-it: 2.9 to 4.1 on 5×5 (200 × 128 samples over 200 games of 31–44 plies,
-`docs/results/5x5/log.csv`), 6.4 to 7.0 in the 9×9 pilot and 8.49 in the
-19×19 pilot (`docs/results/pilots/`). The 19×19 preset's `train_steps`
+it: 2.9 to 4.3 on 5×5 (200 × 128 samples over 200 games of 30–44 plies,
+`docs/results/5x5/log.csv`), 4.4 to 5.9 on 9×9 (`docs/results/9x9/log.csv`)
+and 8.49 in the 19×19 pilot (`docs/results/pilots/`). The 19×19 preset's `train_steps`
 went from 100 to 80 because of that last number (see the note in
 `configs/19x19.cfg`).
 
@@ -1593,8 +1616,8 @@ momentum.
 The learning rate follows a stepped schedule keyed on generation,
 `lr_schedule = 0:0.02,40:0.002` on 5×5 and `0:0.02,90:0.002` on 9×9: fast
 progress first, finer steps later. On 5×5 seed 1 the value loss kept
-falling after the drop at generation 40, from 0.163 to 0.085 at
-generation 60, while the policy loss stayed flat at 1.68–1.73
+falling after the drop at generation 40, from 0.147 to 0.092 at
+generation 60, while the policy loss stayed flat at 1.73–1.75
 (`docs/results/5x5/log.csv`).
 
 ---
@@ -1646,7 +1669,8 @@ distinct move sequences it produced; `log.csv`'s last column,
 5×5 seed 1 it ranged from 9 to 20 out of 20 (`docs/results/5x5/log.csv`)
 — fewer once the network found the perfect line, which is evidence in
 its own right: the policy was collapsing onto one opening. On 9×9 it
-ranged from <!-- RESULTS-PENDING: min and max of distinct_vs_prev over the run, from docs/results/9x9/log.csv --> out of 20.
+ranged from 19 to 20 out of 20 (`docs/results/9x9/log.csv`): with 81
+points and 4 sampled plies, the openings almost never repeat.
 
 **The ladder of opponents.** Playing only g − 1 measures one step at a
 time, and small errors add up. Playing everyone is too expensive. The
@@ -1717,25 +1741,27 @@ generation's rating *at the time*, from the table as it stood right
 after its own arena round. `elo.csv` is rewritten after every round
 with the refit of the whole table, so older generations' ratings move
 as later generations play them. On 5×5 seed 1 (`docs/results/5x5/`),
-generation 33 was rated 1244.4 on the day; after generations 34, 35, 37
-and 41 had played it (scoring 12, 12, 11 and 10 out of 20), the refit
-puts it at 974.7. A new generation is rated from just five matches, and
-a strong-looking 17–3 against an older rung (generation 33 had two)
-counts in full until later evidence tempers it.
+generation 34 was rated 1422.2 on the day; after generations 35, 36, 38
+and 42 had played it (scoring 10, 14, 2 and 13 out of 20), the refit
+puts it at 1138.7. A new generation is rated from just five matches, and
+a strong-looking 17–3 against an older rung (generation 34 beat 26 by
+that score) counts in full until later evidence tempers it.
 
 **The 5×5 curve, stated exactly.** Seed 1's contemporaneous rating
-(`log.csv`) rises from 139.4 at generation 1 to a peak of **1244.4 at
-generation 33** and ends at **1024.4 at generation 60**, 220 below the
+(`log.csv`) rises from 445.6 at generation 1 to a peak of **1422.2 at
+generation 34** and ends at **1117.5 at generation 60**, 305 below the
 peak. The refit (`elo.csv`) tells a flatter story. Averaged over ten
-generations at a time, it rises from 832.5 (generations 21–30) to 951.1
-(31–40), then only to 983.8 (41–50) and 1000.9 (51–60); every refit
-rating from generation 38 on lies between 915 and 1053 (the highest,
-1052.7, at generation 55; the last, 1024.4). Seed 2 has the same shape:
-`log.csv` peaks at 1323.8 in generation 28 and ends at 945.5; its refit
-peaks at 1037.8 in generation 31, averages 976.9, 941.0 and 945.7 over
-the last three decades, and also ends at 945.5 (`runs/5x5-seed2/`). Both final
-networks beat generation 0 20–0 in the arena, and in a 100-game match
-<!-- RESULTS-PENDING: gen_0060 vs gen_0000 score out of 100 with its 95% interval for seed 1 and for seed 2, from docs/results/5x5/final-arena.txt (the match must be played with --komi 24.5, which the plan's Task 23 command omits) -->.
+generations at a time, it rises from 910.0 (generations 21–30) to 1092.2
+(31–40), then stays level: 1086.8 (41–50) and 1089.1 (51–60); every
+refit rating from generation 38 on lies between 1016 and 1127 (the
+highest, 1126.7, at generation 46; the last, 1117.5). Seed 2 has the
+same shape: `log.csv` peaks at 1225.2 in generation 33 and ends at
+852.5; its refit peaks at 956.9 in generation 33, averages 927.1, 894.5
+and 875.1 over the last three decades, and also ends at 852.5
+(`docs/results/5x5-seed2/`). Both final networks beat generation 0 20–0
+in the arena, and in a 100-game match (komi 24.5, 200 simulations,
+`docs/results/5x5/final-arena.txt`) both score 100/100, 95% interval
+0.963–1.000.
 
 Why the plateau, and the apparent decline? Several things are going
 on, and the data cannot fully separate them:
@@ -1743,22 +1769,22 @@ on, and the data cannot fully separate them:
 - **Revision, not regression, explains most of the drop in `log.csv`.**
   Peaks in the contemporaneous column are where a generation was
   briefly overrated; the refit, which uses all later evidence, has no
-  such peak. Generation 60 against generation 33 directly, in a short
+  such peak. Generation 60 against generation 34 directly, in a short
   check, scores 3 of 4 (95% interval 0.30–0.95) — no sign that 60 is
   weaker, and far too few games to say it is stronger:
 
   ```
   $ ./build-blas/arena --a runs/5x5-seed1/checkpoints/gen_0060.azn \
-        --b runs/5x5-seed1/checkpoints/gen_0033.azn --games 4 --workers 1 \
+        --b runs/5x5-seed1/checkpoints/gen_0034.azn --games 4 --workers 1 \
         --komi 24.5 --simulations 100 --temperature-moves 2 --backend blas
-  A runs/5x5-seed1/checkpoints/gen_0060.azn vs B runs/5x5-seed1/checkpoints/gen_0033.azn: A scored 3/4 = 0.750 (95% CI 0.301-0.954), distinct games 4
+  A runs/5x5-seed1/checkpoints/gen_0060.azn vs B runs/5x5-seed1/checkpoints/gen_0034.azn: A scored 3/4 = 0.750 (95% CI 0.301-0.954), distinct games 4
   A wins 3, B wins 1, draws 0
   ```
 - **The game became decided by color.** From generation 34 on, Black
-  takes the whole board in 85–96% of self-play games. Between two
+  takes the whole board in 87–96.5% of self-play games. Between two
   players who both win as Black, a color-balanced match is 50%
   whatever their strength, and seed 1's late matches against g − 1 are:
-  a mean score of 0.48 over the last 20 generations. The arena has run
+  a mean score of 0.49 over the last 20 generations. The arena has run
   out of resolution, not the network out of skill.
 - **Loss of diversity.** The policy has collapsed onto the known perfect
   line (97% on the center point, chapter 05), distinct arena games fell
@@ -1769,17 +1795,17 @@ on, and the data cannot fully separate them:
   sampled openings produce.
 - **The learning-rate drop at generation 40** (0.02 → 0.002) slows
   changes of every kind. It coincides with the plateau but did not
-  obviously cause it: the refit's growth had already slowed in the
-  decade before the drop.
+  obviously cause it: the refit had already reached its plateau level by
+  generation 34, six generations before the drop.
 
 **Drift and non-transitivity.** Above the anchor's 645-point cap, every
 rating is held up by a chain of ladder matches, each only 20 games.
-Generation 0 stops being informative almost at once: from generation 4
+Generation 0 stops being informative almost at once: from generation 1
 on, seed 1's generations beat it 20–0 or 19–1. What remains is a chain
 of noisy links, whose errors can accumulate like a random walk; the
 ladder's long rungs (g − 4, g − 8) limit that drift but cannot remove it.
-And game strength need not be transitive at all. Seed 1 has a clean
-cycle: generation 30 beat 29 14–6, 31 beat 30 15–5, and 29 beat 31 15–5
+And game strength need not be transitive at all. Seed 1 has a cycle:
+generation 30 beat 29 11–9, 31 beat 30 14–6, and 29 beat 31 12–8
 (`docs/results/5x5/results.csv`). With 20 games each, every one of
 those could be noise — which is precisely the point of the next
 section. A deeper caveat applies to all self-play Elo: a network can
@@ -1814,7 +1840,7 @@ The numbers are sobering (`docs/results/5x5/elo.csv`): 10 of 20 gives
 0.05–0.36. On the Elo scale, 0.30–0.70 is ±147 points: **one 20-game
 match cannot resolve a difference smaller than about 150 Elo**. On its
 own, only a lopsided result means much — 15–5 or better (seed 1's
-generation 27 beat 26 17–3), 5–15 or worse (generation 21 lost to 20
+generation 6 beat 5 16–4), 5–15 or worse (generation 24 lost to 23
 3–17), or a sweep of generation 0. The fitted curve is meaningful
 because it pools hundreds of such matches, not because any one of them
 is. And with fewer games even a sweep proves little:
@@ -1843,8 +1869,82 @@ games, a score of 11/20 clears the 55% bar with a 95% interval of
 0.34–0.74, so the gate would mostly be flipping coins. AlphaGo Zero's
 400 games shrink that interval to roughly ±5 percentage points.
 
-For 9×9, the fitted rating of the final generation is
-<!-- RESULTS-PENDING: final elo from docs/results/9x9/elo.csv, its generation number, and the slope of a linear fit of elo over the last third of the run (docs/results/README.md) -->.
+**When the yardstick misleads: the 9×9 runs.** An Elo curve anchored on
+generation 0 measures one thing precisely: how well each generation
+beats generation 0. On 9×9 that went wrong twice, in two different ways,
+and both times 100-game head-to-heads between checkpoints told the real
+story.
+
+The first overnight run was made before the exact-pass rule of chapter
+02 existed (its files are in `docs/results/passbug/`). Its curve said
+the network learned almost nothing and then got worse: the refit peaked
+at 288.4 at generation 35 and ended at 91.8
+(`docs/results/passbug/9x9-main/elo.csv`), and the untrained generation
+0 won 938 of the 3,000 arena games it played against trained
+generations (`docs/results/passbug/9x9-main/results.csv`) — about 7 of
+every 20 after generation 50. A trained network should not lose a third
+of its games to random weights. Two cheap checks located the problem:
+
+- **Head-to-head instead of the anchor.** 100 games of generation 150
+  against generation 30 ended 92–8, and against generation 60 89–11: the
+  lineage *was* improving. Whatever was wrong lived in the games against
+  generation 0, which the anchor-based fit spreads over every rating.
+- **Reading the games.** Generation 150 against generation 0 scored only
+  67/100, and an instrumented replay that wrote each move's search value
+  and Tromp-Taylor margin into the SGF showed that every loss had the
+  same shape. The trained network, clearly ahead on the board, passed
+  while generation 0's hopeless stones were still standing in its area —
+  Tromp-Taylor counts them, so the margin was against it — and generation
+  0 passed back and won on the count.
+  `docs/results/passbug/9x9-gen150-vs-gen0-loss.sgf` is one such game:
+  at ply 25 Black's search value is +0.93, the margin is −4.5, and Black
+  passes.
+
+A probe of that position found the blind spot. After its own pass, the
+network gave the game-ending reply (the opponent's pass) a prior of
+0.0074 among 59 legal moves; with unvisited edges at Q = 0 and tried in
+prior order, 100 simulations never visited it, so the pass kept the
+network's optimistic Q of +0.88 and was played. Generation 0, with
+nearly flat priors, tried pass at its own root, found an exact win, and
+took it. The fix is the `unvisitedQ` rule of chapter 02; with it, the
+very same pre-fix checkpoints beat generation 0 100/100. The weights
+were fine; the search had a hole that only a strange opponent exposed,
+and the anchor turned that one opponent's quirk into the headline curve.
+`docs/results/passbug/README.md` has the full numbers.
+
+The second time is subtler, because nothing is broken. In the final
+run, every generation from 14 on beats generation 0 by 18–2 or better
+(`docs/results/9x9/results.csv`). The refit (`docs/results/9x9/elo.csv`)
+rises from 0 to 784.8 at generation 54, then goes flat: between 601 and
+735 from generation 80 on, **674.5 at generation 150**. A least-squares
+line through generations 101–150, the last third, has a slope of
+**+0.41 Elo per generation** — positive, but +20 Elo over 50
+generations, far inside the noise. `log.csv`'s rating at the time even
+falls, from 1050.6 at generation 85 to 674.5. Yet in 100-game matches
+(200 simulations, `docs/results/9x9/h2h-*.txt`) generation 150 beats
+generation 50 98–2, generation 90 86–14, generation 100 76–24 and
+generation 120 67–33, and generation 90 beats generation 50 89–11 —
+about 9 Elo per generation from 50 to 90 and 4–5 per generation after
+the learning-rate drop at 90, slowing but never reversing. Two
+mechanisms flatten the curve:
+
+- **The anchor's cap.** With the virtual draw, a 20–0 sweep of
+  generation 0 says "645 Elo above generation 0". 137 such near-sweeps
+  pull every late rating toward 645, and the late refit values sit right
+  around it.
+- **Links too short to see the slope.** At 4 Elo per generation, a
+  generation should score 50.6% against g − 1 and 54.6% against g − 8;
+  in generations 101–150 the measured means are 9.6 and 10.7 out of 20.
+  Each of those 20-game links is ±150 Elo, so their combined pull is no
+  match for the anchor's.
+
+Refitting the same table without the matches against generation 0
+(`docs/results/9x9/elo-without-gen0.txt`) gives a steadily rising curve,
+generation 150 449 Elo above generation 50, with a last-third slope of
++2.8 Elo per generation. The lesson of both episodes is the same: a
+self-play rating is a model of a results table, and when it says
+something surprising, play the checkpoints against each other with
+enough games, and read some of the games.
 
 ---
 
@@ -1927,14 +2027,20 @@ partial sums added in a different order give different floating-point
 results.) The BLAS backend is single-threaded per call, so the same
 holds for it. The payoff is visible in the results. The komi-24.5 pilot
 ran with 5 worker threads while another run shared the machine; the
-seed-1 reference run used all 10. Apart from the three timing columns,
+first seed-1 reference run, made with the same code (before the pass
+fix of chapter 07), used all 10. Apart from the three timing columns,
 their logs are identical, to the last digit:
 
 ```
 $ diff <(cut -d, -f1-9,13-15 docs/results/pilots/5x5-komi24.5.csv) \
-       <(cut -d, -f1-9,13-15 docs/results/5x5/log.csv) && echo identical
+       <(cut -d, -f1-9,13-15 docs/results/passbug/5x5-seed1/log.csv) && echo identical
 identical
 ```
+
+The final seed-1 run (`docs/results/5x5/log.csv`) differs from both from
+generation 1 on — the pass fix changes what search plays — which is the
+other half of the same point: the output is a function of the seed, the
+configuration and the code, and of nothing else.
 
 **Crash safety and resume.** A network checkpoint alone is not enough
 to continue a run exactly; that also needs the optimizer's momentum, the
@@ -1993,12 +2099,12 @@ presets say `backend = blas`, so on the default build add
 $ ./build-blas/train --config configs/5x5.cfg --run runs/5x5-seed1
 starting runs/5x5-seed1 at generation 0; effective config (saved to runs/5x5-seed1/config.cfg):
 ...
-gen 1 | selfplay 200 games avg 36.3 plies 5.4s | train loss p 2.83 v 0.48 lr 0.02 2.4s | arena elo 139.4 vs-prev 0.70 (distinct 19/20) 0.4s
-gen 2 | selfplay 200 games avg 38.7 plies 6.8s | train loss p 2.81 v 0.35 lr 0.02 2.5s | arena elo 248.1 vs-prev 0.60 (distinct 20/20) 0.8s
+gen 1 | selfplay 200 games avg 43.1 plies 6.5s | train loss p 2.85 v 0.49 lr 0.02 2.3s | arena elo 445.6 vs-prev 0.95 (distinct 19/20) 0.4s
+gen 2 | selfplay 200 games avg 35.4 plies 6.7s | train loss p 2.89 v 0.42 lr 0.02 2.4s | arena elo 495.3 vs-prev 0.65 (distinct 20/20) 0.8s
 ...
-gen 33 | selfplay 200 games avg 41.0 plies 7.8s | train loss p 1.72 v 0.29 lr 0.02 2.5s | arena elo 1244.4 vs-prev 0.55 (distinct 12/20) 2.1s
+gen 34 | selfplay 200 games avg 40.8 plies 7.3s | train loss p 1.76 v 0.24 lr 0.02 2.5s | arena elo 1422.2 vs-prev 0.70 (distinct 16/20) 2.0s
 ...
-gen 60 | selfplay 200 games avg 42.7 plies 8.0s | train loss p 1.72 v 0.09 lr 0.002 2.5s | arena elo 1024.4 vs-prev 0.50 (distinct 19/20) 2.1s
+gen 60 | selfplay 200 games avg 43.3 plies 7.7s | train loss p 1.73 v 0.09 lr 0.002 2.5s | arena elo 1117.5 vs-prev 0.50 (distinct 13/20) 2.0s
 done: generation 60 in runs/5x5-seed1
 ```
 
@@ -2007,13 +2113,25 @@ done: generation 60 in runs/5x5-seed1
 
 | board | preset | per generation | source |
 |---|---|---|---|
-| 5×5 | 3×32, 200 games × 200 sims | 11.8 s (self-play 7.4, train 2.5, arena 2.0); 60 generations in 11.8 min | `docs/results/5x5/log.csv` |
-| 9×9 | 6×64, 100 games × 200 sims | 2.6 min in the 2-generation pilot (152–155 s); <!-- RESULTS-PENDING: mean time per generation, number of generations completed and total hours of the overnight run, from docs/results/9x9/log.csv --> | `docs/results/pilots/9x9.csv`, `docs/results/9x9/log.csv` |
-| 19×19 | 10×128, 20 games × 400 sims | 62.4 min in the 1-generation pilot (self-play 49.5, train 7.9, arena 5.0); <!-- RESULTS-PENDING: time of generations 1 and 2 of runs/19x19-check, from docs/results/19x19/timing.txt --> | `docs/results/pilots/19x19.csv`, `docs/results/19x19/` |
+| 5×5 | 3×32, 200 games × 200 sims | 11.3 s (self-play 7.1, train 2.5, arena 1.8); 60 generations in 11.3 min | `docs/results/5x5/log.csv` |
+| 9×9 | 6×64, 100 games × 200 sims | 2.6 min in the 2-generation pilot (152–155 s); in the overnight run 4.1 min on average (self-play 2.0, train 1.0, arena 1.0; 2.7 to 4.8 min), 150 generations in 10.2 hours | `docs/results/pilots/9x9.csv`, `docs/results/9x9/log.csv` |
+| 19×19 | 10×128, 20 games × 400 sims | 62.4 min in the 1-generation pilot (self-play 49.5, train 7.9, arena 5.0); in the check run 58.2 min for generation 1 and 129.7 min for generation 2 (self-play 110.5 min: the games grew from 145 to 365 plies) | `docs/results/pilots/19x19.csv`, `docs/results/19x19/` |
 
 Self-play dominates everywhere — search needs hundreds of network
 evaluations per move, training needs one forward and backward pass per
 sample.
+
+**The reference runs were made twice.** The first set of four runs
+(about 12.7 hours of machine time) was made before the exact-pass rule
+of chapter 02; chapter 07 tells how the 9×9 arena exposed the blind spot.
+After the fix all four were repeated from scratch with the same presets
+and seeds, so the before/after comparison differs in one thing only, the
+code: generation 0's share of arena points against trained 9×9
+generations fell from 31% (938 of 3,000) to 2.4% (72 of 3,000), the 9×9
+refit ended at 674.5 instead of 91.8, and the 5×5 runs, where the blind
+spot cannot occur, barely changed (`docs/results/passbug/README.md`). A
+bug found by the evaluation, not by the tests, costs a full night of
+compute; deterministic runs at least make the rerun a clean experiment.
 
 **An honest comparison with AlphaGo Zero.** AlphaGo Zero's strongest
 version trained a 40-block, 256-filter network for 40 days on 29 million
@@ -2029,7 +2147,9 @@ million games would take **about 137 years**. Scaled up to AlphaGo
 Zero's network and search budget — roughly 16 × 4 = 64 times the work
 per game — it is **about 8,700 years**, before counting a single training
 step, and assuming games no longer than the pilot's 151 plies (stronger
-play, with its dead stones captured, likely runs longer). AlphaGo Zero's result
+play, with its dead stones captured, likely runs longer; in the
+two-generation check, generation 2's games already averaged 365 plies
+and 332 s each, `docs/results/19x19/log.csv`). AlphaGo Zero's result
 is a statement about compute as much as about algorithms. What this
 machine *can* do is run the same algorithm, unchanged, on boards where a
 night is enough to watch it learn.
@@ -2081,15 +2201,15 @@ see again in place.
 | Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:177, 277` |
 | The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:243, 162` |
 | Gradient checking | `checkGradient` — `tests/test_layers.cpp:36` |
-| PUCT selection | `Mcts::selectEdge` — `src/mcts.cpp:49` |
-| Legal masking, superko in the tree | `Mcts::expand` — `src/mcts.cpp:127` |
-| Backup and the sign flip | `Mcts::backup` — `src/mcts.cpp:171` |
-| Terminal positions scored by the rules | `Mcts::isTerminal`, `Mcts::terminalValue` — `src/mcts.cpp:38, 42` |
-| Virtual loss and batched search | `Mcts::search`, `Mcts::addVirtualLoss` — `src/mcts.cpp:183, 99` |
+| PUCT selection | `Mcts::selectEdge` — `src/mcts.cpp:54` |
+| Legal masking, superko in the tree | `Mcts::expand` — `src/mcts.cpp:133` |
+| Backup and the sign flip | `Mcts::backup` — `src/mcts.cpp:184` |
+| Terminal positions scored by the rules | `Mcts::isTerminal`, `Mcts::terminalValue` — `src/mcts.cpp:38, 49` |
+| Virtual loss and batched search | `Mcts::search`, `Mcts::addVirtualLoss` — `src/mcts.cpp:196, 105` |
 | The evaluator seam | `Evaluator` — `include/azgo/evaluator.hpp:17`; `LocalEvaluator::evaluate` — `src/evaluator.cpp:19` |
-| Dirichlet root noise | `Mcts::setRootPriors` — `src/mcts.cpp:306`; `dirichlet` — `src/rng.cpp:122` |
-| Temperature | `Mcts::selectAction` — `src/mcts.cpp:269`; `playSelfPlayGame` — `src/selfplay.cpp:14` |
-| Tree reuse and compaction | `Mcts::advance` — `src/mcts.cpp:323` |
+| Dirichlet root noise | `Mcts::setRootPriors` — `src/mcts.cpp:319`; `dirichlet` — `src/rng.cpp:122` |
+| Temperature | `Mcts::selectAction` — `src/mcts.cpp:282`; `playSelfPlayGame` — `src/selfplay.cpp:14` |
+| Tree reuse and compaction | `Mcts::advance` — `src/mcts.cpp:336` |
 | Passes and the end of the game | `Game::play`, `Game::isTerminal` — `src/game.cpp:39, 53` |
 | The value target z | `GameRecord::zAt` — `src/selfplay.cpp:9` |
 | Replay buffer of whole games | `ReplayBuffer::encodeSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:53, 75` |
