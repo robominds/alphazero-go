@@ -48,7 +48,7 @@ the reasons. All three presets use:
 Notes on the columns:
 
 - "Wall time" comes from `runs/reference-runs.log`, which is not in the repository.
-- "Final Elo" is the last row of `elo.csv`: a Bradley-Terry refit anchored at generation 0 = 0.
+- "Final Elo" is the last row of `elo.csv`: a Bradley-Terry refit anchored at generation 0 = 0. The 19×19 check has no `elo.csv` copied here; its figure is the last `elo` in `19x19/log.csv`.
 - "vs gen 0" is a 100-game `arena` match of the final generation against generation 0:
   - 200 simulations, colors alternating;
   - 95% Wilson interval as `arena` prints it;
@@ -149,7 +149,8 @@ the generation gap. The flat refit is an artifact of how it is anchored.
 2. **The ladder cannot see 4 Elo per generation.** In generations
    101–150, newer networks score 9.6, 10.6, 10.3 and 10.7 of 20 against
    g − 1, g − 2, g − 4 and g − 8.
-   - Those are the 50–55% that +4 Elo per generation predicts.
+   - Those (47.8%, 52.8%, 51.6%, 53.7%) are consistent, within noise,
+     with the 50.6–54.6% that +4 Elo per generation predicts.
    - But each 20-game result is ±150 Elo, so the ladder's upward pull is
      too weak to beat the anchor's.
 3. **Evidence for both points.** Refit the same table without the 150
@@ -178,7 +179,7 @@ acceptance on gen_0000.
 
 | check | position (moves from the empty board) | target | result |
 |---|---|---|---|
-| `atari` | `D5 E5 F5 C3 E6 G3`: White E5 is surrounded on three sides, its last liberty is E4, Black to move | E4 top-visited | **pass**: E4 is rank 1 by visits (63/200, 31.5%) and rank 1 by prior (51.4%) |
+| `atari` | `D5 E5 F5 C3 E6 G3`: White E5 is surrounded on three sides, its last liberty is E4, Black to move | E4 top-visited | **pass** as defined: E4 is rank 1 by visits (63/200, 31.5%) and rank 1 by prior (51.4%); but its visits are prior-driven, since its search Q of −0.02 is the lowest of the five most visited moves |
 | `eye` | `A2 A3 B2 B3 C2 C3 D2 D3 D1 E3 F7 E2 G5 E1`: the Black group A2–D2, D1 encloses the straight three A1–B1–C1 against a solid White wall | B1 in the top 3 by visits | **fail**: B1 has a prior below 1% and is not among the 10 most visited moves (the 10th has 4 visits); the top 3 are C6 (39), D6 (18) and E5 (18) |
 | `opening` | empty board | (record only) | prior on E5 (tengen) 11.2%, then E6 9.6%, E4 and D5 8.6%, F5 8.1%; search visits E5 39/200; value −0.54 for Black at komi 7.5 |
 

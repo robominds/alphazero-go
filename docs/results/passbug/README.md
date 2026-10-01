@@ -27,9 +27,13 @@ network should beat a randomly initialized one nearly every time.
 
 ## Diagnosis
 
-The investigation (the Task 23 diagnosis report, 2026-09-30) used
-100-game matches and per-move instrumentation on the pre-fix checkpoints.
-The numbers below are from that report.
+The investigation (2026-09-30) used 100-game matches and per-move
+instrumentation on the pre-fix checkpoints. Its diagnosis report and the
+later pass-fix report are working notes that are **not in this
+repository**, and neither are the instrumented tools or their outputs
+(only the one SGF above was kept). The numbers below are quoted from
+those reports; the key tables follow at the end of this section, so the
+case study stands on its own.
 
 - **The losses have one shape.** gen 150 against gen 0 scored only 67/100
   (gen 30: 63/100, gen 92: 48/100). In every one of those losses:
@@ -73,14 +77,63 @@ The numbers below are from that report.
   reply always gets visited. Komi 24.5 also makes "won on the board, lost
   on the count" almost impossible.
 
+### Key tables from the diagnosis
+
+All matches 100 games, colors alternating, 100 simulations per move,
+komi 7.5, no noise, 4 sampled opening plies, pre-fix checkpoints.
+
+Trained generation (A) against generation 0, pre-fix search. In every
+row, every A loss was a game where A passed while losing on the
+Tromp-Taylor count and generation 0 made the final pass:
+
+| A vs gen 0 | A score | A as Black | A as White |
+|---|---|---|---|
+| gen 10 | 77/100 | 48/50 | 29/50 |
+| gen 30 | 63/100 | 50/50 | 13/50 |
+| gen 60 | 76/100 | 31/50 | 45/50 |
+| gen 92 | 48/100 | 7/50 | 41/50 |
+| gen 100 | 60/100 | 15/50 | 45/50 |
+| gen 150 | 67/100 | 18/50 | 49/50 |
+
+Trained against trained, pre-fix search:
+
+| match | score |
+|---|---|
+| gen 150 vs gen 30 | 92/100 |
+| gen 150 vs gen 60 | 89/100 |
+| gen 150 vs gen 100 | 68/100 |
+
+The same checkpoints with the exact-pass rule patched into the search
+(both sides), and other opponents:
+
+| match | score |
+|---|---|
+| gen 30 / 60 / 100 / 150 vs gen 0, patched | 99/100 each |
+| gen 150 vs gen 60, patched | 91/100 |
+| gen 150 vs a uniform-prior evaluator, unpatched | 47/100 |
+| gen 150 vs a uniform-prior evaluator, patched | 99/100 |
+| gen 150 at 800 simulations vs gen 0 at 100, unpatched | 99/100 |
+| gen 150 and gen 60 vs gen 0 with the committed fix (pass-fix report) | 100/100 each |
+
+Search probe of the example position (ply 24 of the SGF above, gen 150
+to move as Black):
+
+| simulations | pass edge | opponent's pass reply | move chosen |
+|---|---|---|---|
+| 100 | N = 17, Q = +0.88 | N = 0 (prior 0.0074, 59 edges) | pass |
+| 800 | N = 50, Q = +0.74 | N = 4, exact win for White | E7 |
+| 3200 | N = 56, Q = +0.55 | N = 10 | E2 |
+| 100, patched | N = 3, Q = −0.35 | N = 2, exact win for White | E7 |
+
 ## Fix
 
 Commits 87b37ea and 5da9b90 make the fix: "score the game-ending pass edge
 exactly while unvisited".
 
 - When a node is expanded right after a pass, its own pass edge ends the
-  game, so `Mcts::expand` stores that edge's exact value: the Tromp-Taylor
-  score minus komi, from the chooser's side.
+  game, so `Mcts::expand` stores that edge's exact value: the game
+  result, +1, −1 or 0 from the chooser's side, given by the sign of the
+  Tromp-Taylor score minus komi.
 - `Mcts::selectEdge` uses that value instead of Q = 0 while the edge is
   unvisited. This is the `MctsEdge::unvisitedQ` field.
 - It is not general first-play-urgency tuning. Every other unvisited edge

@@ -16,7 +16,8 @@ ResNet, 3 blocks × 32 filters on 5×5 up to 10 × 128 on 19×19 ·
 **Result:** on 5×5, in both of two runs, the final network wins 100 of
 100 games against the untrained one and puts 97% of its prior on the
 center point, the first move of 5×5's known perfect play; on 9×9, after
-one night, generation 150 beats generation 50 in 98 of 100 games
+one night, generation 150 beats generation 50 in 98 of 100 games, though
+it still misreads a basic two-eye shape
 
 **About the numbers.** Everything measured was measured on one Apple M4
 with 10 cores (`docs/results/bench.txt`), and every number names the file
@@ -845,8 +846,9 @@ leaves out.
 
 There is exactly one exception, and it is not first-play-urgency tuning.
 When the previous move was a pass, this node's own pass edge ends the game,
-so its value is known exactly: the Tromp-Taylor score minus komi, from the
-chooser's side. `expand()` stores that value in `unvisitedQ`, and it is used
+so its value is known exactly: the game result, +1, −1 or 0 from the
+chooser's side, given by the sign of the Tromp-Taylor score minus komi.
+`expand()` stores that value in `unvisitedQ`, and it is used
 while the edge is unvisited. Without it, a game-ending pass with a tiny prior
 is never examined at low simulation counts, and a net that likes passing can
 walk into a lost game. Chapters 07 and 08 tell how the arena exposed this.
@@ -1020,8 +1022,10 @@ improvement back into the network.
 
 On 9×9, the final network's top-visited move in the atari test position
 of `docs/results/9x9/analyze-atari.txt` (a White stone with one liberty
-left, Black to move) is the capture, E4, with 63 of 200 visits (31.5%);
-it is also the prior's first choice, at 51.4%. Search cannot fix what it
+left, Black to move) is the capture, E4, with 63 of 200 visits (31.5%),
+so the check as defined passes. But the visits come from the prior, not
+from search: E4 is the prior's first choice at 51.4%, while its search Q
+of −0.02 is the lowest of the five most visited moves. Search cannot fix what it
 never looks at, though: in the eye test position
 (`docs/results/9x9/analyze-eye.txt`) the one move that gives a Black group
 two eyes has a prior below 1% and is not among the ten most visited
@@ -1925,7 +1929,8 @@ falls, from 1050.6 at generation 85 to 674.5. Yet in 100-game matches
 generation 50 98–2, generation 90 86–14, generation 100 76–24 and
 generation 120 67–33, and generation 90 beats generation 50 89–11 —
 about 9 Elo per generation from 50 to 90 and 4–5 per generation after
-the learning-rate drop at 90, slowing but never reversing. Two
+the learning-rate drop at 90; every later checkpoint tested beats every
+earlier one. Two
 mechanisms flatten the curve:
 
 - **The anchor's cap.** With the virtual draw, a 20–0 sweep of
@@ -2028,7 +2033,7 @@ results.) The BLAS backend is single-threaded per call, so the same
 holds for it. The payoff is visible in the results. The komi-24.5 pilot
 ran with 5 worker threads while another run shared the machine; the
 first seed-1 reference run, made with the same code (before the pass
-fix of chapter 07), used all 10. Apart from the three timing columns,
+fix explained in chapter 02, whose story is in chapter 07), used all 10. Apart from the three timing columns,
 their logs are identical, to the last digit:
 
 ```
@@ -2129,7 +2134,9 @@ and seeds, so the before/after comparison differs in one thing only, the
 code: generation 0's share of arena points against trained 9×9
 generations fell from 31% (938 of 3,000) to 2.4% (72 of 3,000), the 9×9
 refit ended at 674.5 instead of 91.8, and the 5×5 runs, where the blind
-spot cannot occur, barely changed (`docs/results/passbug/README.md`). A
+spot rarely matters, barely changed (`docs/results/passbug/README.md`) —
+though the fix changes 5×5 play too, and their logs diverge from
+generation 1 on. A
 bug found by the evaluation, not by the tests, costs a full night of
 compute; deterministic runs at least make the rerun a clean experiment.
 

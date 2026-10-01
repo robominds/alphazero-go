@@ -15,7 +15,7 @@ Apple M4
 25769803776
 
 # Batch 1 vs batch 8 (2026-10-01, after all reference runs, machine otherwise idle).
-# One-off timing program (not in the repository) linked against build-blas/libazgo.a:
+# One-off timing program (source at the end of this file) linked against build-blas/libazgo.a:
 # it times Network::infer exactly as bench's measureInference does (blas backend,
 # one thread, random {0,1} planes, >= 3 s per measurement) at batch 1 and at
 # batch 8, three repetitions each, for the 5x5 and 9x9 preset networks.
@@ -26,3 +26,44 @@ size  blocks x filters  batch-1 evals/s  batch-8 evals/s  ratio
 9x9   6 x 64                       2769             3704   1.34
 9x9   6 x 64                       2722             3718   1.37
 9x9   6 x 64                       2760             3663   1.33
+
+# ---- batchtime.cpp ----
+# Built from the repository root with:
+#   c++ -std=c++17 -O3 -DNDEBUG -DAZ_USE_BLAS -DACCELERATE_NEW_LAPACK -Iinclude \
+#       batchtime.cpp build-blas/libazgo.a -framework Accelerate -o batchtime
+# and run as ./batchtime from the repository root (it reads configs/5x5.cfg and configs/9x9.cfg).
+// One-off: evals/s of the preset networks at batch 1 vs batch 8, one thread.
+#include <chrono>
+#include <cstdio>
+#include <memory>
+#include <vector>
+#include "azgo/backend.hpp"
+#include "azgo/config.hpp"
+#include "azgo/network.hpp"
+#include "azgo/rng.hpp"
+using Clock = std::chrono::steady_clock;
+static double measure(const azgo::NetConfig& nc, int batch, double seconds) {
+    auto backend = azgo::makeBackend("blas", 1);
+    const azgo::Network net(nc, 1);
+    azgo::Workspace ws(nc, batch, *backend);
+    azgo::Rng rng(7);
+    std::vector<float> input(static_cast<size_t>(batch) * nc.planes() * nc.area());
+    for (float& x : input) x = static_cast<float>(rng.below(2));
+    std::vector<float> logits(static_cast<size_t>(batch) * nc.actions()), values(batch);
+    net.infer(ws, input.data(), batch, logits.data(), values.data());
+    long long calls = 0; auto start = Clock::now(); double el = 0;
+    do { net.infer(ws, input.data(), batch, logits.data(), values.data()); ++calls;
+         el = std::chrono::duration<double>(Clock::now() - start).count(); } while (el < seconds);
+    return double(calls) * batch / el;
+}
+int main(int argc, char** argv) {
+    for (const char* p : {"configs/5x5.cfg", "configs/9x9.cfg"}) {
+        const azgo::NetConfig nc = azgo::loadConfigFile(p).netConfig();
+        for (int rep = 0; rep < 3; ++rep) {
+            double b1 = measure(nc, 1, 3.0), b8 = measure(nc, 8, 3.0);
+            std::printf("%dx%d  %d x %d  blas 1 thread  batch1 %8.0f evals/s  batch8 %8.0f evals/s  ratio %.2f\n",
+                        nc.boardSize, nc.boardSize, nc.blocks, nc.filters, b1, b8, b8 / b1);
+            std::fflush(stdout);
+        }
+    }
+}
