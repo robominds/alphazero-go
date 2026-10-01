@@ -169,6 +169,12 @@ void appendLogRow(const std::string& runDir, const GenerationStats& s) {
     if (!out) throw std::runtime_error("cannot append to " + logPath(runDir));
 }
 
+std::string joinInts(const std::vector<int>& v) {
+    std::string out;
+    for (int x : v) out += (out.empty() ? "" : ",") + std::to_string(x);
+    return out.empty() ? "(none)" : out;
+}
+
 } // namespace
 
 Trainer::Trainer(const Config& cfg, const std::string& runDir, Network net, TrainingState state)
@@ -194,6 +200,7 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     TrainingState state;
     state.buffer = ReplayBuffer(static_cast<size_t>(cfg.bufferPositions));
     state.velocity = SgdMomentum(net, cfg.momentum, cfg.weightDecay).velocity();   // all zeros
+    state.botSimulations = cfg.botSimulations;
     state.references = initialReferences(static_cast<int>(cfg.botSimulations.size()));
     // Each bot plays generation 0 now, so it has a rating before it can be chosen.
     calibrateBots(state.results, state.references, roundSettings(cfg, std::nullopt),
@@ -228,10 +235,15 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
         throw ConfigError("cannot change architecture keys on resume: " + keys);
     }
 
-    // A version-1 state.bin (written before bots existed) gets every
-    // configured bot as a reference.
-    TrainingState state =
-        loadTrainingState(statePath(runDir), static_cast<int>(cfg.botSimulations.size()));
+    // A version-1 state.bin (written before bots existed) adopts the
+    // configured bots and gets each as a reference.
+    TrainingState state = loadTrainingState(statePath(runDir), cfg.botSimulations);
+    // config.cfg can be edited by hand without --set, which resumeLockedDiff
+    // cannot see; state.bin records the list the run actually rated.
+    if (state.botSimulations != cfg.botSimulations)
+        throw ConfigError("cannot change bot_simulations on resume: run has " +
+                          joinInts(state.botSimulations) + " but config has " +
+                          joinInts(cfg.botSimulations));
     const std::string ckpt = checkpointPath(runDir, state.generation);
     Network net = loadNetwork(ckpt);
     if (net.config() != cfg.netConfig())

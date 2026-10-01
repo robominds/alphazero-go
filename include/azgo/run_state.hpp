@@ -24,17 +24,21 @@ struct TrainingState {
     // The frozen players new networks are measured against: bots, generation
     // 0 and every promoted generation. Sorted ascending, always contains 0.
     std::vector<int> references{0};
+    // The run's bot_simulations, in order (bot k is player -k). Recorded here
+    // because config.cfg can be edited by hand, and resume must notice.
+    std::vector<int> botSimulations;
 };
 
 // The reference set of a new run: every bot (-numBots, ..., -1) and generation 0.
 std::vector<int> initialReferences(int numBots);
 
-// Binary, magic "AZST" (u32 0x54535A41), version u32 = 2. Atomic replace.
+// Binary, magic "AZST" (u32 0x54535A41), version u32 = 2 (references, then the bot list, come last). Atomic replace.
 void saveTrainingState(const std::string& path, const TrainingState& state);
-// Reads version 2 and version 1, which predates the reference set: a version-1
-// file gets references = initialReferences(numBots), so pass the number of
-// bots the run's config defines. Throws std::runtime_error naming the path.
-TrainingState loadTrainingState(const std::string& path, int numBots = 0);
+// Reads version 2 and version 1, which predates the reference set and the bot
+// list: a version-1 file gets botSimulations = `bots` and references =
+// initialReferences(bots.size()), so pass the bot list the run's config
+// defines. Throws std::runtime_error naming the path.
+TrainingState loadTrainingState(const std::string& path, const std::vector<int>& bots = {});
 
 // Seed phases for deriveSeed(cfg.seed, generation, phase, index). Part of a
 // run's reproducibility contract: changing one changes every later game.

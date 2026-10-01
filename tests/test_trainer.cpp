@@ -313,6 +313,34 @@ static void test_resume_overrides() {
     assert(threw);
 }
 
+// state.bin records the bot list, so a hand-edited config.cfg cannot relabel
+// player -1 or empty the list under a run that already rated its bots.
+static void test_resume_refuses_edited_bot_list() {
+    for (const std::string edited : {"4", ""}) {
+        TempDir dir(edited.empty() ? "editbots_empty" : "editbots_4");
+        startQuiet(tinyConfig(), dir);   // bot_simulations = 8
+        std::string cfgText = readFile(configPath(dir.str()));
+        const size_t at = cfgText.find("bot_simulations = 8");
+        assert(at != std::string::npos);
+        cfgText.replace(at, std::string("bot_simulations = 8").size(),
+                        "bot_simulations = " + edited);
+        writeFile(configPath(dir.str()), cfgText);
+        const std::string state = readFile(statePath(dir.str()));
+
+        bool threw = false;
+        try {
+            Trainer::resume(dir.str(), {});
+        } catch (const ConfigError& e) {
+            const std::string msg = e.what();
+            threw = msg.find("cannot change bot_simulations on resume") != std::string::npos &&
+                    msg.find("run has 8") != std::string::npos;
+        }
+        assert(threw);
+        assert(readFile(statePath(dir.str())) == state);
+        assert(readFile(configPath(dir.str())) == cfgText);
+    }
+}
+
 static void test_start_new_refuses_existing_run() {
     TempDir dir("existing");
     startQuiet(tinyConfig(), dir);
@@ -377,9 +405,10 @@ static void test_resume_from_version1_state() {
     c.botSimulations = {};   // the old run had no bots
     startQuiet(c, dir)->runUntil(1);
 
-    // state.bin as version 1: without the reference set {0} (u32 count + one i32).
+    // state.bin as version 1: without the reference set {0} (u32 count + one i32)
+    // and the empty bot list (u32 count).
     const std::string bytes = readFile(statePath(dir.str()));
-    std::string v1 = bytes.substr(0, bytes.size() - 8);
+    std::string v1 = bytes.substr(0, bytes.size() - 12);
     v1[4] = 1;
     writeFile(statePath(dir.str()), v1);
     // config.cfg without the keys the old code did not know.
@@ -523,6 +552,7 @@ int main() {
     test_non_finite_weights_keep_last_good_state();
     test_progress_line_lists_opponents();
     test_resume_from_version1_state();
+    test_resume_refuses_edited_bot_list();
     test_no_bots_no_extras();
     test_rerate_reproduces_live_results();
     test_rerate_refusals_and_gaps();

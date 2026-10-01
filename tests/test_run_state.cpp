@@ -54,6 +54,7 @@ static TrainingState makeState() {
     s.results.addMatch(6, 7, 20, 9.0);
     s.results.addMatch(-1, 0, 8, 3.0);
     s.references = {-2, -1, 0, 5};
+    s.botSimulations = {100, 400};
     return s;
 }
 
@@ -75,6 +76,7 @@ static void assertSameState(const TrainingState& x, const TrainingState& y) {
     assert(x.results.toCsv() == y.results.toCsv());
     assert(x.results.pairs().size() == y.results.pairs().size());
     assert(x.references == y.references);
+    assert(x.botSimulations == y.botSimulations);
 }
 
 static void test_round_trip() {
@@ -172,24 +174,27 @@ static void test_initial_references() {
     assert((TrainingState{}.references == std::vector<int>{0}));
 }
 
-// A version-1 file is a version-2 file without the reference set at the end:
-// the u32 count and one i32 per reference.
+// A version-1 file is a version-2 file without the reference set and the bot
+// list at the end: a u32 count and the i32 entries of each.
 static void test_version1_gets_default_references() {
     fs::path dir = freshDir("version1");
     TrainingState original = makeState();
     saveTrainingState((dir / "v2.bin").string(), original);
     std::string bytes = readBytes(dir / "v2.bin");
-    std::string v1 = bytes.substr(0, bytes.size() - 4 - 4 * original.references.size());
+    std::string v1 = bytes.substr(
+        0, bytes.size() - 8 - 4 * (original.references.size() + original.botSimulations.size()));
     v1[4] = 1;
     fs::path path = dir / "v1.bin";
     writeBytes(path, v1);
 
-    TrainingState loaded = loadTrainingState(path.string(), 2);
+    TrainingState loaded = loadTrainingState(path.string(), {100, 400});
     assert((loaded.references == std::vector<int>{-2, -1, 0}));
+    assert((loaded.botSimulations == std::vector<int>{100, 400}));   // adopts the config's list
     TrainingState expected = original;
     expected.references = {-2, -1, 0};
     assertSameState(expected, loaded);
     assert((loadTrainingState(path.string()).references == std::vector<int>{0}));   // no bots
+    assert(loadTrainingState(path.string()).botSimulations.empty());
 
     // Saving it again writes version 2.
     saveTrainingState(path.string(), loaded);
@@ -201,8 +206,10 @@ static void test_version1_gets_default_references() {
 static void test_rejects_bad_references() {
     fs::path dir = freshDir("badrefs");
     fs::path path = dir / "state.bin";
+    // The last one names bot -3, but the file stores two bots.
     for (const std::vector<int>& bad : {std::vector<int>{0, -1}, std::vector<int>{-1, 5},
-                                        std::vector<int>{0, 0}, std::vector<int>{}}) {
+                                        std::vector<int>{0, 0}, std::vector<int>{},
+                                        std::vector<int>{-3, 0}}) {
         TrainingState s = makeState();
         s.references = bad;
         saveTrainingState(path.string(), s);

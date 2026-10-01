@@ -57,8 +57,12 @@ runs.
 - It is stored in `state.bin`:
   - `TrainingState` gains `std::vector<int> references`, kept sorted
     ascending.
+  - `TrainingState` also gains `std::vector<int> botSimulations`, the
+    bot list the run rated. It is stored right after the references, so
+    resume can refuse a `config.cfg` whose list was edited by hand.
   - The state format moves to version 2.
-  - A version-1 file loads with references = {0} ∪ {all configured bots}.
+  - A version-1 file loads with references = {0} ∪ {all configured bots}
+    and adopts the config's bot list.
 - **Initial set:** {0} ∪ {every bot}.
 - **Calibration at run start:** `Trainer::startNew` plays each bot
   `calibration_games` games against generation 0 and records the results,
@@ -163,7 +167,9 @@ with default 2 and range 0–32. All three presets set it to 2.
 - `bot_simulations` cannot change on resume: bots are identified by
   position, so a changed list would make the same IDs mean different
   players. Resume refuses the change with a `ConfigError` that names the
-  key, the same way it treats architecture keys.
+  key, the same way it treats architecture keys. The check compares the
+  list recorded in `state.bin` with the effective config, so it also
+  catches a hand edit of `config.cfg` made without `--set`.
 - A `state.bin` version other than 1 or 2 is rejected with the path in
   the message, as now.
 

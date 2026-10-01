@@ -1876,7 +1876,7 @@ A wins 4, B wins 0, draws 0</code></pre>
         });
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }</code></pre>
-<span class="src">src/trainer.cpp:258 — <code>Trainer::runGeneration</code> (abridged)</span>
+<span class="src">src/trainer.cpp:270 — <code>Trainer::runGeneration</code> (abridged)</span>
 <p><code>parallelFor</code> hands out indices from an atomic counter; which worker plays game 17 varies from run to run, but game 17 itself does not. The row split in the naive gemm keeps the arithmetic identical too:</p>
 <pre><code>void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alpha,
                         const float* A, const float* B, float beta, float* C) const {
@@ -2039,7 +2039,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
   <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:91, 64</span></dd>
   <dt>One generation</dt>
-  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:258</span></dd>
+  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:270</span></dd>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
@@ -2047,7 +2047,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
-  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:27</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:211</span></dd>
+  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:27</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:218</span></dd>
   <dt>Inspecting a position</dt>
   <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:70, 91</span></dd>
 </dl>

@@ -13,7 +13,7 @@ namespace azgo {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x54535A41;   // "AZST" read as little-endian bytes
-constexpr uint32_t kStateVersion = 2;   // 2 added the reference set
+constexpr uint32_t kStateVersion = 2;   // 2 added the reference set and bot list
 } // namespace
 
 std::vector<int> initialReferences(int numBots) {
@@ -43,10 +43,12 @@ void saveTrainingState(const std::string& path, const TrainingState& state) {
     w.str(state.results.toCsv());
     w.u32(static_cast<uint32_t>(state.references.size()));
     for (int r : state.references) w.i32(r);
+    w.u32(static_cast<uint32_t>(state.botSimulations.size()));
+    for (int b : state.botSimulations) w.i32(b);
     writeFileAtomically(path, os.str());
 }
 
-TrainingState loadTrainingState(const std::string& path, int numBots) {
+TrainingState loadTrainingState(const std::string& path, const std::vector<int>& bots) {
     std::ifstream in(path, std::ios::binary);
     if (!in) throw std::runtime_error(path + ": cannot open training state");
     std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -77,7 +79,8 @@ TrainingState loadTrainingState(const std::string& path, int numBots) {
         }
         state.results = ResultsTable::fromCsv(r.str());
         if (version == 1) {
-            state.references = initialReferences(numBots);
+            state.botSimulations = bots;
+            state.references = initialReferences(static_cast<int>(bots.size()));
         } else {
             uint32_t count = r.u32();
             if (count > bytes.size() / sizeof(int32_t)) throw std::runtime_error("truncated reference set");
@@ -89,6 +92,13 @@ TrainingState loadTrainingState(const std::string& path, int numBots) {
             for (size_t i = 1; valid && i < state.references.size(); ++i)
                 valid = state.references[i - 1] < state.references[i];
             if (!valid) throw std::runtime_error("invalid reference set (must be ascending and contain 0)");
+            uint32_t numBots = r.u32();
+            if (numBots > bytes.size() / sizeof(int32_t)) throw std::runtime_error("truncated bot list");
+            state.botSimulations.resize(numBots);
+            for (int& b : state.botSimulations) b = r.i32();
+            // Bot k is player -k, so no reference may name a bot that is not stored.
+            if (state.references.front() < -static_cast<long long>(numBots))
+                throw std::runtime_error("invalid reference set (names a bot missing from the bot list)");
         }
         if (is.peek() != std::char_traits<char>::eof())
             throw std::runtime_error("unexpected trailing bytes");
