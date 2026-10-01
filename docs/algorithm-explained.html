@@ -1,0 +1,2042 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaZero for Go, from Scratch</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --bg:#F3F4F7;
+    --surface:#FFFFFF;
+    --surface-2:#ECEEF2;
+    --ink:#1A1D23;
+    --ink-dim:#565E6B;
+    --ink-faint:#8189947a;
+    --rule:#DADDE4;
+    --rule-strong:#C3C8D1;
+    --black:#2C5FA8;
+    --black-soft:#E4ECF7;
+    --white:#BD5A26;
+    --white-soft:#F7E9DE;
+    --code-bg:#EDEFF3;
+    --shadow: 0 1px 2px rgba(20,23,30,.06), 0 6px 20px -12px rgba(20,23,30,.12);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#14161B;
+      --surface:#1B1E25;
+      --surface-2:#20232B;
+      --ink:#E7E9EE;
+      --ink-dim:#9AA1AE;
+      --ink-faint:#5b6270a3;
+      --rule:#2B2F38;
+      --rule-strong:#3A3F4A;
+      --black:#7EA9E6;
+      --black-soft:#1E2B3F;
+      --white:#E2985E;
+      --white-soft:#3A2A1E;
+      --code-bg:#1F2229;
+      --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 24px -14px rgba(0,0,0,.55);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#14161B;
+    --surface:#1B1E25;
+    --surface-2:#20232B;
+    --ink:#E7E9EE;
+    --ink-dim:#9AA1AE;
+    --ink-faint:#5b6270a3;
+    --rule:#2B2F38;
+    --rule-strong:#3A3F4A;
+    --black:#7EA9E6;
+    --black-soft:#1E2B3F;
+    --white:#E2985E;
+    --white-soft:#3A2A1E;
+    --code-bg:#1F2229;
+    --shadow: 0 1px 2px rgba(0,0,0,.35), 0 10px 24px -14px rgba(0,0,0,.55);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    line-height:1.65;
+    font-size:16.5px;
+  }
+  h1,h2,h3{
+    font-family:"IBM Plex Serif", ui-serif, Georgia, serif;
+    font-weight:600;
+    text-wrap:balance;
+    color:var(--ink);
+    letter-spacing:-.01em;
+  }
+  code, .mono, .kv dd, .board, .tag-code{
+    font-family:"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric:tabular-nums;
+  }
+  a{ color:var(--black); }
+  a:hover{ text-decoration-thickness:2px; }
+  :focus-visible{ outline:2px solid var(--black); outline-offset:2px; }
+
+  .shell{
+    max-width:1180px;
+    margin:0 auto;
+    padding:56px 24px 120px;
+    display:grid;
+    grid-template-columns:220px minmax(0,760px);
+    gap:56px;
+    justify-content:center;
+  }
+  @media (max-width:960px){
+    .shell{ grid-template-columns:minmax(0,1fr); }
+    nav.toc{ display:none; }
+  }
+
+  /* ---------- masthead ---------- */
+  .masthead{
+    grid-column:1/-1;
+    max-width:760px;
+    margin:0 auto 8px;
+  }
+  .eyebrow{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:12px;
+    letter-spacing:.09em;
+    text-transform:uppercase;
+    color:var(--ink-dim);
+    margin-bottom:18px;
+  }
+  .eyebrow .chip-black, .eyebrow .chip-white{
+    width:9px;height:9px;border-radius:2px;
+  }
+  .eyebrow .chip-black{ background:var(--black); }
+  .eyebrow .chip-white{ background:var(--white); border-radius:50%; }
+
+  h1.title{
+    font-size:clamp(30px, 4vw, 42px);
+    line-height:1.12;
+    margin:0 0 14px;
+  }
+  .dek{
+    font-size:18px;
+    color:var(--ink-dim);
+    max-width:62ch;
+    margin:0 0 28px;
+  }
+  .meta-row{
+    display:flex;
+    flex-wrap:wrap;
+    gap:10px 18px;
+    font-size:13px;
+    color:var(--ink-dim);
+    border-top:1px solid var(--rule);
+    border-bottom:1px solid var(--rule);
+    padding:12px 0;
+    margin-bottom:8px;
+  }
+  .meta-row b{ color:var(--ink); font-weight:600; }
+
+  /* ---------- toc ---------- */
+  nav.toc{
+    position:sticky;
+    top:56px;
+    align-self:start;
+    font-size:13.5px;
+  }
+  nav.toc .toc-label{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11px;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    color:var(--ink-faint);
+    margin-bottom:10px;
+  }
+  nav.toc ol{
+    list-style:none;
+    margin:0; padding:0;
+    display:flex; flex-direction:column; gap:2px;
+    border-left:1px solid var(--rule);
+  }
+  nav.toc a{
+    /* flex, not block, so a title that wraps aligns its second line with
+       its first rather than sliding back under the section number. The
+       number is one flex item and the title text is an anonymous one, so
+       each gets its own column. */
+    display:flex;
+    align-items:baseline;
+    padding:6px 0 6px 14px;
+    color:var(--ink-dim);
+    text-decoration:none;
+    border-left:2px solid transparent;
+    margin-left:-1px;
+  }
+  nav.toc a:hover{ color:var(--ink); border-left-color:var(--rule-strong); }
+  nav.toc .n{ color:var(--ink-faint); margin-right:8px; flex:none; }
+
+  /* ---------- article ---------- */
+  main{ min-width:0; }
+  section{ margin:0 0 64px; }
+  section:last-of-type{ margin-bottom:0; }
+
+  .sec-head{
+    display:flex;
+    align-items:baseline;
+    gap:14px;
+    margin-bottom:6px;
+  }
+  .sec-num{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:14px;
+    color:var(--ink-faint);
+  }
+  h2{
+    font-size:25px;
+    margin:0;
+  }
+  .concept{
+    display:inline-block;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11px;
+    letter-spacing:.07em;
+    text-transform:uppercase;
+    color:var(--black);
+    background:var(--black-soft);
+    padding:3px 8px;
+    border-radius:3px;
+    margin:10px 0 20px;
+  }
+
+  p{ margin:0 0 16px; max-width:66ch; }
+  ul, ol.list{ margin:0 0 16px; padding-left:22px; max-width:64ch; }
+  li{ margin-bottom:6px; }
+  strong{ font-weight:600; }
+  .black-word{ color:var(--black); font-weight:600; }
+  .white-word{ color:var(--white); font-weight:600; }
+
+  figure{ margin:28px 0; }
+  figure.wide{ margin-left:0; margin-right:0; }
+  .fig-frame{
+    background:var(--surface);
+    border:1px solid var(--rule);
+    border-radius:8px;
+    padding:20px 22px;
+    box-shadow:var(--shadow);
+    overflow-x:auto;
+  }
+  figcaption{
+    margin-top:10px;
+    font-size:13px;
+    color:var(--ink-dim);
+    max-width:66ch;
+  }
+  svg text{ fill:currentColor; }
+  svg .dim{ fill:var(--ink-dim); }
+  svg .faint{ fill:var(--ink-faint); }
+  svg .rule{ stroke:var(--rule-strong); }
+  svg .black-fill{ fill:var(--black); }
+  svg .black-stroke{ stroke:var(--black); }
+  svg .white-fill{ fill:var(--white); }
+  svg .white-stroke{ stroke:var(--white); }
+
+  pre{
+    background:var(--code-bg);
+    border:1px solid var(--rule);
+    border-radius:8px;
+    padding:16px 18px;
+    overflow-x:auto;
+    font-size:13.2px;
+    line-height:1.55;
+    margin:18px 0;
+  }
+  pre code{ background:none; padding:0; }
+  p code, li code{
+    background:var(--code-bg);
+    padding:1.5px 5px;
+    border-radius:4px;
+    font-size:.9em;
+  }
+  .src{
+    display:block;
+    text-align:right;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11.5px;
+    color:var(--ink-faint);
+    margin-top:-10px;
+    margin-bottom:18px;
+  }
+  .src a{ color:var(--ink-faint); }
+
+  .callout{
+    border-left:3px solid var(--black);
+    background:var(--black-soft);
+    padding:14px 18px;
+    border-radius:0 6px 6px 0;
+    margin:20px 0;
+    font-size:15px;
+  }
+  .callout p:last-child{ margin-bottom:0; }
+  .callout .cal-label{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11px;
+    letter-spacing:.06em;
+    text-transform:uppercase;
+    color:var(--black);
+    margin-bottom:6px;
+    display:block;
+  }
+
+  .formula{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:15px;
+    background:var(--surface-2);
+    border:1px solid var(--rule);
+    border-radius:6px;
+    padding:16px 20px;
+    margin:18px 0;
+    overflow-x:auto;
+  }
+  .formula .op{ color:var(--ink-dim); }
+
+  table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:13.8px;
+    margin:18px 0;
+  }
+  caption{ text-align:left; font-size:13px; color:var(--ink-dim); margin-bottom:8px; }
+  th,td{
+    text-align:left;
+    padding:9px 12px;
+    border-bottom:1px solid var(--rule);
+    vertical-align:top;
+  }
+  th{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11px;
+    letter-spacing:.06em;
+    text-transform:uppercase;
+    color:var(--ink-dim);
+    font-weight:500;
+  }
+  td.mono{ font-size:12.8px; white-space:nowrap; }
+  .wrap-table{ overflow-x:auto; }
+
+
+  .glossary dt{
+    font-family:"IBM Plex Mono", monospace;
+    font-weight:500;
+    color:var(--ink);
+    margin-top:14px;
+  }
+  .glossary dd{
+    margin:4px 0 0;
+    color:var(--ink-dim);
+    max-width:62ch;
+  }
+  .glossary dd .loc{ color:var(--ink-faint); font-size:12px; }
+
+  footer{
+    max-width:760px;
+    grid-column:2;
+    margin-top:8px;
+    padding-top:24px;
+    border-top:1px solid var(--rule);
+    font-size:13px;
+    color:var(--ink-faint);
+  }
+  @media (max-width:960px){ footer{ grid-column:1; } }
+
+  /* ---------- additions for the Go page ---------- */
+  svg .white-stone{ fill:var(--white-soft); stroke:var(--white); }
+  .boards{
+    display:flex;
+    flex-wrap:wrap;
+    gap:18px 32px;
+    justify-content:center;
+  }
+  .board-svg{ width:100%; max-width:230px; height:auto; display:block; }
+  .diagram{ width:100%; max-width:470px; height:auto; display:block; margin:0 auto; }
+  /* plot_elo.py colors its series with var(--x) and var(--o); point them at
+     this page's player colors so the charts follow the theme. */
+  .chart{ --x:var(--black); --o:var(--white); padding:14px; }
+  .chart svg{ width:100%; height:auto; display:block; }
+  /* Below 480px the chart keeps a legible size and scrolls inside its frame. */
+  .chart svg{ min-width:480px; }
+  main p, main li, main dd, figcaption, .src, footer{ overflow-wrap:break-word; }
+  footer pre{ font-size:12.5px; }
+  footer p{ max-width:none; }
+  @media (max-width:600px){
+    body{ font-size:16px; }
+    .shell{ padding:32px 16px 80px; gap:32px; }
+    h2{ font-size:22px; }
+    .fig-frame{ padding:14px 12px; }
+    .chart{ padding:8px; }
+    pre{ font-size:12px; padding:12px 14px; }
+    .formula{ padding:12px 14px; }
+    th,td{ padding:8px 8px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <div class="masthead">
+    <div class="eyebrow"><span class="chip-black"></span><span class="chip-white"></span> alphazero-go — code walkthrough</div>
+    <h1 class="title">AlphaZero for Go, from Scratch</h1>
+    <p class="dek">How a residual network, a batched tree search and a few thousand games against itself learn Go on boards from 5×5 to 19×19 — walked through against the actual C++ in this repository, chapter by chapter, in the order the code runs. This is the sequel to <code>alphazero-tictactoe</code>: where an idea was already explained there (PUCT, the sign flip, the Monte Carlo return), this document recaps it in a few lines and spends its words on what Go changes.</p>
+    <div class="meta-row">
+      <span><b>Language</b> C++17, no dependencies (BLAS optional)</span>
+      <span><b>Network</b> a ResNet, 3 blocks × 32 filters on 5×5 up to 10 × 128 on 19×19</span>
+      <span><b>Result</b> on 5×5, in both of two runs, the final network wins 100 of 100 games against the untrained one and puts 97% of its prior on the center point, the first move of 5×5's known perfect play; on 9×9, after one night, generation 150 beats generation 50 in 98 of 100 games, though it still misreads a basic two-eye shape</span>
+    </div>
+  </div>
+
+  <nav class="toc">
+    <div class="toc-label">Contents</div>
+    <ol>
+      <li><a href="#state"><span class="n">00</span>The state</a></li>
+      <li><a href="#network"><span class="n">01</span>The two-headed guess</a></li>
+      <li><a href="#search"><span class="n">02</span>Search corrects the guess</a></li>
+      <li><a href="#batching"><span class="n">03</span>Batching the search</a></li>
+      <li><a href="#selfplay"><span class="n">04</span>Self-play and exploration</a></li>
+      <li><a href="#credit"><span class="n">05</span>Assigning credit</a></li>
+      <li><a href="#learning"><span class="n">06</span>Learning from itself</a></li>
+      <li><a href="#measuring"><span class="n">07</span>Measuring progress without an oracle</a></li>
+      <li><a href="#loop"><span class="n">08</span>The full loop at scale</a></li>
+      <li><a href="#changes"><span class="n">09</span>What changed from tic-tac-toe</a></li>
+      <li><a href="#concept-map"><span class="n">10</span>Concept map</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+<div class="callout">
+  <span class="cal-label">about the numbers</span>
+  <p>Everything measured was measured on one Apple M4 with 10 cores (<code>docs/results/bench.txt</code>), and every number names the file it came from. The 5×5 numbers come from two complete 60-generation runs, seeds 1 and 2, whose <code>log.csv</code>, <code>elo.csv</code> and <code>results.csv</code> are kept in <code>docs/results/5x5/</code> and <code>docs/results/5x5-seed2/</code>. The 9×9 and 19×19 numbers come from <code>docs/results/9x9/</code> (an overnight run) and <code>docs/results/19x19/</code> (a two-generation check). All of these runs were made with the final code. A first set, made before the search fix described in chapters 02 and 07, is kept in <code>docs/results/passbug/</code>; the short pilots in <code>docs/results/pilots/</code>, used to size the presets, also predate that fix. <code>docs/results/README.md</code> summarizes everything.</p>
+</div>
+
+<section id="state">
+<div class="sec-head"><span class="sec-num">00</span><h2>The state</h2></div>
+<span class="concept">concept — the rules as a state machine, and what the network sees</span>
+<p>Tic-tac-toe has 5,478 legal positions; you can print them all. Go on a 5×5 board already has about 4×10¹¹, and on 19×19 about 2×10¹⁷⁰. Nothing in this project enumerates positions. What it needs from the rules is much smaller: given a position, which moves are legal, what does a move do, and who won when the game ends. This chapter is those rules, stated the way a programmer needs them, and then the encoding that turns a position into numbers.</p>
+<p><strong>Groups, liberties, capture.</strong> Stones of one color that touch horizontally or vertically form a <em>group</em>. The empty points next to a group are its <em>liberties</em>. A move places a stone on an empty point (or passes). Then every opponent group left with no liberties is removed — <em>captured</em>. In the diagram below (GTP coordinates: columns A–E, rows 1–5 from the bottom), White's stone at C4 has one liberty left, C5. It is "in atari", and Black C5 would capture it.</p>
+<figure>
+<div class="fig-frame">
+<div class="boards">
+<svg viewBox="0 0 196 230" role="img" aria-label="5 by 5 board: White C4 surrounded on three sides with its last liberty C5 marked; White corner stones A1 and E1 with their two liberties marked" class="board-svg">
+<rect x="16" y="16" width="164" height="164" rx="4" fill="var(--surface-2)"/>
+<line x1="30" y1="30" x2="166" y2="30" class="rule" stroke-width="1"/>
+<line x1="30" y1="30" x2="30" y2="166" class="rule" stroke-width="1"/>
+<text x="30" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">A</text>
+<text x="8" y="34" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">5</text>
+<line x1="30" y1="64" x2="166" y2="64" class="rule" stroke-width="1"/>
+<line x1="64" y1="30" x2="64" y2="166" class="rule" stroke-width="1"/>
+<text x="64" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">B</text>
+<text x="8" y="68" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">4</text>
+<line x1="30" y1="98" x2="166" y2="98" class="rule" stroke-width="1"/>
+<line x1="98" y1="30" x2="98" y2="166" class="rule" stroke-width="1"/>
+<text x="98" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">C</text>
+<text x="8" y="102" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">3</text>
+<line x1="30" y1="132" x2="166" y2="132" class="rule" stroke-width="1"/>
+<line x1="132" y1="30" x2="132" y2="166" class="rule" stroke-width="1"/>
+<text x="132" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">D</text>
+<text x="8" y="136" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">2</text>
+<line x1="30" y1="166" x2="166" y2="166" class="rule" stroke-width="1"/>
+<line x1="166" y1="30" x2="166" y2="166" class="rule" stroke-width="1"/>
+<text x="166" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">E</text>
+<text x="8" y="170" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">1</text>
+<circle cx="64" cy="64" r="14" class="black-fill"/>
+<circle cx="98" cy="64" r="13" class="white-stone" stroke-width="2"/>
+<circle cx="132" cy="64" r="14" class="black-fill"/>
+<circle cx="98" cy="98" r="14" class="black-fill"/>
+<circle cx="30" cy="166" r="13" class="white-stone" stroke-width="2"/>
+<circle cx="166" cy="166" r="13" class="white-stone" stroke-width="2"/>
+<circle cx="98" cy="30" r="5" class="white-fill"/>
+<circle cx="98" cy="30" r="11" fill="none" class="white-stroke" stroke-width="1.5" stroke-dasharray="3 3"/>
+<circle cx="30" cy="132" r="5" class="white-fill"/>
+<circle cx="64" cy="166" r="5" class="white-fill"/>
+<circle cx="132" cy="166" r="5" class="white-fill"/>
+<circle cx="166" cy="132" r="5" class="white-fill"/>
+<text x="98.0" y="222" text-anchor="middle" font-size="11.5" font-family="IBM Plex Mono, ui-monospace, monospace">before: White C4 in atari</text>
+</svg>
+<svg viewBox="0 0 196 230" role="img" aria-label="the same board after Black plays C5: the White stone on C4 is removed" class="board-svg">
+<rect x="16" y="16" width="164" height="164" rx="4" fill="var(--surface-2)"/>
+<line x1="30" y1="30" x2="166" y2="30" class="rule" stroke-width="1"/>
+<line x1="30" y1="30" x2="30" y2="166" class="rule" stroke-width="1"/>
+<text x="30" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">A</text>
+<text x="8" y="34" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">5</text>
+<line x1="30" y1="64" x2="166" y2="64" class="rule" stroke-width="1"/>
+<line x1="64" y1="30" x2="64" y2="166" class="rule" stroke-width="1"/>
+<text x="64" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">B</text>
+<text x="8" y="68" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">4</text>
+<line x1="30" y1="98" x2="166" y2="98" class="rule" stroke-width="1"/>
+<line x1="98" y1="30" x2="98" y2="166" class="rule" stroke-width="1"/>
+<text x="98" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">C</text>
+<text x="8" y="102" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">3</text>
+<line x1="30" y1="132" x2="166" y2="132" class="rule" stroke-width="1"/>
+<line x1="132" y1="30" x2="132" y2="166" class="rule" stroke-width="1"/>
+<text x="132" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">D</text>
+<text x="8" y="136" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">2</text>
+<line x1="30" y1="166" x2="166" y2="166" class="rule" stroke-width="1"/>
+<line x1="166" y1="30" x2="166" y2="166" class="rule" stroke-width="1"/>
+<text x="166" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">E</text>
+<text x="8" y="170" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">1</text>
+<circle cx="98" cy="30" r="14" class="black-fill"/>
+<circle cx="64" cy="64" r="14" class="black-fill"/>
+<circle cx="132" cy="64" r="14" class="black-fill"/>
+<circle cx="98" cy="98" r="14" class="black-fill"/>
+<circle cx="30" cy="166" r="13" class="white-stone" stroke-width="2"/>
+<circle cx="166" cy="166" r="13" class="white-stone" stroke-width="2"/>
+<circle cx="98" cy="30" r="6" fill="none" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="98" cy="64" r="13" fill="none" class="white-stroke" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="98.0" y="222" text-anchor="middle" font-size="11.5" font-family="IBM Plex Mono, ui-monospace, monospace">after C5: C4 captured</text>
+</svg>
+</div>
+</div>
+<figcaption>Liberties, marked with small <span class="white-word">orange</span> dots for the White stones: C4 has one left, C5 (it is in atari); the corner stones A1 and E1 have two each, because the edge takes the others away. Black C5 fills C4's last liberty and removes it. In the text frame <code>analyze</code> prints, Black is <code>X</code> and White <code>O</code>; here <span class="black-word">Black</span> is blue and <span class="white-word">White</span> orange.</figcaption>
+</figure>
+<p><strong>Suicide.</strong> If, after removing captured opponent stones, the moved stone's own group has no liberties, the move is <em>suicide</em>. Strict Tromp-Taylor rules allow it (the suicidal group simply disappears); most human rulesets forbid it, AlphaGo Zero did, and so does this code. A suicide can only ever lose stones, so forbidding it removes a whole family of pointless moves from every search without costing any strength. Note the order of the check: captures first, then the liberty test. A move into a point with no empty neighbors is legal if it captures something, because the capture frees a liberty.</p>
+<p><code>Board::isLegal</code> answers "is this move locally legal" without playing it, by looking at the four neighbors:</p>
+<pre><code>bool Board::isLegal(int action) const {
+    if (action == passAction()) return true;
+    if (action &lt; 0 || action &gt; passAction()) return false;
+    const int p = pad(action);
+    if (cells_[p] != Color::Empty) return false;
+    const Color me = toMove_;
+    const Color them = opponent(me);
+    // The new stone survives if any neighbor gives it a liberty:
+    //  - an empty neighbor is a liberty directly;
+    //  - an opponent group whose only liberty is p gets captured, freeing a point;
+    //  - a friendly group with another liberty besides p lends it one.
+    for (int d : kDirs) {
+        const int q = p + d;
+        const Color c = cells_[q];
+        if (c == Color::Empty) return true;
+        if (c == them &amp;&amp; countLiberties(q, 2) == 1) return true;
+        if (c == me &amp;&amp; countLiberties(q, 2) &gt;= 2) return true;
+    }
+    return false;  // suicide
+}</code></pre>
+<span class="src">src/board.cpp:131 — <code>Board::isLegal</code></span>
+<p><code>countLiberties(q, 2)</code> flood-fills the group at <code>q</code> and stops as soon as it has found two liberties: legality only ever needs to know "none", "exactly one" or "at least two". Groups are not maintained incrementally (no union-find, no chain lists). A flood fill over at most 361 points takes microseconds, while one network evaluation takes tens of microseconds on 5×5 and milliseconds on 19×19 (chapter 01), so the simpler code costs nothing that matters. <code>bench</code> measures the rules engine alone at 1.3 million random moves per second on 5×5 and 178,000 on 19×19, including legality, superko and hashing (<code>docs/results/bench.txt</code>).</p>
+<p>Playing the move is the same logic with side effects — place the stone, then remove each neighboring opponent group left without a liberty:</p>
+<pre><code>int Board::play(int action) {
+    assert(isLegal(action));
+    /* ... a pass only flips toMove_; otherwise p = pad(action), me, them ... */
+    cells_[p] = me;
+    hash_ ^= zobristKey(p, me);
+    int captured = 0;
+    for (int d : kDirs) {
+        const int q = p + d;
+        // A group already removed via another neighbor reads Empty here.
+        if (cells_[q] == them &amp;&amp; countLiberties(q, 1) == 0) captured += removeGroup(q);
+    }
+    /* ... assert the new stone has a liberty, flip toMove_, return captured ... */
+}</code></pre>
+<span class="src">src/board.cpp:152 — <code>Board::play</code> (abridged)</span>
+<p>An illegal move reaching <code>play</code> is a programming error, hence the <code>assert</code>; moves typed by a person are checked first (<code>analyze</code> reports <code>illegal (occupied)</code>, <code>illegal (suicide)</code> or <code>illegal (superko)</code>).</p>
+<p><strong>The padded array and the <code>Off</code> sentinel.</strong> Board size is a runtime value from 5 to 19, but the storage is always a 21×21 array: the largest board plus a one-point border. Every cell outside the playing area holds the color <code>Off</code>.</p>
+<pre><code>Board::Board(int n) : n_(n), toMove_(Color::Black), cells_(), hash_(0) {
+    assert(n &gt;= kMinBoardSize &amp;&amp; n &lt;= kMaxBoardSize);
+    // Everything starts Off; only the n x n playing area is opened up. On a
+    // 5x5 board the unused part of the 21x21 array stays Off as well, so it
+    // behaves exactly like the sentinel border.
+    cells_.fill(Color::Off);
+    for (int p = 0; p &lt; area(); ++p) cells_[pad(p)] = Color::Empty;
+}
+
+int Board::pad(int point) const {
+    return (point / n_ + 1) * kStride + (point % n_ + 1);
+}</code></pre>
+<span class="src">src/board.cpp:47 — <code>Board::Board</code></span>
+<p>The four neighbors of a padded index <code>p</code> are <code>p − 21</code>, <code>p − 1</code>, <code>p + 1</code> and <code>p + 21</code> (<code>kDirs</code>). For any on-board point all four are valid array indices, and an off-board neighbor reads <code>Off</code>, which is neither empty nor a stone — so the flood fills above never need a bounds check, and a stone on the edge simply has fewer liberties, which is exactly Go's rule. One <code>Board</code> type serves every size, and it is a plain value (441 bytes of cells plus a few ints) that search copies freely.</p>
+<p><strong>Ko and positional superko.</strong> Captures make repetition possible. Here Black has just captured a White stone at B3 by playing C3 (before and after):</p>
+<figure>
+<div class="fig-frame">
+<div class="boards">
+<svg viewBox="0 0 196 230" role="img" aria-label="ko shape before the capture: White B3 has one liberty, C3" class="board-svg">
+<rect x="16" y="16" width="164" height="164" rx="4" fill="var(--surface-2)"/>
+<line x1="30" y1="30" x2="166" y2="30" class="rule" stroke-width="1"/>
+<line x1="30" y1="30" x2="30" y2="166" class="rule" stroke-width="1"/>
+<text x="30" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">A</text>
+<text x="8" y="34" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">5</text>
+<line x1="30" y1="64" x2="166" y2="64" class="rule" stroke-width="1"/>
+<line x1="64" y1="30" x2="64" y2="166" class="rule" stroke-width="1"/>
+<text x="64" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">B</text>
+<text x="8" y="68" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">4</text>
+<line x1="30" y1="98" x2="166" y2="98" class="rule" stroke-width="1"/>
+<line x1="98" y1="30" x2="98" y2="166" class="rule" stroke-width="1"/>
+<text x="98" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">C</text>
+<text x="8" y="102" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">3</text>
+<line x1="30" y1="132" x2="166" y2="132" class="rule" stroke-width="1"/>
+<line x1="132" y1="30" x2="132" y2="166" class="rule" stroke-width="1"/>
+<text x="132" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">D</text>
+<text x="8" y="136" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">2</text>
+<line x1="30" y1="166" x2="166" y2="166" class="rule" stroke-width="1"/>
+<line x1="166" y1="30" x2="166" y2="166" class="rule" stroke-width="1"/>
+<text x="166" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">E</text>
+<text x="8" y="170" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">1</text>
+<circle cx="166" cy="30" r="14" class="black-fill"/>
+<circle cx="64" cy="64" r="14" class="black-fill"/>
+<circle cx="98" cy="64" r="13" class="white-stone" stroke-width="2"/>
+<circle cx="30" cy="98" r="14" class="black-fill"/>
+<circle cx="64" cy="98" r="13" class="white-stone" stroke-width="2"/>
+<circle cx="132" cy="98" r="13" class="white-stone" stroke-width="2"/>
+<circle cx="64" cy="132" r="14" class="black-fill"/>
+<circle cx="98" cy="132" r="13" class="white-stone" stroke-width="2"/>
+<circle cx="98" cy="98" r="5" class="white-fill"/>
+<circle cx="98" cy="98" r="11" fill="none" class="white-stroke" stroke-width="1.5" stroke-dasharray="3 3"/>
+<text x="98.0" y="222" text-anchor="middle" font-size="11.5" font-family="IBM Plex Mono, ui-monospace, monospace">before: Black to play C3</text>
+</svg>
+<svg viewBox="0 0 196 230" role="img" aria-label="after Black C3 captures B3: Black C3 has one liberty, B3, and White&#x27;s immediate retake there is forbidden" class="board-svg">
+<rect x="16" y="16" width="164" height="164" rx="4" fill="var(--surface-2)"/>
+<line x1="30" y1="30" x2="166" y2="30" class="rule" stroke-width="1"/>
+<line x1="30" y1="30" x2="30" y2="166" class="rule" stroke-width="1"/>
+<text x="30" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">A</text>
+<text x="8" y="34" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">5</text>
+<line x1="30" y1="64" x2="166" y2="64" class="rule" stroke-width="1"/>
+<line x1="64" y1="30" x2="64" y2="166" class="rule" stroke-width="1"/>
+<text x="64" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">B</text>
+<text x="8" y="68" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">4</text>
+<line x1="30" y1="98" x2="166" y2="98" class="rule" stroke-width="1"/>
+<line x1="98" y1="30" x2="98" y2="166" class="rule" stroke-width="1"/>
+<text x="98" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">C</text>
+<text x="8" y="102" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">3</text>
+<line x1="30" y1="132" x2="166" y2="132" class="rule" stroke-width="1"/>
+<line x1="132" y1="30" x2="132" y2="166" class="rule" stroke-width="1"/>
+<text x="132" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">D</text>
+<text x="8" y="136" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">2</text>
+<line x1="30" y1="166" x2="166" y2="166" class="rule" stroke-width="1"/>
+<line x1="166" y1="30" x2="166" y2="166" class="rule" stroke-width="1"/>
+<text x="166" y="12" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">E</text>
+<text x="8" y="170" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">1</text>
+<circle cx="166" cy="30" r="14" class="black-fill"/>
+<circle cx="64" cy="64" r="14" class="black-fill"/>
+<circle cx="98" cy="64" r="13" class="white-stone" stroke-width="2"/>
+<circle cx="30" cy="98" r="14" class="black-fill"/>
+<circle cx="98" cy="98" r="14" class="black-fill"/>
+<circle cx="132" cy="98" r="13" class="white-stone" stroke-width="2"/>
+<circle cx="64" cy="132" r="14" class="black-fill"/>
+<circle cx="98" cy="132" r="13" class="white-stone" stroke-width="2"/>
+<circle cx="98" cy="98" r="6" fill="none" stroke="var(--surface)" stroke-width="2"/>
+<circle cx="64" cy="98" r="13" fill="none" class="white-stroke" stroke-width="1.5" stroke-dasharray="4 3"/>
+<path d="M58 92L70 104M70 92L58 104" class="white-stroke" stroke-width="2.2" stroke-linecap="round"/>
+<text x="98.0" y="222" text-anchor="middle" font-size="11.5" font-family="IBM Plex Mono, ui-monospace, monospace">after C3: B3 forbidden</text>
+</svg>
+</div>
+</div>
+<figcaption>A ko. Black C3 captures the White stone on B3 and is itself left with one liberty, B3. White retaking at B3 would recreate the position before the capture exactly, so positional superko forbids it (the cross); White has to play elsewhere first.</figcaption>
+</figure>
+<p>Black's new stone at C3 has one liberty, B3. If White could immediately play B3 again, it would capture C3 and recreate the position before the capture exactly, and the two players could trade captures forever. This shape is a <em>ko</em>. The simple ko rule forbids the immediate recapture; this code uses the stronger <em>positional superko</em> rule, the one Tromp-Taylor specifies: <strong>a move may not recreate any whole-board arrangement of stones that has occurred earlier in the game.</strong> It also covers the rare longer cycles (triple ko and friends) that the simple rule misses.</p>
+<p>Checking "has this position ever occurred" naively means comparing boards. Instead, every position carries a <strong>Zobrist hash</strong>: one random 64-bit key per (point, color), generated once from a fixed seed, and the hash of a position is the XOR of the keys of all its stones. Placing a stone XORs its key in, removing one XORs it out, so the hash updates in O(1) per stone. <code>hashAfter</code> computes the hash a move <em>would</em> produce without copying the board, unless the move captures:</p>
+<pre><code>uint64_t Board::hashAfter(int action) const {
+    if (action == passAction()) return hash_;
+    assert(isLegal(action));
+    const int p = pad(action);
+    const Color them = opponent(toMove_);
+    for (int d : kDirs) {
+        const int q = p + d;
+        if (cells_[q] == them &amp;&amp; countLiberties(q, 2) == 1) {
+            // The move captures: let play() work out which stones go.
+            Board next = *this;
+            next.play(action);
+            return next.hash();
+        }
+    }
+    // No capture: the only change is one new stone.
+    return hash_ ^ zobristKey(p, toMove_);
+}</code></pre>
+<span class="src">src/board.cpp:174 — <code>Board::hashAfter</code></span>
+<p>A single <code>Board</code> has no memory of the past, so superko lives one level up, in <code>Game</code>, which keeps every position of the game and a hash set of the positions seen so far:</p>
+<pre><code>bool Game::isLegal(int action) const {
+    if (isTerminal()) return false;
+    const Board&amp; b = board();
+    // Passing never changes the stones, so it can never break superko.
+    if (action == b.passAction()) return true;
+    if (!b.isLegal(action)) return false;
+    // Positional superko: compare the hash of the resulting stones against
+    // every position of this game so far.
+    return seen_.count(b.hashAfter(action)) == 0;
+}</code></pre>
+<span class="src">src/game.cpp:19 — <code>Game::isLegal</code></span>
+<p>The hash covers the stones only, not the side to move: "positional" superko compares arrangements of stones. A hash collision (two different positions with the same 64-bit hash) would wrongly forbid one legal move; with 2⁶⁴ possible values and at most a few thousand positions per game, that is not a practical concern.</p>
+<p><strong>Try it</strong> — the retake in the diagram above, typed as a move list (<code>analyze</code> checks every move before it plays it):</p>
+<pre><code>$ ./build-blas/analyze --checkpoint runs/5x5-seed1/checkpoints/gen_0060.azn \
+      --komi 24.5 --moves "B4 C4 A3 C2 B2 D3 E5 B3 C3 B3"
+error: move 10 (B3): illegal (superko)
+$ ./build-blas/analyze --checkpoint runs/5x5-seed1/checkpoints/gen_0060.azn \
+      --komi 24.5 --moves "B1 C3 A2 D3 E5 A1"
+error: move 6 (A1): illegal (suicide)</code></pre>
+<p><strong>Scoring: Tromp-Taylor area and komi.</strong> The game ends after two consecutive passes (or at a move cap of 2·n² moves, so that self-play always finishes). The final position is then scored by <strong>Tromp-Taylor area scoring</strong>: each player gets one point per stone on the board plus one point per empty point in regions that touch only that player's stones. Empty regions that touch both colors count for nobody. There is no judgment of which stones are "dead" — chapter 05 shows what that does to the games.</p>
+<pre><code>int Board::areaScore() const {
+    // Every stone counts for its color. Every maximal empty region is flood
+    // filled once; it counts for a color only if all stones it touches have
+    // that color (seki liberties and dame touch both and count for nobody).
+    /* ... stack, mark, black = 0, white = 0 ... */
+    for (int point = 0; point &lt; area(); ++point) {
+        const int start = pad(point);
+        const Color c = cells_[start];
+        if (c == Color::Black) { ++black; continue; }
+        if (c == Color::White) { ++white; continue; }
+        if (mark[start]) continue;
+        /* ... flood fill the empty region from start, counting regionSize
+               and noting whether it touches Black and/or White ... */
+        if (reachesBlack &amp;&amp; !reachesWhite) black += regionSize;
+        if (reachesWhite &amp;&amp; !reachesBlack) white += regionSize;
+    }
+    return black - white;
+}</code></pre>
+<span class="src">src/board.cpp:201 — <code>Board::areaScore</code> (abridged)</span>
+<p>Black moves first, which is worth several points on 19×19, so White receives <strong>komi</strong>: <code>Game::scoreForBlack()</code> is <code>areaScore() − komi</code>, and the default komi is 7.5. The half point means a draw is impossible; an integer komi can produce an exact tie, which this code scores as a draw (chapter 05). How much the first move is worth depends on the board, and on 5×5 it is worth everything: 5×5 Go is solved, and perfect play gives Black the entire board, a win by 25 points. That is why the 5×5 preset uses komi 24.5 instead of 7.5 — chapter 05 has the evidence.</p>
+<p><strong>What the network sees: input planes.</strong> The network does not read a <code>Board</code>. It reads a stack of n×n planes of 0s and 1s, always from the point of view of the player about to move — the Go version of tic-tac-toe's "my stones / their stones" canonicalization:</p>
+<ul>
+  <li>for each of the last H positions (H = <code>history</code>, 8 in every preset): one plane of the side-to-move's stones and one of the opponent's stones — 2H planes;</li>
+  <li>a "Black to move" plane and a "White to move" plane, exactly one of which is all ones.</li>
+</ul>
+<p>That is 2H + 2 = 18 planes. "Own" means the player to move <em>now</em>, in every history plane: the network sees the recent past through the eyes of the player who has to act.</p>
+<pre><code>void encodePlanes(const std::vector&lt;const uint8_t*&gt;&amp; stones, int n, Color toMove,
+                  int H, int sym, float* out) {
+    /* ... asserts; zero the whole output; dest[p] = transformPoint(sym, p, n) ... */
+    const uint8_t own = static_cast&lt;uint8_t&gt;(toMove);
+    const uint8_t opp = static_cast&lt;uint8_t&gt;(opponent(toMove));
+    const int available = std::min(H, static_cast&lt;int&gt;(stones.size()));
+    for (int k = 0; k &lt; available; ++k) {
+        // "Own" is the player to move now, in every history plane, so the
+        // network always sees the game from the perspective it must act in.
+        float* ownPlane = out + static_cast&lt;size_t&gt;(2 * k) * area;
+        float* oppPlane = ownPlane + area;
+        const uint8_t* s = stones[static_cast&lt;size_t&gt;(k)];
+        for (int p = 0; p &lt; area; ++p) {
+            if (s[p] == own) ownPlane[dest[p]] = 1.0f;
+            else if (s[p] == opp) oppPlane[dest[p]] = 1.0f;
+        }
+    }
+    // Planes 2H (Black to move) and 2H + 1 (White to move): exactly one is all ones.
+    const int colorPlane = 2 * H + (toMove == Color::Black ? 0 : 1);
+    float* plane = out + static_cast&lt;size_t&gt;(colorPlane) * area;
+    std::fill(plane, plane + area, 1.0f);
+}</code></pre>
+<span class="src">src/encode.cpp:14 — <code>encodePlanes</code> (abridged)</span>
+<p>Why history at all? The current stones alone do not say which moves superko forbids, or which stones were just captured; the last few positions do. Positions before the first move are all-zero planes. The <code>sym</code> argument rotates or mirrors the output (chapter 06); search always passes 0, the identity.</p>
+<p>Why <em>two</em> color planes, one of them all ones? Because of how the first layer reads the board. It is a 3×3 convolution with <em>zero padding</em>: at an edge point, the three neighbors that would lie off the board are read as 0. In the stone planes, an empty point is also 0 — so without help, an empty point on the edge looks exactly like an empty point in the middle of the board, and the network cannot tell where the edge is. A plane that is 1 on every on-board point breaks the tie: the convolution sees 1s inside the board and padding 0s outside it, so every 3×3 window that overlaps the edge produces a different response. AlphaGo Zero used 17 planes with a single color plane that is all ones for Black to move and all zeros for White; with that encoding the edge signal vanishes whenever White is to move. Two planes, exactly one of them all ones, keep it on every turn and still say whose turn it is.</p>
+</section>
+
+<section id="network">
+<div class="sec-head"><span class="sec-num">01</span><h2>The two-headed guess</h2></div>
+<span class="concept">concept — function approximation with a residual convolutional network</span>
+<p>As in tic-tac-toe, one network answers two questions about a position: a <strong>policy</strong> (a probability for each move: which moves look good) and a <strong>value</strong> (a number in [−1, 1]: the expected result for the player to move). Search uses the first to decide where to look and the second to stop looking.</p>
+<p>Tic-tac-toe's network was a multilayer perceptron, 18 → 64 → 64 → {9, 1}. That design does not survive contact with Go. On 19×19 the input has 18 × 361 = 6,498 numbers; a fully connected first layer of any useful width would need millions of weights, and worse, it would have to learn "a stone in atari can be captured" separately at every one of 361 locations. Go's patterns mean the same thing wherever they occur (the edge aside, which the ones plane from chapter 00 makes visible). A <strong>convolution</strong> exploits that: one small filter, 3×3 points across all input planes, slides over the whole board, so a pattern learned once is recognized everywhere.</p>
+<p>This is AlphaGo Zero's architecture, at a size a CPU can train:</p>
+<figure>
+<div class="fig-frame">
+<div class="diagram-wrap">
+<svg viewBox="0 0 440 684" role="img" class="diagram" aria-label="Network: input planes, a 3 by 3 convolution stem, a stack of residual blocks each computing relu(x + F(x)), then a policy head giving n squared plus one logits and a value head giving one tanh value">
+<rect x="110" y="8" width="220" height="44" rx="6" fill="var(--surface)" class="rule" stroke-width="1.4"/>
+<text x="220.0" y="28" text-anchor="middle" font-size="14" font-family="IBM Plex Mono, ui-monospace, monospace">input planes</text>
+<text x="220.0" y="45" text-anchor="middle" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">[18][n][n]</text>
+<line x1="220" y1="52" x2="220" y2="68" class="rule" stroke-width="1.4"/><path d="M220 69 l-5 -8 h10 z" class="dim"/>
+<rect x="70" y="70" width="300" height="44" rx="6" fill="var(--surface)" class="black-stroke" stroke-width="1.4"/>
+<text x="220.0" y="90" text-anchor="middle" font-size="14" font-family="IBM Plex Mono, ui-monospace, monospace">stem</text>
+<text x="220.0" y="107" text-anchor="middle" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">3×3 conv (F filters) → BN → ReLU</text>
+<line x1="220" y1="114" x2="220" y2="130" class="rule" stroke-width="1.4"/><path d="M220 131 l-5 -8 h10 z" class="dim"/>
+<rect x="30" y="132" width="390" height="326" rx="8" fill="var(--black-soft)" fill-opacity="0.35" class="black-stroke" stroke-width="1.4" stroke-dasharray="5 4"/>
+<text x="44" y="152" font-size="13" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">residual block × blocks</text>
+<circle cx="150" cy="166" r="3.5" class="dim"/>
+<text x="138" y="171" text-anchor="end" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">x</text>
+<line x1="150" y1="169" x2="150" y2="178" class="rule" stroke-width="1.4"/><path d="M150 179 l-5 -8 h10 z" class="dim"/>
+<rect x="76" y="180" width="148" height="26" rx="4" fill="var(--surface)" class="rule" stroke-width="1.2"/>
+<text x="150" y="198" text-anchor="middle" font-size="13" font-family="IBM Plex Mono, ui-monospace, monospace">3×3 conv</text>
+<line x1="150" y1="206" x2="150" y2="218" class="rule" stroke-width="1.4"/><path d="M150 219 l-5 -8 h10 z" class="dim"/>
+<rect x="76" y="220" width="148" height="26" rx="4" fill="var(--surface)" class="rule" stroke-width="1.2"/>
+<text x="150" y="238" text-anchor="middle" font-size="13" font-family="IBM Plex Mono, ui-monospace, monospace">batch norm</text>
+<line x1="150" y1="246" x2="150" y2="258" class="rule" stroke-width="1.4"/><path d="M150 259 l-5 -8 h10 z" class="dim"/>
+<rect x="76" y="260" width="148" height="26" rx="4" fill="var(--surface)" class="rule" stroke-width="1.2"/>
+<text x="150" y="278" text-anchor="middle" font-size="13" font-family="IBM Plex Mono, ui-monospace, monospace">ReLU</text>
+<line x1="150" y1="286" x2="150" y2="298" class="rule" stroke-width="1.4"/><path d="M150 299 l-5 -8 h10 z" class="dim"/>
+<rect x="76" y="300" width="148" height="26" rx="4" fill="var(--surface)" class="rule" stroke-width="1.2"/>
+<text x="150" y="318" text-anchor="middle" font-size="13" font-family="IBM Plex Mono, ui-monospace, monospace">3×3 conv</text>
+<line x1="150" y1="326" x2="150" y2="338" class="rule" stroke-width="1.4"/><path d="M150 339 l-5 -8 h10 z" class="dim"/>
+<rect x="76" y="340" width="148" height="26" rx="4" fill="var(--surface)" class="rule" stroke-width="1.2"/>
+<text x="150" y="358" text-anchor="middle" font-size="13" font-family="IBM Plex Mono, ui-monospace, monospace">batch norm</text>
+<line x1="150" y1="366" x2="150" y2="379" class="rule" stroke-width="1.4"/><path d="M150 380 l-5 -8 h10 z" class="dim"/>
+<circle cx="150" cy="392" r="12" fill="var(--surface)" class="white-stroke" stroke-width="1.8"/>
+<text x="150" y="398" text-anchor="middle" font-size="17" class="white-fill" font-family="IBM Plex Mono, ui-monospace, monospace">+</text>
+<path d="M150 166 H330 V392 H170" fill="none" class="white-stroke" stroke-width="1.8"/>
+<path d="M163 392 l9 -5 v10 z" class="white-fill"/>
+<text x="340" y="271.0" font-size="13" class="white-fill" font-family="IBM Plex Mono, ui-monospace, monospace">skip:</text>
+<text x="340" y="289.0" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">x as is</text>
+<line x1="150" y1="404" x2="150" y2="418" class="rule" stroke-width="1.4"/><path d="M150 419 l-5 -8 h10 z" class="dim"/>
+<rect x="76" y="420" width="148" height="26" rx="4" fill="var(--surface)" class="rule" stroke-width="1.2"/>
+<text x="150" y="438" text-anchor="middle" font-size="13" font-family="IBM Plex Mono, ui-monospace, monospace">ReLU</text>
+<text x="236" y="438" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">relu(x + F(x))</text>
+<line x1="220" y1="458" x2="220" y2="474" class="rule" stroke-width="1.4"/><path d="M220 475 l-5 -8 h10 z" class="dim"/>
+<rect x="130" y="476" width="180" height="44" rx="6" fill="var(--surface)" class="rule" stroke-width="1.4"/>
+<text x="220.0" y="496" text-anchor="middle" font-size="14" font-family="IBM Plex Mono, ui-monospace, monospace">trunk</text>
+<text x="220.0" y="513" text-anchor="middle" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">[F][n][n]</text>
+<path d="M170 520 V534 H110 V546" fill="none" class="rule" stroke-width="1.4"/><path d="M110 547 l-5 -8 h10 z" class="dim"/>
+<path d="M270 520 V534 H330 V546" fill="none" class="rule" stroke-width="1.4"/><path d="M330 547 l-5 -8 h10 z" class="dim"/>
+<rect x="6" y="548" width="208" height="126" rx="6" fill="var(--surface)" class="rule" stroke-width="1.4"/>
+<text x="110.0" y="568" text-anchor="middle" font-size="14" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">policy head</text>
+<text x="110.0" y="585" text-anchor="middle" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">1×1 conv, 2 filters</text>
+<text x="110.0" y="602" text-anchor="middle" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">→ BN → ReLU</text>
+<text x="110.0" y="619" text-anchor="middle" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">Linear 2n² → n²+1</text>
+<text x="110.0" y="636" text-anchor="middle" font-size="13" font-family="IBM Plex Mono, ui-monospace, monospace">logits: n² points</text>
+<text x="110.0" y="653" text-anchor="middle" font-size="13" font-family="IBM Plex Mono, ui-monospace, monospace">+ pass</text>
+<rect x="226" y="548" width="208" height="126" rx="6" fill="var(--surface)" class="rule" stroke-width="1.4"/>
+<text x="330.0" y="568" text-anchor="middle" font-size="14" class="white-fill" font-family="IBM Plex Mono, ui-monospace, monospace">value head</text>
+<text x="330.0" y="585" text-anchor="middle" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">1×1 conv, 1 filter</text>
+<text x="330.0" y="602" text-anchor="middle" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">→ BN → ReLU</text>
+<text x="330.0" y="619" text-anchor="middle" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">Linear n² → V → ReLU</text>
+<text x="330.0" y="636" text-anchor="middle" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">Linear V → 1 → tanh</text>
+<text x="330.0" y="653" text-anchor="middle" font-size="13" font-family="IBM Plex Mono, ui-monospace, monospace">value in [−1, 1]</text>
+</svg>
+</div>
+</div>
+<figcaption>The network. A 3×3 convolution stem lifts the 18 input planes to F channels; each residual block adds a two-convolution correction F(x) to its input x, which also travels unchanged along the skip path (that is where gradients pass straight through); the trunk then feeds two small heads. Presets: 3 × 32 with V = 32 on 5×5, 6 × 64 with V = 64 on 9×9, 10 × 128 with V = 256 on 19×19.</figcaption>
+</figure>
+<p>The presets set the number of residual blocks (<code>blocks</code>), the filter count F (<code>filters</code>) and the value-head width V (<code>value_hidden</code>) per board size (in this document B always means the batch size): 3 × 32 with V = 32 on 5×5, 6 × 64 with V = 64 on 9×9, and 10 × 128 with V = 256 on 19×19 (<code>configs/*.cfg</code>). AlphaGo Zero used 20 or 40 blocks of 256 filters.</p>
+<p><strong>Convolution as im2col + gemm.</strong> A convolution could be written as six nested loops, but nearly all of a ResNet's time goes into one operation, and it pays to make it a single big one: general matrix multiply, <em>gemm</em>. The trick is <strong>im2col</strong>: copy every 3×3 neighborhood of the input into a column of a matrix, then the whole convolution is one multiplication of the weight matrix by that column matrix.</p>
+<pre><code>void Conv2d::forward(const Backend&amp; be, const float* x, int B, int n, float* col, float* y) const {
+    const int M = B * n * n;
+    // A 1x1 convolution needs no unfolding: x [cin][M] already is the column matrix.
+    const float* columns = x;
+    if (k != 1) {
+        be.im2col(x, cin, B, n, k, col);
+        columns = col;
+    }
+    // y [cout][M] = w [cout][cin*k*k] . columns [cin*k*k][M]
+    be.gemm(false, false, cout, M, cin * k * k, 1.0f, w.data(), columns, 0.0f, y);
+}</code></pre>
+<span class="src">src/layers.cpp:34 — <code>Conv2d::forward</code></span>
+<p><strong>Worked example</strong> — the one in <code>tests/test_layers.cpp</code> and <code>tests/test_backend.cpp</code>: a single 3×3 input plane holding 1…9, and one 3×3 filter of all ones, so each output is the sum of a 3×3 neighborhood.</p>
+<figure>
+<div class="fig-frame">
+<div class="diagram-wrap">
+<svg viewBox="0 0 440 310" role="img" class="diagram" aria-label="im2col: the 3 by 3 window around pixel (0,0) of a 3 by 3 input, padded with zeros, is copied into column 0 of the column matrix; the all-ones filter row times that column gives 12">
+<text x="14" y="20" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">input 1…9, zero padded</text>
+<rect x="14" y="34" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="32.0" y="58.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="50" y="34" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="68.0" y="58.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="86" y="34" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="104.0" y="58.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="122" y="34" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="140.0" y="58.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="158" y="34" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="176.0" y="58.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="14" y="70" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="32.0" y="94.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="50" y="70" width="36" height="36" fill="var(--surface)" class="rule" stroke-width="1"/>
+<text x="68.0" y="94.0" text-anchor="middle" font-size="16" font-family="IBM Plex Mono, ui-monospace, monospace">1</text>
+<rect x="86" y="70" width="36" height="36" fill="var(--surface)" class="rule" stroke-width="1"/>
+<text x="104.0" y="94.0" text-anchor="middle" font-size="16" font-family="IBM Plex Mono, ui-monospace, monospace">2</text>
+<rect x="122" y="70" width="36" height="36" fill="var(--surface)" class="rule" stroke-width="1"/>
+<text x="140.0" y="94.0" text-anchor="middle" font-size="16" font-family="IBM Plex Mono, ui-monospace, monospace">3</text>
+<rect x="158" y="70" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="176.0" y="94.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="14" y="106" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="32.0" y="130.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="50" y="106" width="36" height="36" fill="var(--surface)" class="rule" stroke-width="1"/>
+<text x="68.0" y="130.0" text-anchor="middle" font-size="16" font-family="IBM Plex Mono, ui-monospace, monospace">4</text>
+<rect x="86" y="106" width="36" height="36" fill="var(--surface)" class="rule" stroke-width="1"/>
+<text x="104.0" y="130.0" text-anchor="middle" font-size="16" font-family="IBM Plex Mono, ui-monospace, monospace">5</text>
+<rect x="122" y="106" width="36" height="36" fill="var(--surface)" class="rule" stroke-width="1"/>
+<text x="140.0" y="130.0" text-anchor="middle" font-size="16" font-family="IBM Plex Mono, ui-monospace, monospace">6</text>
+<rect x="158" y="106" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="176.0" y="130.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="14" y="142" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="32.0" y="166.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="50" y="142" width="36" height="36" fill="var(--surface)" class="rule" stroke-width="1"/>
+<text x="68.0" y="166.0" text-anchor="middle" font-size="16" font-family="IBM Plex Mono, ui-monospace, monospace">7</text>
+<rect x="86" y="142" width="36" height="36" fill="var(--surface)" class="rule" stroke-width="1"/>
+<text x="104.0" y="166.0" text-anchor="middle" font-size="16" font-family="IBM Plex Mono, ui-monospace, monospace">8</text>
+<rect x="122" y="142" width="36" height="36" fill="var(--surface)" class="rule" stroke-width="1"/>
+<text x="140.0" y="166.0" text-anchor="middle" font-size="16" font-family="IBM Plex Mono, ui-monospace, monospace">9</text>
+<rect x="158" y="142" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="176.0" y="166.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="14" y="178" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="32.0" y="202.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="50" y="178" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="68.0" y="202.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="86" y="178" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="104.0" y="202.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="122" y="178" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="140.0" y="202.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="158" y="178" width="36" height="36" fill="none" class="rule" stroke-dasharray="3 3" stroke-width="1"/>
+<text x="176.0" y="202.0" text-anchor="middle" font-size="16" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<rect x="12" y="32" width="112" height="112" rx="3" fill="var(--black-soft)" fill-opacity="0.45" class="black-stroke" stroke-width="2.4"/>
+<text x="32.0" y="58.0" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<text x="68.0" y="58.0" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<text x="104.0" y="58.0" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<text x="32.0" y="94.0" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<text x="68.0" y="94.0" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">1</text>
+<text x="104.0" y="94.0" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">2</text>
+<text x="32.0" y="130.0" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<text x="68.0" y="130.0" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">4</text>
+<text x="104.0" y="130.0" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">5</text>
+<text x="14" y="238" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">window of pixel (0,0)</text>
+<path d="M204 125 L240 125" class="rule" stroke-width="1.6" fill="none"/>
+<path d="M244 125 l-9 -5 v10 z" class="dim"/>
+<text x="222" y="111" text-anchor="middle" font-size="12.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">copy</text>
+<text x="338" y="18" text-anchor="middle" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">column 0</text>
+<rect x="322" y="26" width="32" height="27" fill="var(--black-soft)" class="black-stroke" stroke-width="1.2"/>
+<text x="338" y="45" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<text x="315" y="44" text-anchor="end" font-size="12" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">(-1,-1)</text>
+<rect x="322" y="53" width="32" height="27" fill="var(--black-soft)" class="black-stroke" stroke-width="1.2"/>
+<text x="338" y="72" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<text x="315" y="71" text-anchor="end" font-size="12" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">(-1, 0)</text>
+<rect x="322" y="80" width="32" height="27" fill="var(--black-soft)" class="black-stroke" stroke-width="1.2"/>
+<text x="338" y="99" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<text x="315" y="98" text-anchor="end" font-size="12" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">(-1,+1)</text>
+<rect x="322" y="107" width="32" height="27" fill="var(--black-soft)" class="black-stroke" stroke-width="1.2"/>
+<text x="338" y="126" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<text x="315" y="125" text-anchor="end" font-size="12" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">( 0,-1)</text>
+<rect x="322" y="134" width="32" height="27" fill="var(--black-soft)" class="black-stroke" stroke-width="1.2"/>
+<text x="338" y="153" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">1</text>
+<text x="315" y="152" text-anchor="end" font-size="12" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">( 0, 0)</text>
+<rect x="322" y="161" width="32" height="27" fill="var(--black-soft)" class="black-stroke" stroke-width="1.2"/>
+<text x="338" y="180" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">2</text>
+<text x="315" y="179" text-anchor="end" font-size="12" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">( 0,+1)</text>
+<rect x="322" y="188" width="32" height="27" fill="var(--black-soft)" class="black-stroke" stroke-width="1.2"/>
+<text x="338" y="207" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">0</text>
+<text x="315" y="206" text-anchor="end" font-size="12" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">(+1,-1)</text>
+<rect x="322" y="215" width="32" height="27" fill="var(--black-soft)" class="black-stroke" stroke-width="1.2"/>
+<text x="338" y="234" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">4</text>
+<text x="315" y="233" text-anchor="end" font-size="12" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">(+1, 0)</text>
+<rect x="322" y="242" width="32" height="27" fill="var(--black-soft)" class="black-stroke" stroke-width="1.2"/>
+<text x="338" y="261" text-anchor="middle" font-size="16" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">5</text>
+<text x="315" y="260" text-anchor="end" font-size="12" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">(+1,+1)</text>
+<text x="362" y="153.5" font-size="15" font-family="IBM Plex Mono, ui-monospace, monospace">→ 12</text>
+<text x="338" y="293" text-anchor="middle" font-size="13" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">ones · column</text>
+</svg>
+</div>
+</div>
+<figcaption>im2col for one output pixel. The 3×3 window centred on pixel (0,0) hangs over the edge, so five of its nine entries are padding zeros; copied out row by row it becomes column 0 of the column matrix, and the all-ones filter row times that column is 12, the first output in the table below. Doing this for all nine pixels gives the 9×9 column matrix, and one gemm then computes every output at once.</figcaption>
+</figure>
+<pre><code>input          im2col: one column per output pixel, one row per filter offset
+1 2 3                  pixel:  0  1  2  3  4  5  6  7  8
+4 5 6          (-1,-1)         0  0  0  0  1  2  0  4  5
+7 8 9          (-1, 0)         0  0  0  1  2  3  4  5  6
+               (-1,+1)         0  0  0  2  3  0  5  6  0
+               ( 0,-1)         0  1  2  0  4  5  0  7  8
+               ( 0, 0)         1  2  3  4  5  6  7  8  9
+               ( 0,+1)         2  3  0  5  6  0  8  9  0
+               (+1,-1)         0  4  5  0  7  8  0  0  0
+               (+1, 0)         4  5  6  7  8  9  0  0  0
+               (+1,+1)         5  6  0  8  9  0  0  0  0
+
+weights [1 1 1 1 1 1 1 1 1]  ×  columns  =  12 21 16 27 45 33 24 39 28
+
+output         12 21 16
+               27 45 33
+               24 39 28</code></pre>
+<p>Column 0 is pixel (0,0)'s neighborhood with the five off-board entries filled with zeros — the zero padding. The 1×9 weight row times the 9×9 column matrix gives all nine outputs at once. With C input planes the column matrix has 9C rows, and with F filters the weight matrix has F rows, so a whole layer is one [F × 9C] · [9C × n²] product. <code>Backend::im2col</code>, which builds the columns, is plain memory shuffling, and so is its adjoint <code>col2im</code>; both are virtual with a shared default implementation. <code>gemm</code> is the one pure-virtual operation, the one each backend must supply: blocked loops in the naive backend, a call to <code>cblas_sgemm</code> in the BLAS backend (Apple Accelerate on macOS, which runs it on the CPU's matrix units).</p>
+<p><strong>Channel-major layout.</strong> Every activation in the network is stored as <code>[channels][B][n·n]</code>: all of channel 0 for every sample in the batch, then all of channel 1, and so on. That is not the order the caller supplies (<code>[B][planes][n·n]</code>, one sample after another), so <code>forward</code> transposes the input once:</p>
+<pre><code>void Network::forward(Workspace&amp; ws, const float* input, int B, Mode mode) {
+    /* ... be = backend, n, A = n * n, P = planes, M = B * A, col, convOut ... */
+    // [B][planes][A] -&gt; [planes][B][A]. Channel-major lets a conv treat the
+    // whole batch as one wide matrix: one gemm per layer, not one per sample.
+    for (int b = 0; b &lt; B; ++b)
+        for (int p = 0; p &lt; P; ++p)
+            std::copy(input + (static_cast&lt;size_t&gt;(b) * P + p) * A,
+                      input + (static_cast&lt;size_t&gt;(b) * P + p + 1) * A,
+                      ws.input_.data() + (static_cast&lt;size_t&gt;(p) * B + b) * A);
+
+    /* ... norm() runs a batch norm in this call's mode (below); the stem is
+           conv3x3 -&gt; norm -&gt; ReLU; then, for each residual block: ... */
+        blk.conv1.forward(be, x, B, n, col, convOut);
+        norm(blk.bn1, convOut, buf.act1.data(), buf.xhat1.data(), buf.invStd1.data());
+        reluForward(buf.act1.data(), trunk);
+        blk.conv2.forward(be, buf.act1.data(), B, n, col, convOut);
+        norm(blk.bn2, convOut, buf.out.data(), buf.xhat2.data(), buf.invStd2.data());
+        for (size_t j = 0; j &lt; trunk; ++j) buf.out[j] += x[j];   // the skip connection
+        reluForward(buf.out.data(), trunk);
+    /* ... policy head and value head ... */
+}</code></pre>
+<span class="src">src/network.cpp:177 — <code>Network::forward</code> (abridged)</span>
+<p>With this layout the column matrix of a batch is just wider: M = B·n² columns instead of n², and one gemm computes the layer for every sample at once. It also makes batch norm, which works one channel at a time, read one contiguous run of B·n² floats per channel.</p>
+<p><strong>Batch norm, and the bug you get if you mix up its two modes.</strong> After each convolution, batch norm rescales every channel to mean 0 and variance 1, then applies a learned scale γ and shift β. It is what makes a deep stack of convolutions trainable at a reasonable learning rate. The question is: mean and variance <em>of what</em>? In training, of the current minibatch, per channel, over all B·n² values:</p>
+<pre><code>void BatchNorm2d::forwardTrain(const float* x, int M, float* y, float* xhat, float* invStd,
+                               bool updateRunning) {
+    assert(M &gt; 1);
+    for (int ch = 0; ch &lt; c; ++ch) {
+        /* ... mean and biased variance of channel ch over its M values, in double ... */
+        const float inv = static_cast&lt;float&gt;(1.0 / std::sqrt(var + kEps));
+        invStd[ch] = inv;
+        /* ... y = gamma * (x - mean) * inv + beta, saving xhat = (x - mean) * inv ... */
+        if (updateRunning) {
+            // Inference sees one position at a time, so it needs population
+            // estimates: unbiased variance, exponential moving averages.
+            const double unbiased = var * M / (M - 1);
+            runMean[ch] = (1.0f - kMomentum) * runMean[ch] + kMomentum * static_cast&lt;float&gt;(mean);
+            runVar[ch] = (1.0f - kMomentum) * runVar[ch] + kMomentum * static_cast&lt;float&gt;(unbiased);
+        }
+    }
+}</code></pre>
+<span class="src">src/layers.cpp:85 — <code>BatchNorm2d::forwardTrain</code> (abridged)</span>
+<p>In inference — every evaluation during search — it uses the running averages collected during training instead, which reduce to one fixed scale and shift per channel:</p>
+<pre><code>void BatchNorm2d::forwardInfer(const float* x, int M, float* y) const {
+    for (int ch = 0; ch &lt; c; ++ch) {
+        // Fold the fixed statistics into one scale and shift per channel.
+        const float scale = gamma[ch] / std::sqrt(runVar[ch] + kEps);
+        const float shift = beta[ch] - scale * runMean[ch];
+        const float* xc = x + static_cast&lt;size_t&gt;(ch) * M;
+        float* yc = y + static_cast&lt;size_t&gt;(ch) * M;
+        for (int i = 0; i &lt; M; ++i) yc[i] = scale * xc[i] + shift;
+    }
+}</code></pre>
+<span class="src">src/layers.cpp:74 — <code>BatchNorm2d::forwardInfer</code></span>
+<p>Mixing the two up fails in two different, quiet ways. Use batch statistics during search, and a position's evaluation depends on which other leaves happen to share its batch of 8 — or, at batch 1, every channel of a lone position gets normalized to mean 0 over its own n² points, erasing exactly the "is there more of this feature here than usual" information the network relies on. Forget to update the running statistics during training, and inference normalizes with the initial mean 0 and variance 1, so every layer sees activations at a scale it was never trained on. Neither bug crashes and both still produce legal moves. That is why <code>Network</code> has three explicit modes — <code>Infer</code> (running statistics), <code>Train</code> (batch statistics, running statistics updated) and <code>Probe</code> (batch statistics, nothing updated, for gradient checks) — and why <code>tests/test_network.cpp</code> checks that inference is per-sample: the same position evaluated alone and inside a batch of four gives the same output.</p>
+<p><strong>Residual blocks.</strong> Each block computes <code>relu(x + F(x))</code>, where F is two convolutions: the block learns a <em>correction</em> to its input rather than a whole new representation. The payoff is in the backward pass. Gradients flowing back through a plain stack of layers are multiplied by each layer's Jacobian in turn and tend to shrink or blow up with depth; through a residual block they also flow along the skip connection unchanged. You can see that line in the backward code below: <code>dTrunk</code> passes straight through and the convolution path adds to it. AlphaGo Zero's 40-block network would be very hard to train without it; this project's 3 to 10 blocks benefit the same way.</p>
+<p><strong>The heads.</strong> The policy head squeezes the trunk to 2 channels with a 1×1 convolution and then a fully connected layer maps those 2n² numbers to n² + 1 logits: one per point plus one for <strong>pass</strong>. It knows nothing about legality — occupied points get logits too — so something downstream must mask them (chapter 02). The value head squeezes to one channel, then a hidden layer of V units and a single <code>tanh</code> output, so the value lives in the same [−1, 1] units as the game result it is trained against.</p>
+<p><strong>What depth and width buy, and what they cost.</strong> Each 3×3 convolution widens the window a unit can see by 2 points, so the trunk's receptive field is 1 + 2 × (number of 3×3 convs) = 1 + 2(2·blocks + 1) points wide: 15 on 5×5, 27 on 9×9 and 43 on 19×19. In each preset that is at least 2n − 1, enough for every point to be influenced by every other, even corner to corner. Width (F) is how many distinct features each point can carry. A 3×3 layer costs 9 · F² · n² multiply-adds per position, so the trunk costs roughly blocks · F² · n²: 10 · 128² · 361 ≈ 59.1 million for 19×19's preset against 3 · 32² · 25 = 76,800 for 5×5's, about 770 times the arithmetic per evaluation. Measured on the M4 (<code>docs/results/bench.txt</code>; inference at batch 8 on one thread; a training step at batch 128, which the naive backend splits across all 10 cores while BLAS runs on one thread):</p>
+<div class="wrap-table"><table>
+<thead><tr><th>board</th><th>blocks × filters</th><th>backend</th><th>evaluations/s</th><th>training step</th></tr></thead>
+<tbody>
+<tr><td>5×5</td><td>3 × 32</td><td>naive</td><td>10,544</td><td>28.0 ms</td></tr>
+<tr><td>5×5</td><td>3 × 32</td><td>BLAS</td><td>30,488</td><td>12.1 ms</td></tr>
+<tr><td>9×9</td><td>6 × 64</td><td>naive</td><td>402</td><td>490.3 ms</td></tr>
+<tr><td>9×9</td><td>6 × 64</td><td>BLAS</td><td>3,696</td><td>149.0 ms</td></tr>
+<tr><td>19×19</td><td>10 × 128</td><td>naive</td><td>13</td><td>10,649.8 ms</td></tr>
+<tr><td>19×19</td><td>10 × 128</td><td>BLAS</td><td>229</td><td>2,393.5 ms</td></tr>
+</tbody></table></div>
+<p>Two things stand out. First, the 5×5 → 19×19 slowdown is about 130× with BLAS, not 770×: at 5×5 the matrices are so small that fixed costs per call dominate. Second, the BLAS advantage grows with the matrices, from 2.9× on 5×5 to 18× on 19×19 — the matrix unit needs big products to pay off. (Even the training step, where the naive gemm gets ten cores and BLAS one, is 2.3–4.4× faster with BLAS.) Chapter 03 makes the same argument about batch size.</p>
+<p><strong>Backprop through convolution, batch norm and linear layers.</strong> The forward pass was hand-written, so the backward pass is too — the chain rule, layer by layer, in reverse. For a convolution <code>y = w · columns</code>, the weight gradient is <code>dy · columnsᵀ</code>, and the input gradient is <code>wᵀ · dy</code> folded back onto the pixels it came from by <code>col2im</code> — the adjoint of <code>im2col</code>, which <em>adds</em> every column entry back into the input position it was copied from, so overlapping patches sum:</p>
+<pre><code>void Conv2d::backward(const Backend&amp; be, const float* x, const float* col, const float* dy,
+                      int B, int n, float* dcol, float* dx) {
+    const int M = B * n * n;
+    const int K = cin * k * k;
+    const float* columns = k == 1 ? x : col;
+    // y = w . columns, so dL/dw = dy . columns^T (summed over all M pixels),
+    // accumulated into gw (beta = 1).
+    be.gemm(false, true, cout, K, M, 1.0f, dy, columns, 1.0f, gw.data());
+    if (dx == nullptr) return;
+    if (k == 1) {
+        // dL/dx = w^T . dy directly: the columns ARE x.
+        be.gemm(true, false, cin, M, cout, 1.0f, w.data(), dy, 0.0f, dx);
+    } else {
+        // dL/dcolumns = w^T . dy, then fold the columns back onto the pixels
+        // they were copied from; col2im sums overlapping patches.
+        be.gemm(true, false, K, M, cout, 1.0f, w.data(), dy, 0.0f, dcol);
+        be.col2im(dcol, cin, B, n, k, dx);
+    }
+}</code></pre>
+<span class="src">src/layers.cpp:46 — <code>Conv2d::backward</code></span>
+<p>Three gemms per convolution per step, all through the same <code>Backend</code> call as the forward pass, so the BLAS speedup applies to training too. Batch norm's backward (<code>BatchNorm2d::backward</code>) is the least obvious one: every input in a channel moved that channel's batch mean and variance, so every input's gradient collects a share of every output's gradient, <code>dx = γ·invStd/M · (M·dy − Σdy − x̂·Σ(dy·x̂))</code>, while <code>dγ = Σ(dy·x̂)</code> and <code>dβ = Σdy</code>. That is why the training forward pass saves the normalized values <code>x̂</code> and <code>invStd</code>.</p>
+<p>The linear layers are tic-tac-toe's backprop in matrix form (<code>gw += dyᵀ · x</code>, <code>dx = dy · w</code>), and ReLU passes a gradient only where its output was positive. <code>Network::backward</code> strings them together: both heads first, their trunk gradients added (the trunk feeds both), then the residual blocks in reverse:</p>
+<pre><code>void Network::backward(Workspace&amp; ws, int B) {
+    /* ... value head and policy head backward; dTrunk = dL/d(trunk output) ... */
+    for (size_t i = blocks_.size(); i-- &gt; 0;) {
+        ResidualBlock&amp; blk = blocks_[i];
+        Workspace::BlockBuffers&amp; buf = ws.blocks_[i];
+        const float* in = i == 0 ? ws.stemOut_.data() : ws.blocks_[i - 1].out.data();
+        reluBackward(buf.out.data(), dTrunk, trunk);           // now dL/d(bn2 output + skip)
+        /* ... bn2, conv2, ReLU and bn1 backward into dTmp2 ... */
+        be.im2col(in, F, B, n, 3, col);
+        blk.conv1.backward(be, in, col, dTmp2, B, n, dcol, dTmp);
+        // The skip path passes dTrunk to the block input unchanged; the conv
+        // path adds its own contribution.
+        for (size_t j = 0; j &lt; trunk; ++j) dTrunk[j] += dTmp[j];
+    }
+    /* ... stem backward; no gradient needed for the input planes ... */
+}</code></pre>
+<span class="src">src/network.cpp:277 — <code>Network::backward</code> (abridged)</span>
+<p>One memory detail: all 3×3 convolutions share a single <code>im2col</code> buffer, so by the time the backward pass reaches a convolution its columns have been overwritten. The code rebuilds them from the saved input just before use (<code>be.im2col(...)</code> above) — one extra cheap copy per layer instead of keeping 2·blocks + 1 column matrices alive.</p>
+<p><strong>How do you know it is right? Finite differences.</strong> A backprop bug compiles, runs, and often still lowers the loss, just towards a worse network. The defense, as in tic-tac-toe, is to check every analytic gradient against the definition of a derivative: nudge one number by ±h, measure the loss both ways, and compare the slope with what backward reported. <code>tests/test_layers.cpp</code> does this for every entry of every layer's input and parameters, using the loss <code>L = Σ rᵢ yᵢ</code> with random weights <code>r</code>, whose gradient with respect to the layer output is exactly <code>r</code>:</p>
+<pre><code>template &lt;typename LossFn&gt;
+void checkGradient(const char* what, float* value, const float* analytic, size_t count,
+                   LossFn loss) {
+    for (size_t i = 0; i &lt; count; ++i) {
+        const float saved = value[i];
+        const float up = saved + kH, down = saved - kH;
+        value[i] = up;
+        const double lossUp = loss();
+        value[i] = down;
+        const double lossDown = loss();
+        value[i] = saved;
+        const double numeric = (lossUp - lossDown) / (static_cast&lt;double&gt;(up) - down);
+        const double a = analytic[i];
+        const double tol = 2e-2 * std::max(std::fabs(a), std::fabs(numeric)) + 2e-3;
+        if (!(std::fabs(a - numeric) &lt;= tol)) {
+            std::printf("%s[%zu]: analytic %.6f numeric %.6f\n", what, i, a, numeric);
+            assert(false);
+        }
+    }
+}</code></pre>
+<span class="src">tests/test_layers.cpp:36 — <code>checkGradient</code></span>
+<p>The step actually taken is measured after float rounding (<code>up − down</code>, not <code>2h</code>). <code>tests/test_network.cpp</code> then checks the whole network — two residual blocks on 5×5 — through the real loss. There a nudge often crosses one of the ReLU kinks behind a batch norm, where the slope genuinely changes; the test detects that case (the one-sided slopes disagree with each other) and excuses only a minority of probes, so a real mismatch in a smooth region still fails.</p>
+<p><strong>The loss.</strong> Training minimizes, averaged over a batch,</p>
+<pre><code>L = (z − v)²  −  Σₐ π(a) · log softmax(logits)ₐ</code></pre>
+<p>the squared error between the value <code>v</code> and the game result <code>z</code> (chapter 05), plus the cross-entropy between the search's visit distribution <code>π</code> (chapter 02) and the policy. L2 weight decay, the third term of AlphaGo Zero's loss, is applied by the optimizer instead (chapter 06). <code>trainStep</code> is forward in training mode, the loss with its gradients, then backward:</p>
+<pre><code>LossStats Network::trainStep(Workspace&amp; ws, const float* input, const float* pi, const float* z,
+                             int B) {
+    zeroGrad();
+    forward(ws, input, B, Mode::Train);
+    LossStats stats = loss(ws, pi, z, B, true);
+    backward(ws, B);
+    return stats;
+}</code></pre>
+<span class="src">src/network.cpp:162 — <code>Network::trainStep</code></span>
+<p><code>Network::loss</code> computes the log-softmax with the usual guard (subtract the largest logit before <code>exp</code>, so nothing overflows) and the two closed-form output gradients familiar from tic-tac-toe: <code>softmax − π</code> for the policy logits, and <code>2(v − z)(1 − v²)</code> through the <code>tanh</code>, both divided by the batch size.</p>
+<div class="callout">
+  <span class="cal-label">parameters versus activations</span>
+  <p><code>Network</code> holds only weights and batch-norm running statistics; every activation buffer lives in a separate <code>Workspace</code>. Ten self-play threads can then share one read-only network, each with its own workspace, with no locks and no copies of the weights. The same split is what a GPU backend would need: weights uploaded once, scratch per stream.</p>
+</div>
+</section>
+
+<section id="search">
+<div class="sec-head"><span class="sec-num">02</span><h2>Search corrects the guess</h2></div>
+<span class="concept">concept — planning with PUCT tree search, and search as policy improvement</span>
+<p>A network's first guesses are close to random, and even a trained one has blind spots. <strong>Monte Carlo tree search</strong> checks the guess against the rules: from the current position it runs many <em>simulations</em>, each walking down the tree of moves to a position it has not looked at yet, asking the network about that one position, and backing the answer up the path it came down. After a few hundred simulations the visit counts at the root are a better policy than the network's raw prior, and that improved policy is both the move played and the training target. Tic-tac-toe's chapter 02 walks through this on a 9-square board; the algorithm here is the same, rebuilt around a flat node arena, batched evaluation (chapter 03) and Go's extra rules.</p>
+<p>The tree lives in two flat vectors. A node (<code>MctsNode</code>) holds a <code>Board</code>, its parent's index, the ply and consecutive-pass count, and the range of its edges; an edge (<code>MctsEdge</code>) holds the action, the prior P, the visit count N, the value sum W and a virtual-loss counter. Everything refers to everything else by index, so there is no pointer chasing and no per-node allocation.</p>
+<p><strong>Selection: PUCT.</strong> At each node the descent takes the edge with the largest</p>
+<pre><code>Q(s,a) + c_puct · P(s,a) · √(Σ_b N(s,b)) / (1 + N(s,a))</code></pre>
+<p>where <code>Q = W / N</code> is the average result this move has produced so far (exploitation) and the second term is an exploration bonus that starts proportional to the network's prior and shrinks as the move gets visited. <code>c_puct</code> is 1.5 in every preset.</p>
+<pre><code>int Mcts::selectEdge(int nodeIndex) const {
+    const MctsNode&amp; nd = nodes_[nodeIndex];
+    assert(nd.expanded &amp;&amp; nd.numEdges &gt; 0);
+    // In-flight descents count as visits (and as losses, below) so that the
+    // next descent in the same batch is pushed towards other edges.
+    int parentN = 0;
+    for (int i = 0; i &lt; nd.numEdges; ++i) {
+        const MctsEdge&amp; e = edges_[nd.firstEdge + i];
+        parentN += e.visits + e.virtualLoss;
+    }
+    // max(1, .) lets the very first descent from a fresh node follow the
+    // prior instead of seeing an all-zero exploration term.
+    const float sqrtN = std::sqrt(static_cast&lt;float&gt;(std::max(1, parentN)));
+    int best = nd.firstEdge;
+    float bestScore = -std::numeric_limits&lt;float&gt;::infinity();
+    for (int i = 0; i &lt; nd.numEdges; ++i) {
+        const MctsEdge&amp; e = edges_[nd.firstEdge + i];
+        const int n = e.visits + e.virtualLoss;
+        // Each virtual loss adds a -1 result for the chooser. An unvisited
+        // edge has Q = e.unvisitedQ: 0, except a known game-ending pass.
+        const float q = n &gt; 0 ? (e.valueSum - static_cast&lt;float&gt;(e.virtualLoss)) / n : e.unvisitedQ;
+        const float u = cfg_.cPuct * e.prior * sqrtN / (1 + n);
+        if (q + u &gt; bestScore) {   // strict '&gt;': the first index wins ties
+            bestScore = q + u;
+            best = nd.firstEdge + i;
+        }
+    }
+    return best;
+}</code></pre>
+<span class="src">src/mcts.cpp:54 — <code>Mcts::selectEdge</code></span>
+<p>Ignore <code>virtualLoss</code> for now (it is 0 when batching is off; chapter 03 explains it). An unvisited edge gets Q = 0, a neutral guess; KataGo-era engines tune this "first-play urgency", which this project deliberately leaves out.</p>
+<p>There is exactly one exception, and it is not first-play-urgency tuning. When the previous move was a pass, this node's own pass edge ends the game, so its value is known exactly: the game result, +1, −1 or 0 from the chooser's side, given by the sign of the Tromp-Taylor score minus komi. <code>expand()</code> stores that value in <code>unvisitedQ</code>, and it is used while the edge is unvisited. Without it, a game-ending pass with a tiny prior is never examined at low simulation counts, and a net that likes passing can walk into a lost game. Chapters 07 and 08 tell how the arena exposed this.</p>
+<p><strong>Legal masking and a softmax over legal moves only.</strong> The policy head produces a logit for every point, including occupied ones and points where a stone would be suicide or break superko. When a leaf is <em>expanded</em>, it gets edges for legal actions only, and the priors are a softmax over just those logits, so the illegal moves' probability mass is not wasted and the remaining priors still sum to 1:</p>
+<pre><code>void Mcts::expand(int nodeIndex, const float* logits, float value) {
+    const Board&amp; board = nodes_[nodeIndex].board;
+    const int pass = board.passAction();
+    // Positions on the path from this node back to the root: together with
+    // the game's own history they are what positional superko forbids.
+    std::vector&lt;uint64_t&gt; pathHashes;
+    for (int x = nodeIndex; x != -1; x = nodes_[x].parent) pathHashes.push_back(nodes_[x].board.hash());
+
+    std::vector&lt;int&gt; legal;
+    for (int a = 0; a &lt;= pass; ++a) {
+        if (!board.isLegal(a)) continue;
+        if (a != pass) {
+            const uint64_t h = board.hashAfter(a);
+            if (game_-&gt;seen(h) || std::find(pathHashes.begin(), pathHashes.end(), h) != pathHashes.end())
+                continue;
+        }
+        legal.push_back(a);
+    }
+    assert(!legal.empty());   // pass is always legal
+
+    // Softmax over the legal actions only; subtracting the max avoids overflow.
+    /* ... p[i] = exp(logits[legal[i]] - maxLogit), sum = sum of p ... */
+    /* ... one edge per legal action with rawPrior = prior = p[i] / sum ... */
+    nd.expanded = true;
+    nd.netValue = value;
+}</code></pre>
+<span class="src">src/mcts.cpp:133 — <code>Mcts::expand</code> (abridged)</span>
+<p><strong>Superko inside the tree.</strong> A node deep in the tree is a position that has not happened yet. Whether a move from it would repeat a position depends on two histories: the real game's (<code>game_-&gt;seen</code>, the hash set from chapter 00) and the hypothetical moves on the path from the root down to this node (<code>pathHashes</code>). Both are checked. Because each node has exactly one parent, the path — and so the set of forbidden moves — is well defined for every node. The analyze output in the "Try it" block at the end of this chapter shows the result on the ko position from chapter 00: B3, White's forbidden retake, gets no edge, so no prior and no visits.</p>
+<p><strong>Backup and the sign flip.</strong> The value the network returns is from the point of view of the player to move <em>at the leaf</em>. Each edge on the path belongs to the player who chose it, who is the opponent of the player to move at the node it leads to. So the value is negated once before it is added to the last edge, and once more at every edge above:</p>
+<pre><code>void Mcts::backup(int leaf, const std::vector&lt;int&gt;&amp; pathEdges, float value) {
+    // value is from the leaf's side to move. Each edge belongs to the player
+    // choosing it, who is the opponent of the node it leads to: flip first.
+    float v = value;
+    for (auto it = pathEdges.rbegin(); it != pathEdges.rend(); ++it) {
+        v = -v;
+        edges_[*it].valueSum += v;
+        edges_[*it].visits += 1;
+    }
+    for (int x = leaf; x != -1; x = nodes_[x].parent) nodes_[x].visits += 1;
+}</code></pre>
+<span class="src">src/mcts.cpp:184 — <code>Mcts::backup</code></span>
+<p>This includes <strong>pass</strong>. A pass changes no stones but does hand the move to the opponent (<code>Board::play</code> flips <code>toMove_</code> for a pass too), so a pass edge flips the sign exactly like any other move. What a pass <em>does</em> change is the pass count, and that decides whether the next node is the end of the game. <code>Mcts::descend</code> creates children lazily, the first time a descent takes an edge, and a child made by a pass inherits the parent's count plus one (any other move resets it to 0). The root's count comes from the real game, and a kept tree is thrown away if its root's count no longer matches the game's.</p>
+<p><strong>Terminal nodes are scored by the rules.</strong> When a descent reaches a node after two consecutive passes, or at the move cap, there is nothing to guess: the game is over and Tromp-Taylor says who won.</p>
+<pre><code>bool Mcts::isTerminal(const MctsNode&amp; node) const {
+    return node.passes &gt;= 2 || node.ply &gt;= game_-&gt;maxMoves();
+}
+
+float Mcts::scoreValue(const Board&amp; board) const {
+    // Tromp-Taylor score minus komi as a result for board's side to move.
+    float margin = static_cast&lt;float&gt;(board.areaScore()) - game_-&gt;komi();
+    float blackResult = margin &gt; 0 ? 1.0f : (margin &lt; 0 ? -1.0f : 0.0f);
+    return board.toMove() == Color::Black ? blackResult : -blackResult;
+}
+
+float Mcts::terminalValue(const MctsNode&amp; node) const {
+    // The game is over, so no guess is needed: score it with the rules.
+    return scoreValue(node.board);
+}</code></pre>
+<span class="src">src/mcts.cpp:49 — <code>Mcts::terminalValue</code></span>
+<p><code>tests/test_mcts.cpp</code> pins the pass case down: after Black passes on an empty board, White's pass edge ends the game with White winning by komi, so every visit to that edge must add exactly +1 for White — <code>valueSum == visits</code>. Exact terminal values matter more in Go than in tic-tac-toe: every game ends with passes, and the search must know that passing while behind loses.</p>
+<p><strong>Try it</strong> — search correcting the prior. The ko position from chapter 00 after Black's capture, White to move, analyzed with the final 5×5 network of seed 1:</p>
+<pre><code>$ ./build-blas/analyze --checkpoint runs/5x5-seed1/checkpoints/gen_0060.azn \
+      --komi 24.5 --simulations 200 --moves "B4 C4 A3 C2 B2 D3 E5 B3 C3"
+runs/5x5-seed1/checkpoints/gen_0060.azn: 9 moves played, White to move, komi 24.5
+
+   A B C D E
+ 5 . . . . X  5
+ 4 . X O . .  4
+ 3 X . X O .  3
+ 2 . X O . .  2
+ 1 . . . . .  1
+   A B C D E
+White to move
+
+Value (side to move): +0.77
+
+Policy prior, % of legal moves ("." below 1%):
+     A  B  C  D  E
+ 5   .  3  2  8  X
+ 4   .  X  O 30 17
+ 3   X  .  X  O  .
+ 2   .  X  O 11  8
+ 1   .  3  2 10  .
+Pass prior: 1.2%
+
+Top 10 moves by prior:
+  D4     30.3%
+  E4     17.3%
+  D2     11.3%
+  D1      9.9%
+...
+
+MCTS value (side to move): +0.64 after 200 simulations
+Top 10 moves by visits:
+  D1       104 visits ( 52.0%)  Q +0.79
+  E4        39 visits ( 19.5%)  Q +0.67
+  E2        32 visits ( 16.0%)  Q +0.60
+  D4         8 visits (  4.0%)  Q -0.15
+  D2         8 visits (  4.0%)  Q +0.15
+  D5         6 visits (  3.0%)  Q +0.24
+...</code></pre>
+<p>The prior liked D4 best (30.3%); after 200 simulations search has found that D4 is bad (8 visits, Q −0.15) and puts more than half its visits on D1, only the prior's fourth choice at 9.9%, whose Q is highest. B3 prints as "." and is never visited — the superko mask at work (<code>analyze</code> applies the same legal-move mask to the raw prior). With komi 24.5 White wins unless Black ends up owning all 25 points, which is why the value favors White here; chapter 05 explains that komi. The visit distribution, not the prior, is what the game plays and what the network is trained on: <strong>search is a policy-improvement operator</strong>, and training distills the improvement back into the network.</p>
+<p>On 9×9, the final network's top-visited move in the atari test position of <code>docs/results/9x9/analyze-atari.txt</code> (a White stone with one liberty left, Black to move) is the capture, E4, with 63 of 200 visits (31.5%), so the check as defined passes. But the visits come from the prior, not from search: E4 is the prior's first choice at 51.4%, while its search Q of −0.02 is the lowest of the five most visited moves. Search cannot fix what it never looks at, though: in the eye test position (<code>docs/results/9x9/analyze-eye.txt</code>) the one move that gives a Black group two eyes has a prior below 1% and is not among the ten most visited moves, and the network's values show it does not know the group dies without it (<code>docs/results/README.md</code>).</p>
+</section>
+
+<section id="batching">
+<div class="sec-head"><span class="sec-num">03</span><h2>Batching the search</h2></div>
+<span class="concept">concept — virtual loss, and feeding the matrix unit big matrices</span>
+<p>Serial MCTS evaluates one leaf per network call. On a CPU with a matrix unit, or on a GPU, that wastes most of the hardware: a call on one position is a skinny matrix product, and fixed per-call costs dominate. The fix is to collect several leaves and evaluate them in one call. The difficulty is that the descents are deterministic: with no new information in between, eight descents from the root would all follow the same path to the same leaf.</p>
+<p><strong>Virtual loss.</strong> While a descent is waiting for its leaf to be evaluated, every edge on its path counts one extra visit <em>and</em> one extra loss for the player choosing it (the <code>virtualLoss</code> terms in <code>selectEdge</code>, chapter 02). That lowers Q along the path and lowers the exploration bonus too, so the next descent is pushed towards other moves. When the batch comes back, the virtual losses are removed and the real values backed up. With a batch size of 1 there is never a descent in flight, and the algorithm is exactly serial MCTS; <code>tests/test_mcts.cpp</code> checks that batch size 1 calls the evaluator once per leaf and that batched searches leave no virtual loss behind.</p>
+<figure>
+<div class="fig-frame">
+<div class="diagram-wrap">
+<svg viewBox="0 0 440 350" role="img" class="diagram" aria-label="Two descents in one batch: the first follows the edge with the highest Q plus U to a leaf and marks its path with virtual loss; the second then sees that edge lowered and takes another one">
+<line x1="220" y1="30" x2="362" y2="150" class="rule" stroke-width="1.4"/>
+<line x1="220" y1="30" x2="220" y2="150" class="black-stroke" stroke-width="4"/>
+<line x1="220" y1="210" x2="220" y2="282" class="black-stroke" stroke-width="4"/>
+<line x1="220" y1="30" x2="78" y2="150" class="white-stroke" stroke-width="3" stroke-dasharray="7 5"/>
+<line x1="78" y1="210" x2="78" y2="282" class="white-stroke" stroke-width="3" stroke-dasharray="7 5"/>
+<circle cx="220" cy="30" r="20" fill="var(--surface)" class="rule" stroke-width="1.6"/>
+<text x="220" y="34.5" text-anchor="middle" font-size="12.5" font-family="IBM Plex Mono, ui-monospace, monospace">root</text>
+<circle cx="78" cy="150" r="15" fill="var(--surface)" class="rule" stroke-width="1.6"/>
+<text x="78" y="155" text-anchor="middle" font-size="14" font-family="IBM Plex Mono, ui-monospace, monospace">A</text>
+<circle cx="220" cy="150" r="15" fill="var(--surface)" class="rule" stroke-width="1.6"/>
+<text x="220" y="155" text-anchor="middle" font-size="14" font-family="IBM Plex Mono, ui-monospace, monospace">B</text>
+<circle cx="362" cy="150" r="15" fill="var(--surface)" class="rule" stroke-width="1.6"/>
+<text x="362" y="155" text-anchor="middle" font-size="14" font-family="IBM Plex Mono, ui-monospace, monospace">C</text>
+<rect x="62" y="268" width="32" height="28" rx="4" fill="var(--surface)" class="white-stroke" stroke-width="1.8" stroke-dasharray="4 3"/>
+<text x="78" y="287" text-anchor="middle" font-size="12.5" font-family="IBM Plex Mono, ui-monospace, monospace">A1</text>
+<rect x="204" y="268" width="32" height="28" rx="4" fill="var(--surface)" class="black-stroke" stroke-width="1.8" stroke-dasharray="4 3"/>
+<text x="220" y="287" text-anchor="middle" font-size="12.5" font-family="IBM Plex Mono, ui-monospace, monospace">B1</text>
+<text x="78" y="184" text-anchor="middle" font-size="12" class="dim" stroke="var(--surface)" stroke-width="6" stroke-linejoin="round" paint-order="stroke" font-family="IBM Plex Mono, ui-monospace, monospace">P .30 N 2 Q +.10</text>
+<text x="78" y="202" text-anchor="middle" font-size="12.5" stroke="var(--surface)" stroke-width="6" stroke-linejoin="round" paint-order="stroke" font-family="IBM Plex Mono, ui-monospace, monospace">Q+U 0.47 → 0.50</text>
+<text x="220" y="184" text-anchor="middle" font-size="12" class="dim" stroke="var(--surface)" stroke-width="6" stroke-linejoin="round" paint-order="stroke" font-family="IBM Plex Mono, ui-monospace, monospace">P .45 N 3 Q +.20</text>
+<text x="220" y="202" text-anchor="middle" font-size="12.5" stroke="var(--surface)" stroke-width="6" stroke-linejoin="round" paint-order="stroke" font-family="IBM Plex Mono, ui-monospace, monospace">Q+U 0.61 → 0.26</text>
+<text x="362" y="184" text-anchor="middle" font-size="12" class="dim" stroke="var(--surface)" stroke-width="6" stroke-linejoin="round" paint-order="stroke" font-family="IBM Plex Mono, ui-monospace, monospace">P .25 N 1 Q −.05</text>
+<text x="362" y="202" text-anchor="middle" font-size="12.5" stroke="var(--surface)" stroke-width="6" stroke-linejoin="round" paint-order="stroke" font-family="IBM Plex Mono, ui-monospace, monospace">Q+U 0.41 → 0.45</text>
+<rect x="158" y="75" width="124" height="22" rx="4" fill="var(--surface)" class="black-stroke" stroke-width="1.2"/>
+<text x="220" y="90" text-anchor="middle" font-size="12.5" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">+1 virtual loss</text>
+<rect x="158" y="231" width="124" height="22" rx="4" fill="var(--surface)" class="black-stroke" stroke-width="1.2"/>
+<text x="220" y="246" text-anchor="middle" font-size="12.5" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">+1 virtual loss</text>
+<text x="246" y="280" font-size="12.5" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">descent 1 waits</text>
+<text x="246" y="296" font-size="12.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">for the batch</text>
+<text x="106" y="276" font-size="12.5" class="white-fill" font-family="IBM Plex Mono, ui-monospace, monospace">descent 2</text>
+<text x="106" y="292" font-size="12.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">takes A</text>
+<text x="220" y="340" text-anchor="middle" font-size="12" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">illustrative numbers, c_puct = 1.5</text>
+</svg>
+</div>
+</div>
+<figcaption>Two descents of one batched round. <span class="black-word">Descent 1</span> takes B, the edge with the largest Q + U (0.61), and its leaf B1 waits for the batch. Every edge on its path now counts one extra visit that lost: B's Q falls from +0.20 to −0.10 and its exploration bonus shrinks, so B's score drops to 0.26 and <span class="white-word">descent 2</span> takes A (0.50) instead. When the batch returns, the virtual losses are removed and the real values backed up.</figcaption>
+</figure>
+<pre><code>void Mcts::search(const Game&amp; game, Rng&amp; rng) {
+    assert(!game.isTerminal());
+    prepareRoot(game);
+    // The root needs priors before the first descent; evaluating it is not a simulation.
+    if (!nodes_[0].expanded) evaluateLeaves({0});
+    setRootPriors(rng);   // fresh noise (or none) for this search
+    /* ... leaves, paths, path; done = 0 ... */
+    while (done &lt; cfg_.simulations) {
+        /* ... clear this round's leaves and paths ... */
+        // One round: up to batchSize descents, never more than the
+        // simulations still owed. Each descent's virtual loss steers the
+        // next one elsewhere.
+        for (int d = 0; d &lt; cfg_.batchSize; ++d) {
+            if (done + static_cast&lt;int&gt;(leaves.size()) &gt;= cfg_.simulations) break;
+            const int leaf = descend(path);
+            addVirtualLoss(leaf, path, +1);
+            if (isTerminal(nodes_[leaf])) {
+                // Exact value, no network needed: finish this simulation now.
+                addVirtualLoss(leaf, path, -1);
+                backup(leaf, path, terminalValue(nodes_[leaf]));
+                ++done;
+            } else if (nodes_[leaf].pending) {
+                // Collision: another descent this round already waits on this
+                // leaf. Undo and evaluate what we have rather than spin.
+                addVirtualLoss(leaf, path, -1);
+                break;
+            } else {
+                nodes_[leaf].pending = true;
+                leaves.push_back(leaf);
+                paths.push_back(path);
+            }
+        }
+        if (leaves.empty()) continue;
+        evaluateLeaves(leaves);   // one evaluator call for the whole round
+        /* ... for each leaf: pending = false, remove its virtual loss,
+               back up its network value, ++done ... */
+    }
+    game_ = nullptr;
+}</code></pre>
+<span class="src">src/mcts.cpp:196 — <code>Mcts::search</code> (abridged)</span>
+<p><strong>Collisions end the round.</strong> Virtual loss discourages repeats but does not forbid them: when one move is much better than the rest, a second descent can still land on a leaf that is already waiting. Evaluating it twice would waste a slot and double-count it, so the round stops early and evaluates the leaves it has. A terminal leaf never waits at all; its exact value is backed up on the spot. The cost of batching is a slightly different search: descents in a round cannot see each other's results. A batch size of 8 (<code>mcts_batch</code> in every preset) is a common compromise — small enough that the tree does not "go wide" much, large enough to fill the matrix unit better.</p>
+<p><strong>Why batch size matters to gemm.</strong> Take the 5×5 preset's residual convolution: its weight matrix is 32 × 288 (32 filters, 32 channels × 9 offsets). At batch 1 it multiplies a column matrix 25 wide; at batch 8, 200 wide. Both products cost the same per column, but the batch-8 call pays the fixed costs — the call itself, packing the operands, starting the matrix unit, and all the per-layer bookkeeping around it — once for eight positions instead of once for each. Measured on the M4, one thread, BLAS backend (<code>docs/results/bench.txt</code>, last table): the 5×5 network evaluates about 23,000 positions per second at batch 1 and 30,400 at batch 8; the 9×9 network about 2,750 and 3,700. Batching buys about 1.3× on this CPU — worth having, but modest: on one CPU thread the fixed costs are a small part of each call. Hardware with much higher fixed costs per call, such as a GPU, gains more from the same batching; this project measured only the CPU. <code>bench</code> measures inference at the MCTS batch of 8 (<code>docs/results/bench.txt</code>): 30,488 positions per second on 5×5 is 3,811 network calls per second, each covering a whole batch.</p>
+<p><strong>The <code>Evaluator</code> seam.</strong> MCTS never touches <code>Network</code>. It encodes its leaves into input planes (chapter 00) and hands them to an <code>Evaluator</code>:</p>
+<pre><code>class Evaluator {
+public:
+    virtual ~Evaluator() = default;
+    virtual int boardSize() const = 0;
+    virtual int history() const = 0;
+    virtual int maxBatch() const = 0;
+    // input [B][numPlanes(history())][n*n]; logits [B][n*n+1]; values [B].
+    virtual void evaluate(const float* input, int B, float* logits, float* values) = 0;
+};</code></pre>
+<span class="src">include/azgo/evaluator.hpp:17 — <code>Evaluator</code></span>
+<p>The shipped implementation, <code>LocalEvaluator</code>, is one per worker thread: it wraps the shared read-only network and a private <code>Workspace</code> and just calls <code>Network::infer</code>. <code>UniformEvaluator</code> returns equal logits and a constant value, which lets the search tests run with no network at all ("with a uniform prior, does search still find the one winning capture?").</p>
+<p>This is where a GPU would plug in, without touching MCTS. The design spec's extension path has two steps. First, a <code>MetalBackend</code> implementing the <code>Backend</code> interface (<code>gemm</code>, <code>im2col</code>, <code>col2im</code>) with Metal compute kernels; on Apple Silicon the CPU and GPU share memory, so buffers need not be copied. Second, a <em>batching evaluator</em>: an <code>Evaluator</code> whose <code>evaluate</code> puts a worker's leaves in a shared queue and blocks until a dispatcher thread has run one large batch — 64 to 256 positions gathered from all ten workers — through the GPU. MCTS would still see the same <code>evaluate</code> call. The spec estimates the M4's GPU at only about 2× the Accelerate/matrix-unit CPU path, and only at large batch sizes; that estimate, not a measurement, is why v1 stops at the CPU.</p>
+</section>
+
+<section id="selfplay">
+<div class="sec-head"><span class="sec-num">04</span><h2>Self-play and exploration</h2></div>
+<span class="concept">concept — generating diverse experience without wrecking its quality</span>
+<p>Self-play is the data generator: the current network, guided by search, plays both sides, and every position becomes a training example. Two mechanisms keep those games from collapsing into one repeated line.</p>
+<p><strong>Dirichlet noise at the root.</strong> Tic-tac-toe's chapter 03 showed why: the PUCT exploration bonus is proportional to the prior, so a move the network has learned to dismiss is never searched, never played, and never corrected. Before each self-play search, the root's priors are mixed with a random Dirichlet sample, 25% noise to 75% network:</p>
+<pre><code>void Mcts::setRootPriors(Rng&amp; rng) {
+    MctsNode&amp; root = nodes_[0];
+    MctsEdge* e = edges_.data() + root.firstEdge;
+    // Skip the noise when it would be a no-op (and Dirichlet needs alpha &gt; 0).
+    if (!cfg_.addNoise || cfg_.noiseFraction &lt;= 0.0f || cfg_.dirichletScale &lt;= 0.0f) {
+        for (int i = 0; i &lt; root.numEdges; ++i) e[i].prior = e[i].rawPrior;
+        return;
+    }
+    // alpha shrinks with the board so the total noise "mass" stays about
+    // dirichletScale spread over the legal moves, whatever the board size.
+    const int area = eval_.boardSize() * eval_.boardSize();
+    const std::vector&lt;double&gt; eta = dirichlet(rng, cfg_.dirichletScale / area, root.numEdges);
+    const float eps = cfg_.noiseFraction;
+    for (int i = 0; i &lt; root.numEdges; ++i)
+        e[i].prior = (1.0f - eps) * e[i].rawPrior + eps * static_cast&lt;float&gt;(eta[i]);
+}</code></pre>
+<span class="src">src/mcts.cpp:319 — <code>Mcts::setRootPriors</code></span>
+<p><strong>Why α scales as 10/n².</strong> A symmetric Dirichlet sample over L moves with concentration α is a random probability vector; the smaller α, the more of its mass lands on a few moves. What matters for exploration is roughly α·L, the total concentration: a sample with α·L ≈ 10 looks like "a handful of moves get a real boost". The number of legal moves grows with the board, about n² early in a game, so keeping α·L constant means α = 10/n²: <strong>0.4 on 5×5, 0.12 on 9×9, 0.028 on 19×19</strong>. AlphaZero reported the same rule of thumb — α in inverse proportion to the typical number of legal moves, 0.3 for chess, 0.15 for shogi and 0.03 for Go. Using 19×19's 0.03 on 5×5 would put nearly all of each sample on one random move; using 5×5's 0.4 on 19×19 would spread it almost evenly over 362 moves, adding the same sliver to every prior instead of singling out a few moves to explore. Tic-tac-toe used a fixed 0.3 over at most 9 moves.</p>
+<p>Noise is added only at the root and only in self-play. The arena and <code>analyze</code> switch it off (<code>addNoise = false</code>): measuring strength and inspecting a position want the network's honest judgment. With tree reuse (below) the root was an interior node of the previous search, so it starts with its raw priors, and <code>setRootPriors</code> mixes fresh noise into them on every search.</p>
+<p><strong>Temperature.</strong> The second mechanism acts on which move is <em>played</em>, not which moves are searched. For the first <code>temperature_moves</code> plies of a self-play game the move is sampled in proportion to its visit count (temperature 1); after that, the most visited move is played (temperature 0, ties broken at random):</p>
+<pre><code>GameRecord playSelfPlayGame(Evaluator&amp; evaluator, const SelfPlayConfig&amp; cfg, Rng&amp; rng) {
+    /* ... n, area, game, mcts with addNoise forced on, rec ... */
+    while (!game.isTerminal()) {
+        mcts.search(game, rng);
+
+        // Position before the move ...
+        const size_t offset = rec.stones.size();
+        rec.stones.resize(offset + area);
+        game.board().exportStones(rec.stones.data() + offset);
+        /* ... and the search's visit counts, the policy target pi, as sparse
+               (action, count) pairs in rec.visits ... */
+
+        // Sample in the opening for variety, then play the best move.
+        const float temperature = game.moveCount() &lt; cfg.temperatureMoves ? 1.0f : 0.0f;
+        const int action = mcts.selectAction(temperature, rng);
+        rec.moves.push_back(action);
+        game.play(action);
+        mcts.advance(action);   // reuse the subtree under the move just played
+    }
+    rec.resultForBlack = game.resultForBlack();
+    return rec;
+}</code></pre>
+<span class="src">src/selfplay.cpp:14 — <code>playSelfPlayGame</code> (abridged)</span>
+<p>The presets sample 8 plies on 5×5, 20 on 9×9 and 30 on 19×19 (AlphaGo Zero's value), roughly the first fifth of a typical game on each board (5×5 games average 30 to 44 plies, <code>docs/results/5x5/log.csv</code>; 9×9 games 87 to 116, <code>docs/results/9x9/log.csv</code>; the two 19×19 generations 145 and 365, <code>docs/results/19x19/log.csv</code>). Tic-tac-toe taught the lesson this number encodes: its default used to be 2, and training plateaued because self-play kept replaying the same few games — the network can only learn positions self-play reaches. In a 9-move game the answer was to sample the whole game. In Go that would be the other mistake: a sampled blunder in the endgame flips the result, and with it the value label of every position in the game. Sample the opening, where variety is cheap, then play well.</p>
+<p><strong>Tree reuse and compaction.</strong> After a move, the subtree under the move just played is exactly the search a player would like to continue, so it is kept: the chosen child becomes the new root, with all its visits. The rest of the tree can never be reached again. Rather than leaving it in the vectors, <code>advance</code> copies only the reachable subtree into fresh vectors and swaps them in:</p>
+<pre><code>void Mcts::advance(int action) {
+    if (nodes_.empty()) return;
+    /* ... newRoot = child of the root edge whose action matches ... */
+    if (newRoot &lt; 0) {   // never explored (or illegal): nothing worth keeping
+        reset();
+        return;
+    }
+    // Copy only the subtree under newRoot into fresh vectors, so memory stays
+    // bounded by what one move's search built. Explicit-stack DFS; each stack
+    // entry is (old node, its new parent, the new edge that must point to it).
+    /* ... DFS from newRoot: copy each node and its edges into fresh vectors
+           `nodes` and `edges`, renumbering parent, firstEdge and child ... */
+    nodes_.swap(nodes);
+    edges_.swap(edges);
+}</code></pre>
+<span class="src">src/mcts.cpp:336 — <code>Mcts::advance</code> (abridged)</span>
+<p>Without compaction the node vector would only ever grow: a 19×19 self-play game at 400 simulations per move and several hundred moves would keep every node of every search in memory. With it, the arena holds only positions still reachable from the current one, and everything built for moves that were not played is released at once. Each node holds a whole <code>Board</code> (the 441-byte padded array), so this is the difference between megabytes per game and a growing pile per worker. A reused root already has visits, and <code>search</code> adds <code>simulations</code> <em>new</em> ones on top, so reuse also buys a slightly deeper search for free. <code>tests/test_mcts.cpp</code> checks that <code>advance</code> keeps the chosen subtree's statistics intact.</p>
+</section>
+
+<section id="credit">
+<div class="sec-head"><span class="sec-num">05</span><h2>Assigning credit</h2></div>
+<span class="concept">concept — the Monte Carlo return, and what the rules make it mean</span>
+<p>A self-play game produces a hundred positions and one result. As in tic-tac-toe, credit is assigned the most direct way: once the game is over, every position is labeled with the final result <code>z</code>, seen from the player to move <em>at that position</em>. The result comes from the score:</p>
+<pre><code>float Game::resultForBlack() const {
+    const float s = scoreForBlack();
+    // An integer komi can produce an exact tie; it is scored as a draw.
+    if (s &gt; 0.0f) return 1.0f;
+    if (s &lt; 0.0f) return -1.0f;
+    return 0.0f;
+}</code></pre>
+<span class="src">src/game.cpp:61 — <code>Game::resultForBlack</code></span>
+<p>and <code>GameRecord::zAt(ply)</code> turns it around for White's positions (Black moves at even plies, so <code>z</code> is <code>resultForBlack</code> at even plies and its negation at odd ones). Only the sign of the score is kept: winning by half a point and by fifty are the same <code>z = +1</code>. That is AlphaGo Zero's choice — the value head predicts who wins, not by how much — and it is why komi matters so much: it decides where "who wins" flips.</p>
+<p><strong>Passing, and how a game ends.</strong> A pass is a legal action at every turn. <code>Game::play</code> counts consecutive passes, and any stone resets the count:</p>
+<pre><code>void Game::play(int action) {
+    assert(isLegal(action));
+    Board next = board();
+    next.play(action);
+    passes_ = (action == next.passAction()) ? passes_ + 1 : 0;
+    moves_.push_back(action);
+    seen_.insert(next.hash());  // a pass re-inserts an existing hash: no-op
+    boards_.push_back(next);
+}</code></pre>
+<span class="src">src/game.cpp:39 — <code>Game::play</code></span>
+<p>Two consecutive passes end the game (so does the move cap, 2n² moves: 50 on 5×5, 162 on 9×9, 722 on 19×19). An untrained network can pass on move 1 and its opponent can pass right back: a two-ply game, scored on an empty board, which White wins by komi. <code>tests/test_selfplay.cpp</code> checks exactly that case: two positions recorded, <code>z = −1</code> at Black's and <code>+1</code> at White's. It is a useful lesson for the network, and learned fast: passing early loses.</p>
+<p><strong>Tromp-Taylor means dead stones must actually be captured.</strong> Human rules end with the players agreeing which stones are dead and removing them before counting. Tromp-Taylor has no such step — a stone on the board at the end counts, however hopeless it is. So the winning side must spend moves capturing stones that a human would simply have removed. Here is a real self-play game, generation 60 of the 5×5 seed-1 run (<code>runs/5x5-seed1/sgf/gen_0060_game_00.sgf</code>), after 29 moves:</p>
+<pre><code>$ ./build-blas/analyze --checkpoint runs/5x5-seed1/checkpoints/gen_0060.azn --komi 24.5 \
+      --simulations 200 \
+      --moves "C3 D3 C2 C4 D4 B4 D2 E4 D5 C5 E3 B3 B2 A3 A5 A2 B5 A4 B5 A5 E5 B1 C1 E1 A1 E2 B5 C4 C5"
+runs/5x5-seed1/checkpoints/gen_0060.azn: 29 moves played, White to move, komi 24.5
+
+   A B C D E
+ 5 . X X X X  5
+ 4 . . O X .  4
+ 3 . . X . X  3
+ 2 . X X X O  2
+ 1 X . X . O  1
+   A B C D E
+White to move
+
+Value (side to move): -1.00
+...
+Pass prior: 27.1%
+...
+MCTS value (side to move): -1.00 after 200 simulations
+Top 10 moves by visits:
+  pass      55 visits ( 27.5%)  Q -1.00
+  A3        41 visits ( 20.5%)  Q -1.00
+  A4        31 visits ( 15.5%)  Q -1.00
+  B3        23 visits ( 11.5%)  Q -1.00
+  A5        18 visits (  9.0%)  Q -1.00
+  B4        18 visits (  9.0%)  Q -1.00
+  A2        14 visits (  7.0%)  Q -1.00</code></pre>
+<p>Every White stone on the board is dead — C4 and the pair E2–E1 each have one liberty left — and the network knows it: the value is −1.00 for White, and every move searches to −1.00. But if both players passed now, those three White stones would count for White, the empty points next to them would count for nobody, and Black — who needs all 25 points at komi 24.5 — would lose. So the game goes on. White passes; Black captures E2 and E1 with D1, C4 with B4, and White's two throw-ins at B3 and A2 with A3; after ply 35 there is no White stone left. From there Black would win by passing, but every move searches to +1.00 and nothing makes Black prefer ending the game (<code>analyze</code> there spreads the visits, pass getting the most at 22%; self-play, with root noise, played B1): it keeps filling its own points while White passes or throws in a stone, and the game stops at the 50-move cap, <code>B+0.5</code>. This is why Tromp-Taylor games run long and contain many passes: the average 5×5 game was 43.1 plies in generation 1 and 43.3 in generation 60 (as short as 29.6 in between), and between 13.6% and 31.9% of all plies in a generation were passes (<code>docs/results/5x5/log.csv</code>). The 9×9 run went from 88.6 plies in generation 1 to 93.0 in generation 150, with 10.3% of the plies passes (<code>docs/results/9x9/log.csv</code>). The upside is that the rules need no life-and-death oracle, only a flood fill, which is exactly what a program learning from nothing needs. (Engines like KataGo add tricks to shorten this phase; this project leaves them out.)</p>
+<p><strong>Why 5×5 uses komi 24.5.</strong> 5×5 Go is solved: with perfect play Black opens on the center point and ends up owning the whole board, a win by 25 points. At the standard komi of 7.5, the network discovers a large part of that early, and then almost every game is a Black win. The pilot at komi 7.5 (<code>docs/results/pilots/5x5-komi7.5.csv</code>) shows it: self-play Black win rate above 0.85 in every generation from 26 on (0.895–0.96 over the last ten), and from then on the arena cannot tell generations apart, because a color-balanced match between two players who both win every game as Black is 50% whatever their strength. The Elo curve peaked at 1066.3 in generation 27 and sagged to 733.1 by generation 60; the mean rating of the last ten generations was only +124 above the first ten's (all three figures are <code>log.csv</code> ratings, chapter 07).</p>
+<p>At komi 24.5, Black wins only by owning all 25 points, so games stay undecided far longer and the arena keeps finding differences. In seed 1 (<code>docs/results/5x5/log.csv</code>) the self-play Black win rate wanders between 0.16 and 0.845 over generations 3–33 while Elo climbs, then stays above 0.85 once the network plays the perfect line, from generation 34 on (seed 2: from generation 31 on). The mean <code>log.csv</code> rating of the last ten generations is +470 above the first ten's (+530 in the komi-24.5 pilot, <code>docs/results/pilots/5x5-komi24.5.csv</code>). Komi 20.5 behaved similarly in its pilot (+489, <code>docs/results/pilots/5x5-komi20.5.csv</code>) but saturated sooner. And the final network agrees with the known solution — its prior on the empty board:</p>
+<pre><code>$ ./build-blas/analyze --checkpoint runs/5x5-seed1/checkpoints/gen_0060.azn --komi 24.5 \
+      --simulations 200
+...
+Value (side to move): +0.85
+
+Policy prior, % of legal moves ("." below 1%):
+     A  B  C  D  E
+ 5   .  .  .  .  .
+ 4   .  .  .  .  .
+ 3   .  . 97  .  .
+ 2   .  .  .  .  .
+ 1   .  .  .  .  .
+...
+MCTS value (side to move): +0.90 after 200 simulations
+Top 10 moves by visits:
+  C3       196 visits ( 98.0%)  Q +0.92
+  C4         2 visits (  1.0%)  Q +0.22
+  D3         1 visits (  0.5%)  Q +0.10
+  C2         1 visits (  0.5%)  Q +0.17</code></pre>
+<p>The same command on generation 0 prints a value of +0.08 and spreads its prior over the board — A2 highest at 17.3%, the center below 1% — and search's top ten moves each get 3.5–13% of the 200 simulations, all with Q between −0.03 and +0.05: the untrained network knows nothing yet.</p>
+<p><strong>The integer-komi draw.</strong> With a half-point komi a tie is impossible. With an integer komi, <code>scoreForBlack() == 0</code> is possible; it is scored as a draw everywhere: <code>resultForBlack() == 0</code>, <code>z = 0</code> at every position of the game, the SGF records <code>RE[0]</code>, and the arena scores it as half a point for each side (<code>matchScore</code> returns 0.5). On 5×5 at komi 25, a perfect game — Black owning all 25 points — is exactly a draw:</p>
+<pre><code>$ ./build-blas/arena --a runs/5x5-seed1/checkpoints/gen_0060.azn \
+      --b runs/5x5-seed1/checkpoints/gen_0033.azn --games 4 --workers 1 \
+      --komi 25 --simulations 100 --temperature-moves 2 --backend blas
+A runs/5x5-seed1/checkpoints/gen_0060.azn vs B runs/5x5-seed1/checkpoints/gen_0033.azn: A scored 2.5/4 = 0.625 (95% CI 0.219-0.908), distinct games 4
+A wins 1, B wins 0, draws 3</code></pre>
+</section>
+
+<section id="learning">
+<div class="sec-head"><span class="sec-num">06</span><h2>Learning from itself</h2></div>
+<span class="concept">concept — supervised learning on self-generated labels, with a replay buffer</span>
+<p>Once positions carry <code>(π, z)</code> labels, training is ordinary supervised learning on the loss from chapter 01. The Go-specific questions are where the examples live, how they are drawn, and how hard to train on them.</p>
+<p><strong>A replay buffer of whole games.</strong> Tic-tac-toe's buffer held encoded examples. Here an encoded example is 18 planes of n² floats — 26 KB on 19×19 — while the position itself is n² bytes, and the 16 history planes are just the previous 8 positions of the same game. So the buffer stores <strong>whole games</strong> (<code>GameRecord</code>: the moves, one byte per point per position, the sparse visit counts and the result) in a sliding window of at most <code>buffer_positions</code> positions, evicting the oldest games first. A sample is a (game, ply) pair, and its planes are rebuilt when it is drawn:</p>
+<pre><code>void ReplayBuffer::encodeSample(size_t gameIndex, int ply, int history, int sym,
+                                float* input, float* pi, float* z) const {
+    const GameRecord&amp; g = games_[gameIndex];
+    assert(ply &gt;= 0 &amp;&amp; ply &lt; g.positions());
+    const int n = g.boardSize;
+
+    // History comes straight from the same game's earlier positions.
+    std::vector&lt;const uint8_t*&gt; stones;
+    for (int k = 0; k &lt; history &amp;&amp; ply - k &gt;= 0; ++k) stones.push_back(g.stonesAt(ply - k));
+    encodePlanes(stones, n, g.toMoveAt(ply), history, sym, input);
+
+    // pi = visit counts normalised, moved to where the symmetry puts each point.
+    /* ... zero pi; total = sum of counts at this ply ... */
+    for (const auto&amp; av : g.visits[ply])
+        pi[transformAction(sym, av.first, n)] = static_cast&lt;float&gt;(av.second) / static_cast&lt;float&gt;(total);
+
+    *z = g.zAt(ply);
+}</code></pre>
+<span class="src">src/replay_buffer.cpp:53 — <code>ReplayBuffer::encodeSample</code> (abridged)</span>
+<p><code>sample</code> draws each of a batch's positions uniformly over all positions in the window (so long games contribute more samples, in proportion to their length) and gives each its own random symmetry. The windows are sized in generations of play: 100,000 positions on 5×5 is about twelve generations of 200 games of ~40 plies; 200,000 on 9×9 about 25 generations of 100 games of ~80 plies.</p>
+<p><strong>Symmetry augmentation.</strong> Go's rules, and komi, are unchanged if the board is rotated or mirrored, so each position has up to 8 equivalent versions with the same value and correspondingly transformed best moves. Showing the network a random one of the 8 multiplies the data for free:</p>
+<pre><code>int transformPoint(int sym, int point, int n) {
+    assert(sym &gt;= 0 &amp;&amp; sym &lt; kNumSymmetries);
+    assert(point &gt;= 0 &amp;&amp; point &lt; n * n);
+    int row = point / n, col = point % n;
+    if (sym &amp; 4) col = n - 1 - col;               // mirror left-right first
+    for (int turn = 0; turn &lt; (sym &amp; 3); ++turn) {
+        // One clockwise quarter turn: the top row becomes the right column.
+        const int r = col;
+        const int c = n - 1 - row;
+        row = r;
+        col = c;
+    }
+    return row * n + col;
+}</code></pre>
+<span class="src">src/symmetry.cpp:6 — <code>transformPoint</code></span>
+<p>The same permutation is applied to every plane and to π (pass maps to itself), so input and target stay consistent. AlphaGo Zero used this, and also evaluated a random symmetry of each leaf during search; AlphaZero dropped both, because chess and shogi are not symmetric (pawns move one way, castling is one-sided) and it wanted one algorithm for all three games. This project augments in training only; search always evaluates the untransformed board.</p>
+<p><strong>Replay ratio.</strong> Each generation takes <code>train_steps</code> SGD steps of <code>batch_size</code> samples. The <em>replay ratio</em> — samples drawn per new position generated — is, once the window is full and game lengths are steady, the expected number of times a position is drawn over its whole stay in the window. Too low and self-play time is wasted; too high and the network overfits the latest games. <code>log.csv</code> records it: 2.9 to 4.3 on 5×5 (200 × 128 samples over 200 games of 30–44 plies, <code>docs/results/5x5/log.csv</code>), 4.4 to 5.9 on 9×9 (<code>docs/results/9x9/log.csv</code>) and 8.49 in the 19×19 pilot (<code>docs/results/pilots/</code>). The 19×19 preset's <code>train_steps</code> went from 100 to 80 because of that last number (see the note in <code>configs/19x19.cfg</code>).</p>
+<p><strong>SGD with momentum and weight decay.</strong> The optimizer is AlphaGo Zero's: momentum 0.9, L2 weight decay 1e-4.</p>
+<pre><code>void SgdMomentum::step(Network&amp; net, float lr) {
+    std::vector&lt;ParamView&gt; params = net.params();
+    assert(params.size() == velocity_.size());
+    for (size_t k = 0; k &lt; params.size(); ++k) {
+        ParamView&amp; p = params[k];
+        std::vector&lt;float&gt;&amp; v = velocity_[k];
+        assert(v.size() == p.size);
+        // Decay only weights: shrinking BN's gamma/beta or a bias toward zero
+        // does not make the function smoother, it just fights the fit.
+        const float decay = p.decay ? weightDecay_ : 0.0f;
+        for (size_t i = 0; i &lt; p.size; ++i) {
+            const float g = p.grad[i] + decay * p.value[i];
+            v[i] = momentum_ * v[i] + g;
+            p.value[i] -= lr * v[i];
+        }
+    }
+}</code></pre>
+<span class="src">src/optimizer.cpp:19 — <code>SgdMomentum::step</code></span>
+<p>Adding <code>λ·w</code> to the gradient is the same as adding <code>(λ/2)·‖w‖²</code> to the loss. Tic-tac-toe put the penalty in the loss and decayed every parameter; here it lives in the optimizer and applies only to convolution and linear weights (<code>ParamView::decay</code>), the usual choice for networks with batch norm. The velocity buffers are part of the saved training state (chapter 08), so a resumed run continues with the same momentum.</p>
+<p>The learning rate follows a stepped schedule keyed on generation, <code>lr_schedule = 0:0.02,40:0.002</code> on 5×5 and <code>0:0.02,90:0.002</code> on 9×9: fast progress first, finer steps later. On 5×5 seed 1 the value loss kept falling after the drop at generation 40, from 0.147 to 0.092 at generation 60, while the policy loss stayed flat at 1.73–1.75 (<code>docs/results/5x5/log.csv</code>).</p>
+</section>
+
+<section id="measuring">
+<div class="sec-head"><span class="sec-num">07</span><h2>Measuring progress without an oracle</h2></div>
+<span class="concept">concept — relative evaluation — arenas, Bradley-Terry Elo and confidence intervals</span>
+<p>Tic-tac-toe could be scored against a perfect minimax player. Go cannot (5×5 is solved, but no solver ships with this project, and 9×9 and 19×19 are not). The only yardstick left is the network's own past: each new generation plays earlier ones, and ratings are fitted to the results. This chapter is about how much that can and cannot tell you.</p>
+<p><strong>The arena.</strong> Every generation (<code>arena_every = 1</code>), the new network plays <code>arena_games</code> games (20 in the 5×5 and 9×9 presets, colors alternating) against each of a few earlier generations, with search but without Dirichlet noise:</p>
+<pre><code>GameOutcome playArenaGame(WorkerContext&amp; ctx, const ArenaConfig&amp; cfg, int n, uint64_t seed,
+                          int index) {
+    Rng rng(deriveSeed(seed, static_cast&lt;uint64_t&gt;(index)));
+    bool aIsBlack = index % 2 == 0;   // colors alternate, so A is Black in half the games
+    /* ... game; MctsConfig mc from cfg with addNoise = false; searchA, searchB ... */
+    while (!game.isTerminal()) {
+        bool blackToMove = game.board().toMove() == Color::Black;
+        Mcts&amp; mover = blackToMove == aIsBlack ? searchA : searchB;
+        mover.search(game, rng);
+        // A few sampled opening moves make the games differ from each other.
+        float temperature = game.moveCount() &lt; cfg.temperatureMoves ? 1.0f : 0.0f;
+        int action = mover.selectAction(temperature, rng);
+        game.play(action);
+        /* ... both trees advance to the move played ... */
+    }
+    return {matchScore(game.resultForBlack(), aIsBlack), game.moves()};
+}</code></pre>
+<span class="src">src/arena.cpp:35 — <code>playArenaGame</code> (abridged)</span>
+<p><strong>Opening diversity.</strong> Without noise, search is deterministic up to random tie-breaks, and two fixed networks would replay nearly the same game twenty times — twenty games of evidence that are really one. Tic-tac-toe's arena once did exactly that: 2 distinct games out of 40. So the first <code>arena_temperature_moves</code> plies (2 on 5×5, 4 on the larger boards) are sampled from the visit counts, and the arena counts the distinct move sequences it produced; <code>log.csv</code>'s last column, <code>distinct_vs_prev</code>, records that count for the match against g − 1. On 5×5 seed 1 it ranged from 9 to 20 out of 20 (<code>docs/results/5x5/log.csv</code>) — fewer once the network found the perfect line, which is evidence in its own right: the policy was collapsing onto one opening. On 9×9 it ranged from 19 to 20 out of 20 (<code>docs/results/9x9/log.csv</code>): with 81 points and 4 sampled plies, the openings almost never repeat.</p>
+<p><strong>The ladder of opponents.</strong> Playing only g − 1 measures one step at a time, and small errors add up. Playing everyone is too expensive. The compromise is a sparse ladder, dense near the present and sparse into the past, plus generation 0:</p>
+<pre><code>std::vector&lt;int&gt; ladderOpponents(int generation, int maxOpponents) {
+    std::vector&lt;int&gt; out;
+    if (generation &lt;= 0) return out;
+    // g-1, g-2, g-4, g-8, ...: dense near the present, sparse into the past.
+    for (int d = 1; generation - d &gt;= 1 &amp;&amp; static_cast&lt;int&gt;(out.size()) &lt; maxOpponents; d *= 2)
+        out.push_back(generation - d);
+    out.push_back(0);   // the anchor: every rating is relative to generation 0
+    return out;
+}</code></pre>
+<span class="src">src/arena.cpp:102 — <code>ladderOpponents</code></span>
+<p>With <code>arena_opponents = 4</code>, generation 33 plays 32, 31, 29, 25 and 0.</p>
+<p><strong>Bradley-Terry instead of incremental Elo.</strong> Chess-style Elo updates each player's rating after every game by an amount proportional to the surprise. The result depends on the order the games arrive in, and it never revisits old ratings in the light of new evidence. This project instead keeps every pairwise result in a table (<code>results.csv</code>) and, after each arena round, refits all ratings at once by maximum likelihood under the <strong>Bradley-Terry</strong> model: P(i beats j) = γᵢ / (γᵢ + γⱼ), reported on the Elo scale as 400·log₁₀ γ, where a 200-point gap means about 76%. The fit is Hunter's MM algorithm:</p>
+<pre><code>std::map&lt;int, double&gt; fitBradleyTerry(const ResultsTable&amp; results, int anchor) {
+    /* ... 1. keep only players connected to the anchor through played pairs ... */
+    // 2. Pair counts plus one virtual drawn game per played pair: n_ij + 1
+    //    games, s_ij + 0.5 score. Without it a player who never lost would have
+    //    an infinite maximum-likelihood rating.
+    /* ... wins[i] (with the virtual halves) and one edge {i, j, games} per pair ... */
+    // 3. MM iteration (Hunter 2004): gamma_i &lt;- W_i / sum_j n_ij / (gamma_i + gamma_j).
+    //    Each sweep increases the likelihood; rescaling keeps gamma_anchor = 1.
+    for (int sweep = 0; sweep &lt; 100000; ++sweep) {
+        std::fill(denom.begin(), denom.end(), 0.0);
+        for (const Edge&amp; e : edges) {
+            double d = e.games / (gamma[e.i] + gamma[e.j]);
+            denom[e.i] += d;
+            denom[e.j] += d;
+        }
+        for (size_t i = 0; i &lt; m; ++i) next[i] = wins[i] / denom[i];
+        /* ... divide by next[anchor]; stop when no gamma changes by 1e-10 in log ... */
+    }
+    /* ... elo[id] = 400 * log10(gamma) ... */
+}</code></pre>
+<span class="src">src/elo.cpp:112 — <code>fitBradleyTerry</code> (abridged)</span>
+<p>Three properties matter. <strong>Order independence</strong>: the fit depends only on the table, so a resumed run reproduces the same ratings. <strong>The anchor</strong>: generation 0 is pinned at 0; every rating is "Elo above the untrained network". <strong>The virtual draw</strong>: each played pair gets one extra half-won game, so a 20–0 sweep gives a finite gap of 400·log₁₀(20.5/0.5) = 645 Elo rather than infinity. The 5×5 komi-7.5 pilot shows that cap directly: generation 1 swept generation 0, its only opponent, and was rated 645.1 (<code>docs/results/pilots/5x5-komi7.5.csv</code>).</p>
+<p><strong>Why old ratings move: <code>log.csv</code> versus <code>elo.csv</code>.</strong> The two files answer different questions. <code>log.csv</code>'s <code>elo</code> column is each generation's rating <em>at the time</em>, from the table as it stood right after its own arena round. <code>elo.csv</code> is rewritten after every round with the refit of the whole table, so older generations' ratings move as later generations play them. On 5×5 seed 1 (<code>docs/results/5x5/</code>), generation 34 was rated 1422.2 on the day; after generations 35, 36, 38 and 42 had played it (scoring 10, 14, 2 and 13 out of 20), the refit puts it at 1138.7. A new generation is rated from just five matches, and a strong-looking 17–3 against an older rung (generation 34 beat 26 by that score) counts in full until later evidence tempers it.</p>
+<p><strong>The 5×5 curve, stated exactly.</strong> Seed 1's contemporaneous rating (<code>log.csv</code>) rises from 445.6 at generation 1 to a peak of <strong>1422.2 at generation 34</strong> and ends at <strong>1117.5 at generation 60</strong>, 305 below the peak. The refit (<code>elo.csv</code>) tells a flatter story. Averaged over ten generations at a time, it rises from 910.0 (generations 21–30) to 1092.2 (31–40), then stays level: 1086.8 (41–50) and 1089.1 (51–60); every refit rating from generation 38 on lies between 1016 and 1127 (the highest, 1126.7, at generation 46; the last, 1117.5). Seed 2 has the same shape: <code>log.csv</code> peaks at 1225.2 in generation 33 and ends at 852.5; its refit peaks at 956.9 in generation 33, averages 927.1, 894.5 and 875.1 over the last three decades, and also ends at 852.5 (<code>docs/results/5x5-seed2/</code>). Both final networks beat generation 0 20–0 in the arena, and in a 100-game match (komi 24.5, 200 simulations, <code>docs/results/5x5/final-arena.txt</code>) both score 100/100, 95% interval 0.963–1.000.</p>
+<figure>
+<div class="fig-frame chart">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Elo by generation: 5×5 seed 1, 5×5 seed 2" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="14">
+<title>Elo by generation: 5×5 seed 1, 5×5 seed 2</title>
+<rect x="0" y="0" width="640" height="360" fill="var(--surface, #FFFFFF)"/>
+<line x1="70" y1="310.0" x2="622" y2="310.0" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="315.0" text-anchor="end" fill="var(--ink-dim, #565E6B)">-200</text>
+<line x1="70" y1="274.6" x2="622" y2="274.6" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="279.6" text-anchor="end" fill="var(--ink-dim, #565E6B)">0</text>
+<line x1="70" y1="239.1" x2="622" y2="239.1" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="244.1" text-anchor="end" fill="var(--ink-dim, #565E6B)">200</text>
+<line x1="70" y1="203.7" x2="622" y2="203.7" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="208.7" text-anchor="end" fill="var(--ink-dim, #565E6B)">400</text>
+<line x1="70" y1="168.3" x2="622" y2="168.3" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="173.3" text-anchor="end" fill="var(--ink-dim, #565E6B)">600</text>
+<line x1="70" y1="132.9" x2="622" y2="132.9" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="137.9" text-anchor="end" fill="var(--ink-dim, #565E6B)">800</text>
+<line x1="70" y1="97.4" x2="622" y2="97.4" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="102.4" text-anchor="end" fill="var(--ink-dim, #565E6B)">1000</text>
+<line x1="70" y1="62.0" x2="622" y2="62.0" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="67.0" text-anchor="end" fill="var(--ink-dim, #565E6B)">1200</text>
+<line x1="70.0" y1="310" x2="70.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="70.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">0</text>
+<line x1="162.0" y1="310" x2="162.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="162.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">10</text>
+<line x1="254.0" y1="310" x2="254.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="254.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">20</text>
+<line x1="346.0" y1="310" x2="346.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="346.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">30</text>
+<line x1="438.0" y1="310" x2="438.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="438.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">40</text>
+<line x1="530.0" y1="310" x2="530.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="530.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">50</text>
+<line x1="622.0" y1="310" x2="622.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="622.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">60</text>
+<line x1="70" y1="310" x2="622" y2="310" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1.2"/>
+<text x="346.0" y="354" text-anchor="middle" fill="var(--ink-dim, #565E6B)">generation</text>
+<text x="16" y="186.0" text-anchor="middle" fill="var(--ink-dim, #565E6B)" transform="rotate(-90 16 186.0)">Elo</text>
+<polyline points="70.0,274.6 79.2,255.1 88.4,241.6 97.6,220.8 106.8,214.6 116.0,224.3 125.2,211.0 134.4,192.5 143.6,203.3 152.8,181.2 162.0,181.9 171.2,187.4 180.4,171.5 189.6,183.2 198.8,172.9 208.0,169.3 217.2,164.4 226.4,152.0 235.6,131.5 244.8,147.5 254.0,149.8 263.2,142.9 272.4,137.9 281.6,104.5 290.8,118.9 300.0,120.0 309.2,114.9 318.4,96.2 327.6,104.1 336.8,99.8 346.0,94.5 355.2,82.5 364.4,82.1 373.6,86.5 382.8,72.9 392.0,74.4 401.2,79.1 410.4,79.8 419.6,94.5 428.8,80.0 438.0,79.1 447.2,80.6 456.4,78.8 465.6,80.8 474.8,80.2 484.0,83.0 493.2,75.0 502.4,83.0 511.6,84.4 520.8,86.0 530.0,88.5 539.2,84.1 548.4,84.2 557.6,84.3 566.8,81.9 576.0,82.2 585.2,78.9 594.4,80.1 603.6,83.5 612.8,80.7 622.0,76.6" fill="none" stroke="var(--x, #2C5FA8)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="70.0,274.6 79.2,283.0 88.4,265.5 97.6,235.7 106.8,224.0 116.0,216.0 125.2,196.6 134.4,196.1 143.6,201.2 152.8,190.5 162.0,184.7 171.2,184.1 180.4,165.3 189.6,165.2 198.8,159.4 208.0,162.7 217.2,163.1 226.4,162.8 235.6,153.5 244.8,151.4 254.0,146.7 263.2,150.2 272.4,147.9 281.6,125.5 290.8,123.0 300.0,137.1 309.2,115.5 318.4,131.4 327.6,141.8 336.8,127.0 346.0,112.0 355.2,111.2 364.4,106.0 373.6,105.1 382.8,113.5 392.0,109.5 401.2,107.9 410.4,113.0 419.6,112.9 428.8,113.2 438.0,111.3 447.2,112.5 456.4,113.0 465.6,114.2 474.8,114.7 484.0,113.7 493.2,117.2 502.4,118.6 511.6,119.4 520.8,120.5 530.0,117.3 539.2,116.3 548.4,118.8 557.6,119.8 566.8,114.2 576.0,120.4 585.2,122.7 594.4,120.7 603.6,122.5 612.8,116.4 622.0,123.6" fill="none" stroke="var(--o, #BD5A26)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="70" y1="18" x2="92" y2="18" stroke="var(--x, #2C5FA8)" stroke-width="2.6"/>
+<text x="100" y="23" fill="var(--ink, #1A1D23)">5×5 seed 1</text>
+<line x1="70" y1="40" x2="92" y2="40" stroke="var(--o, #BD5A26)" stroke-width="2.6"/>
+<text x="100" y="45" fill="var(--ink, #1A1D23)">5×5 seed 2</text>
+</svg>
+</div>
+<figcaption>The <code>elo.csv</code> refit of both 5×5 runs (<code>docs/results/5x5/</code>, <code>docs/results/5x5-seed2/</code>), generation 0 = 0: a steady rise to about generation 31–34, then a plateau once Black wins nearly every self-play game. Drawn by <code>tools/plot_elo.py</code>.</figcaption>
+</figure>
+<p>Why the plateau, and the apparent decline? Several things are going on, and the data cannot fully separate them:</p>
+<ul>
+  <li><strong>Revision, not regression, explains most of the drop in <code>log.csv</code>.</strong> Peaks in the contemporaneous column are where a generation was briefly overrated; the refit, which uses all later evidence, has no such peak. Generation 60 against generation 34 directly, in a short check, scores 3 of 4 (95% interval 0.30–0.95) — no sign that 60 is weaker, and far too few games to say it is stronger:
+<pre><code>$ ./build-blas/arena --a runs/5x5-seed1/checkpoints/gen_0060.azn \
+      --b runs/5x5-seed1/checkpoints/gen_0034.azn --games 4 --workers 1 \
+      --komi 24.5 --simulations 100 --temperature-moves 2 --backend blas
+A runs/5x5-seed1/checkpoints/gen_0060.azn vs B runs/5x5-seed1/checkpoints/gen_0034.azn: A scored 3/4 = 0.750 (95% CI 0.301-0.954), distinct games 4
+A wins 3, B wins 1, draws 0</code></pre></li>
+  <li><strong>The game became decided by color.</strong> From generation 34 on, Black takes the whole board in 87–96.5% of self-play games. Between two players who both win as Black, a color-balanced match is 50% whatever their strength, and seed 1's late matches against g − 1 are: a mean score of 0.49 over the last 20 generations. The arena has run out of resolution, not the network out of skill.</li>
+  <li><strong>Loss of diversity.</strong> The policy has collapsed onto the known perfect line (97% on the center point, chapter 05), distinct arena games fell from 20 to as few as 9, and self-play, driven by the same policy, likely visits fewer distinct positions. Positions off the main line then get less training data, which could let late generations drift on exactly the positions the arena's sampled openings produce.</li>
+  <li><strong>The learning-rate drop at generation 40</strong> (0.02 → 0.002) slows changes of every kind. It coincides with the plateau but did not obviously cause it: the refit had already reached its plateau level by generation 34, six generations before the drop.</li>
+</ul>
+<p><strong>Drift and non-transitivity.</strong> Above the anchor's 645-point cap, every rating is held up by a chain of ladder matches, each only 20 games. Generation 0 stops being informative almost at once: from generation 1 on, seed 1's generations beat it 20–0 or 19–1. What remains is a chain of noisy links, whose errors can accumulate like a random walk; the ladder's long rungs (g − 4, g − 8) limit that drift but cannot remove it. And game strength need not be transitive at all. Seed 1 has a cycle: generation 30 beat 29 11–9, 31 beat 30 14–6, and 29 beat 31 12–8 (<code>docs/results/5x5/results.csv</code>). With 20 games each, every one of those could be noise — which is precisely the point of the next section. A deeper caveat applies to all self-play Elo: a network can improve against its own ancestors in ways that do not transfer to other opponents. This project has no outside yardstick by design (the spec rules out baseline bots and external engines), so its Elo claims are claims about this lineage only.</p>
+<p><strong>How noisy are 20 games? Wilson intervals.</strong> The log reports each match against g − 1 with a 95% <strong>Wilson score interval</strong>, which behaves sensibly for small samples and for scores of 0 or 1, unlike the textbook p ± 1.96·√(p(1−p)/n):</p>
+<pre><code>std::pair&lt;double, double&gt; wilsonInterval(double score, int games, double z) {
+    if (games &lt;= 0) return {0.0, 1.0};
+    double n = games;
+    double p = score / n;
+    double z2 = z * z;
+    // Center pulled toward 1/2 and a half-width that stays positive at p = 0
+    // or 1: unlike p +- z*sqrt(p(1-p)/n), it behaves for small samples.
+    double denom = 1.0 + z2 / n;
+    double center = (p + z2 / (2.0 * n)) / denom;
+    double half = z * std::sqrt(p * (1.0 - p) / n + z2 / (4.0 * n * n)) / denom;
+    return {std::max(0.0, center - half), std::min(1.0, center + half)};
+}</code></pre>
+<span class="src">src/elo.cpp:183 — <code>wilsonInterval</code></span>
+<p>The numbers are sobering (<code>docs/results/5x5/elo.csv</code>): 10 of 20 gives 0.30–0.70; 15 of 20, a clear-looking 75%, gives 0.53–0.89; 3 of 20 gives 0.05–0.36. On the Elo scale, 0.30–0.70 is ±147 points: <strong>one 20-game match cannot resolve a difference smaller than about 150 Elo</strong>. On its own, only a lopsided result means much — 15–5 or better (seed 1's generation 6 beat 5 16–4), 5–15 or worse (generation 24 lost to 23 3–17), or a sweep of generation 0. The fitted curve is meaningful because it pools hundreds of such matches, not because any one of them is. And with fewer games even a sweep proves little:</p>
+<pre><code>$ ./build-blas/arena --a runs/5x5-seed1/checkpoints/gen_0060.azn \
+      --b runs/5x5-seed1/checkpoints/gen_0000.azn --games 4 --workers 1 \
+      --komi 24.5 --simulations 100 --temperature-moves 2 --backend blas
+A runs/5x5-seed1/checkpoints/gen_0060.azn vs B runs/5x5-seed1/checkpoints/gen_0000.azn: A scored 4/4 = 1.000 (95% CI 0.510-1.000), distinct games 4
+A wins 4, B wins 0, draws 0</code></pre>
+<p>Four wins out of four only establish a win rate above 51%.</p>
+<p><strong>Gating (AlphaGo Zero) versus none (AlphaZero).</strong> AlphaGo Zero kept a "best" network that generated all self-play; a newly trained network replaced it only after winning at least 55% of a 400-game match. AlphaZero dropped the gate and always self-played with the latest network, a simpler loop. This project supports both. With <code>gating = on</code>, self-play uses <code>bestGeneration</code>, the best generation is always in the arena line-up, and it is replaced when <code>passesGate(score, games, gating_threshold)</code> — <code>score / games &gt;= 0.55</code> — holds for the new network against it. The presets leave gating off, and the numbers above show why it would be a poor fit at this scale: at 20 games, a score of 11/20 clears the 55% bar with a 95% interval of 0.34–0.74, so the gate would mostly be flipping coins. AlphaGo Zero's 400 games shrink that interval to roughly ±5 percentage points.</p>
+<p><strong>When the yardstick misleads: the 9×9 runs.</strong> An Elo curve anchored on generation 0 measures one thing precisely: how well each generation beats generation 0. On 9×9 that went wrong twice, in two different ways, and both times 100-game head-to-heads between checkpoints told the real story.</p>
+<p>The first overnight run was made before the exact-pass rule of chapter 02 existed (its files are in <code>docs/results/passbug/</code>). Its curve said the network learned almost nothing and then got worse: the refit peaked at 288.4 at generation 35 and ended at 91.8 (<code>docs/results/passbug/9x9-main/elo.csv</code>), and the untrained generation 0 won 938 of the 3,000 arena games it played against trained generations (<code>docs/results/passbug/9x9-main/results.csv</code>) — about 7 of every 20 after generation 50. A trained network should not lose a third of its games to random weights. Two cheap checks located the problem:</p>
+<figure>
+<div class="fig-frame chart">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Elo by generation: 9×9 before the pass fix, 9×9 after the fix" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="14">
+<title>Elo by generation: 9×9 before the pass fix, 9×9 after the fix</title>
+<rect x="0" y="0" width="640" height="360" fill="var(--surface, #FFFFFF)"/>
+<line x1="70" y1="310.0" x2="622" y2="310.0" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="315.0" text-anchor="end" fill="var(--ink-dim, #565E6B)">0</text>
+<line x1="70" y1="248.0" x2="622" y2="248.0" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="253.0" text-anchor="end" fill="var(--ink-dim, #565E6B)">200</text>
+<line x1="70" y1="186.0" x2="622" y2="186.0" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="191.0" text-anchor="end" fill="var(--ink-dim, #565E6B)">400</text>
+<line x1="70" y1="124.0" x2="622" y2="124.0" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="129.0" text-anchor="end" fill="var(--ink-dim, #565E6B)">600</text>
+<line x1="70" y1="62.0" x2="622" y2="62.0" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="67.0" text-anchor="end" fill="var(--ink-dim, #565E6B)">800</text>
+<line x1="70.0" y1="310" x2="70.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="70.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">0</text>
+<line x1="254.0" y1="310" x2="254.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="254.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">50</text>
+<line x1="438.0" y1="310" x2="438.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="438.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">100</text>
+<line x1="622.0" y1="310" x2="622.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="622.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">150</text>
+<line x1="70" y1="310" x2="622" y2="310" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1.2"/>
+<text x="346.0" y="354" text-anchor="middle" fill="var(--ink-dim, #565E6B)">generation</text>
+<text x="16" y="186.0" text-anchor="middle" fill="var(--ink-dim, #565E6B)" transform="rotate(-90 16 186.0)">Elo</text>
+<polyline points="70.0,310.0 73.7,266.7 77.4,260.6 81.0,258.3 84.7,265.5 88.4,266.3 92.1,255.8 95.8,257.1 99.4,243.6 103.1,240.0 106.8,261.9 110.5,257.0 114.2,234.2 117.8,247.8 121.5,246.6 125.2,260.6 128.9,266.0 132.6,234.0 136.2,259.8 139.9,267.3 143.6,259.3 147.3,259.7 151.0,274.8 154.6,272.3 158.3,273.9 162.0,266.2 165.7,252.3 169.4,252.3 173.0,252.3 176.7,270.3 180.4,267.2 184.1,267.0 187.8,250.1 191.4,251.8 195.1,242.8 198.8,220.6 202.5,233.4 206.2,255.8 209.8,234.1 213.5,234.9 217.2,261.0 220.9,239.1 224.6,245.5 228.2,258.5 231.9,250.0 235.6,248.1 239.3,242.9 243.0,244.7 246.6,239.9 250.3,239.5 254.0,239.4 257.7,242.5 261.4,246.7 265.0,249.9 268.7,253.6 272.4,244.2 276.1,246.8 279.8,263.4 283.4,266.3 287.1,249.5 290.8,235.4 294.5,268.6 298.2,261.6 301.8,257.7 305.5,270.9 309.2,257.0 312.9,255.5 316.6,266.0 320.2,258.8 323.9,251.4 327.6,249.3 331.3,288.0 335.0,262.4 338.6,255.5 342.3,246.1 346.0,258.0 349.7,272.6 353.4,259.7 357.0,261.1 360.7,280.9 364.4,275.6 368.1,264.3 371.8,252.0 375.4,260.6 379.1,271.3 382.8,258.9 386.5,258.0 390.2,278.3 393.8,285.9 397.5,290.5 401.2,269.9 404.9,289.0 408.6,269.8 412.2,286.2 415.9,283.7 419.6,271.5 423.3,287.3 427.0,288.1 430.6,295.9 434.3,290.8 438.0,290.7 441.7,283.1 445.4,284.2 449.0,276.2 452.7,280.2 456.4,298.6 460.1,296.2 463.8,292.4 467.4,294.7 471.1,285.2 474.8,283.3 478.5,289.8 482.2,277.3 485.8,293.0 489.5,285.6 493.2,279.8 496.9,285.1 500.6,284.4 504.2,289.0 507.9,290.2 511.6,277.5 515.3,295.5 519.0,288.0 522.6,291.3 526.3,278.6 530.0,283.5 533.7,296.5 537.4,294.9 541.0,288.0 544.7,289.7 548.4,278.8 552.1,280.6 555.8,281.2 559.4,293.0 563.1,285.8 566.8,283.6 570.5,305.4 574.2,293.7 577.8,293.1 581.5,285.4 585.2,294.1 588.9,297.9 592.6,292.8 596.2,276.9 599.9,283.8 603.6,285.2 607.3,281.4 611.0,280.3 614.6,287.0 618.3,278.2 622.0,281.5" fill="none" stroke="var(--x, #2C5FA8)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="70.0,310.0 73.7,275.6 77.4,259.5 81.0,251.8 84.7,253.1 88.4,247.1 92.1,249.0 95.8,257.4 99.4,229.3 103.1,247.3 106.8,219.4 110.5,226.4 114.2,206.3 117.8,221.5 121.5,196.3 125.2,227.8 128.9,228.3 132.6,200.8 136.2,224.0 139.9,191.7 143.6,194.2 147.3,198.4 151.0,173.0 154.6,159.2 158.3,167.7 162.0,150.2 165.7,126.1 169.4,162.2 173.0,136.3 176.7,154.5 180.4,115.1 184.1,143.5 187.8,134.4 191.4,126.0 195.1,92.4 198.8,89.6 202.5,138.3 206.2,127.6 209.8,111.8 213.5,113.8 217.2,105.4 220.9,126.3 224.6,88.8 228.2,87.8 231.9,109.0 235.6,99.3 239.3,113.2 243.0,76.2 246.6,93.8 250.3,94.8 254.0,68.2 257.7,71.2 261.4,83.4 265.0,69.2 268.7,66.7 272.4,90.7 276.1,99.0 279.8,90.7 283.4,78.3 287.1,100.6 290.8,78.2 294.5,100.4 298.2,87.0 301.8,67.6 305.5,73.7 309.2,80.4 312.9,86.1 316.6,80.4 320.2,94.2 323.9,82.9 327.6,81.1 331.3,81.2 335.0,109.2 338.6,90.2 342.3,91.1 346.0,89.3 349.7,99.1 353.4,94.7 357.0,87.3 360.7,78.4 364.4,116.2 368.1,101.8 371.8,105.6 375.4,108.1 379.1,100.0 382.8,86.4 386.5,103.0 390.2,82.2 393.8,112.8 397.5,102.6 401.2,106.2 404.9,85.7 408.6,99.0 412.2,110.7 415.9,101.3 419.6,114.8 423.3,110.7 427.0,103.3 430.6,108.0 434.3,117.3 438.0,114.8 441.7,109.6 445.4,98.5 449.0,103.0 452.7,111.0 456.4,103.5 460.1,111.8 463.8,84.9 467.4,102.8 471.1,104.9 474.8,110.0 478.5,104.3 482.2,112.1 485.8,119.7 489.5,123.7 493.2,118.2 496.9,123.7 500.6,114.0 504.2,122.1 507.9,111.8 511.6,112.0 515.3,115.7 519.0,111.9 522.6,101.6 526.3,113.7 530.0,107.0 533.7,109.3 537.4,106.6 541.0,115.9 544.7,107.1 548.4,107.8 552.1,120.0 555.8,107.8 559.4,87.7 563.1,109.8 566.8,100.4 570.5,122.3 574.2,84.9 577.8,100.8 581.5,96.4 585.2,105.9 588.9,108.4 592.6,90.8 596.2,106.0 599.9,108.1 603.6,110.8 607.3,108.7 611.0,106.0 614.6,112.1 618.3,91.4 622.0,100.9" fill="none" stroke="var(--o, #BD5A26)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="70" y1="18" x2="92" y2="18" stroke="var(--x, #2C5FA8)" stroke-width="2.6"/>
+<text x="100" y="23" fill="var(--ink, #1A1D23)">9×9 before the pass fix</text>
+<line x1="70" y1="40" x2="92" y2="40" stroke="var(--o, #BD5A26)" stroke-width="2.6"/>
+<text x="100" y="45" fill="var(--ink, #1A1D23)">9×9 after the fix</text>
+</svg>
+</div>
+<figcaption>The 9×9 <code>elo.csv</code> refit before the pass fix (<code>docs/results/passbug/9x9-main/elo.csv</code>) and after it (<code>docs/results/9x9/elo.csv</code>): same preset, same seed, both anchored on generation 0 = 0. Before the fix, generation 0's exploit of the blind spot dragged every rating down; the trained networks themselves were improving.</figcaption>
+</figure>
+<ul>
+  <li><strong>Head-to-head instead of the anchor.</strong> 100 games of generation 150 against generation 30 ended 92–8, and against generation 60 89–11: the lineage <em>was</em> improving. Whatever was wrong lived in the games against generation 0, which the anchor-based fit spreads over every rating.</li>
+  <li><strong>Reading the games.</strong> Generation 150 against generation 0 scored only 67/100, and an instrumented replay that wrote each move's search value and Tromp-Taylor margin into the SGF showed that every loss had the same shape. The trained network, clearly ahead on the board, passed while generation 0's hopeless stones were still standing in its area — Tromp-Taylor counts them, so the margin was against it — and generation 0 passed back and won on the count. <code>docs/results/passbug/9x9-gen150-vs-gen0-loss.sgf</code> is one such game: at ply 25 Black's search value is +0.93, the margin is −4.5, and Black passes.</li>
+</ul>
+<p>A probe of that position found the blind spot. After its own pass, the network gave the game-ending reply (the opponent's pass) a prior of 0.0074 among 59 legal moves; with unvisited edges at Q = 0 and tried in prior order, 100 simulations never visited it, so the pass kept the network's optimistic Q of +0.88 and was played. Generation 0, with nearly flat priors, tried pass at its own root, found an exact win, and took it. The fix is the <code>unvisitedQ</code> rule of chapter 02; with it, the very same pre-fix checkpoints beat generation 0 100/100. The weights were fine; the search had a hole that only a strange opponent exposed, and the anchor turned that one opponent's quirk into the headline curve. <code>docs/results/passbug/README.md</code> has the full numbers.</p>
+<p>The second time is subtler, because nothing is broken. In the final run, every generation from 14 on beats generation 0 by 18–2 or better (<code>docs/results/9x9/results.csv</code>). The refit (<code>docs/results/9x9/elo.csv</code>) rises from 0 to 784.8 at generation 54, then goes flat: between 601 and 735 from generation 80 on, <strong>674.5 at generation 150</strong>. A least-squares line through generations 101–150, the last third, has a slope of <strong>+0.41 Elo per generation</strong> — positive, but +20 Elo over 50 generations, far inside the noise. <code>log.csv</code>'s rating at the time even falls, from 1050.6 at generation 85 to 674.5. Yet in 100-game matches (200 simulations, <code>docs/results/9x9/h2h-*.txt</code>) generation 150 beats generation 50 98–2, generation 90 86–14, generation 100 76–24 and generation 120 67–33, and generation 90 beats generation 50 89–11 — about 9 Elo per generation from 50 to 90 and 4–5 per generation after the learning-rate drop at 90; every later checkpoint tested beats every earlier one. Two mechanisms flatten the curve:</p>
+<ul>
+  <li><strong>The anchor's cap.</strong> With the virtual draw, a 20–0 sweep of generation 0 says "645 Elo above generation 0". 137 such near-sweeps pull every late rating toward 645, and the late refit values sit right around it.</li>
+  <li><strong>Links too short to see the slope.</strong> At 4 Elo per generation, a generation should score 50.6% against g − 1 and 54.6% against g − 8; in generations 101–150 the measured means are 9.6 and 10.7 out of 20. Each of those 20-game links is ±150 Elo, so their combined pull is no match for the anchor's.</li>
+</ul>
+<p>Refitting the same table without the matches against generation 0 (<code>docs/results/9x9/elo-without-gen0.txt</code>) gives a steadily rising curve, generation 150 449 Elo above generation 50, with a last-third slope of +2.8 Elo per generation. The lesson of both episodes is the same: a self-play rating is a model of a results table, and when it says something surprising, play the checkpoints against each other with enough games, and read some of the games.</p>
+<figure>
+<div class="fig-frame chart">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Elo by generation: 9×9 elo.csv, all pairs (gen 0 = 0), 9×9 without gen-0 pairs (gen 50 = 0)" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="14">
+<title>Elo by generation: 9×9 elo.csv, all pairs (gen 0 = 0), 9×9 without gen-0 pairs (gen 50 = 0)</title>
+<rect x="0" y="0" width="640" height="360" fill="var(--surface, #FFFFFF)"/>
+<line x1="70" y1="310.0" x2="622" y2="310.0" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="315.0" text-anchor="end" fill="var(--ink-dim, #565E6B)">-1500</text>
+<line x1="70" y1="260.4" x2="622" y2="260.4" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="265.4" text-anchor="end" fill="var(--ink-dim, #565E6B)">-1000</text>
+<line x1="70" y1="210.8" x2="622" y2="210.8" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="215.8" text-anchor="end" fill="var(--ink-dim, #565E6B)">-500</text>
+<line x1="70" y1="161.2" x2="622" y2="161.2" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="166.2" text-anchor="end" fill="var(--ink-dim, #565E6B)">0</text>
+<line x1="70" y1="111.6" x2="622" y2="111.6" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="116.6" text-anchor="end" fill="var(--ink-dim, #565E6B)">500</text>
+<line x1="70" y1="62.0" x2="622" y2="62.0" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="67.0" text-anchor="end" fill="var(--ink-dim, #565E6B)">1000</text>
+<line x1="70.0" y1="310" x2="70.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="70.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">0</text>
+<line x1="254.0" y1="310" x2="254.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="254.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">50</text>
+<line x1="438.0" y1="310" x2="438.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="438.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">100</text>
+<line x1="622.0" y1="310" x2="622.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="622.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">150</text>
+<line x1="70" y1="310" x2="622" y2="310" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1.2"/>
+<text x="346.0" y="354" text-anchor="middle" fill="var(--ink-dim, #565E6B)">generation</text>
+<text x="16" y="186.0" text-anchor="middle" fill="var(--ink-dim, #565E6B)" transform="rotate(-90 16 186.0)">Elo</text>
+<polyline points="70.0,161.2 73.7,150.2 77.4,145.1 81.0,142.6 84.7,143.0 88.4,141.1 92.1,141.7 95.8,144.4 99.4,135.4 103.1,141.1 106.8,132.2 110.5,134.4 114.2,128.0 117.8,132.9 121.5,124.8 125.2,134.9 128.9,135.1 132.6,126.3 136.2,133.7 139.9,123.4 143.6,124.1 147.3,125.5 151.0,117.4 154.6,112.9 158.3,115.7 162.0,110.1 165.7,102.4 169.4,113.9 173.0,105.6 176.7,111.4 180.4,98.8 184.1,107.9 187.8,105.0 191.4,102.3 195.1,91.6 198.8,90.7 202.5,106.2 206.2,102.8 209.8,97.8 213.5,98.4 217.2,95.7 220.9,102.4 224.6,90.4 228.2,90.1 231.9,96.9 235.6,93.8 239.3,98.2 243.0,86.4 246.6,92.0 250.3,92.3 254.0,83.8 257.7,84.8 261.4,88.7 265.0,84.2 268.7,83.3 272.4,91.0 276.1,93.7 279.8,91.0 283.4,87.1 287.1,94.2 290.8,87.0 294.5,94.1 298.2,89.8 301.8,83.6 305.5,85.6 309.2,87.7 312.9,89.5 316.6,87.7 320.2,92.2 323.9,88.5 327.6,87.9 331.3,88.0 335.0,96.9 338.6,90.9 342.3,91.1 346.0,90.6 349.7,93.7 353.4,92.3 357.0,89.9 360.7,87.1 364.4,99.2 368.1,94.6 371.8,95.8 375.4,96.6 379.1,94.0 382.8,89.6 386.5,95.0 390.2,88.3 393.8,98.1 397.5,94.8 401.2,96.0 404.9,89.4 408.6,93.7 412.2,97.4 415.9,94.4 419.6,98.7 423.3,97.4 427.0,95.1 430.6,96.6 434.3,99.5 438.0,98.7 441.7,97.1 445.4,93.5 449.0,95.0 452.7,97.5 456.4,95.1 460.1,97.8 463.8,89.2 467.4,94.9 471.1,95.6 474.8,97.2 478.5,95.4 482.2,97.9 485.8,100.3 489.5,101.6 493.2,99.8 496.9,101.6 500.6,98.5 504.2,101.1 507.9,97.8 511.6,97.8 515.3,99.0 519.0,97.8 522.6,94.5 526.3,98.4 530.0,96.2 533.7,97.0 537.4,96.1 541.0,99.1 544.7,96.3 548.4,96.5 552.1,100.4 555.8,96.5 559.4,90.1 563.1,97.1 566.8,94.1 570.5,101.1 574.2,89.2 577.8,94.3 581.5,92.9 585.2,95.9 588.9,96.7 592.6,91.0 596.2,95.9 599.9,96.6 603.6,97.5 607.3,96.8 611.0,95.9 614.6,97.9 618.3,91.2 622.0,94.3" fill="none" stroke="var(--x, #2C5FA8)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="73.7,282.1 77.4,275.3 81.0,273.5 84.7,272.9 88.4,271.7 92.1,270.4 95.8,273.4 99.4,264.8 103.1,270.9 106.8,260.1 110.5,262.1 114.2,253.4 117.8,258.1 121.5,249.3 125.2,259.8 128.9,258.7 132.6,248.9 136.2,255.7 139.9,243.4 143.6,243.1 147.3,242.3 151.0,233.1 154.6,226.3 158.3,227.9 162.0,219.8 165.7,210.5 169.4,222.1 173.0,211.3 176.7,215.4 180.4,201.5 184.1,210.2 187.8,205.6 191.4,201.2 195.1,188.8 198.8,186.2 202.5,201.6 206.2,196.2 209.8,190.2 213.5,189.7 217.2,185.2 220.9,191.4 224.6,177.8 228.2,176.1 231.9,181.9 235.6,177.5 239.3,181.2 243.0,167.4 246.6,172.0 250.3,171.1 254.0,161.2 257.7,161.1 261.4,163.9 265.0,158.1 268.7,156.2 272.4,163.1 276.1,164.8 279.8,160.9 283.4,155.9 287.1,162.1 290.8,153.7 294.5,159.5 298.2,154.5 301.8,147.1 305.5,148.2 309.2,149.3 312.9,150.4 316.6,147.5 320.2,151.1 323.9,146.1 327.6,145.1 331.3,144.2 335.0,152.4 338.6,145.4 342.3,144.9 346.0,143.5 349.7,145.8 353.4,143.5 357.0,140.3 360.7,136.7 364.4,147.7 368.1,142.6 371.8,143.1 375.4,143.2 379.1,139.6 382.8,134.5 386.5,139.2 390.2,131.7 393.8,140.7 397.5,136.8 401.2,137.2 404.9,129.8 408.6,133.0 412.2,136.1 415.9,132.7 419.6,136.4 423.3,134.2 427.0,131.5 430.6,132.1 434.3,134.5 438.0,133.5 441.7,131.2 445.4,126.8 449.0,127.7 452.7,130.2 456.4,126.9 460.1,129.6 463.8,120.4 467.4,125.9 471.1,125.6 474.8,127.5 478.5,125.0 482.2,127.4 485.8,128.9 489.5,130.5 493.2,128.2 496.9,129.8 500.6,125.8 504.2,128.6 507.9,124.4 511.6,124.8 515.3,125.5 519.0,124.2 522.6,120.4 526.3,124.2 530.0,121.7 533.7,122.3 537.4,120.3 541.0,123.9 544.7,120.8 548.4,120.9 552.1,124.6 555.8,120.2 559.4,113.9 563.1,120.8 566.8,117.7 570.5,124.6 574.2,112.4 577.8,116.6 581.5,115.9 585.2,118.8 588.9,119.6 592.6,113.8 596.2,118.8 599.9,119.4 603.6,120.1 607.3,119.3 611.0,118.5 614.6,120.4 618.3,113.1 622.0,116.6" fill="none" stroke="var(--o, #BD5A26)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="70" y1="18" x2="92" y2="18" stroke="var(--x, #2C5FA8)" stroke-width="2.6"/>
+<text x="100" y="23" fill="var(--ink, #1A1D23)">9×9 elo.csv, all pairs (gen 0 = 0)</text>
+<line x1="70" y1="40" x2="92" y2="40" stroke="var(--o, #BD5A26)" stroke-width="2.6"/>
+<text x="100" y="45" fill="var(--ink, #1A1D23)">9×9 without gen-0 pairs (gen 50 = 0)</text>
+</svg>
+</div>
+<div class="wrap-table"><table>
+<caption>100-game head-to-heads, 200 simulations, komi 7.5 (<code>docs/results/9x9/h2h-*.txt</code>)</caption>
+<thead><tr><th>match</th><th>score</th><th>95% CI</th><th>as an Elo gap</th></tr></thead>
+<tbody>
+<tr><td>gen 150 vs gen 50</td><td>98/100</td><td>0.930–0.994</td><td>+676</td></tr>
+<tr><td>gen 150 vs gen 90</td><td>86/100</td><td>0.779–0.915</td><td>+315</td></tr>
+<tr><td>gen 150 vs gen 100</td><td>76/100</td><td>0.668–0.833</td><td>+200</td></tr>
+<tr><td>gen 150 vs gen 120</td><td>67/100</td><td>0.573–0.754</td><td>+123</td></tr>
+<tr><td>gen 90 vs gen 50</td><td>89/100</td><td>0.814–0.937</td><td>+363</td></tr>
+</tbody></table></div>
+<figcaption>Two fits of the same 9×9 results table. The <code>elo.csv</code> refit, anchored on generation 0, goes flat after about generation 50 because every late generation sweeps generation 0. Refitting without the pairs against generation 0 (<code>docs/results/9x9/elo-without-gen0.csv</code>, the full series behind <code>elo-without-gen0.txt</code>; anchored so generation 50 = 0, so read its shape, not its level) rises to the end. The head-to-heads in the table agree with the second curve. (For gen 90 vs gen 50, <code>arena</code> printed the gen 50 side: 11/100, CI 0.063–0.186.)</figcaption>
+</figure>
+</section>
+
+<section id="loop">
+<div class="sec-head"><span class="sec-num">08</span><h2>The full loop at scale</h2></div>
+<span class="concept">concept — a reproducible, crash-safe training loop, and what it costs</span>
+<p>One <strong>generation</strong> is five steps, in <code>Trainer::runGeneration</code>:</p>
+<figure>
+<div class="fig-frame">
+<div class="diagram-wrap">
+<svg viewBox="0 0 440 370" role="img" class="diagram" aria-label="The generation loop: self-play, train, checkpoint, arena, commit, then back to self-play for the next generation">
+<rect x="20" y="14" width="340" height="50" rx="6" fill="var(--surface)" class="black-stroke" stroke-width="1.5"/>
+<text x="32" y="35" font-size="14" font-weight="600" font-family="IBM Plex Mono, ui-monospace, monospace">1  self-play</text>
+<text x="32" y="54" font-size="12.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">games_per_generation games, W threads</text>
+<line x1="190" y1="64" x2="190" y2="80" class="rule" stroke-width="1.4"/><path d="M190 81 l-5 -8 h10 z" class="dim"/>
+<rect x="20" y="84" width="340" height="50" rx="6" fill="var(--surface)" class="rule" stroke-width="1.5"/>
+<text x="32" y="105" font-size="14" font-weight="600" font-family="IBM Plex Mono, ui-monospace, monospace">2  train</text>
+<text x="32" y="124" font-size="12.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">train_steps SGD steps on replay samples</text>
+<line x1="190" y1="134" x2="190" y2="150" class="rule" stroke-width="1.4"/><path d="M190 151 l-5 -8 h10 z" class="dim"/>
+<rect x="20" y="154" width="340" height="50" rx="6" fill="var(--surface)" class="rule" stroke-width="1.5"/>
+<text x="32" y="175" font-size="14" font-weight="600" font-family="IBM Plex Mono, ui-monospace, monospace">3  checkpoint</text>
+<text x="32" y="194" font-size="12.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">checkpoints/gen_NNNN.azn</text>
+<line x1="190" y1="204" x2="190" y2="220" class="rule" stroke-width="1.4"/><path d="M190 221 l-5 -8 h10 z" class="dim"/>
+<rect x="20" y="224" width="340" height="50" rx="6" fill="var(--surface)" class="rule" stroke-width="1.5"/>
+<text x="32" y="245" font-size="14" font-weight="600" font-family="IBM Plex Mono, ui-monospace, monospace">4  arena</text>
+<text x="32" y="264" font-size="12.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">vs the ladder; results.csv, elo.csv refit</text>
+<line x1="190" y1="274" x2="190" y2="290" class="rule" stroke-width="1.4"/><path d="M190 291 l-5 -8 h10 z" class="dim"/>
+<rect x="20" y="294" width="340" height="50" rx="6" fill="var(--surface)" class="white-stroke" stroke-width="1.5"/>
+<text x="32" y="315" font-size="14" font-weight="600" font-family="IBM Plex Mono, ui-monospace, monospace">5  commit</text>
+<text x="32" y="334" font-size="12.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">state.bin (the commit point), then log.csv</text>
+<path d="M360 329 H405 V39 H368" fill="none" class="rule" stroke-width="1.6"/>
+<path d="M362 39 l8 -5 v10 z" class="dim"/>
+<text x="420" y="190" font-size="12.5" class="dim" text-anchor="middle" transform="rotate(90 420 190)" font-family="IBM Plex Mono, ui-monospace, monospace">next generation, g + 1</text>
+</svg>
+</div>
+</div>
+<figcaption>One generation, in <code>Trainer::runGeneration</code>. The steps never overlap. Everything written before step 5 may be left half-done by a crash and is rewritten identically by the rerun; a generation exists once its <code>state.bin</code> is on disk.</figcaption>
+</figure>
+<p>It is AlphaGo Zero's loop run synchronously: no step overlaps another. An asynchronous actor/learner design would keep every core busy all the time, but this one reads as a list of plain steps, and it makes two guarantees that are hard to get otherwise: determinism and a clean resume.</p>
+<p><strong>Deterministic threading.</strong> Self-play and arena games run on W worker threads (all cores by default), which finish in an unpredictable order. The output is identical for any W anyway, because of three rules:</p>
+<ul>
+  <li>every random stream is seeded from its <em>identity</em>, never from its thread: game i of generation g's self-play uses <code>deriveSeed(seed, g, kPhaseSelfPlay, i)</code>, training uses <code>deriveSeed(seed, g, kPhaseTrain)</code>, the arena <code>deriveSeed(seed, g, kPhaseArena, opponent)</code>;</li>
+  <li>results are stored by index, not by completion order;</li>
+  <li>in the training phase the naive backend splits a gemm's output rows across threads, so every output element is computed by exactly one thread with the same sequence of floating-point operations.</li>
+</ul>
+<pre><code>GenerationStats Trainer::runGeneration() {
+    /* ... g = state_.generation + 1, workers, per-worker backends and evaluators ... */
+        // Game i's randomness depends only on i, and its record is stored at
+        // index i, so the result does not depend on which thread played it.
+        parallelFor(numGames, workers, [&amp;](int i, int w) {
+            Rng rng(deriveSeed(cfg_.seed, static_cast&lt;uint64_t&gt;(g), kPhaseSelfPlay,
+                               static_cast&lt;uint64_t&gt;(i)));
+            records[static_cast&lt;size_t&gt;(i)] = playSelfPlayGame(*evaluators[static_cast&lt;size_t&gt;(w)], sp, rng);
+        });
+    /* ... statistics, SGF, then every record into the buffer in index order ... */
+}</code></pre>
+<span class="src">src/trainer.cpp:180 — <code>Trainer::runGeneration</code> (abridged)</span>
+<p><code>parallelFor</code> hands out indices from an atomic counter; which worker plays game 17 varies from run to run, but game 17 itself does not. The row split in the naive gemm keeps the arithmetic identical too:</p>
+<pre><code>void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alpha,
+                        const float* A, const float* B, float beta, float* C) const {
+    /* ... pack transposed operands; small products run on this thread ... */
+    // Split the rows of C into contiguous chunks, one per thread. Each element
+    // of C is computed by exactly one thread with exactly the same sequence of
+    // floating-point operations (the loop order over p does not depend on the
+    // row range), so the result is bitwise identical for any thread count.
+    const int chunk = (M + workers - 1) / workers;
+    std::vector&lt;std::thread&gt; pool;
+    for (int t = 1; t &lt; workers; ++t) {
+        const int r0 = t * chunk, r1 = std::min(M, r0 + chunk);
+        if (r0 &gt;= r1) break;
+        pool.emplace_back(gemmRows, r0, r1, N, K, alpha, A, B, beta, C);
+    }
+    gemmRows(0, std::min(M, chunk), N, K, alpha, A, B, beta, C);   // chunk 0 on this thread
+    for (std::thread&amp; t : pool) t.join();
+}</code></pre>
+<span class="src">src/backend.cpp:138 — <code>NaiveBackend::gemm</code> (abridged)</span>
+<p>(A split over the <em>inner</em> dimension K would also be parallel, but partial sums added in a different order give different floating-point results.) The BLAS backend is single-threaded per call, so the same holds for it. The payoff is visible in the results. The komi-24.5 pilot ran with 5 worker threads while another run shared the machine; the first seed-1 reference run, made with the same code (before the pass fix explained in chapter 02, whose story is in chapter 07), used all 10. Apart from the three timing columns, their logs are identical, to the last digit:</p>
+<pre><code>$ diff &lt;(cut -d, -f1-9,13-15 docs/results/pilots/5x5-komi24.5.csv) \
+       &lt;(cut -d, -f1-9,13-15 docs/results/passbug/5x5-seed1/log.csv) &amp;&amp; echo identical
+identical</code></pre>
+<p>The final seed-1 run (<code>docs/results/5x5/log.csv</code>) differs from both from generation 1 on — the pass fix changes what search plays — which is the other half of the same point: the output is a function of the seed, the configuration and the code, and of nothing else.</p>
+<p><strong>Crash safety and resume.</strong> A network checkpoint alone is not enough to continue a run exactly; that also needs the optimizer's momentum, the replay buffer, the generation counter, the gating state and the arena table. All of it goes into one file, <code>state.bin</code>, and <strong><code>state.bin</code> is the commit point</strong>: a generation exists once its <code>state.bin</code> is on disk. Everything written before it (the checkpoint, SGF files, <code>results.csv</code>, <code>elo.csv</code>) may be left half-updated by a crash, and is then simply rewritten by the rerun of the generation with identical bytes — every random stream is derived from the seed, so the rerun is bit-identical. <code>log.csv</code> is appended after the commit; a crash between the two loses one human-facing row, never the run. Every file is replaced with the same routine:</p>
+<pre><code>void writeFileAtomically(const std::string&amp; path, const std::string&amp; contents) {
+    const std::string tmp = path + ".tmp";
+    // Truncates any leftover .tmp from an earlier crash.
+    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    /* ... write all of contents, retrying on EINTR ... */
+    // The data must be on disk before the rename makes it visible under path.
+    if (!syncFd(fd)) fail("cannot sync " + tmp);
+    /* ... close ... */
+    // rename() replaces the destination in one step on POSIX file systems:
+    // readers see the old file or the new one, never a partial write.
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    /* ... then fsync the directory, so the rename itself survives a power loss ... */
+}</code></pre>
+<span class="src">src/serialize.cpp:180 — <code>writeFileAtomically</code> (abridged)</span>
+<p><code>syncFd</code> asks macOS for <code>F_FULLFSYNC</code>, because plain <code>fsync</code> there only reaches the drive's cache; elsewhere it is <code>fsync</code>. Before anything is committed, the trainer also rejects a bad generation: a non-finite loss at any step, or any non-finite weight or momentum value after the last step (which the per-step loss check cannot see), aborts with the generation number and leaves generation g − 1's state untouched. <code>train --run DIR --resume</code> then continues from <code>state.bin</code>. Tunable keys may be overridden on resume; architecture keys may not, because they fix the tensor shapes in every checkpoint:</p>
+<pre><code>$ ./build-blas/train --run runs/5x5-seed1 --resume --set blocks=4
+error: cannot change architecture keys on resume: blocks</code></pre>
+<p><code>tests/test_trainer.cpp</code> checks the strongest form of all this: two generations, then a resume, then two more is byte-identical to four uninterrupted generations.</p>
+<p><strong>Try it</strong> — the 5×5 reference run (with a <code>-DAZ_USE_BLAS=ON</code> build; the presets say <code>backend = blas</code>, so on the default build add <code>--set backend=naive</code>, about 3× slower on 5×5):</p>
+<pre><code>$ ./build-blas/train --config configs/5x5.cfg --run runs/5x5-seed1
+starting runs/5x5-seed1 at generation 0; effective config (saved to runs/5x5-seed1/config.cfg):
+...
+gen 1 | selfplay 200 games avg 43.1 plies 6.5s | train loss p 2.85 v 0.49 lr 0.02 2.3s | arena elo 445.6 vs-prev 0.95 (distinct 19/20) 0.4s
+gen 2 | selfplay 200 games avg 35.4 plies 6.7s | train loss p 2.89 v 0.42 lr 0.02 2.4s | arena elo 495.3 vs-prev 0.65 (distinct 20/20) 0.8s
+...
+gen 34 | selfplay 200 games avg 40.8 plies 7.3s | train loss p 1.76 v 0.24 lr 0.02 2.5s | arena elo 1422.2 vs-prev 0.70 (distinct 16/20) 2.0s
+...
+gen 60 | selfplay 200 games avg 43.3 plies 7.7s | train loss p 1.73 v 0.09 lr 0.002 2.5s | arena elo 1117.5 vs-prev 0.50 (distinct 13/20) 2.0s
+done: generation 60 in runs/5x5-seed1</code></pre>
+<p><strong>Compute budgets.</strong> What one generation costs on the M4, from the <code>selfplay_s</code>, <code>train_s</code> and <code>arena_s</code> columns:</p>
+<div class="wrap-table"><table>
+<thead><tr><th>board</th><th>preset</th><th>per generation</th><th>source</th></tr></thead>
+<tbody>
+<tr><td>5×5</td><td>3×32, 200 games × 200 sims</td><td>11.3 s (self-play 7.1, train 2.5, arena 1.8); 60 generations in 11.3 min</td><td><code>docs/results/5x5/log.csv</code></td></tr>
+<tr><td>9×9</td><td>6×64, 100 games × 200 sims</td><td>2.6 min in the 2-generation pilot (152–155 s); in the overnight run 4.1 min on average (self-play 2.0, train 1.0, arena 1.0; 2.7 to 4.8 min), 150 generations in 10.2 hours</td><td><code>docs/results/pilots/9x9.csv</code>, <code>docs/results/9x9/log.csv</code></td></tr>
+<tr><td>19×19</td><td>10×128, 20 games × 400 sims</td><td>62.4 min in the 1-generation pilot (self-play 49.5, train 7.9, arena 5.0); in the check run 58.2 min for generation 1 and 129.7 min for generation 2 (self-play 110.5 min: the games grew from 145 to 365 plies)</td><td><code>docs/results/pilots/19x19.csv</code>, <code>docs/results/19x19/</code></td></tr>
+</tbody></table></div>
+<p>Self-play dominates everywhere — search needs hundreds of network evaluations per move, training needs one forward and backward pass per sample.</p>
+<p><strong>The reference runs were made twice.</strong> The first set of four runs (about 12.7 hours of machine time) was made before the exact-pass rule of chapter 02; chapter 07 tells how the 9×9 arena exposed the blind spot. After the fix all four were repeated from scratch with the same presets and seeds, so the before/after comparison differs in one thing only, the code: generation 0's share of arena points against trained 9×9 generations fell from 31% (938 of 3,000) to 2.4% (72 of 3,000), the 9×9 refit ended at 674.5 instead of 91.8, and the 5×5 runs, where the blind spot rarely matters, barely changed (<code>docs/results/passbug/README.md</code>) — though the fix changes 5×5 play too, and their logs diverge from generation 1 on. A bug found by the evaluation, not by the tests, costs a full night of compute; deterministic runs at least make the rerun a clean experiment.</p>
+<p><strong>An honest comparison with AlphaGo Zero.</strong> AlphaGo Zero's strongest version trained a 40-block, 256-filter network for 40 days on 29 million self-play games, searching 1,600 simulations per move (its 20-block version: 4.9 million games in 3 days). DeepMind did not itemize its self-play hardware in the AlphaGo Zero paper; for AlphaZero it reports 5,000 first-generation TPUs generating games. Now the M4. The 19×19 pilot played 20 games in 2,970.8 s of self-play (<code>docs/results/pilots/19x19.csv</code>) — 148.5 s of the whole machine per game, with a network a sixteenth of the size (a quarter of the blocks, a quarter of F²) and a quarter of the simulations. At that rate, 29 million games would take <strong>about 137 years</strong>. Scaled up to AlphaGo Zero's network and search budget — roughly 16 × 4 = 64 times the work per game — it is <strong>about 8,700 years</strong>, before counting a single training step, and assuming games no longer than the pilot's 151 plies (stronger play, with its dead stones captured, likely runs longer; in the two-generation check, generation 2's games already averaged 365 plies and 332 s each, <code>docs/results/19x19/log.csv</code>). AlphaGo Zero's result is a statement about compute as much as about algorithms. What this machine <em>can</em> do is run the same algorithm, unchanged, on boards where a night is enough to watch it learn.</p>
+</section>
+
+<section id="changes">
+<div class="sec-head"><span class="sec-num">09</span><h2>What changed from tic-tac-toe</h2></div>
+<div class="wrap-table"><table>
+<thead><tr><th>Component</th><th>alphazero-tictactoe</th><th>alphazero-go</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>State</td><td>9 cells, win check</td><td>padded 21×21 array, captures, suicide, positional superko (Zobrist), Tromp-Taylor score, komi</td><td>Go's rules; one type for sizes 5–19</td></tr>
+<tr><td>Encoding</td><td>18 floats: mine, theirs</td><td>2H + 2 planes: 8 positions of history plus two color planes</td><td>history reveals ko; an all-ones plane shows the edge</td></tr>
+<tr><td>Network</td><td>MLP 18 → 64 → 64 → {9, 1}</td><td>ResNet: 3×3 conv stem, <code>blocks</code> residual blocks, conv policy and value heads, batch norm</td><td>translation-invariant patterns; depth</td></tr>
+<tr><td>Arithmetic</td><td>loops over arrays</td><td>im2col + gemm behind a <code>Backend</code> (naive or BLAS)</td><td>nearly all time is gemm; BLAS uses the matrix unit</td></tr>
+<tr><td>Search</td><td>recursive, one leaf per call, fresh tree per move</td><td>flat arena, batched descents with virtual loss, tree reuse with compaction</td><td>fill the matrix unit; keep work between moves</td></tr>
+<tr><td>Legality in search</td><td>occupied cells</td><td>occupancy, suicide, superko against game and tree path</td><td>ko fights</td></tr>
+<tr><td>Dirichlet α</td><td>fixed 0.3</td><td>10/n² (0.4 to 0.03)</td><td>legal-move count grows with the board</td></tr>
+<tr><td>Temperature</td><td>whole game (9 plies)</td><td>first 8 / 20 / 30 plies</td><td>variety in the opening, clean endgame labels</td></tr>
+<tr><td>Replay buffer</td><td>ring of encoded examples</td><td>window of whole games, planes rebuilt on sampling</td><td>history for free, 1 byte per point</td></tr>
+<tr><td>Augmentation</td><td>none</td><td>8 board symmetries</td><td>Go is symmetric</td></tr>
+<tr><td>Optimizer</td><td>momentum, decay on every parameter, fixed LR</td><td>momentum, decay on weights only, stepped LR schedule</td><td>batch norm; longer runs</td></tr>
+<tr><td>Evaluation</td><td>vs. exhaustive minimax</td><td>arena vs. own ladder, Bradley-Terry Elo, Wilson intervals, optional gating</td><td>no oracle for Go</td></tr>
+<tr><td>Randomness</td><td><code>std::mt19937</code>, <code>random_device</code></td><td>one specified generator, streams from <code>deriveSeed</code></td><td>reproducible for any thread count</td></tr>
+<tr><td>Parallelism</td><td>single thread</td><td>W self-play/arena workers, row-split gemm</td><td>a run takes hours, not minutes</td></tr>
+<tr><td>Persistence</td><td>one weights file</td><td>checkpoints plus an atomic, fsync'd <code>state.bin</code>; resume</td><td>runs outlive a laptop lid</td></tr>
+</tbody></table></div>
+<p>What did <em>not</em> change is the part worth remembering: one network with two heads, search as a policy-improvement operator, the Monte Carlo result as the value target, and a loss that asks the network to predict what search and the game already found.</p>
+</section>
+
+<section id="concept-map">
+<div class="sec-head"><span class="sec-num">10</span><h2>Concept map</h2></div>
+<p>A quick index back into the repository, for whichever idea you want to see again in place.</p>
+<dl class="glossary">
+  <dt>Groups, liberties, capture, suicide</dt>
+  <dd><code>Board::isLegal</code>, <code>Board::play</code> <span class="loc">— src/board.cpp:131, 152</span></dd>
+  <dt>Padded board and the <code>Off</code> sentinel</dt>
+  <dd><code>Board::Board</code>, <code>Board::pad</code> <span class="loc">— src/board.cpp:47, 56</span></dd>
+  <dt>Zobrist hashing and positional superko</dt>
+  <dd><code>Board::hashAfter</code> <span class="loc">— src/board.cpp:174</span>; <code>Game::isLegal</code> <span class="loc">— src/game.cpp:19</span></dd>
+  <dt>Tromp-Taylor area scoring, komi, the draw</dt>
+  <dd><code>Board::areaScore</code> <span class="loc">— src/board.cpp:201</span>; <code>Game::resultForBlack</code> <span class="loc">— src/game.cpp:61</span></dd>
+  <dt>Input planes and the all-ones color plane</dt>
+  <dd><code>encodePlanes</code> <span class="loc">— src/encode.cpp:14</span></dd>
+  <dt>Convolution as im2col + gemm</dt>
+  <dd><code>Conv2d::forward</code>, <code>Conv2d::backward</code> <span class="loc">— src/layers.cpp:34, 46</span>; <code>Backend::im2col</code>, <code>Backend::col2im</code> <span class="loc">— src/backend.cpp:17, 50</span></dd>
+  <dt>The compute backend seam</dt>
+  <dd><code>Backend</code> <span class="loc">— include/azgo/backend.hpp:16</span>; <code>NaiveBackend::gemm</code> <span class="loc">— src/backend.cpp:138</span></dd>
+  <dt>Batch norm, training vs. inference</dt>
+  <dd><code>BatchNorm2d::forwardTrain</code>, <code>BatchNorm2d::forwardInfer</code>, <code>BatchNorm2d::backward</code> <span class="loc">— src/layers.cpp:85, 74, 119</span></dd>
+  <dt>Residual ResNet, policy and value heads</dt>
+  <dd><code>Network::forward</code>, <code>Network::backward</code> <span class="loc">— src/network.cpp:177, 277</span></dd>
+  <dt>The loss</dt>
+  <dd><code>Network::loss</code>, <code>Network::trainStep</code> <span class="loc">— src/network.cpp:243, 162</span></dd>
+  <dt>Gradient checking</dt>
+  <dd><code>checkGradient</code> <span class="loc">— tests/test_layers.cpp:36</span></dd>
+  <dt>PUCT selection</dt>
+  <dd><code>Mcts::selectEdge</code> <span class="loc">— src/mcts.cpp:54</span></dd>
+  <dt>Legal masking, superko in the tree</dt>
+  <dd><code>Mcts::expand</code> <span class="loc">— src/mcts.cpp:133</span></dd>
+  <dt>Backup and the sign flip</dt>
+  <dd><code>Mcts::backup</code> <span class="loc">— src/mcts.cpp:184</span></dd>
+  <dt>Terminal positions scored by the rules</dt>
+  <dd><code>Mcts::isTerminal</code>, <code>Mcts::terminalValue</code> <span class="loc">— src/mcts.cpp:38, 49</span></dd>
+  <dt>Virtual loss and batched search</dt>
+  <dd><code>Mcts::search</code>, <code>Mcts::addVirtualLoss</code> <span class="loc">— src/mcts.cpp:196, 105</span></dd>
+  <dt>The evaluator seam</dt>
+  <dd><code>Evaluator</code> <span class="loc">— include/azgo/evaluator.hpp:17</span>; <code>LocalEvaluator::evaluate</code> <span class="loc">— src/evaluator.cpp:19</span></dd>
+  <dt>Dirichlet root noise</dt>
+  <dd><code>Mcts::setRootPriors</code> <span class="loc">— src/mcts.cpp:319</span>; <code>dirichlet</code> <span class="loc">— src/rng.cpp:122</span></dd>
+  <dt>Temperature</dt>
+  <dd><code>Mcts::selectAction</code> <span class="loc">— src/mcts.cpp:282</span>; <code>playSelfPlayGame</code> <span class="loc">— src/selfplay.cpp:14</span></dd>
+  <dt>Tree reuse and compaction</dt>
+  <dd><code>Mcts::advance</code> <span class="loc">— src/mcts.cpp:336</span></dd>
+  <dt>Passes and the end of the game</dt>
+  <dd><code>Game::play</code>, <code>Game::isTerminal</code> <span class="loc">— src/game.cpp:39, 53</span></dd>
+  <dt>The value target z</dt>
+  <dd><code>GameRecord::zAt</code> <span class="loc">— src/selfplay.cpp:9</span></dd>
+  <dt>Replay buffer of whole games</dt>
+  <dd><code>ReplayBuffer::encodeSample</code>, <code>ReplayBuffer::sample</code> <span class="loc">— src/replay_buffer.cpp:53, 75</span></dd>
+  <dt>Symmetry augmentation</dt>
+  <dd><code>transformPoint</code>, <code>transformAction</code> <span class="loc">— src/symmetry.cpp:6, 21</span></dd>
+  <dt>SGD with momentum, weight decay</dt>
+  <dd><code>SgdMomentum::step</code> <span class="loc">— src/optimizer.cpp:19</span></dd>
+  <dt>Learning-rate schedule</dt>
+  <dd><code>LrSchedule::at</code> <span class="loc">— src/optimizer.cpp:100</span></dd>
+  <dt>Arena and opening diversity</dt>
+  <dd><code>playArenaGame</code>, <code>playMatch</code> <span class="loc">— src/arena.cpp:35, 66</span></dd>
+  <dt>Ladder of opponents, gating</dt>
+  <dd><code>ladderOpponents</code>, <code>passesGate</code> <span class="loc">— src/arena.cpp:102, 112</span></dd>
+  <dt>Bradley-Terry Elo with a virtual draw</dt>
+  <dd><code>fitBradleyTerry</code> <span class="loc">— src/elo.cpp:112</span></dd>
+  <dt>Wilson intervals</dt>
+  <dd><code>wilsonInterval</code> <span class="loc">— src/elo.cpp:183</span></dd>
+  <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
+  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:81, 56</span></dd>
+  <dt>One generation</dt>
+  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:180</span></dd>
+  <dt>Seed derivation</dt>
+  <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
+  <dt>Work sharing by index</dt>
+  <dd><code>parallelFor</code> <span class="loc">— src/parallel.cpp:12</span></dd>
+  <dt>Atomic, durable writes</dt>
+  <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
+  <dt>Training state and resume</dt>
+  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:17</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:140</span></dd>
+  <dt>Inspecting a position</dt>
+  <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:70, 91</span></dd>
+</dl>
+</section>
+
+  </main>
+
+  <footer>
+    <p>Build it and run the 5×5 preset yourself:</p>
+<pre><code>cmake -S . -B build-blas -DCMAKE_BUILD_TYPE=Release -DAZ_USE_BLAS=ON
+cmake --build build-blas -j
+./build-blas/train --config configs/5x5.cfg --run runs/my-5x5
+./build-blas/analyze --checkpoint runs/my-5x5/checkpoints/gen_0060.azn --komi 24.5</code></pre>
+    <p>This page is the illustrated rendering of <code>docs/algorithm-explained.md</code>, chapter for chapter. Written by Mark Castelluccio. Drafted with the help of Claude (Anthropic) through <a href="https://claude.com/claude-code">Claude Code</a>; every quoted line of code is checked against the source by <code>tools/check_citations.py</code>, and every number against the file it names.</p>
+  </footer>
+</div>
+</body>
+</html>

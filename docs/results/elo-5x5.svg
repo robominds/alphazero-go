@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Elo by generation: 5×5 seed 1, 5×5 seed 2" font-family="IBM Plex Mono, ui-monospace, Menlo, monospace" font-size="14">
+<title>Elo by generation: 5×5 seed 1, 5×5 seed 2</title>
+<rect x="0" y="0" width="640" height="360" fill="var(--surface, #FFFFFF)"/>
+<line x1="70" y1="310.0" x2="622" y2="310.0" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="315.0" text-anchor="end" fill="var(--ink-dim, #565E6B)">-200</text>
+<line x1="70" y1="274.6" x2="622" y2="274.6" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="279.6" text-anchor="end" fill="var(--ink-dim, #565E6B)">0</text>
+<line x1="70" y1="239.1" x2="622" y2="239.1" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="244.1" text-anchor="end" fill="var(--ink-dim, #565E6B)">200</text>
+<line x1="70" y1="203.7" x2="622" y2="203.7" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="208.7" text-anchor="end" fill="var(--ink-dim, #565E6B)">400</text>
+<line x1="70" y1="168.3" x2="622" y2="168.3" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="173.3" text-anchor="end" fill="var(--ink-dim, #565E6B)">600</text>
+<line x1="70" y1="132.9" x2="622" y2="132.9" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="137.9" text-anchor="end" fill="var(--ink-dim, #565E6B)">800</text>
+<line x1="70" y1="97.4" x2="622" y2="97.4" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="102.4" text-anchor="end" fill="var(--ink-dim, #565E6B)">1000</text>
+<line x1="70" y1="62.0" x2="622" y2="62.0" stroke="var(--rule, #DADDE4)" stroke-width="1"/>
+<text x="62" y="67.0" text-anchor="end" fill="var(--ink-dim, #565E6B)">1200</text>
+<line x1="70.0" y1="310" x2="70.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="70.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">0</text>
+<line x1="162.0" y1="310" x2="162.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="162.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">10</text>
+<line x1="254.0" y1="310" x2="254.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="254.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">20</text>
+<line x1="346.0" y1="310" x2="346.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="346.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">30</text>
+<line x1="438.0" y1="310" x2="438.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="438.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">40</text>
+<line x1="530.0" y1="310" x2="530.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="530.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">50</text>
+<line x1="622.0" y1="310" x2="622.0" y2="315" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1"/>
+<text x="622.0" y="332" text-anchor="middle" fill="var(--ink-dim, #565E6B)">60</text>
+<line x1="70" y1="310" x2="622" y2="310" stroke="var(--rule-strong, #C3C8D1)" stroke-width="1.2"/>
+<text x="346.0" y="354" text-anchor="middle" fill="var(--ink-dim, #565E6B)">generation</text>
+<text x="16" y="186.0" text-anchor="middle" fill="var(--ink-dim, #565E6B)" transform="rotate(-90 16 186.0)">Elo</text>
+<polyline points="70.0,274.6 79.2,255.1 88.4,241.6 97.6,220.8 106.8,214.6 116.0,224.3 125.2,211.0 134.4,192.5 143.6,203.3 152.8,181.2 162.0,181.9 171.2,187.4 180.4,171.5 189.6,183.2 198.8,172.9 208.0,169.3 217.2,164.4 226.4,152.0 235.6,131.5 244.8,147.5 254.0,149.8 263.2,142.9 272.4,137.9 281.6,104.5 290.8,118.9 300.0,120.0 309.2,114.9 318.4,96.2 327.6,104.1 336.8,99.8 346.0,94.5 355.2,82.5 364.4,82.1 373.6,86.5 382.8,72.9 392.0,74.4 401.2,79.1 410.4,79.8 419.6,94.5 428.8,80.0 438.0,79.1 447.2,80.6 456.4,78.8 465.6,80.8 474.8,80.2 484.0,83.0 493.2,75.0 502.4,83.0 511.6,84.4 520.8,86.0 530.0,88.5 539.2,84.1 548.4,84.2 557.6,84.3 566.8,81.9 576.0,82.2 585.2,78.9 594.4,80.1 603.6,83.5 612.8,80.7 622.0,76.6" fill="none" stroke="var(--x, #2C5FA8)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="70.0,274.6 79.2,283.0 88.4,265.5 97.6,235.7 106.8,224.0 116.0,216.0 125.2,196.6 134.4,196.1 143.6,201.2 152.8,190.5 162.0,184.7 171.2,184.1 180.4,165.3 189.6,165.2 198.8,159.4 208.0,162.7 217.2,163.1 226.4,162.8 235.6,153.5 244.8,151.4 254.0,146.7 263.2,150.2 272.4,147.9 281.6,125.5 290.8,123.0 300.0,137.1 309.2,115.5 318.4,131.4 327.6,141.8 336.8,127.0 346.0,112.0 355.2,111.2 364.4,106.0 373.6,105.1 382.8,113.5 392.0,109.5 401.2,107.9 410.4,113.0 419.6,112.9 428.8,113.2 438.0,111.3 447.2,112.5 456.4,113.0 465.6,114.2 474.8,114.7 484.0,113.7 493.2,117.2 502.4,118.6 511.6,119.4 520.8,120.5 530.0,117.3 539.2,116.3 548.4,118.8 557.6,119.8 566.8,114.2 576.0,120.4 585.2,122.7 594.4,120.7 603.6,122.5 612.8,116.4 622.0,123.6" fill="none" stroke="var(--o, #BD5A26)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="70" y1="18" x2="92" y2="18" stroke="var(--x, #2C5FA8)" stroke-width="2.6"/>
+<text x="100" y="23" fill="var(--ink, #1A1D23)">5×5 seed 1</text>
+<line x1="70" y1="40" x2="92" y2="40" stroke="var(--o, #BD5A26)" stroke-width="2.6"/>
+<text x="100" y="45" fill="var(--ink, #1A1D23)">5×5 seed 2</text>
+</svg>

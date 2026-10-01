@@ -8,8 +8,8 @@ idea was already explained there (PUCT, the sign flip, the Monte Carlo
 return), this document recaps it in a few lines and spends its words on
 what Go changes.
 
-*(An illustrated HTML rendering of this document, with the Elo plots, is
-planned as `docs/algorithm-explained.html`.)*
+*(An illustrated HTML rendering of this document, with diagrams and the
+Elo plots, is `docs/algorithm-explained.html`.)*
 
 **Language:** C++17, no dependencies (BLAS optional) · **Network:** a
 ResNet, 3 blocks × 32 filters on 5×5 up to 10 × 128 on 19×19 ·

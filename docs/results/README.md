@@ -259,7 +259,10 @@ Two generations say nothing about strength, and none is claimed.
 - `9x9/`:
   - `log.csv`, `elo.csv`, `results.csv`, `sample.sgf`;
   - `final-arena.txt`, the `h2h-*.txt` head-to-heads;
-  - `elo-without-gen0.txt`;
+  - `elo-without-gen0.txt`, and `elo-without-gen0.csv`, every generation of its second fit;
   - `analyze-{atari,eye,opening}.txt` and `analyze-eye-probe.txt`.
 - `19x19/`: `log.csv`, `timing.txt`, `analyze-gen2.txt`.
 - `passbug/`: the pre-fix runs and the case study.
+- `elo.svg`, `elo-5x5.svg`, `elo-9x9.svg`, `elo-passbug.svg`: Elo charts
+  drawn from the CSV files above by `tools/plot_elo.py` (the commands are in
+  the main `README.md`).
