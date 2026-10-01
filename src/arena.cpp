@@ -132,16 +132,6 @@ MatchResult playMatch(const Network& a, const Network& b, const ArenaConfig& cfg
                      backendName);
 }
 
-std::vector<int> ladderOpponents(int generation, int maxOpponents) {
-    std::vector<int> out;
-    if (generation <= 0) return out;
-    // g-1, g-2, g-4, g-8, ...: dense near the present, sparse into the past.
-    for (int d = 1; generation - d >= 1 && static_cast<int>(out.size()) < maxOpponents; d *= 2)
-        out.push_back(generation - d);
-    out.push_back(0);   // the anchor: every rating is relative to generation 0
-    return out;
-}
-
 int strongestReference(const std::map<int, double>& ratings, const std::vector<int>& references) {
     int best = 0;
     double bestRating = 0;

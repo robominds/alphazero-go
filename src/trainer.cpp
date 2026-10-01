@@ -8,10 +8,12 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
 #include "azgo/arena.hpp"
+#include "azgo/arena_round.hpp"
 #include "azgo/backend.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/elo.hpp"
@@ -43,6 +45,9 @@ double secondsSince(Clock::time_point start) {
 std::string logPath(const std::string& runDir) { return (fs::path(runDir) / "log.csv").string(); }
 std::string eloPath(const std::string& runDir) { return (fs::path(runDir) / "elo.csv").string(); }
 std::string resultsPath(const std::string& runDir) { return (fs::path(runDir) / "results.csv").string(); }
+std::string referencesPath(const std::string& runDir) {
+    return (fs::path(runDir) / "references.csv").string();
+}
 
 std::string sgfPath(const std::string& runDir, int generation, int game) {
     char name[64];
@@ -50,7 +55,8 @@ std::string sgfPath(const std::string& runDir, int generation, int game) {
     return (fs::path(runDir) / "sgf" / name).string();
 }
 
-// elo.csv: one row per rated generation, ascending. The win rate columns come
+// elo.csv: one row per rated generation, ascending; bots (negative IDs) are
+// listed in references.csv instead. The win rate columns come
 // from the (g-1, g) pair of the results table: how often g beat its
 // predecessor, with a 95% Wilson interval. Empty when the pair was never played.
 std::string eloCsv(const ResultsTable& results) {
@@ -59,9 +65,11 @@ std::string eloCsv(const ResultsTable& results) {
 
     std::string out = kEloHeader;
     for (const auto& [generation, rating] : fitBradleyTerry(results, 0)) {
+        if (generation < 0) continue;
         const double elo = rating + 0.0;   // turns a -0.0 into 0.0, so the anchor prints "0.0"
         char line[160];
-        auto it = byPair.find({generation - 1, generation});
+        // Generation 0 has no predecessor; (-1, 0) is bot 1's calibration pair.
+        auto it = generation > 0 ? byPair.find({generation - 1, generation}) : byPair.end();
         if (it != byPair.end() && it->second.games > 0) {
             const int games = it->second.games;
             const double score = games - it->second.scoreA;   // scoreA is g-1's score
@@ -84,6 +92,63 @@ double ratingAtOrBefore(const ResultsTable& results, int generation) {
     auto it = ratings.upper_bound(generation);
     if (it == ratings.begin()) return 0.0;
     return std::prev(it)->second;
+}
+
+// The rating files, rewritten after every refit: results.csv, elo.csv and
+// references.csv in `dir`.
+void writeRatingFiles(const std::string& dir, const ResultsTable& results,
+                      const std::vector<int>& references, const std::vector<int>& botSimulations) {
+    writeFileAtomically(resultsPath(dir), results.toCsv());
+    writeFileAtomically(eloPath(dir), eloCsv(results));
+    writeFileAtomically(referencesPath(dir), referencesCsv(results, references, botSimulations));
+}
+
+ArenaConfig arenaConfig(const Config& cfg) {
+    ArenaConfig ac;
+    ac.games = cfg.arenaGames;
+    ac.simulations = cfg.arenaSimulations;
+    ac.mctsBatch = cfg.mctsBatch;
+    ac.cPuct = cfg.cPuct;
+    ac.temperatureMoves = cfg.arenaTemperatureMoves;
+    ac.komi = cfg.komi;
+    ac.maxMoves = cfg.effectiveMaxMoves();
+    return ac;
+}
+
+ArenaRoundSettings roundSettings(const Config& cfg, std::optional<int> bestNetwork) {
+    ArenaRoundSettings s;
+    s.seed = cfg.seed;
+    s.arenaGames = cfg.arenaGames;
+    s.maxExtra = cfg.arenaOpponents;
+    s.calibrationGames = cfg.calibrationGames;
+    s.promoteThreshold = cfg.promoteThreshold;
+    s.bestNetwork = bestNetwork;
+    return s;
+}
+
+// Real arena matches between the players of the run in runDir: bots come from
+// bot_simulations, generations from their checkpoints, except `liveNet`
+// (generation `liveGeneration`), which is already in memory.
+MatchFn runMatches(const Config& cfg, const std::string& runDir, int liveGeneration,
+                   const Network* liveNet) {
+    return [cfg, runDir, liveGeneration, liveNet](int a, int b, int games, uint64_t seed) {
+        ArenaConfig ac = arenaConfig(cfg);
+        ac.games = games;
+        std::unique_ptr<Network> loaded[2];
+        ArenaPlayer players[2];
+        const int ids[2] = {a, b};
+        for (int i = 0; i < 2; ++i) {
+            if (ids[i] < 0) {
+                players[i] = ArenaPlayer::bot(cfg.botSimulations.at(static_cast<size_t>(-ids[i] - 1)));
+            } else if (liveNet && ids[i] == liveGeneration) {
+                players[i] = ArenaPlayer::network(*liveNet);
+            } else {
+                loaded[i] = std::make_unique<Network>(loadNetwork(checkpointPath(runDir, ids[i])));
+                players[i] = ArenaPlayer::network(*loaded[i]);
+            }
+        }
+        return playMatch(players[0], players[1], ac, seed, cfg.effectiveWorkers(), cfg.backend);
+    };
 }
 
 void appendLogRow(const std::string& runDir, const GenerationStats& s) {
@@ -128,9 +193,12 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     state.buffer = ReplayBuffer(static_cast<size_t>(cfg.bufferPositions));
     state.velocity = SgdMomentum(net, cfg.momentum, cfg.weightDecay).velocity();   // all zeros
     state.references = initialReferences(static_cast<int>(cfg.botSimulations.size()));
+    // Each bot plays generation 0 now, so it has a rating before it can be chosen.
+    calibrateBots(state.results, state.references, roundSettings(cfg, std::nullopt),
+                  runMatches(cfg, runDir, 0, &net));
 
     writeFileAtomically(logPath(runDir), kLogHeader);
-    writeFileAtomically(eloPath(runDir), std::string(kEloHeader) + "0,0,,,\n");
+    writeRatingFiles(runDir, state.results, state.references, cfg.botSimulations);
     // state.bin last: until it exists the directory is not a run, so a crash
     // anywhere above leaves something startNew can simply redo.
     saveTrainingState(statePath(runDir), state);
@@ -326,40 +394,24 @@ GenerationStats Trainer::runGeneration() {
     const auto arenaStart = Clock::now();
     int newBest = cfg_.gating ? state_.bestGeneration : g;
     const bool arenaThisGeneration = cfg_.arenaEvery > 0 && g % cfg_.arenaEvery == 0;
+    ArenaRoundResult round;
     if (arenaThisGeneration) {
-        std::vector<int> opponents = ladderOpponents(g, cfg_.arenaOpponents);
-        if (cfg_.gating &&
-            std::find(opponents.begin(), opponents.end(), state_.bestGeneration) == opponents.end())
-            opponents.push_back(state_.bestGeneration);
-
-        ArenaConfig ac;
-        ac.games = cfg_.arenaGames;
-        ac.simulations = cfg_.arenaSimulations;
-        ac.mctsBatch = cfg_.mctsBatch;
-        ac.cPuct = cfg_.cPuct;
-        ac.temperatureMoves = cfg_.arenaTemperatureMoves;
-        ac.komi = cfg_.komi;
-        ac.maxMoves = cfg_.effectiveMaxMoves();
-
-        for (int o : opponents) {
-            const Network opponent = loadNetwork(checkpointPath(runDir_, o));
-            const MatchResult r = playMatch(net_, opponent, ac,
-                                            deriveSeed(cfg_.seed, static_cast<uint64_t>(g),
-                                                       kPhaseArena, static_cast<uint64_t>(o)),
-                                            workers, cfg_.backend);
-            state_.results.addMatch(g, o, r.games, r.scoreA);
-            if (o == g - 1) {
-                stats.winRateVsPrev = r.scoreA / r.games;
-                stats.distinctVsPrev = r.distinctGames;
+        const std::optional<int> best =
+            cfg_.gating ? std::optional<int>(state_.bestGeneration) : std::nullopt;
+        round = runArenaRound(g, state_.results, state_.references, roundSettings(cfg_, best),
+                              runMatches(cfg_, runDir_, g, &net_));
+        for (const ArenaMatch& m : round.matches) {
+            if (m.opponent == g - 1) {
+                stats.winRateVsPrev = m.result.scoreA / m.result.games;
+                stats.distinctVsPrev = m.result.distinctGames;
             }
-            if (cfg_.gating && o == state_.bestGeneration &&
-                passesGate(r.scoreA, r.games, cfg_.gatingThreshold))
+            if (best && m.opponent == *best &&
+                passesGate(m.result.scoreA, m.result.games, cfg_.gatingThreshold))
                 newBest = g;
         }
         // Refit every rating from all results so far: Bradley-Terry does not
         // depend on the order results arrived in, so a resumed run agrees.
-        writeFileAtomically(resultsPath(runDir_), state_.results.toCsv());
-        writeFileAtomically(eloPath(runDir_), eloCsv(state_.results));
+        writeRatingFiles(runDir_, state_.results, state_.references, cfg_.botSimulations);
     }
     stats.elo = ratingAtOrBefore(state_.results, g);
     stats.arenaSeconds = secondsSince(arenaStart);
@@ -375,27 +427,24 @@ GenerationStats Trainer::runGeneration() {
 
     if (log_) {
         char line[512];
-        int len = std::snprintf(line, sizeof line,
-                                "gen %d | selfplay %d games avg %.1f plies %.1fs | "
-                                "train loss p %.2f v %.2f lr %g %.1fs | ",
-                                g, stats.games, stats.avgLength, stats.selfPlaySeconds,
-                                stats.policyLoss, stats.valueLoss, stats.lr, stats.trainSeconds);
-        if (arenaThisGeneration) {
-            char vsPrev[32] = "n/a";
-            if (stats.winRateVsPrev >= 0)
-                std::snprintf(vsPrev, sizeof vsPrev, "%.2f", stats.winRateVsPrev);
-            char distinct[48] = "";
-            if (stats.distinctVsPrev >= 0)
-                std::snprintf(distinct, sizeof distinct, " (distinct %d/%d)",
-                              stats.distinctVsPrev, cfg_.arenaGames);
-            std::snprintf(line + len, sizeof line - static_cast<size_t>(len),
-                          "arena elo %.1f vs-prev %s%s %.1fs", stats.elo, vsPrev, distinct,
-                          stats.arenaSeconds);
-        } else {
-            std::snprintf(line + len, sizeof line - static_cast<size_t>(len),
-                          "no arena, elo %.1f", stats.elo);
-        }
+        std::snprintf(line, sizeof line,
+                      "gen %d | selfplay %d games avg %.1f plies %.1fs | "
+                      "train loss p %.2f v %.2f lr %g %.1fs | ",
+                      g, stats.games, stats.avgLength, stats.selfPlaySeconds, stats.policyLoss,
+                      stats.valueLoss, stats.lr, stats.trainSeconds);
         *log_ << line;
+        if (arenaThisGeneration) {
+            // e.g. "arena elo 512.3 vs 149:0.55 120:0.70 bot100:1.00 (distinct 19/20) promoted 3.2s"
+            char elo[48], tail[64];
+            std::snprintf(elo, sizeof elo, "arena elo %.1f ", stats.elo);
+            std::snprintf(tail, sizeof tail, " (distinct %d/%d)%s %.1fs", stats.distinctVsPrev,
+                          cfg_.arenaGames, round.promoted ? " promoted" : "", stats.arenaSeconds);
+            *log_ << elo << opponentSummary(round, cfg_.botSimulations) << tail;
+        } else {
+            char noArena[48];
+            std::snprintf(noArena, sizeof noArena, "no arena, elo %.1f", stats.elo);
+            *log_ << noArena;
+        }
         if (cfg_.gating) *log_ << " | best " << state_.bestGeneration;
         *log_ << std::endl;
     }

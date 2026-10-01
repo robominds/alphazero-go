@@ -56,10 +56,6 @@ MatchResult playMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaCon
 MatchResult playMatch(const Network& a, const Network& b, const ArenaConfig& cfg,
                       uint64_t seed, int workers, const std::string& backendName);
 
-// Opponents for generation g: g-1, g-2, g-4, g-8, ... (>= 1), the first
-// `maxOpponents` of those, then 0 if not already present. Empty for g == 0.
-std::vector<int> ladderOpponents(int generation, int maxOpponents);
-
 // The rated reference with the highest rating, ties to the larger player ID.
 // References missing from `ratings` are skipped; throws std::invalid_argument
 // if none is rated.
@@ -78,7 +74,7 @@ std::vector<int> selectOpponents(int generation, const std::map<int, double>& ra
                                  const std::vector<int>& references, int maxExtra,
                                  std::optional<int> bestNetwork = std::nullopt);
 
-// score / games >= threshold.
+// score >= (threshold - 1e-6) * games: thresholds are float config keys (0.85f > 0.85).
 bool passesGate(double score, int games, double threshold);
 
 // Score of one finished game for player A: 1, 0.5 (resultForBlack == 0) or 0.

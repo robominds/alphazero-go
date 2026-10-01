@@ -61,7 +61,4 @@ private:
     // Further members: implementation-defined (Task 21).
 };
 
-// Seed phases for deriveSeed(cfg.seed, generation, phase, index).
-constexpr uint64_t kPhaseInit = 0, kPhaseSelfPlay = 1, kPhaseTrain = 2, kPhaseArena = 3;
-
 } // namespace azgo

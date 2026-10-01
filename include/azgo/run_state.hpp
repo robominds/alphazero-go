@@ -4,6 +4,7 @@
 // go into one binary file that is replaced atomically, so a crash mid-save
 // leaves the old state.
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 #include "azgo/elo.hpp"
@@ -34,6 +35,12 @@ void saveTrainingState(const std::string& path, const TrainingState& state);
 // file gets references = initialReferences(numBots), so pass the number of
 // bots the run's config defines. Throws std::runtime_error naming the path.
 TrainingState loadTrainingState(const std::string& path, int numBots = 0);
+
+// Seed phases for deriveSeed(cfg.seed, generation, phase, index). Part of a
+// run's reproducibility contract: changing one changes every later game.
+// kPhaseCalibration seeds bot calibration (generation 0) and promotion games.
+constexpr uint64_t kPhaseInit = 0, kPhaseSelfPlay = 1, kPhaseTrain = 2, kPhaseArena = 3,
+                   kPhaseCalibration = 4;
 
 // Run-directory paths.
 std::string checkpointPath(const std::string& runDir, int generation);  // runDir/checkpoints/gen_0007.azn

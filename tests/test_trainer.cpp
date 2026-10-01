@@ -74,6 +74,12 @@ static std::string readFile(const std::string& path) {
     return ss.str();
 }
 
+static void writeFile(const std::string& path, const std::string& bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << bytes;
+    assert(out && "file should be writable");
+}
+
 static int countLines(const std::string& s) {
     return static_cast<int>(std::count(s.begin(), s.end(), '\n'));
 }
@@ -119,6 +125,15 @@ static void test_start_new_writes_run_files() {
     assert(s.generation == 0 && s.bestGeneration == 0 && s.samplesTrained == 0);
     assert(s.buffer.positions() == 0 && s.buffer.capacity() == 1000);
     assert((s.references == std::vector<int>{-1, 0}));   // the bot and generation 0
+    // The bot played calibration_games = 2 games against generation 0.
+    const std::vector<ResultsTable::Pair> calibration = s.results.pairs();
+    assert(calibration.size() == 1);
+    assert(calibration[0].a == -1 && calibration[0].b == 0 && calibration[0].games == 2);
+    assert(readFile(dir.file("results.csv")) == s.results.toCsv());
+    const std::vector<std::string> refs = splitLines(readFile(dir.file("references.csv")));
+    assert(refs.size() == 3 && refs[0] == "player,kind,simulations,promoted_at,elo");
+    assert(refs[1].rfind("-1,bot,8,0,", 0) == 0 && refs[1].size() > 11);   // rated
+    assert(refs[2] == "0,checkpoint,,0,0.0");
     // Momentum starts at zero, one buffer per parameter tensor.
     Network net = loadNetwork(checkpointPath(dir.str(), 0));
     std::vector<ParamView> params = net.params();
@@ -132,7 +147,7 @@ static void test_start_new_writes_run_files() {
            "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
            "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev\n");
     assert(readFile(dir.file("elo.csv")) ==
-           "generation,elo,winrate_vs_prev,wr_low,wr_high\n0,0,,,\n");
+           "generation,elo,winrate_vs_prev,wr_low,wr_high\n0,0.0,,,\n");
 }
 
 static void test_two_generations() {
@@ -178,15 +193,26 @@ static void test_two_generations() {
 
     assert(countLines(readFile(dir.file("log.csv"))) == 3);   // header + 2 rows
 
-    // Generation 1 plays 0; generation 2 plays its ladder {1} plus the anchor 0.
-    std::map<std::pair<int, int>, ResultsTable::Pair> pairs = readResults(dir);
-    assert(pairs.size() == 3);
-    for (std::pair<int, int> key : {std::make_pair(0, 1), std::make_pair(0, 2), std::make_pair(1, 2)}) {
-        assert(pairs.count(key));
-        assert(pairs[key].games == 2);
-    }
-
+    // References start as {bot -1, 0}, and arena_opponents = 2 leaves room for
+    // all of them: generation 1 plays 0 and the bot, generation 2 plays 1, 0
+    // and the bot. A promoted generation played calibration_games = 2 more
+    // games against the strongest reference, so exactly one of its pairs has 4.
     TrainingState s = loadTrainingState(statePath(dir.str()));
+    std::map<std::pair<int, int>, ResultsTable::Pair> pairs = readResults(dir);
+    assert(pairs.size() == 6);
+    assert(pairs.at({-1, 0}).games == 2);   // calibration
+    for (std::pair<int, int> key : {std::make_pair(0, 1), std::make_pair(-1, 1), std::make_pair(0, 2),
+                                    std::make_pair(1, 2), std::make_pair(-1, 2)}) {
+        assert(pairs.count(key));
+        assert(pairs[key].games == 2 || pairs[key].games == 4);
+    }
+    for (int g = 1; g <= 2; ++g) {
+        int extended = 0;
+        for (const auto& [key, p] : pairs)
+            if (key.second == g && p.games == 4) ++extended;
+        const bool promoted = std::find(s.references.begin(), s.references.end(), g) != s.references.end();
+        assert(extended == (promoted ? 1 : 0));
+    }
     assert(s.generation == 2);
     assert(s.bestGeneration == 2);                 // no gating: always the newest
     assert(s.samplesTrained == 2 * 4 * 16);
@@ -225,7 +251,7 @@ static void test_resume_is_byte_identical() {
         assert(t->generation() == 4);
     }
     for (const char* f : {"checkpoints/gen_0004.azn", "state.bin", "elo.csv", "results.csv",
-                          "sgf/gen_0004_game_00.sgf"})
+                          "references.csv", "sgf/gen_0004_game_00.sgf"})
         assert(readFile(a.file(f)) == readFile(b.file(f)));
 }
 
@@ -237,7 +263,7 @@ static void test_thread_count_independence() {
     startQuiet(c, one)->runUntil(2);
     c.workers = 3;
     startQuiet(c, three)->runUntil(2);
-    for (const char* f : {"checkpoints/gen_0002.azn", "state.bin", "results.csv"})
+    for (const char* f : {"checkpoints/gen_0002.azn", "state.bin", "results.csv", "references.csv"})
         assert(readFile(one.file(f)) == readFile(three.file(f)));
 }
 
@@ -307,6 +333,7 @@ static void test_gating_state_is_consistent() {
     Config c = tinyConfig();
     c.gating = true;
     c.gatingThreshold = 1.0f;
+    c.promoteThreshold = 1.0f;
     startQuiet(c, dir)->runUntil(3);
 
     std::map<std::pair<int, int>, ResultsTable::Pair> pairs = readResults(dir);
@@ -315,10 +342,88 @@ static void test_gating_state_is_consistent() {
         // The current best is always among g's opponents.
         auto it = pairs.find({best, g});
         assert(it != pairs.end());
-        // scoreA is the older network's score: 0 means g won every game.
-        if (it->second.scoreA == 0.0) best = g;
+        // scoreA is the older network's score: 0 means g won every game. More
+        // than arena_games games means promotion games were added, which with
+        // promote_threshold 1 needs a clean sweep of the arena games, so g
+        // passed the gate too.
+        if (it->second.scoreA == 0.0 || it->second.games > c.arenaGames) best = g;
     }
     assert(loadTrainingState(statePath(dir.str())).bestGeneration == best);
+}
+
+// The progress line names every opponent with the new network's score.
+static void test_progress_line_lists_opponents() {
+    TempDir dir("progress");
+    std::unique_ptr<Trainer> t = startQuiet(tinyConfig(), dir);
+    std::ostringstream out;
+    t->setLog(&out);
+    t->runGeneration();
+    const std::string line = out.str();
+    assert(line.rfind("gen 1 | ", 0) == 0);
+    assert(line.find("| arena elo ") != std::string::npos);
+    assert(line.find(" vs 0:") != std::string::npos);      // g-1 first
+    assert(line.find(" bot8:") != std::string::npos);      // bots by simulation count
+    assert(line.find(" (distinct ") != std::string::npos);
+}
+
+// Review Focus 1: a run started before rating-aware opponents. Its state.bin
+// is version 1 (no reference set) and its config.cfg has none of the new
+// keys, so the defaults apply on resume: one bot at 100 simulations, which
+// is calibrated with 80 games at the first arena and then played like any
+// reference.
+static void test_resume_from_version1_state() {
+    TempDir dir("version1");
+    Config c = tinyConfig();
+    c.botSimulations = {};   // the old run had no bots
+    startQuiet(c, dir)->runUntil(1);
+
+    // state.bin as version 1: without the reference set {0} (u32 count + one i32).
+    const std::string bytes = readFile(statePath(dir.str()));
+    std::string v1 = bytes.substr(0, bytes.size() - 8);
+    v1[4] = 1;
+    writeFile(statePath(dir.str()), v1);
+    // config.cfg without the keys the old code did not know.
+    std::string oldConfig;
+    for (const std::string& line : splitLines(readFile(configPath(dir.str()))))
+        if (line.rfind("bot_simulations", 0) != 0 && line.rfind("calibration_games", 0) != 0 &&
+            line.rfind("promote_threshold", 0) != 0)
+            oldConfig += line + "\n";
+    writeFile(configPath(dir.str()), oldConfig);
+
+    std::unique_ptr<Trainer> t = resumeQuiet(dir, {});
+    assert((t->config().botSimulations == std::vector<int>{100}));
+    t->runUntil(2);
+    std::map<std::pair<int, int>, ResultsTable::Pair> pairs = readResults(dir);
+    assert(pairs.at({-1, 0}).games == 80);   // calibrated once, at generation 2
+    assert(pairs.count({-1, 2}));            // and then chosen
+    assert(!pairs.count({-1, 1}));           // generation 1 ran before the bot existed
+    TrainingState s = loadTrainingState(statePath(dir.str()));
+    assert(s.references.front() == -1);
+    assert(readFile(statePath(dir.str()))[4] == 2);   // saved as version 2
+    assert(readFile(dir.file("references.csv")).find("\n-1,bot,100,0,") != std::string::npos);
+}
+
+// Review Focus 4: no bots and no extra opponents. Each generation plays only
+// g-1 and the strongest reference (the same player while generation 0 is the
+// whole reference set), and nothing negative appears anywhere.
+static void test_no_bots_no_extras() {
+    TempDir dir("nobots");
+    Config c = tinyConfig();
+    c.botSimulations = {};
+    c.arenaOpponents = 0;
+    startQuiet(c, dir)->runUntil(3);
+    std::map<std::pair<int, int>, ResultsTable::Pair> pairs = readResults(dir);
+    for (const auto& [key, p] : pairs) assert(key.first >= 0);
+    for (int g = 1; g <= 3; ++g) {
+        assert(pairs.count({g - 1, g}));
+        int opponents = 0;
+        for (const auto& [key, p] : pairs)
+            if (key.second == g) ++opponents;
+        assert(opponents >= 1 && opponents <= 2);
+    }
+    assert(pairs.size() >= 3 && pairs.at({0, 1}).games >= 2);
+    const std::vector<std::string> refs = splitLines(readFile(dir.file("references.csv")));
+    assert(refs[1] == "0,checkpoint,,0,0.0");
 }
 
 // A blown-up learning rate must abort the generation before anything of it is
@@ -349,6 +454,9 @@ int main() {
     test_start_new_refuses_existing_run();
     test_gating_state_is_consistent();
     test_non_finite_weights_keep_last_good_state();
+    test_progress_line_lists_opponents();
+    test_resume_from_version1_state();
+    test_no_bots_no_extras();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }

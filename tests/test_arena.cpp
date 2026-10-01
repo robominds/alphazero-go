@@ -43,16 +43,6 @@ static void checkBookkeeping(const MatchResult& r, int games) {
     assert(r.distinctGames >= 1 && r.distinctGames <= games);
 }
 
-static void test_ladder() {
-    assert(ladderOpponents(0, 4).empty());
-    assert((ladderOpponents(1, 4) == std::vector<int>{0}));
-    assert((ladderOpponents(2, 4) == std::vector<int>{1, 0}));
-    assert((ladderOpponents(3, 4) == std::vector<int>{2, 1, 0}));
-    assert((ladderOpponents(10, 4) == std::vector<int>{9, 8, 6, 2, 0}));
-    assert((ladderOpponents(10, 2) == std::vector<int>{9, 8, 0}));
-    assert((ladderOpponents(9, 8) == std::vector<int>{8, 7, 5, 1, 0}));
-}
-
 static void test_gate() {
     assert(passesGate(11, 20, 0.55));
     assert(!passesGate(10.9, 20, 0.55));
@@ -242,7 +232,6 @@ static void test_rejects_bad_setup() {
 }
 
 int main() {
-    test_ladder();
     test_gate();
     test_match_score();
     test_deterministic_across_workers_and_runs();

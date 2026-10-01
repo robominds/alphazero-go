@@ -26,6 +26,8 @@ echo "== train: new run, 2 generations =="
 "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$RUN" "${TINY[@]}" --generations 2
 test -s "$CK/gen_0002.azn" || fail "gen_0002.azn missing"
 test -s "$RUN/sgf/gen_0001_game_00.sgf" || fail "no SGF written for generation 1"
+grep -q '^-1,bot,100,0,' "$RUN/references.csv" || fail "references.csv does not list the calibrated bot"
+grep -q '^-1,0,80,' "$RUN/results.csv" || fail "results.csv has no bot calibration games"
 
 echo "== train: resume to generation 3 =="
 "$BUILD/train" --run "$RUN" --resume --generations 3
