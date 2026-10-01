@@ -490,6 +490,9 @@ int rerateRun(const std::string& runDir, const std::vector<std::string>& overrid
     int last = 0;
     while (fs::exists(checkpointPath(runDir, last + 1))) ++last;
 
+    // Fail on an unavailable backend before anything is written.
+    makeBackend(cfg.backend, 1);
+
     const std::string outDir = (fs::path(runDir) / "rerate").string();
     fs::create_directories(outDir);
     ResultsTable results;

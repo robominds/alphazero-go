@@ -515,6 +515,19 @@ static void test_rerate_refusals_and_gaps() {
     assert(threw);
     assert(!fs::exists(dir.path / "rerate"));
 
+    // An unavailable backend fails before rerate/ is created. Only the
+    // default (naive-only) build can show it.
+    if (!blasAvailable()) {
+        threw = false;
+        try {
+            rerateRun(dir.str(), {"backend=blas"}, nullptr);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        assert(threw);
+        assert(!fs::exists(dir.path / "rerate"));
+    }
+
     // Every generation is measured against g-1, so a missing checkpoint ends
     // the replay: with gen_0002 gone only generation 1 is re-rated.
     fs::remove(checkpointPath(dir.str(), 2));
