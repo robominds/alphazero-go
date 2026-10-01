@@ -224,6 +224,13 @@ no extra storage. Uniform sampling over positions. Each sample gets a
 uniformly random symmetry. Serializable as part of training state.
 
 **`arena` / `elo`**
+
+> Amended 2026-10-01 by `2026-10-01-rating-aware-arena-design.md`: the
+> ladder in the first bullet is replaced by opponents chosen by rating (g−1,
+> the strongest reference and the references with an expected score closest
+> to 0.7), plus a uniform-prior MCTS bot as a fixed yardstick. Generation 0
+> stays the anchor at 0 Elo.
+
 - Every `arena_every` generations (default 1), the new network plays
   `arena_games` games per opponent (default 20, colors balanced)
   against: the previous generation; a sparse ladder of older

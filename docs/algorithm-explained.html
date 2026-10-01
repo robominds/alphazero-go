@@ -1566,7 +1566,7 @@ A wins 1, B wins 0, draws 3</code></pre>
                           int index) {
     Rng rng(deriveSeed(seed, static_cast&lt;uint64_t&gt;(index)));
     bool aIsBlack = index % 2 == 0;   // colors alternate, so A is Black in half the games
-    /* ... game; MctsConfig mc from cfg with addNoise = false; searchA, searchB ... */
+    /* ... game; searchA, searchB from each Seat's MctsConfig, addNoise = false ... */
     while (!game.isTerminal()) {
         bool blackToMove = game.board().toMove() == Color::Black;
         Mcts&amp; mover = blackToMove == aIsBlack ? searchA : searchB;
@@ -1579,20 +1579,43 @@ A wins 1, B wins 0, draws 3</code></pre>
     }
     return {matchScore(game.resultForBlack(), aIsBlack), game.moves()};
 }</code></pre>
-<span class="src">src/arena.cpp:35 — <code>playArenaGame</code> (abridged)</span>
+<span class="src">src/arena.cpp:50 — <code>playArenaGame</code> (abridged)</span>
 <p><strong>Opening diversity.</strong> Without noise, search is deterministic up to random tie-breaks, and two fixed networks would replay nearly the same game twenty times — twenty games of evidence that are really one. Tic-tac-toe's arena once did exactly that: 2 distinct games out of 40. So the first <code>arena_temperature_moves</code> plies (2 on 5×5, 4 on the larger boards) are sampled from the visit counts, and the arena counts the distinct move sequences it produced; <code>log.csv</code>'s last column, <code>distinct_vs_prev</code>, records that count for the match against g − 1. On 5×5 seed 1 it ranged from 9 to 20 out of 20 (<code>docs/results/5x5/log.csv</code>) — fewer once the network found the perfect line, which is evidence in its own right: the policy was collapsing onto one opening. On 9×9 it ranged from 19 to 20 out of 20 (<code>docs/results/9x9/log.csv</code>): with 81 points and 4 sampled plies, the openings almost never repeat.</p>
-<p><strong>The ladder of opponents.</strong> Playing only g − 1 measures one step at a time, and small errors add up. Playing everyone is too expensive. The compromise is a sparse ladder, dense near the present and sparse into the past, plus generation 0:</p>
-<pre><code>std::vector&lt;int&gt; ladderOpponents(int generation, int maxOpponents) {
-    std::vector&lt;int&gt; out;
-    if (generation &lt;= 0) return out;
-    // g-1, g-2, g-4, g-8, ...: dense near the present, sparse into the past.
-    for (int d = 1; generation - d &gt;= 1 &amp;&amp; static_cast&lt;int&gt;(out.size()) &lt; maxOpponents; d *= 2)
-        out.push_back(generation - d);
-    out.push_back(0);   // the anchor: every rating is relative to generation 0
+<p><strong>Choosing informative opponents.</strong> Playing only g − 1 measures one step at a time, and small errors add up. Playing everyone is too expensive. So which earlier players are worth twenty games? A game the new network wins with probability p has a result with variance p(1 − p), and that is how much it can tell you: 0.25 at p = 0.5, 0.21 at 0.7, 0.09 at 0.9, 0.01 at 0.99. A game against an opponent it beats 99% of the time is worth a twenty-fifth of an even game. The rating fit adds a second limit (next section): a 20–0 sweep can never say more than 400·log₁₀(41) ≈ 645 Elo. The reference runs in <code>docs/results/</code> were made with a fixed ladder: g − 1, g − 2, g − 4, g − 8, and always generation 0. On 9×9, generation 0 scored at most 2 of 20 in 137 of its 150 matches, and 0 of 20 in 110 (<code>docs/results/9x9/results.csv</code>). The end of this chapter shows what that did to the curve. The arena now picks its opponents from the current ratings instead:</p>
+<pre><code>std::vector&lt;int&gt; selectOpponents(int generation, const std::map&lt;int, double&gt;&amp; ratings,
+                                 const std::vector&lt;int&gt;&amp; references, int maxExtra,
+                                 std::optional&lt;int&gt; bestNetwork) {
+    /* ... generation must be &gt;= 1 ... */
+    std::vector&lt;int&gt; out{generation - 1};   // the progress signal
+    auto chosen = [&amp;](int p) { return std::find(out.begin(), out.end(), p) != out.end(); };
+    const int strongest = strongestReference(ratings, references);
+    if (!chosen(strongest)) out.push_back(strongest);   // the promotion check
+
+    // The new network has no rating yet; its predecessor's is the best guess.
+    auto prev = ratings.find(generation - 1);
+    const double estimate = prev == ratings.end() ? 0.0 : prev-&gt;second;
+    std::vector&lt;std::pair&lt;double, int&gt;&gt; candidates;   // (|E - 0.7|, player)
+    for (int r : references) {
+        auto it = ratings.find(r);
+        if (it == ratings.end() || chosen(r)) continue;
+        candidates.push_back({std::fabs(expectedScore(estimate, it-&gt;second) - kTargetScore), r});
+    }
+    std::sort(candidates.begin(), candidates.end());   // by distance, then by smaller ID
+    for (size_t i = 0; i &lt; candidates.size() &amp;&amp; static_cast&lt;int&gt;(i) &lt; maxExtra; ++i)
+        out.push_back(candidates[i].second);
+
+    if (bestNetwork &amp;&amp; !chosen(*bestNetwork)) out.push_back(*bestNetwork);   // gating
     return out;
 }</code></pre>
-<span class="src">src/arena.cpp:102 — <code>ladderOpponents</code></span>
-<p>With <code>arena_opponents = 4</code>, generation 33 plays 32, 31, 29, 25 and 0.</p>
+<span class="src">src/arena.cpp:152 — <code>selectOpponents</code> (abridged)</span>
+<p>The candidates are the <strong>references</strong>: a frozen set of players that starts as generation 0 plus the bots, and only grows.</p>
+<ul>
+<li><strong>g − 1</strong> is always played. It is the progress signal, and its match is the one <code>log.csv</code> reports.</li>
+<li><strong>The strongest reference</strong> is always played. It is the promotion check: a generation that scores at least <code>promote_threshold</code> against it (0.85, about 300 Elo) plays it <code>calibration_games</code> (80) more games and joins the references, as the next yardstick.</li>
+<li><strong><code>arena_opponents</code> more references</strong> (2 in the presets) are the ones for which the new network's expected score, E = 1 / (1 + 10^((R_c − R̂)/400)), is closest to 0.7. R̂, the new network's rating, is not known yet, so g − 1's rating stands in.</li>
+</ul>
+<p>Generation 0 stays pinned at 0 Elo and is never removed. Once every new network beats it, it simply stops being chosen, and its old results stay in the fit. For example, take generation 10, with g − 1 rated 800 and references at 100 (a bot), 0 (generation 0), 450 (generation 4) and 700 (generation 6). It plays 9, then 6 (the strongest), then 4 (E = 0.88) and the bot (E = 0.98). Generation 0, at E = 0.99, is left out (<code>test_select_opponents</code> in <code>tests/test_arena.cpp</code>).</p>
+<p><strong>A yardstick from outside the lineage.</strong> The references include <strong>uniform bots</strong> (<code>bot_simulations = 100</code> in the presets): MCTS players whose priors are all equal and whose value is always 0. A bot knows the rules and nothing else, so its strength depends only on its simulation count, and it is the same in every run. Each bot plays generation 0 <code>calibration_games</code> games when a run starts, so it is rated before it can be chosen. <code>references.csv</code> lists every reference with its rating. Selection, matches, refit and promotion are one function, <code>runArenaRound</code> (<code>src/arena_round.cpp</code>). Training uses it, and so does <code>train --run DIR --rerate</code>, which replays the arena over a finished run's checkpoints into <code>DIR/rerate/</code>. With gating off, the arena never feeds back into training, so a re-rated run measures exactly the networks a live run would have.</p>
 <p><strong>Bradley-Terry instead of incremental Elo.</strong> Chess-style Elo updates each player's rating after every game by an amount proportional to the surprise. The result depends on the order the games arrive in, and it never revisits old ratings in the light of new evidence. This project instead keeps every pairwise result in a table (<code>results.csv</code>) and, after each arena round, refits all ratings at once by maximum likelihood under the <strong>Bradley-Terry</strong> model: P(i beats j) = γᵢ / (γᵢ + γⱼ), reported on the Elo scale as 400·log₁₀ γ, where a 200-point gap means about 76%. The fit is Hunter's MM algorithm:</p>
 <pre><code>std::map&lt;int, double&gt; fitBradleyTerry(const ResultsTable&amp; results, int anchor) {
     /* ... 1. keep only players connected to the anchor through played pairs ... */
@@ -1614,7 +1637,7 @@ A wins 1, B wins 0, draws 3</code></pre>
     }
     /* ... elo[id] = 400 * log10(gamma) ... */
 }</code></pre>
-<span class="src">src/elo.cpp:112 — <code>fitBradleyTerry</code> (abridged)</span>
+<span class="src">src/elo.cpp:113 — <code>fitBradleyTerry</code> (abridged)</span>
 <p>Three properties matter. <strong>Order independence</strong>: the fit depends only on the table, so a resumed run reproduces the same ratings. <strong>The anchor</strong>: generation 0 is pinned at 0; every rating is "Elo above the untrained network". <strong>The virtual draw</strong>: each played pair gets one extra half-won game, so a 20–0 sweep gives a finite gap of 400·log₁₀(20.5/0.5) = 645 Elo rather than infinity. The 5×5 komi-7.5 pilot shows that cap directly: generation 1 swept generation 0, its only opponent, and was rated 645.1 (<code>docs/results/pilots/5x5-komi7.5.csv</code>).</p>
 <p><strong>Why old ratings move: <code>log.csv</code> versus <code>elo.csv</code>.</strong> The two files answer different questions. <code>log.csv</code>'s <code>elo</code> column is each generation's rating <em>at the time</em>, from the table as it stood right after its own arena round. <code>elo.csv</code> is rewritten after every round with the refit of the whole table, so older generations' ratings move as later generations play them. On 5×5 seed 1 (<code>docs/results/5x5/</code>), generation 34 was rated 1422.2 on the day; after generations 35, 36, 38 and 42 had played it (scoring 10, 14, 2 and 13 out of 20), the refit puts it at 1138.7. A new generation is rated from just five matches, and a strong-looking 17–3 against an older rung (generation 34 beat 26 by that score) counts in full until later evidence tempers it.</p>
 <p><strong>The 5×5 curve, stated exactly.</strong> Seed 1's contemporaneous rating (<code>log.csv</code>) rises from 445.6 at generation 1 to a peak of <strong>1422.2 at generation 34</strong> and ends at <strong>1117.5 at generation 60</strong>, 305 below the peak. The refit (<code>elo.csv</code>) tells a flatter story. Averaged over ten generations at a time, it rises from 910.0 (generations 21–30) to 1092.2 (31–40), then stays level: 1086.8 (41–50) and 1089.1 (51–60); every refit rating from generation 38 on lies between 1016 and 1127 (the highest, 1126.7, at generation 46; the last, 1117.5). Seed 2 has the same shape: <code>log.csv</code> peaks at 1225.2 in generation 33 and ends at 852.5; its refit peaks at 956.9 in generation 33, averages 927.1, 894.5 and 875.1 over the last three decades, and also ends at 852.5 (<code>docs/results/5x5-seed2/</code>). Both final networks beat generation 0 20–0 in the arena, and in a 100-game match (komi 24.5, 200 simulations, <code>docs/results/5x5/final-arena.txt</code>) both score 100/100, 95% interval 0.963–1.000.</p>
@@ -1678,7 +1701,7 @@ A wins 3, B wins 1, draws 0</code></pre></li>
   <li><strong>Loss of diversity.</strong> The policy has collapsed onto the known perfect line (97% on the center point, chapter 05), distinct arena games fell from 20 to as few as 9, and self-play, driven by the same policy, likely visits fewer distinct positions. Positions off the main line then get less training data, which could let late generations drift on exactly the positions the arena's sampled openings produce.</li>
   <li><strong>The learning-rate drop at generation 40</strong> (0.02 → 0.002) slows changes of every kind. It coincides with the plateau but did not obviously cause it: the refit had already reached its plateau level by generation 34, six generations before the drop.</li>
 </ul>
-<p><strong>Drift and non-transitivity.</strong> Above the anchor's 645-point cap, every rating is held up by a chain of ladder matches, each only 20 games. Generation 0 stops being informative almost at once: from generation 1 on, seed 1's generations beat it 20–0 or 19–1. What remains is a chain of noisy links, whose errors can accumulate like a random walk; the ladder's long rungs (g − 4, g − 8) limit that drift but cannot remove it. And game strength need not be transitive at all. Seed 1 has a cycle: generation 30 beat 29 11–9, 31 beat 30 14–6, and 29 beat 31 12–8 (<code>docs/results/5x5/results.csv</code>). With 20 games each, every one of those could be noise — which is precisely the point of the next section. A deeper caveat applies to all self-play Elo: a network can improve against its own ancestors in ways that do not transfer to other opponents. This project has no outside yardstick by design (the spec rules out baseline bots and external engines), so its Elo claims are claims about this lineage only.</p>
+<p><strong>Drift and non-transitivity.</strong> In the ladder-era runs of <code>docs/results/</code>, every rating above the anchor's 645-point cap is held up by a chain of ladder matches, each only 20 games. Generation 0 stops being informative almost at once: from generation 1 on, seed 1's generations beat it 20–0 or 19–1. What remains is a chain of noisy links, whose errors can accumulate like a random walk; the ladder's long rungs (g − 4, g − 8) limit that drift but cannot remove it. And game strength need not be transitive at all. Seed 1 has a cycle: generation 30 beat 29 11–9, 31 beat 30 14–6, and 29 beat 31 12–8 (<code>docs/results/5x5/results.csv</code>). With 20 games each, every one of those could be noise — which is precisely the point of the next section. A deeper caveat applies to all self-play Elo: a network can improve against its own ancestors in ways that do not transfer to other opponents. The uniform bot is the only outside yardstick here, and a weak one; the reference runs were made before it existed, so their Elo claims are claims about their own lineage only. External engines stay out of scope.</p>
 <p><strong>How noisy are 20 games? Wilson intervals.</strong> The log reports each match against g − 1 with a 95% <strong>Wilson score interval</strong>, which behaves sensibly for small samples and for scores of 0 or 1, unlike the textbook p ± 1.96·√(p(1−p)/n):</p>
 <pre><code>std::pair&lt;double, double&gt; wilsonInterval(double score, int games, double z) {
     if (games &lt;= 0) return {0.0, 1.0};
@@ -1692,7 +1715,7 @@ A wins 3, B wins 1, draws 0</code></pre></li>
     double half = z * std::sqrt(p * (1.0 - p) / n + z2 / (4.0 * n * n)) / denom;
     return {std::max(0.0, center - half), std::min(1.0, center + half)};
 }</code></pre>
-<span class="src">src/elo.cpp:183 — <code>wilsonInterval</code></span>
+<span class="src">src/elo.cpp:184 — <code>wilsonInterval</code></span>
 <p>The numbers are sobering (<code>docs/results/5x5/elo.csv</code>): 10 of 20 gives 0.30–0.70; 15 of 20, a clear-looking 75%, gives 0.53–0.89; 3 of 20 gives 0.05–0.36. On the Elo scale, 0.30–0.70 is ±147 points: <strong>one 20-game match cannot resolve a difference smaller than about 150 Elo</strong>. On its own, only a lopsided result means much — 15–5 or better (seed 1's generation 6 beat 5 16–4), 5–15 or worse (generation 24 lost to 23 3–17), or a sweep of generation 0. The fitted curve is meaningful because it pools hundreds of such matches, not because any one of them is. And with fewer games even a sweep proves little:</p>
 <pre><code>$ ./build-blas/arena --a runs/5x5-seed1/checkpoints/gen_0060.azn \
       --b runs/5x5-seed1/checkpoints/gen_0000.azn --games 4 --workers 1 \
@@ -1822,7 +1845,7 @@ A wins 4, B wins 0, draws 0</code></pre>
 <line x1="190" y1="204" x2="190" y2="220" class="rule" stroke-width="1.4"/><path d="M190 221 l-5 -8 h10 z" class="dim"/>
 <rect x="20" y="224" width="340" height="50" rx="6" fill="var(--surface)" class="rule" stroke-width="1.5"/>
 <text x="32" y="245" font-size="14" font-weight="600" font-family="IBM Plex Mono, ui-monospace, monospace">4  arena</text>
-<text x="32" y="264" font-size="12.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">vs the ladder; results.csv, elo.csv refit</text>
+<text x="32" y="264" font-size="12.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">vs g−1 and references; rating files refit</text>
 <line x1="190" y1="274" x2="190" y2="290" class="rule" stroke-width="1.4"/><path d="M190 291 l-5 -8 h10 z" class="dim"/>
 <rect x="20" y="294" width="340" height="50" rx="6" fill="var(--surface)" class="white-stroke" stroke-width="1.5"/>
 <text x="32" y="315" font-size="14" font-weight="600" font-family="IBM Plex Mono, ui-monospace, monospace">5  commit</text>
@@ -1853,7 +1876,7 @@ A wins 4, B wins 0, draws 0</code></pre>
         });
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }</code></pre>
-<span class="src">src/trainer.cpp:180 — <code>Trainer::runGeneration</code> (abridged)</span>
+<span class="src">src/trainer.cpp:258 — <code>Trainer::runGeneration</code> (abridged)</span>
 <p><code>parallelFor</code> hands out indices from an atomic counter; which worker plays game 17 varies from run to run, but game 17 itself does not. The row split in the naive gemm keeps the arithmetic identical too:</p>
 <pre><code>void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alpha,
                         const float* A, const float* B, float beta, float* C) const {
@@ -1938,7 +1961,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
 <tr><td>Replay buffer</td><td>ring of encoded examples</td><td>window of whole games, planes rebuilt on sampling</td><td>history for free, 1 byte per point</td></tr>
 <tr><td>Augmentation</td><td>none</td><td>8 board symmetries</td><td>Go is symmetric</td></tr>
 <tr><td>Optimizer</td><td>momentum, decay on every parameter, fixed LR</td><td>momentum, decay on weights only, stepped LR schedule</td><td>batch norm; longer runs</td></tr>
-<tr><td>Evaluation</td><td>vs. exhaustive minimax</td><td>arena vs. own ladder, Bradley-Terry Elo, Wilson intervals, optional gating</td><td>no oracle for Go</td></tr>
+<tr><td>Evaluation</td><td>vs. exhaustive minimax</td><td>arena vs. own references and a uniform bot, Bradley-Terry Elo, Wilson intervals, optional gating</td><td>no oracle for Go</td></tr>
 <tr><td>Randomness</td><td><code>std::mt19937</code>, <code>random_device</code></td><td>one specified generator, streams from <code>deriveSeed</code></td><td>reproducible for any thread count</td></tr>
 <tr><td>Parallelism</td><td>single thread</td><td>W self-play/arena workers, row-split gemm</td><td>a run takes hours, not minutes</td></tr>
 <tr><td>Persistence</td><td>one weights file</td><td>checkpoints plus an atomic, fsync'd <code>state.bin</code>; resume</td><td>runs outlive a laptop lid</td></tr>
@@ -2003,17 +2026,19 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Learning-rate schedule</dt>
   <dd><code>LrSchedule::at</code> <span class="loc">— src/optimizer.cpp:100</span></dd>
   <dt>Arena and opening diversity</dt>
-  <dd><code>playArenaGame</code>, <code>playMatch</code> <span class="loc">— src/arena.cpp:35, 66</span></dd>
-  <dt>Ladder of opponents, gating</dt>
-  <dd><code>ladderOpponents</code>, <code>passesGate</code> <span class="loc">— src/arena.cpp:102, 112</span></dd>
+  <dd><code>playArenaGame</code>, <code>playMatch</code> <span class="loc">— src/arena.cpp:50, 86</span></dd>
+  <dt>Choosing opponents, gating</dt>
+  <dd><code>selectOpponents</code>, <code>passesGate</code> <span class="loc">— src/arena.cpp:152, 180</span></dd>
+  <dt>Arena rounds: calibration, promotion</dt>
+  <dd><code>calibrateBots</code>, <code>runArenaRound</code> <span class="loc">— src/arena_round.cpp:22, 39</span></dd>
   <dt>Bradley-Terry Elo with a virtual draw</dt>
-  <dd><code>fitBradleyTerry</code> <span class="loc">— src/elo.cpp:112</span></dd>
+  <dd><code>fitBradleyTerry</code> <span class="loc">— src/elo.cpp:113</span></dd>
   <dt>Wilson intervals</dt>
-  <dd><code>wilsonInterval</code> <span class="loc">— src/elo.cpp:183</span></dd>
+  <dd><code>wilsonInterval</code> <span class="loc">— src/elo.cpp:184</span></dd>
   <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
-  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:81, 56</span></dd>
+  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:91, 64</span></dd>
   <dt>One generation</dt>
-  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:180</span></dd>
+  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:258</span></dd>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
@@ -2021,7 +2046,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
-  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:17</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:140</span></dd>
+  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:27</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:211</span></dd>
   <dt>Inspecting a position</dt>
   <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:70, 91</span></dd>
 </dl>

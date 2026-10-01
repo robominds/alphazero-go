@@ -31,8 +31,8 @@ cmake --build build-blas -j
 ctest --test-dir build-blas --output-on-failure
 ```
 
-Each build has 23 component tests plus an integration smoke test (24 in
-ctest; `ctest -N | tail -1` prints `Total Tests: 24`).
+Each build has 24 component tests plus an integration smoke test (25 in
+ctest; `ctest -N | tail -1` prints `Total Tests: 25`).
 
 **The presets in `configs/` say `backend = blas`**, because BLAS is 2.9×
 faster on 5×5 and 18× faster on 19×19 (`docs/results/bench.txt`). Use them
@@ -59,6 +59,13 @@ gen 60 | selfplay 200 games avg 43.3 plies 7.7s | train loss p 1.73 v 0.09 lr 0.
 done: generation 60 in runs/5x5-seed1
 ```
 
+These lines are from the reference runs, made before the arena chose its
+opponents by rating. The arena part of the line now lists every opponent
+with the new network's score, in the form `vs 149:0.55 120:0.70
+bot100:1.00`, and ends with `promoted` when the generation joins the
+reference set. `references.csv` in the run directory lists the reference
+set with ratings, bots included.
+
 `--set key=value` overrides any config key and `--generations N` trains
 until generation N; the reference runs used, for example,
 `--set seed=2` and `--generations 2`:
@@ -84,8 +91,25 @@ $ ./build-blas/train --run runs/5x5-seed1 --resume --set blocks=4
 error: cannot change architecture keys on resume: blocks
 ```
 
-**`arena`** plays two checkpoints against each other, colors alternating,
-and prints the score with a 95% Wilson interval
+`bot_simulations` cannot change on resume either: bot k is arena player
+−k, so the list is fixed for the life of a run.
+
+`--rerate` trains nothing. It replays only the arena over a run's
+existing checkpoints with the current opponent selection, and writes
+`DIR/rerate/` (`results.csv`, `elo.csv`, `references.csv` and a `log.csv`
+with one row per generation). `state.bin` and `config.cfg` are left
+untouched, and `--set` applies to the replay only. A run made before
+`arena_opponents` changed meaning should be re-rated with the presets'
+new value:
+
+```
+$ ./build-blas/train --run runs/9x9-main --rerate --set arena_opponents=2
+```
+
+**`arena`** plays two checkpoints against each other (or, with
+`--b-bot SIMS` instead of `--b`, a checkpoint against a uniform bot
+searching SIMS simulations per move), colors alternating, and prints the
+score with a 95% Wilson interval
 (`docs/results/9x9/final-arena.txt`):
 
 ```
@@ -220,6 +244,9 @@ python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-mai
   — the design spec.
 - [`docs/superpowers/plans/2026-09-29-alphazero-go.md`](docs/superpowers/plans/2026-09-29-alphazero-go.md)
   — the implementation plan.
+- [`docs/superpowers/specs/2026-10-01-rating-aware-arena-design.md`](docs/superpowers/specs/2026-10-01-rating-aware-arena-design.md)
+  and [`docs/superpowers/plans/2026-10-01-rating-aware-arena.md`](docs/superpowers/plans/2026-10-01-rating-aware-arena.md)
+  — the rating-aware arena: opponents chosen by rating, the uniform bot and `--rerate`.
 
 `python3 tools/check_citations.py` checks that every `file:line` citation
 in both explainers still points at the quoted definition.

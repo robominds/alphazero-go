@@ -1646,7 +1646,7 @@ GameOutcome playArenaGame(WorkerContext& ctx, const ArenaConfig& cfg, int n, uin
                           int index) {
     Rng rng(deriveSeed(seed, static_cast<uint64_t>(index)));
     bool aIsBlack = index % 2 == 0;   // colors alternate, so A is Black in half the games
-    /* ... game; MctsConfig mc from cfg with addNoise = false; searchA, searchB ... */
+    /* ... game; searchA, searchB from each Seat's MctsConfig, addNoise = false ... */
     while (!game.isTerminal()) {
         bool blackToMove = game.board().toMove() == Color::Black;
         Mcts& mover = blackToMove == aIsBlack ? searchA : searchB;
@@ -1660,7 +1660,7 @@ GameOutcome playArenaGame(WorkerContext& ctx, const ArenaConfig& cfg, int n, uin
     return {matchScore(game.resultForBlack(), aIsBlack), game.moves()};
 }
 ```
-*src/arena.cpp:35 — `playArenaGame` (abridged)*
+*src/arena.cpp:50 — `playArenaGame` (abridged)*
 
 **Opening diversity.** Without noise, search is deterministic up to
 random tie-breaks, and two fixed networks would replay nearly the same
@@ -1676,25 +1676,85 @@ its own right: the policy was collapsing onto one opening. On 9×9 it
 ranged from 19 to 20 out of 20 (`docs/results/9x9/log.csv`): with 81
 points and 4 sampled plies, the openings almost never repeat.
 
-**The ladder of opponents.** Playing only g − 1 measures one step at a
-time, and small errors add up. Playing everyone is too expensive. The
-compromise is a sparse ladder, dense near the present and sparse into
-the past, plus generation 0:
+**Choosing informative opponents.** Playing only g − 1 measures one
+step at a time, and small errors add up. Playing everyone is too
+expensive. So which earlier players are worth twenty games? A game the
+new network wins with probability p has a result with variance
+p(1 − p), and that is how much it can tell you: 0.25 at p = 0.5, 0.21
+at 0.7, 0.09 at 0.9, 0.01 at 0.99. A game against an opponent it beats
+99% of the time is worth a twenty-fifth of an even game. The rating fit
+adds a second limit (next section): a 20–0 sweep can never say more
+than 400·log₁₀(41) ≈ 645 Elo. The reference runs in `docs/results/`
+were made with a fixed ladder: g − 1, g − 2, g − 4, g − 8, and always
+generation 0. On 9×9, generation 0 scored at most 2 of 20 in 137 of its
+150 matches, and 0 of 20 in 110 (`docs/results/9x9/results.csv`). The
+end of this chapter shows what that did to the curve. The arena now
+picks its opponents from the current ratings instead:
 
 ```cpp
-std::vector<int> ladderOpponents(int generation, int maxOpponents) {
-    std::vector<int> out;
-    if (generation <= 0) return out;
-    // g-1, g-2, g-4, g-8, ...: dense near the present, sparse into the past.
-    for (int d = 1; generation - d >= 1 && static_cast<int>(out.size()) < maxOpponents; d *= 2)
-        out.push_back(generation - d);
-    out.push_back(0);   // the anchor: every rating is relative to generation 0
+std::vector<int> selectOpponents(int generation, const std::map<int, double>& ratings,
+                                 const std::vector<int>& references, int maxExtra,
+                                 std::optional<int> bestNetwork) {
+    /* ... generation must be >= 1 ... */
+    std::vector<int> out{generation - 1};   // the progress signal
+    auto chosen = [&](int p) { return std::find(out.begin(), out.end(), p) != out.end(); };
+    const int strongest = strongestReference(ratings, references);
+    if (!chosen(strongest)) out.push_back(strongest);   // the promotion check
+
+    // The new network has no rating yet; its predecessor's is the best guess.
+    auto prev = ratings.find(generation - 1);
+    const double estimate = prev == ratings.end() ? 0.0 : prev->second;
+    std::vector<std::pair<double, int>> candidates;   // (|E - 0.7|, player)
+    for (int r : references) {
+        auto it = ratings.find(r);
+        if (it == ratings.end() || chosen(r)) continue;
+        candidates.push_back({std::fabs(expectedScore(estimate, it->second) - kTargetScore), r});
+    }
+    std::sort(candidates.begin(), candidates.end());   // by distance, then by smaller ID
+    for (size_t i = 0; i < candidates.size() && static_cast<int>(i) < maxExtra; ++i)
+        out.push_back(candidates[i].second);
+
+    if (bestNetwork && !chosen(*bestNetwork)) out.push_back(*bestNetwork);   // gating
     return out;
 }
 ```
-*src/arena.cpp:102 — `ladderOpponents`*
+*src/arena.cpp:152 — `selectOpponents` (abridged)*
 
-With `arena_opponents = 4`, generation 33 plays 32, 31, 29, 25 and 0.
+The candidates are the **references**: a frozen set of players that
+starts as generation 0 plus the bots, and only grows.
+
+- **g − 1** is always played. It is the progress signal, and its match
+  is the one `log.csv` reports.
+- **The strongest reference** is always played. It is the promotion
+  check: a generation that scores at least `promote_threshold` against
+  it (0.85, about 300 Elo) plays it `calibration_games` (80) more games
+  and joins the references, as the next yardstick.
+- **`arena_opponents` more references** (2 in the presets) are the ones
+  for which the new network's expected score,
+  E = 1 / (1 + 10^((R_c − R̂)/400)), is closest to 0.7. R̂, the new
+  network's rating, is not known yet, so g − 1's rating stands in.
+
+Generation 0 stays pinned at 0 Elo and is never removed. Once every new
+network beats it, it simply stops being chosen, and its old results stay
+in the fit. For example, take generation 10, with g − 1 rated 800 and
+references at 100 (a bot), 0 (generation 0), 450 (generation 4) and 700
+(generation 6). It plays 9, then 6 (the strongest), then 4 (E = 0.88)
+and the bot (E = 0.98). Generation 0, at E = 0.99, is left out
+(`test_select_opponents` in `tests/test_arena.cpp`).
+
+**A yardstick from outside the lineage.** The references include
+**uniform bots** (`bot_simulations = 100` in the presets): MCTS players
+whose priors are all equal and whose value is always 0. A bot knows the
+rules and nothing else, so its strength depends only on its simulation
+count, and it is the same in every run. Each bot plays generation 0
+`calibration_games` games when a run starts, so it is rated before it
+can be chosen. `references.csv` lists every reference with its rating.
+Selection, matches, refit and promotion are one function,
+`runArenaRound` (`src/arena_round.cpp`). Training uses it, and so does
+`train --run DIR --rerate`, which replays the arena over a finished
+run's checkpoints into `DIR/rerate/`. With gating off, the arena never
+feeds back into training, so a re-rated run measures exactly the
+networks a live run would have.
 
 **Bradley-Terry instead of incremental Elo.** Chess-style Elo updates
 each player's rating after every game by an amount proportional to the
@@ -1728,7 +1788,7 @@ std::map<int, double> fitBradleyTerry(const ResultsTable& results, int anchor) {
     /* ... elo[id] = 400 * log10(gamma) ... */
 }
 ```
-*src/elo.cpp:112 — `fitBradleyTerry` (abridged)*
+*src/elo.cpp:113 — `fitBradleyTerry` (abridged)*
 
 Three properties matter. **Order independence**: the fit depends only
 on the table, so a resumed run reproduces the same ratings. **The
@@ -1802,8 +1862,9 @@ on, and the data cannot fully separate them:
   obviously cause it: the refit had already reached its plateau level by
   generation 34, six generations before the drop.
 
-**Drift and non-transitivity.** Above the anchor's 645-point cap, every
-rating is held up by a chain of ladder matches, each only 20 games.
+**Drift and non-transitivity.** In the ladder-era runs of
+`docs/results/`, every rating above the anchor's 645-point cap is held
+up by a chain of ladder matches, each only 20 games.
 Generation 0 stops being informative almost at once: from generation 1
 on, seed 1's generations beat it 20–0 or 19–1. What remains is a chain
 of noisy links, whose errors can accumulate like a random walk; the
@@ -1814,9 +1875,10 @@ generation 30 beat 29 11–9, 31 beat 30 14–6, and 29 beat 31 12–8
 those could be noise — which is precisely the point of the next
 section. A deeper caveat applies to all self-play Elo: a network can
 improve against its own ancestors in ways that do not transfer to other
-opponents. This project has no outside yardstick by design (the spec
-rules out baseline bots and external engines), so its Elo claims are
-claims about this lineage only.
+opponents. The uniform bot is the only outside yardstick here, and a
+weak one; the reference runs were made before it existed, so their Elo
+claims are claims about their own lineage only. External engines stay
+out of scope.
 
 **How noisy are 20 games? Wilson intervals.** The log reports each
 match against g − 1 with a 95% **Wilson score interval**, which behaves
@@ -1837,7 +1899,7 @@ std::pair<double, double> wilsonInterval(double score, int games, double z) {
     return {std::max(0.0, center - half), std::min(1.0, center + half)};
 }
 ```
-*src/elo.cpp:183 — `wilsonInterval`*
+*src/elo.cpp:184 — `wilsonInterval`*
 
 The numbers are sobering (`docs/results/5x5/elo.csv`): 10 of 20 gives
 0.30–0.70; 15 of 20, a clear-looking 75%, gives 0.53–0.89; 3 of 20 gives
@@ -1963,7 +2025,7 @@ One **generation** is five steps, in `Trainer::runGeneration`:
 1. self-play   games_per_generation games with the current network, on W threads
 2. train       train_steps SGD steps on minibatches from the replay buffer
 3. checkpoint  checkpoints/gen_NNNN.azn
-4. arena       new network vs the ladder; results.csv and elo.csv refit
+4. arena       new network vs g-1 and chosen references; rating files refit
 5. commit      state.bin (the commit point), then one row of log.csv
 ```
 
@@ -2000,7 +2062,7 @@ GenerationStats Trainer::runGeneration() {
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:180 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:258 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not. The
@@ -2178,7 +2240,7 @@ night is enough to watch it learn.
 | Replay buffer | ring of encoded examples | window of whole games, planes rebuilt on sampling | history for free, 1 byte per point |
 | Augmentation | none | 8 board symmetries | Go is symmetric |
 | Optimizer | momentum, decay on every parameter, fixed LR | momentum, decay on weights only, stepped LR schedule | batch norm; longer runs |
-| Evaluation | vs. exhaustive minimax | arena vs. own ladder, Bradley-Terry Elo, Wilson intervals, optional gating | no oracle for Go |
+| Evaluation | vs. exhaustive minimax | arena vs. own references and a uniform bot, Bradley-Terry Elo, Wilson intervals, optional gating | no oracle for Go |
 | Randomness | `std::mt19937`, `random_device` | one specified generator, streams from `deriveSeed` | reproducible for any thread count |
 | Parallelism | single thread | W self-play/arena workers, row-split gemm | a run takes hours, not minutes |
 | Persistence | one weights file | checkpoints plus an atomic, fsync'd `state.bin`; resume | runs outlive a laptop lid |
@@ -2223,16 +2285,17 @@ see again in place.
 | Symmetry augmentation | `transformPoint`, `transformAction` — `src/symmetry.cpp:6, 21` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:19` |
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:100` |
-| Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:35, 66` |
-| Ladder of opponents, gating | `ladderOpponents`, `passesGate` — `src/arena.cpp:102, 112` |
-| Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:112` |
-| Wilson intervals | `wilsonInterval` — `src/elo.cpp:183` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:81, 56` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:180` |
+| Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:50, 86` |
+| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:152, 180` |
+| Arena rounds: calibration, promotion | `calibrateBots`, `runArenaRound` — `src/arena_round.cpp:22, 39` |
+| Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
+| Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:91, 64` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:258` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:12` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:17`; `Trainer::resume` — `src/trainer.cpp:140` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:27`; `Trainer::resume` — `src/trainer.cpp:211` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:70, 91` |
 
 ---
