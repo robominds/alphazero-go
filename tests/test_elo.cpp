@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <iterator>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -106,6 +107,30 @@ static void test_csv_round_trip() {
     assert(ResultsTable::fromCsv("a,b,games,score_a\n").empty());
 }
 
+// Bots are players -1, -2, ...: they sort before generation 0, round-trip
+// through the CSV and are rated like anyone else.
+static void test_negative_ids() {
+    ResultsTable t;
+    t.addMatch(0, -1, 10, 8.0);   // generation 0 scored 8 of 10 against bot 1
+    t.addMatch(-2, 3, 4, 1.0);
+    t.addMatch(-1, -2, 6, 3.0);
+    assert((t.players() == std::vector<int>{-2, -1, 0, 3}));
+    std::string csv = t.toCsv();
+    assert(csv == "a,b,games,score_a\n-2,-1,6,3\n-2,3,4,1\n-1,0,10,2\n");
+    assert(ResultsTable::fromCsv(csv).toCsv() == csv);
+
+    // The same known-ladder check as above, with two of the players being bots.
+    std::map<int, double> truth{{-2, -300.0}, {-1, 150.0}, {0, 0.0}, {4, 500.0}};
+    ResultsTable r;
+    const int games = 100000;
+    for (auto i = truth.begin(); i != truth.end(); ++i)
+        for (auto j = std::next(i); j != truth.end(); ++j)
+            r.addMatch(i->first, j->first, games, games * expectedScore(i->second, j->second));
+    auto elo = fitBradleyTerry(r, 0);
+    assert(elo.size() == 4 && elo.at(0) == 0.0);
+    for (const auto& [player, rating] : truth) assert(near(elo.at(player), rating, 2.0));
+}
+
 static bool csvThrows(const std::string& csv, const std::string& expectInMessage) {
     try {
         ResultsTable::fromCsv(csv);
@@ -122,6 +147,7 @@ static void test_csv_rejects_bad_input() {
     assert(csvThrows("a,b,games,score_a\n0,1,2,1\n0,x,2,1\n", "line 3"));
     assert(csvThrows("a,b,games,score_a\n0,1,2,3\n", "line 2"));    // score > games
     assert(csvThrows("a,b,games,score_a\n1,1,2,1\n", "line 2"));    // a == b
+    assert(csvThrows("a,b,games,score_a\n-1,-1,2,1\n", "line 2"));  // a == b, bots too
     assert(csvThrows("a,b,games,score_a\n0,1,0,0\n", "line 2"));    // no games
 }
 
@@ -145,6 +171,7 @@ int main() {
     test_disconnected_players_omitted();
     test_csv_round_trip();
     test_csv_rejects_bad_input();
+    test_negative_ids();
     test_wilson_interval();
     std::printf("test_elo: all tests passed\n");
     return 0;

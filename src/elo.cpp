@@ -101,7 +101,8 @@ ResultsTable ResultsTable::fromCsv(const std::string& csv) {
         if (!parseIntField(f[0], a) || !parseIntField(f[1], b) || !parseIntField(f[2], games) ||
             !parseDoubleField(f[3], score))
             fail("malformed number");
-        if (a == b || a < 0 || b < 0) fail("players must be distinct generations >= 0");
+        // Generations are >= 0 and bots < 0, so any int is a player.
+        if (a == b) fail("players must be distinct");
         if (games <= 0 || score < 0 || score > games) fail("score_a must be in [0, games]");
         table.addMatch(a, b, games, score);
     }

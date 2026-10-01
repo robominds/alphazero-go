@@ -12,7 +12,8 @@
 
 namespace azgo {
 
-// All arena results so far. Players are generation numbers.
+// All arena results so far. Players are generation numbers (>= 0) and
+// fixed-strength bots (-1, -2, ...: bot k is player -k).
 class ResultsTable {
 public:
     struct Pair { int a; int b; int games; double scoreA; };  // a < b; scoreA in [0, games]
