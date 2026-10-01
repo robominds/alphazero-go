@@ -47,7 +47,9 @@ static void test_defaults() {
     assert(c.temperatureMoves == 20);
     assert(c.bufferPositions == 200000 && c.trainSteps == 200 && c.batchSize == 256);
     assert(c.lrSchedule == "0:0.02" && c.momentum == 0.9f && c.weightDecay == 1e-4f);
-    assert(c.arenaEvery == 1 && c.arenaGames == 20 && c.arenaOpponents == 4);
+    assert(c.arenaEvery == 1 && c.arenaGames == 20 && c.arenaOpponents == 2);
+    assert((c.botSimulations == std::vector<int>{100}));
+    assert(c.calibrationGames == 80 && c.promoteThreshold == 0.85f);
     assert(c.arenaSimulations == 100 && c.arenaTemperatureMoves == 4);
     assert(!c.gating && c.gatingThreshold == 0.55f && c.sgfPerGeneration == 2);
 
@@ -77,6 +79,13 @@ static void test_presets_load() {
     Config c19 = loadConfigFile(preset("19x19.cfg"));
     assert(c19.boardSize == 19 && c19.blocks == 10 && c19.filters == 128);
     assert(c19.valueHidden == 256 && c19.simulations == 400 && c19.arenaGames == 10);
+
+    // Every preset uses the same rating-aware arena settings.
+    for (const Config& c : {c5, c9, c19}) {
+        assert(c.arenaOpponents == 2);
+        assert((c.botSimulations == std::vector<int>{100}));
+        assert(c.calibrationGames == 80 && c.promoteThreshold == 0.85f);
+    }
 }
 
 static void test_missing_file() {
@@ -163,6 +172,68 @@ static void test_architecture_diff() {
     assert((diff == std::vector<std::string>{"board_size", "blocks", "value_hidden"}));
 }
 
+static void test_arena_keys() {
+    // A list, printed without spaces whatever the input spacing.
+    Config c = parseConfigText("bot_simulations = 50, 200\n", "t.cfg");
+    assert((c.botSimulations == std::vector<int>{50, 200}));
+    assert(contains(configToString(c), "bot_simulations = 50,200\n"));
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+
+    // Empty means no bots, in a file and as an override, and round-trips.
+    Config none = parseConfigText("bot_simulations =\n", "t.cfg");
+    assert(none.botSimulations.empty());
+    assert(configToString(parseConfigText(configToString(none), "rt")) == configToString(none));
+    Config o;
+    applyOverride(o, "bot_simulations=");
+    assert(o.botSimulations.empty());
+    applyOverride(o, "bot_simulations=100000");
+    assert((o.botSimulations == std::vector<int>{100000}));
+
+    c = parseConfigText("calibration_games = 2\npromote_threshold = 1\narena_opponents = 0\n", "t.cfg");
+    assert(c.calibrationGames == 2 && c.promoteThreshold == 1.0f && c.arenaOpponents == 0);
+    c = parseConfigText("calibration_games = 10000\npromote_threshold = 0.5\narena_opponents = 32\n", "t.cfg");
+    assert(c.calibrationGames == 10000 && c.promoteThreshold == 0.5f && c.arenaOpponents == 32);
+
+    std::string msg = errorOf("calibration_games = 7");
+    assert(contains(msg, "t.cfg:1: calibration_games: ") && contains(msg, "even"));
+    assert(contains(errorOf("calibration_games = 0"), "t.cfg:1: calibration_games: "));
+    assert(contains(errorOf("calibration_games = 10002"), "t.cfg:1: calibration_games: "));
+    assert(contains(errorOf("promote_threshold = 0.4"), "t.cfg:1: promote_threshold: "));
+    assert(contains(errorOf("promote_threshold = 1.01"), "t.cfg:1: promote_threshold: "));
+    assert(contains(errorOf("arena_opponents = 33"), "t.cfg:1: arena_opponents: "));
+    assert(contains(errorOf("arena_opponents = -1"), "t.cfg:1: arena_opponents: "));
+}
+
+// Review Focus 2: hand-edited bot lists.
+static void test_bot_simulations_rejects_bad_lists() {
+    for (const char* bad : {"0", "-5", "100001", "1e3", "abc", "100,", ",100", "100,,200",
+                            "100 200", "100,100"}) {
+        std::string msg = errorOf(std::string("bot_simulations = ") + bad);
+        assert(contains(msg, "t.cfg:1: bot_simulations: "));
+    }
+    assert(contains(errorOf("bot_simulations = 100,100"), "duplicate"));
+    assert(contains(errorOf("bot_simulations = 50,0"), "bot 2"));
+}
+
+static void test_resume_locked_diff() {
+    Config a, b;
+    assert(resumeLockedDiff(a, b).empty());
+    // Tunable arena keys are not locked.
+    b.arenaOpponents = 5;
+    b.calibrationGames = 20;
+    b.promoteThreshold = 0.9f;
+    assert(resumeLockedDiff(a, b).empty());
+    // bot_simulations is locked but is not an architecture key.
+    b.botSimulations = {50};
+    assert((resumeLockedDiff(a, b) == std::vector<std::string>{"bot_simulations"}));
+    assert(architectureDiff(a, b).empty());
+    b.filters = 32;
+    assert((resumeLockedDiff(a, b) == std::vector<std::string>{"filters", "bot_simulations"}));
+    b = a;
+    b.botSimulations = {};
+    assert((resumeLockedDiff(a, b) == std::vector<std::string>{"bot_simulations"}));
+}
+
 static void test_errors_name_key_and_line() {
     std::string msg = errorOf("komi = 7.5\nfoo = 1\n");
     assert(contains(msg, "t.cfg:2") && contains(msg, "foo") && contains(msg, "unknown key"));
@@ -231,6 +302,9 @@ int main() {
     test_round_trip();
     test_overrides();
     test_architecture_diff();
+    test_arena_keys();
+    test_bot_simulations_rejects_bad_lists();
+    test_resume_locked_diff();
     test_errors_name_key_and_line();
     test_hand_edited_files();
     std::printf("test_config: all tests passed\n");

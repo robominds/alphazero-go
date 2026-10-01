@@ -146,10 +146,14 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     Config cfg = saved;
     for (const std::string& o : overrides) applyOverride(cfg, o);
 
-    const std::vector<std::string> diff = architectureDiff(saved, cfg);
+    const std::vector<std::string> diff = resumeLockedDiff(saved, cfg);
     if (!diff.empty()) {
         std::string keys;
         for (const std::string& k : diff) keys += (keys.empty() ? "" : ", ") + k;
+        // resumeLockedDiff lists bot_simulations last, after any architecture keys.
+        if (diff.back() == "bot_simulations")
+            throw ConfigError("cannot change keys on resume: " + keys +
+                              " (bot k is arena player -k, so the bot list is fixed for a run)");
         throw ConfigError("cannot change architecture keys on resume: " + keys);
     }
 

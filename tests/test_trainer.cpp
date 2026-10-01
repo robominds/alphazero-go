@@ -253,6 +253,18 @@ static void test_resume_overrides() {
     assert(threw);
     assert(readFile(configPath(dir.str())) == before);
 
+    // So is bot_simulations: bots are numbered by their position in it.
+    threw = false;
+    try {
+        Trainer::resume(dir.str(), {"bot_simulations=50"});
+    } catch (const ConfigError& e) {
+        const std::string msg = e.what();
+        threw = msg.find("cannot change") != std::string::npos &&
+                msg.find("bot_simulations") != std::string::npos;
+    }
+    assert(threw);
+    assert(readFile(configPath(dir.str())) == before);
+
     // Tunable keys are accepted and persisted.
     std::unique_ptr<Trainer> t = resumeQuiet(dir, {"simulations=12"});
     assert(t->config().simulations == 12);

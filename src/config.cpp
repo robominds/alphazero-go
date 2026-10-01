@@ -1,4 +1,5 @@
 #include "azgo/config.hpp"
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -74,6 +75,46 @@ std::string parseBool(const std::string& v, bool& out) {
     if (v == "true" || v == "on" || v == "1") { out = true; return ""; }
     if (v == "false" || v == "off" || v == "0") { out = false; return ""; }
     return "expected true|false|on|off|1|0, got " + quoted(v);
+}
+
+// Colors alternate game by game, so an odd count would favor one side.
+std::string parseEvenGames(const std::string& v, int& out) {
+    int games = 0;
+    std::string reason = parseInt(v, 2, 10000, games);
+    if (!reason.empty()) return reason;
+    if (games % 2 != 0) return "expected an even number (colors alternate), got " + quoted(v);
+    out = games;
+    return "";
+}
+
+// "100" or "50, 200": the bots' simulation counts, each in [1, 100000] and
+// all different (bots are named by their count, e.g. "bot100"). An empty
+// value means no bots. Splitting by hand, rather than with getline, keeps the
+// empty item of "100," so that it is rejected.
+std::string parseBotList(const std::string& v, std::vector<int>& out) {
+    std::vector<int> list;
+    for (size_t start = 0; !v.empty();) {
+        size_t comma = v.find(',', start);
+        // const: a non-const std::string would make quoted() below pick std::quoted by ADL.
+        const std::string item =
+            trim(v.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+        int sims = 0;
+        std::string reason = parseInt(item, 1, 100000, sims);
+        if (!reason.empty()) return "bot " + std::to_string(list.size() + 1) + ": " + reason;
+        if (std::find(list.begin(), list.end(), sims) != list.end())
+            return "duplicate entry " + quoted(item) + " (each bot needs its own simulation count)";
+        list.push_back(sims);
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    out = list;
+    return "";
+}
+
+std::string printBotList(const std::vector<int>& list) {
+    std::string out;
+    for (size_t i = 0; i < list.size(); ++i) out += (i ? "," : "") + std::to_string(list[i]);
+    return out;
 }
 
 // The shortest "%.Ng" (N = 6..9) that reads back as exactly the same float:
@@ -165,18 +206,18 @@ const KeyEntry kKeys[] = {
      printFloat<&Config::weightDecay>},
     // arena
     {"arena_every", false, intKey<&Config::arenaEvery, 0, 1000000>, printInt<&Config::arenaEvery>},
-    {"arena_games", false,
-     [](Config& c, const std::string& v) -> std::string {
-         int games = 0;
-         std::string reason = parseInt(v, 2, 10000, games);
-         if (!reason.empty()) return reason;
-         // Colors alternate game by game, so an odd count would favor one side.
-         if (games % 2 != 0) return "expected an even number (colors alternate), got " + quoted(v);
-         c.arenaGames = games;
-         return "";
-     },
+    {"arena_games", false, [](Config& c, const std::string& v) { return parseEvenGames(v, c.arenaGames); },
      printInt<&Config::arenaGames>},
-    {"arena_opponents", false, intKey<&Config::arenaOpponents, 1, 32>, printInt<&Config::arenaOpponents>},
+    {"arena_opponents", false, intKey<&Config::arenaOpponents, 0, 32>, printInt<&Config::arenaOpponents>},
+    {"bot_simulations", false,
+     [](Config& c, const std::string& v) { return parseBotList(v, c.botSimulations); },
+     [](const Config& c) { return printBotList(c.botSimulations); }},
+    {"calibration_games", false,
+     [](Config& c, const std::string& v) { return parseEvenGames(v, c.calibrationGames); },
+     printInt<&Config::calibrationGames>},
+    {"promote_threshold", false,
+     [](Config& c, const std::string& v) { return parseFloat(v, 0.5, 1, c.promoteThreshold); },
+     printFloat<&Config::promoteThreshold>},
     {"arena_simulations", false, intKey<&Config::arenaSimulations, 1, 100000>,
      printInt<&Config::arenaSimulations>},
     {"arena_temperature_moves", false, intKey<&Config::arenaTemperatureMoves, 0, 100000>,
@@ -282,6 +323,12 @@ std::vector<std::string> architectureDiff(const Config& a, const Config& b) {
     std::vector<std::string> keys;
     for (const KeyEntry& e : kKeys)
         if (e.architecture && e.print(a) != e.print(b)) keys.push_back(e.key);
+    return keys;
+}
+
+std::vector<std::string> resumeLockedDiff(const Config& a, const Config& b) {
+    std::vector<std::string> keys = architectureDiff(a, b);
+    if (a.botSimulations != b.botSimulations) keys.push_back("bot_simulations");
     return keys;
 }
 

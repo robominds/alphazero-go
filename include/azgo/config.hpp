@@ -3,7 +3,9 @@
 // One table in config.cpp lists each key with its parser and printer, so the
 // parser, the printer and the architecture check can never disagree.
 // Architecture keys fix the network's tensor shapes and cannot change on
-// resume; every other key is tunable between generations.
+// resume. Neither can bot_simulations: bot k is arena player -k, so a changed
+// list would give old player IDs to new bots. Every other key is tunable
+// between generations.
 #pragma once
 #include <cstdint>
 #include <stdexcept>
@@ -48,7 +50,10 @@ struct Config {
     // arena
     int arenaEvery = 1;                // 0 = never
     int arenaGames = 20;               // per opponent, even
-    int arenaOpponents = 4;            // most recent ladder entries (generation 0 always added)
+    int arenaOpponents = 2;            // extra references chosen by rating (0-32), besides g-1 and the strongest
+    std::vector<int> botSimulations = {100};   // uniform-prior MCTS bots; bot k is player -k; empty = none
+    int calibrationGames = 80;         // even: each bot vs generation 0 at the start; each promotion
+    float promoteThreshold = 0.85f;    // score vs the strongest reference that adds g to the references
     int arenaSimulations = 100;
     int arenaTemperatureMoves = 4;
     bool gating = false;
@@ -77,5 +82,8 @@ std::string configToString(const Config& cfg);
 
 // Keys that fix the network's shape: board_size, history, blocks, filters, value_hidden.
 std::vector<std::string> architectureDiff(const Config& a, const Config& b);
+
+// Keys a resume must refuse to change: architectureDiff, then bot_simulations.
+std::vector<std::string> resumeLockedDiff(const Config& a, const Config& b);
 
 } // namespace azgo
