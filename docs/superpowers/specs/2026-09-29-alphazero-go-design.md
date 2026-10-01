@@ -40,6 +40,8 @@ depth (residual blocks) and width (filters) are configurable.
   watched as SGF files; positions can be inspected with `analyze`.
 - Baseline bots (random/heuristic players) or external engines as
   yardsticks. Progress is measured by the checkpoint arena and Elo.
+  (The 2026-10-01 amendment adds one exception: a uniform-prior MCTS bot
+  as the single fixed yardstick.)
 - GPU acceleration in v1. The design leaves two seams (compute
   `Backend`, MCTS `Evaluator`) so a Metal backend and a cross-thread
   batching evaluator can be added later without restructuring.

@@ -62,7 +62,7 @@ done: generation 60 in runs/5x5-seed1
 These lines are from the reference runs, made before the arena chose its
 opponents by rating. The arena part of the line now lists every opponent
 with the new network's score, in the form `vs 149:0.55 120:0.70
-bot100:1.00`, and ends with `promoted` when the generation joins the
+bot100:1.00`, and adds `promoted` when the generation is promoted into the
 reference set. `references.csv` in the run directory lists the reference
 set with ratings, bots included.
 

@@ -1638,7 +1638,7 @@ This chapter is about how much that can and cannot tell you.
 
 **The arena.** Every generation (`arena_every = 1`), the new network
 plays `arena_games` games (20 in the 5×5 and 9×9 presets, colors
-alternating) against each of a few earlier generations, with search but
+alternating) against a few earlier generations and the bots, with search but
 without Dirichlet noise:
 
 ```cpp
@@ -1686,8 +1686,9 @@ at 0.7, 0.09 at 0.9, 0.01 at 0.99. A game against an opponent it beats
 adds a second limit (next section): a 20–0 sweep can never say more
 than 400·log₁₀(41) ≈ 645 Elo. The reference runs in `docs/results/`
 were made with a fixed ladder: g − 1, g − 2, g − 4, g − 8, and always
-generation 0. On 9×9, generation 0 scored at most 2 of 20 in 137 of its
-150 matches, and 0 of 20 in 110 (`docs/results/9x9/results.csv`). The
+generation 0. On 9×9, generation 0 scored at most 2 of 20 in every one
+of its 137 matches from generation 14 on, and 0 of 20 in 110 of all 150
+matches (`docs/results/9x9/results.csv`). The
 end of this chapter shows what that did to the curve. The arena now
 picks its opponents from the current ratings instead:
 
@@ -1731,8 +1732,9 @@ starts as generation 0 plus the bots, and only grows.
   and joins the references, as the next yardstick.
 - **`arena_opponents` more references** (2 in the presets) are the ones
   for which the new network's expected score,
-  E = 1 / (1 + 10^((R_c − R̂)/400)), is closest to 0.7. R̂, the new
-  network's rating, is not known yet, so g − 1's rating stands in.
+  E = 1 / (1 + 10^((R_c − R̂)/400)), is closest to 0.7. R_c is the candidate's rating and R̂ the new
+  network's estimate; the new network has no rating yet, so g − 1's
+  rating stands in.
 
 Generation 0 stays pinned at 0 Elo and is never removed. Once every new
 network beats it, it simply stops being chosen, and its old results stay
@@ -1807,8 +1809,8 @@ with the refit of the whole table, so older generations' ratings move
 as later generations play them. On 5×5 seed 1 (`docs/results/5x5/`),
 generation 34 was rated 1422.2 on the day; after generations 35, 36, 38
 and 42 had played it (scoring 10, 14, 2 and 13 out of 20), the refit
-puts it at 1138.7. A new generation is rated from just five matches, and
-a strong-looking 17–3 against an older rung (generation 34 beat 26 by
+puts it at 1138.7. In that run, a new generation was rated from just five
+matches, and a strong-looking 17–3 against an older ladder rung (generation 34 beat 26 by
 that score) counts in full until later evidence tempers it.
 
 **The 5×5 curve, stated exactly.** Seed 1's contemporaneous rating
@@ -2174,6 +2176,11 @@ gen 34 | selfplay 200 games avg 40.8 plies 7.3s | train loss p 1.76 v 0.24 lr 0.
 gen 60 | selfplay 200 games avg 43.3 plies 7.7s | train loss p 1.73 v 0.09 lr 0.002 2.5s | arena elo 1117.5 vs-prev 0.50 (distinct 13/20) 2.0s
 done: generation 60 in runs/5x5-seed1
 ```
+
+These lines come from the reference run, made with the old ladder. A run
+today prints the `vs 0:… bot100:…` form instead, with different arena Elo
+and arena times; the self-play and training numbers are unchanged, because
+gating is off.
 
 **Compute budgets.** What one generation costs on the M4, from the
 `selfplay_s`, `train_s` and `arena_s` columns:
