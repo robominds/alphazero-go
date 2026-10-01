@@ -1,0 +1,6 @@
+$ ./build-blas/arena --a runs/5x5-seed1/checkpoints/gen_0060.azn --b runs/5x5-seed1/checkpoints/gen_0000.azn --games 100 --simulations 200 --komi 24.5 --backend blas
+A runs/5x5-seed1/checkpoints/gen_0060.azn vs B runs/5x5-seed1/checkpoints/gen_0000.azn: A scored 100/100 = 1.000 (95% CI 0.963-1.000), distinct games 97
+A wins 100, B wins 0, draws 0
+$ ./build-blas/arena --a runs/5x5-seed2/checkpoints/gen_0060.azn --b runs/5x5-seed2/checkpoints/gen_0000.azn --games 100 --simulations 200 --komi 24.5 --backend blas
+A runs/5x5-seed2/checkpoints/gen_0060.azn vs B runs/5x5-seed2/checkpoints/gen_0000.azn: A scored 100/100 = 1.000 (95% CI 0.963-1.000), distinct games 98
+A wins 100, B wins 0, draws 0

@@ -13,3 +13,16 @@ size   random-playout moves/s
 Apple M4
 10
 25769803776
+
+# Batch 1 vs batch 8 (2026-10-01, after all reference runs, machine otherwise idle).
+# One-off timing program (not in the repository) linked against build-blas/libazgo.a:
+# it times Network::infer exactly as bench's measureInference does (blas backend,
+# one thread, random {0,1} planes, >= 3 s per measurement) at batch 1 and at
+# batch 8, three repetitions each, for the 5x5 and 9x9 preset networks.
+size  blocks x filters  batch-1 evals/s  batch-8 evals/s  ratio
+5x5   3 x 32                      23292            30381   1.30
+5x5   3 x 32                      23206            30491   1.31
+5x5   3 x 32                      22963            30326   1.32
+9x9   6 x 64                       2769             3704   1.34
+9x9   6 x 64                       2722             3718   1.37
+9x9   6 x 64                       2760             3663   1.33

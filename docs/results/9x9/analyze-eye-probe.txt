@@ -1,0 +1,21 @@
+# Follow-up probe of the eye position: the value the gen 150 network gives after each continuation.
+
+$ ./build-blas/analyze --checkpoint runs/9x9-main/checkpoints/gen_0150.azn --moves "A2 A3 B2 B3 C2 C3 D2 D3 D1 E3 F7 E2 G5 E1 B1" --simulations 200 --komi 7.5 --backend blas | grep -E 'to move$|Value|MCTS value'
+White to move
+Value (side to move): +0.76
+MCTS value (side to move): +0.76 after 200 simulations
+
+$ ./build-blas/analyze --checkpoint runs/9x9-main/checkpoints/gen_0150.azn --moves "A2 A3 B2 B3 C2 C3 D2 D3 D1 E3 F7 E2 G5 E1 pass B1" --simulations 200 --komi 7.5 --backend blas | grep -E 'to move$|Value|MCTS value'
+Black to move
+Value (side to move): -0.65
+MCTS value (side to move): -0.62 after 200 simulations
+
+$ ./build-blas/analyze --checkpoint runs/9x9-main/checkpoints/gen_0150.azn --moves "A2 A3 B2 B3 C2 C3 D2 D3 D1 E3 F7 E2 G5 E1 C6" --simulations 200 --komi 7.5 --backend blas | grep -E 'to move$|Value|MCTS value'
+White to move
+Value (side to move): +0.42
+MCTS value (side to move): +0.52 after 200 simulations
+
+$ ./build-blas/analyze --checkpoint runs/9x9-main/checkpoints/gen_0150.azn --moves "A2 A3 B2 B3 C2 C3 D2 D3 D1 E3 F7 E2 G5 E1 C6 B1" --simulations 200 --komi 7.5 --backend blas | grep -E 'to move$|Value|MCTS value'
+Black to move
+Value (side to move): -0.26
+MCTS value (side to move): -0.15 after 200 simulations

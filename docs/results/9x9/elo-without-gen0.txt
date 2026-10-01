@@ -1,0 +1,48 @@
+# Is the 9x9 late Elo plateau real? Bradley-Terry refits of runs/9x9-main/results.csv
+# (= docs/results/9x9/results.csv), made 2026-10-01 with the Python script at the end
+# of this file, a line-by-line port of src/elo.cpp fitBradleyTerry (one virtual
+# drawn game per played pair, Hunter's MM iteration). First row: the full table,
+# which reproduces elo.csv. Second row: the same table without the 150 pairs
+# against generation 0 (each a 20-0, 19-1 or 18-2 sweep from generation 14 on),
+# re-anchored so generation 50 is 0. The slope is a least-squares fit over
+# generations 101-150, the last third of the run.
+
+$ python3 refit.py runs/9x9-main
+reproduces elo.csv: max |diff| = 0.05
+fit                                       50     60     70     80     90    100    110    120    130    140    150   slope 101-150
+elo.csv (all pairs, anchor gen 0)       780    748    739    625    657    630    645    639    652    658    674   +0.41 Elo/gen
+without gen-0 pairs, gen 50 := 0          0     75    163    136    242    279    340    367    407    427    449   +2.78 Elo/gen
+
+# ---- refit.py ----
+# Re-implementation of src/elo.cpp fitBradleyTerry (virtual draw per pair, MM),
+# used to test whether the 9x9 late Elo plateau is an anchor artifact.
+import csv, math, sys
+def load(p): return [(int(r['a']),int(r['b']),int(r['games']),float(r['score_a'])) for r in csv.DictReader(open(p))]
+def fit(pairs, anchor, virtual=0.5, tol=1e-10):
+    ids=sorted({x for a,b,_,_ in pairs for x in (a,b)}); ix={g:i for i,g in enumerate(ids)}
+    W=[0.0]*len(ids); E=[]
+    for a,b,n,s in pairs:
+        i,j=ix[a],ix[b]; nn=n+2*virtual; si=s+virtual
+        W[i]+=si; W[j]+=nn-si; E.append((i,j,nn))
+    g=[1.0]*len(ids); k=ix[anchor]
+    for _ in range(200000):
+        d=[0.0]*len(ids)
+        for i,j,nn in E:
+            t=nn/(g[i]+g[j]); d[i]+=t; d[j]+=t
+        nx=[W[i]/d[i] for i in range(len(ids))]; sc=nx[k]; nx=[x/sc for x in nx]
+        ch=max(abs(math.log(nx[i]/g[i])) for i in range(len(ids))); g=nx
+        if ch<tol: break
+    return {ids[i]:400*math.log10(g[i]) for i in range(len(ids))}
+def slope(d,lo,hi):
+    xs=[x for x in d if lo<=x<=hi]; ys=[d[x] for x in xs]; n=len(xs); mx=sum(xs)/n; my=sum(ys)/n
+    return sum((x-mx)*(y-my) for x,y in zip(xs,ys))/sum((x-mx)**2 for x in xs)
+run=sys.argv[1]
+P=load(run+'/results.csv')
+ref={int(r['generation']):float(r['elo']) for r in csv.DictReader(open(run+'/elo.csv'))}
+full=fit(P,0)
+print('reproduces elo.csv: max |diff| = %.2f'%max(abs(full[g]-ref[g]) for g in ref))
+nog0=fit([p for p in P if p[0]!=0 and p[1]!=0],50)
+show=[50,60,70,80,90,100,110,120,130,140,150]
+print('fit                                   ' + ' '.join('%6d'%g for g in show) + '   slope 101-150')
+print('elo.csv (all pairs, anchor gen 0)    ' + ' '.join('%6.0f'%full[g] for g in show) + '   %+.2f Elo/gen'%slope(full,101,150))
+print('without gen-0 pairs, gen 50 := 0     ' + ' '.join('%6.0f'%(nog0[g]-nog0[50]) for g in show) + '   %+.2f Elo/gen'%slope(nog0,101,150))

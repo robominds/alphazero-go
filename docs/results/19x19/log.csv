@@ -1,0 +1,3 @@
+generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev
+1,20,145.00,0.0521,0.4000,5.81700,0.24259,0.02,7.062,2809.538,378.891,302.733,63.9,0.6000,10
+2,20,364.50,0.1119,0.5500,5.67674,0.25531,0.02,2.809,6630.774,380.730,771.601,206.2,0.5000,10

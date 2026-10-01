@@ -1,0 +1,2 @@
+gen 1 | selfplay 20 games avg 145.0 plies 2809.5s | train loss p 5.82 v 0.24 lr 0.02 378.9s | arena elo 63.9 vs-prev 0.60 (distinct 10/10) 302.7s
+gen 2 | selfplay 20 games avg 364.5 plies 6630.8s | train loss p 5.68 v 0.26 lr 0.02 380.7s | arena elo 206.2 vs-prev 0.50 (distinct 10/10) 771.6s
