@@ -13445,6 +13445,11 @@ EOF
 
 ## Appendix: Interface Contract
 
+> Note (2026-10-01): `MctsEdge` gained `float unvisitedQ` (the exact value of a
+> game-ending pass edge, see `src/mcts.cpp`) and `GenerationStats` gained
+> `int distinctVsPrev` (log.csv column `distinct_vs_prev`). The headers below
+> are otherwise as originally planned.
+
 Every public header in the project, in final form. Plan tasks copy these
 verbatim into their "create header" steps. Private members marked
 "implementation-defined" are chosen by the owning task. Naming: types

@@ -43,7 +43,8 @@ depth (residual blocks) and width (filters) are configurable.
 - GPU acceleration in v1. The design leaves two seams (compute
   `Backend`, MCTS `Evaluator`) so a Metal backend and a cross-thread
   batching evaluator can be added later without restructuring.
-- Resignation, playout-cap randomization, first-play-urgency tuning,
+- Resignation, playout-cap randomization, first-play-urgency tuning (the exact scoring of a known
+  terminal pass edge in Select is not FPU tuning),
   "don't fill own eye" heuristics, and other KataGo/Leela-era
   refinements. The explainer mentions them as possible extensions.
 - Board-size-agnostic networks (global pooling heads). A checkpoint is
@@ -178,7 +179,10 @@ gather leaves from all threads for a GPU without touching MCTS.
   visit count N, value sum W, and virtual-loss count. Iterative, not
   recursive.
 - Select: argmax over children of `Q + c_puct · P · √(ΣN) / (1 + N)`,
-  `c_puct` default 1.5. Unvisited children use Q = 0.
+  `c_puct` default 1.5. Unvisited children use Q = 0, with one exception: the game-ending
+  pass edge after a pass uses its exact Tromp-Taylor result (+1/−1/0 from
+  the chooser's side) while unvisited; see `docs/results/passbug/README.md`
+  for why.
 - Each expanded node stores its `Board` and hash. Superko legality
   during search checks the game's past hashes plus the hashes on the
   current root-to-node path; history planes for a leaf are built by

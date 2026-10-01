@@ -31,8 +31,8 @@ cmake --build build-blas -j
 ctest --test-dir build-blas --output-on-failure
 ```
 
-Each build has 24 tests (`ctest -N | tail -1` prints `Total Tests: 24`),
-one assert-based executable per component.
+Each build has 23 component tests plus an integration smoke test (24 in
+ctest; `ctest -N | tail -1` prints `Total Tests: 24`).
 
 **The presets in `configs/` say `backend = blas`**, because BLAS is 2.9×
 faster on 5×5 and 18× faster on 19×19 (`docs/results/bench.txt`). Use them
@@ -145,7 +145,9 @@ is self-play + training + arena from the runs' `log.csv`
 
 5×5 uses komi 24.5 because 5×5 Go is solved as a Black win by the whole
 board; at komi 7.5 Black wins almost every game and the arena stops
-telling generations apart (`docs/results/pilots/`).
+telling generations apart (`docs/results/pilots/`). Checkpoints do not store
+komi, and `arena` and `analyze` default to 7.5, so evaluating 5×5 checkpoints
+needs `--komi 24.5` (and `--backend blas` with the BLAS build).
 
 ## Results
 

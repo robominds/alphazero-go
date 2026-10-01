@@ -144,7 +144,8 @@ the generation gap. The flat refit is an artifact of how it is anchored.
    matches are 20–0 (`9x9/results.csv`).
    - With the virtual draw that `fitBradleyTerry` adds to each pair, a
      20–0 pair says "400·log₁₀(20.5/0.5) = 645 Elo above generation 0".
-   - The 137 such pairs (generations 14–150) pull every late rating toward 645. The late
+   - The 137 pairs scoring 18–2 or better (generations 14–150; 110 of them 20–0)
+     pull every late rating toward 645. The late
      refit values, 601–735, sit right on that cap.
 2. **The ladder cannot see 4 Elo per generation.** In generations
    101–150, newer networks score 9.6, 10.6, 10.3 and 10.7 of 20 against
