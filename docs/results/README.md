@@ -43,6 +43,12 @@ the reasons. All three presets use:
 | arena_games × arena_opponents (+ gen 0) | 20 × 4 | 20 × 4 | 10 × 2 |
 | arena_temperature_moves | 2 | 4 | 4 |
 
+The reference runs used the ladder (`arena_opponents = 4` plus generation
+0; 2 plus generation 0 on 19×19). The presets now choose opponents by
+rating (`arena_opponents = 2`, `bot_simulations = 100`,
+`calibration_games = 80`, `promote_threshold = 0.85`); the re-rated
+results below use those values.
+
 ## Results by board size
 
 Notes on the columns:
@@ -72,10 +78,10 @@ The criterion has two parts:
 
 Both seeds meet both parts:
 
-| run | vs gen 0 | `log.csv` Elo, last 10 − first 10 | `elo.csv` Elo, last 10 − first 10 |
-|---|---|---|---|
-| seed 1 | 100/100 | 1137.6 − 668.1 = +469.5 | 1089.1 − 349.7 = +739.4 |
-| seed 2 | 100/100 | 910.5 − 549.2 = +361.3 | 875.1 − 311.9 = +563.3 |
+| run | vs gen 0 | `log.csv` Elo, last 10 − first 10 | `elo.csv` Elo, last 10 − first 10 | re-rated `rerate/elo.csv`, last 10 − first 10 |
+|---|---|---|---|---|
+| seed 1 | 100/100 | 1137.6 − 668.1 = +469.5 | 1089.1 − 349.7 = +739.4 | 1709.9 − 716.2 = +993.7 |
+| seed 2 | 100/100 | 910.5 − 549.2 = +361.3 | 875.1 − 311.9 = +563.3 | 1511.4 − 551.2 = +960.2 |
 
 Both curves rise and then go flat. The plateau starts around generation
 34 for seed 1 and generation 31 for seed 2.
@@ -91,6 +97,29 @@ Both curves rise and then go flat. The plateau starts around generation
 
 The final networks remain unbeaten by generation 0 (`final-arena.txt`).
 `sample.sgf` is a generation-60 self-play game, won B+0.5.
+
+The table's last column comes from re-rating both runs with
+rating-aware opponents (`5x5/rerate/`, `5x5-seed2/rerate/`; the method
+and its caveats are in "9×9 re-rated with rating-aware opponents"
+below). It used
+`train --run runs/5x5-seed1 --rerate --set arena_opponents=2`, and the
+same for `runs/5x5-seed2`.
+
+- Seed 1: generation 60 is rated 1671.5 (peak 1728.0 at generation 57).
+  The 100-simulation bot is rated 281.5; it scored 70/80 against
+  generation 0. Generations 3, 9, 17, 20, 24, 29, 33 and 43 were
+  promoted (`5x5/rerate/references.csv`, `results.csv`, `elo.csv`).
+- Seed 2: generation 60 is rated 1579.3. The bot is rated −65.9; it
+  scored 32/80 against generation 0. Generations 3, 6, 11, 18, 24, 31
+  and 43 were promoted (`5x5-seed2/rerate/references.csv`, `results.csv`,
+  `elo.csv`).
+- No generation from 30 on played generation 0 in either run
+  (`rerate/log.csv`).
+
+The re-rated curves keep the same shape, a rise and then a plateau from
+about generation 40. Their decade means are 716.2, 1099.4, 1423.3,
+1626.4, 1697.9, 1709.9 (seed 1) and 551.2, 970.4, 1225.2, 1411.0,
+1499.7, 1511.4 (seed 2).
 
 ### 9×9: criterion not met (the eye check fails)
 
@@ -144,7 +173,7 @@ the generation gap. The flat refit is an artifact of how it is anchored.
    matches are 20–0 (`9x9/results.csv`).
    - With the virtual draw that `fitBradleyTerry` adds to each pair, a
      20–0 pair says "400·log₁₀(20.5/0.5) = 645 Elo above generation 0".
-   - The 137 pairs scoring 18–2 or better (generations 14–150; 110 of them 20–0)
+   - The 137 pairs scoring 18–2 or better (generations 14–150; 109 of them 20–0)
      pull every late rating toward 645. The late
      refit values, 601–735, sit right on that cap.
 2. **The ladder cannot see 4 Elo per generation.** In generations
@@ -201,6 +230,82 @@ instead, the group is dead.
 
 `9x9/sample.sgf` is a generation-150 self-play game, won W+6.5.
 
+### 9×9 re-rated with rating-aware opponents
+
+The code now chooses arena opponents by rating instead of by ladder
+distance: each generation plays g − 1, the strongest reference and
+`arena_opponents` more references, those against which its expected
+score is closest to 0.7. The references are a fixed uniform-prior bot,
+generation 0, and every generation that scored at least
+`promote_threshold` against the strongest reference (`docs/algorithm-explained.md`, chapter 07). With
+gating off, the arena never feeds back into training, so the run's
+checkpoints can be re-measured without retraining:
+
+```bash
+./build-blas/train --run runs/9x9-main --rerate --set arena_opponents=2
+```
+
+This replays the arena over generations 1–150 into
+`runs/9x9-main/rerate/`, copied to `9x9/rerate/`. It took 2 h 06 min
+(`runs/rerate-runs.log`, not in the repository).
+
+- **Checks.** Every generation played g − 1 first, and generation 1's
+  opponents are `0 -1`, as in a fresh run (`9x9/rerate/log.csv`).
+- **The bot** (100 simulations) scored 75/80 against generation 0 in
+  calibration and is rated 328.9 (`9x9/rerate/results.csv`,
+  `references.csv`).
+- **Promoted generations:** 23, 30, 43, 53, 78, 95 and 121, seven in all
+  (`9x9/rerate/references.csv`).
+- **Generation 0:** one generation from 30 on played it, generation 30
+  itself, when generation 0 and the bot were the only references left
+  to fill the two extra slots (`9x9/rerate/log.csv`).
+
+The re-rated gaps against the 100-game head-to-heads (`9x9/h2h-*.txt`):
+
+| match | h2h | ladder `elo.csv` | re-rated |
+|---|---|---|---|
+| gen 150 vs gen 50 | +676 | −106 | +634 |
+| gen 150 vs gen 90 | +315 | +17 | +249 |
+| gen 150 vs gen 100 | +200 | +45 | +234 |
+| gen 150 vs gen 120 | +123 | +36 | +133 |
+| gen 90 vs gen 50 | +363 | −122 | +385 |
+
+Every re-rated gap has the head-to-head's sign and lies within 66 Elo of
+it. The re-rated ratings (`9x9/rerate/elo.csv`) are 1132.5 at generation
+50, 1517.4 at 90, 1532.1 at 100, 1633.6 at 120 and 1766.6 at 150.
+
+A least-squares fit of `9x9/rerate/elo.csv` over generations 101–150
+gives **+2.83 Elo per generation**, so the Elo-slope part of the
+criterion is met on the re-rated curve. On the ladder `elo.csv` it was
++0.41 (met on its sign only). +2.83 is about +140 Elo over 50
+generations; the refit without generation-0 pairs gave +2.78, and the
+head-to-heads about 4 per generation after generation 90.
+
+**The 9×9 criterion as a whole is still not met.** The eye check is a
+property of the generation-150 network, and re-rating does not change
+the network.
+
+Three caveats about reading these files:
+
+- **The scale depends on `arena_opponents`.** Bradley-Terry compresses
+  gaps when more distant pairs are in the table. A re-rate of 5×5 seed 1
+  made during review with four extra references put generation 60 at
+  1307, against 1671.5 with two (`5x5/rerate/elo.csv`; the four-extra
+  run is not published). The ratings and the gaps between them hold for
+  `arena_opponents = 2`; numbers from different settings do not compare.
+- **Promotion can admit a generation that lost to g − 1.** It only has
+  to reach the threshold against the strongest reference. In 5×5 seed 1,
+  generation 24 scored 3/20 against generation 23 and 18/20 against
+  generation 20, and was promoted; generation 33 scored 4/20 against
+  generation 32 and was promoted too (`5x5/rerate/log.csv`). No promoted
+  9×9 generation scored below 0.50 against g − 1.
+- **`winrate_vs_prev` can count more games than `score_vs_prev`.** When
+  g is promoted against g − 1 (g − 1 is the strongest reference), the
+  80 calibration games are added to that pair, so `elo.csv`'s
+  `winrate_vs_prev` covers 100 games while `log.csv`'s `score_vs_prev`
+  covers the 20 arena games. No two consecutive generations were promoted
+  in these three runs, so here the two columns agree.
+
 ### 19×19: criterion met (it runs)
 
 The criterion is that both generations complete, the losses are finite
@@ -233,6 +338,12 @@ Two generations say nothing about strength, and none is claimed.
    - The rating method saturates once every generation sweeps the
      generation-0 anchor. A fixed panel of stronger reference checkpoints
      would fix that; the code was not changed for this report.
+   - The code has since been changed to choose arena opponents by
+     rating (a fixed bot plus promoted reference checkpoints), and
+     `train --rerate` re-measured this run with it: the re-rated curve
+     rises to the end, +2.83 Elo per generation over generations
+     101–150 and +634 from generation 50 to 150 against the head-to-head
+     +676 (`9x9/rerate/elo.csv`).
 3. **The first set of reference runs was invalid: the pass bug.** The
    runs made before commits 87b37ea and 5da9b90 had a search blind spot.
    - At low simulation counts, a game-ending pass reply with a tiny prior
@@ -262,6 +373,19 @@ Two generations say nothing about strength, and none is claimed.
   - `final-arena.txt`, the `h2h-*.txt` head-to-heads;
   - `elo-without-gen0.txt`, and `elo-without-gen0.csv`, every generation of its second fit;
   - `analyze-{atari,eye,opening}.txt` and `analyze-eye-probe.txt`.
+- `9x9/rerate/`, `5x5/rerate/`, `5x5-seed2/rerate/`: the three runs
+  re-rated with rating-aware opponents (`train --rerate --set
+  arena_opponents=2`):
+  - `results.csv`, every pairwise result of the replay, starting with the
+    bot's calibration against generation 0 (bot k is player −k);
+  - `elo.csv`, the final refit, one row per generation, in the format of
+    a run's `elo.csv`;
+  - `references.csv`, the bot and the promoted generations with their
+    final ratings;
+  - `log.csv`, one row per generation: its opponents, its scores against
+    g − 1 and the strongest reference, whether it was promoted, and its
+    rating at the time;
+  - `progress.txt`, the per-generation lines `train --rerate` printed.
 - `19x19/`: `log.csv`, `timing.txt`, `analyze-gen2.txt`.
 - `passbug/`: the pre-fix runs and the case study.
 - `elo.svg`, `elo-5x5.svg`, `elo-9x9.svg`, `elo-passbug.svg`: Elo charts

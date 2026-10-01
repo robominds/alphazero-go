@@ -2015,6 +2015,24 @@ self-play rating is a model of a results table, and when it says
 something surprising, play the checkpoints against each other with
 enough games, and read some of the games.
 
+**Re-rated with informative opponents.** The rating-aware arena
+described earlier in this chapter can be replayed over this run's saved
+checkpoints:
+`train --run runs/9x9-main --rerate --set arena_opponents=2` writes
+`runs/9x9-main/rerate/` and leaves the run itself untouched. In the re-rated fit
+(`docs/results/9x9/rerate/elo.csv`), generation 150 is rated **1766.6**
+and stands 634 Elo above generation 50, against +676 from the 100-game
+head-to-head (`docs/results/9x9/h2h-gen0150-vs-gen0050.txt`). Its
+last-third slope is **+2.83 Elo per generation**
+(`docs/results/9x9/rerate/elo.csv`), against +0.41 for the ladder
+(`docs/results/9x9/elo.csv`). The 100-simulation uniform bot is rated
+328.9 (`docs/results/9x9/rerate/references.csv`). A Bradley-Terry scale
+depends on which pairs were played, so these numbers hold for
+`arena_opponents = 2`. The curve now tells the head-to-heads' story:
+steady progress that slows but does not stop, about 9.6 Elo per
+generation from 50 to 90 and 4.2 from 90 to 150
+(`docs/results/9x9/rerate/elo.csv`).
+
 ---
 
 ## 08 — The full loop at scale

@@ -197,7 +197,10 @@ From `docs/results/README.md`, which has the details and the sources.
   generation 90 86/100, generation 100 76/100 and generation 120 67/100,
   and generation 90 beats generation 50 89/100. Refit without the games
   against generation 0, the curve rises to the end (+449 Elo from
-  generation 50 to 150).
+  generation 50 to 150). Re-rated with rating-aware opponents
+  (`docs/results/9x9/rerate/elo.csv`), it rises with a slope of +2.83 Elo
+  per generation over the last third, and generation 150 is +634 above
+  generation 50, against the head-to-head's +676.
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is
@@ -210,18 +213,20 @@ From `docs/results/README.md`, which has the details and the sources.
 
 <img src="docs/results/elo.svg" width="640" alt="Elo by generation, elo.csv refits: 5x5 seed 1 rises to about 1100 by generation 34 and stays there; 9x9 rises to 785 at generation 54 and then stays flat, between 601 and 735 from generation 80 on">
 
-<img src="docs/results/elo-9x9.svg" width="640" alt="Two fits of the 9x9 results: the elo.csv refit anchored on generation 0 goes flat after generation 50; the refit without generation-0 pairs, anchored at generation 50, keeps rising to +449 at generation 150">
+<img src="docs/results/elo-9x9.svg" width="640" alt="Three fits of the 9x9 run: the ladder elo.csv refit, anchored on generation 0, goes flat after generation 50 and ends at 674.5; the ladder refit without generation-0 pairs, anchored at generation 50, keeps rising to +449 at generation 150; the dashed re-rated curve, the same checkpoints replayed against rating-aware opponents and anchored on generation 0, rises to the end at 1766.6, 634 above generation 50">
 
 The first chart is the `elo.csv` refit of the 5×5 seed-1 and 9×9 runs,
 both anchored on generation 0 = 0. The second shows why the 9×9 curve
 flattens: refit without the pairs against generation 0 (anchored so
-generation 50 = 0), the same table rises to the end. The charts are drawn
+generation 50 = 0), the same table rises to the end; so does the dashed
+curve, the run re-rated with rating-aware opponents. The charts are drawn
 by `tools/plot_elo.py` (standard-library Python):
 
 ```bash
 python3 tools/plot_elo.py docs/results/5x5/elo.csv docs/results/9x9/elo.csv > docs/results/elo.svg
-python3 tools/plot_elo.py "9×9 elo.csv, all pairs (gen 0 = 0)=docs/results/9x9/elo.csv" \
-    "9×9 without gen-0 pairs (gen 50 = 0)=docs/results/9x9/elo-without-gen0.csv" > docs/results/elo-9x9.svg
+python3 tools/plot_elo.py "9×9 elo.csv, ladder (gen 0 = 0)=docs/results/9x9/elo.csv" \
+    "9×9 ladder without gen-0 pairs (gen 50 = 0)=docs/results/9x9/elo-without-gen0.csv" \
+    "9×9 re-rated (gen 0 = 0)=docs/results/9x9/rerate/elo.csv" > docs/results/elo-9x9.svg
 python3 tools/plot_elo.py "5×5 seed 1=docs/results/5x5/elo.csv" "5×5 seed 2=docs/results/5x5-seed2/elo.csv" > docs/results/elo-5x5.svg
 python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-main/elo.csv" \
     "9×9 after the fix=docs/results/9x9/elo.csv" > docs/results/elo-passbug.svg
