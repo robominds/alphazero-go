@@ -197,10 +197,11 @@ From `docs/results/README.md`, which has the details and the sources.
   generation 90 86/100, generation 100 76/100 and generation 120 67/100,
   and generation 90 beats generation 50 89/100. Refit without the games
   against generation 0, the curve rises to the end (+449 Elo from
-  generation 50 to 150). Re-rated with rating-aware opponents
-  (`docs/results/9x9/rerate/elo.csv`), it rises with a slope of +2.83 Elo
-  per generation over the last third, and generation 150 is +634 above
-  generation 50, against the head-to-head's +676.
+  generation 50 to 150). Re-rated with rating-aware opponents (with
+  `arena_opponents = 2`; `docs/results/9x9/rerate/elo.csv`), it rises
+  with a slope of +2.83 Elo per generation over the last third, and
+  generation 150 is +634 above generation 50, against the head-to-head's
+  +676.
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is

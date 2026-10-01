@@ -287,24 +287,27 @@ the network.
 
 Three caveats about reading these files:
 
-- **The scale depends on `arena_opponents`.** Bradley-Terry compresses
-  gaps when more distant pairs are in the table. A re-rate of 5×5 seed 1
-  made during review with four extra references put generation 60 at
-  1307, against 1671.5 with two (`5x5/rerate/elo.csv`; the four-extra
-  run is not published). The ratings and the gaps between them hold for
-  `arena_opponents = 2`; numbers from different settings do not compare.
+- **The scale depends on `arena_opponents`.** A re-rate of 5×5 seed 1
+  with four extra references (`--set arena_opponents=4`, on a copy of the
+  run) compressed the scale: generation 60 at 1306.9
+  (`5x5/rerate-opp4/elo.csv`), against 1671.5 with two
+  (`5x5/rerate/elo.csv`), with the same promoted generations. The ratings
+  and the gaps between them hold for `arena_opponents = 2`; numbers from
+  different settings do not compare.
 - **Promotion can admit a generation that lost to g − 1.** It only has
-  to reach the threshold against the strongest reference. In 5×5 seed 1,
-  generation 24 scored 3/20 against generation 23 and 18/20 against
-  generation 20, and was promoted; generation 33 scored 4/20 against
-  generation 32 and was promoted too (`5x5/rerate/log.csv`). No promoted
+  to reach the threshold against the strongest reference. It happened in
+  both 5×5 runs. In seed 1, generation 24 scored 3/20 against generation
+  23 and 18/20 against generation 20, and was promoted; generation 33
+  scored 4/20 against generation 32 and was promoted too
+  (`5x5/rerate/log.csv`). In seed 2, generation 11 was promoted with
+  9/20 against generation 10 (`5x5-seed2/rerate/log.csv`). No promoted
   9×9 generation scored below 0.50 against g − 1.
 - **`winrate_vs_prev` can count more games than `score_vs_prev`.** When
   g is promoted against g − 1 (g − 1 is the strongest reference), the
   80 calibration games are added to that pair, so `elo.csv`'s
   `winrate_vs_prev` covers 100 games while `log.csv`'s `score_vs_prev`
-  covers the 20 arena games. No two consecutive generations were promoted
-  in these three runs, so here the two columns agree.
+  covers the 20 arena games. In these three runs the two columns agree
+  for every generation (`rerate/elo.csv`, `rerate/log.csv`).
 
 ### 19×19: criterion met (it runs)
 
@@ -386,6 +389,9 @@ Two generations say nothing about strength, and none is claimed.
     g − 1 and the strongest reference, whether it was promoted, and its
     rating at the time;
   - `progress.txt`, the per-generation lines `train --rerate` printed.
+- `5x5/rerate-opp4/`: `elo.csv`, `references.csv` and `log.csv` of a
+  re-rate of 5×5 seed 1 with `--set arena_opponents=4`, made on a copy of
+  the run, for the scale caveat above.
 - `19x19/`: `log.csv`, `timing.txt`, `analyze-gen2.txt`.
 - `passbug/`: the pre-fix runs and the case study.
 - `elo.svg`, `elo-5x5.svg`, `elo-9x9.svg`, `elo-passbug.svg`: Elo charts
