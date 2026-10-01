@@ -35,6 +35,8 @@ const char* const kLogHeader =
     "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
     "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev\n";
 const char* const kEloHeader = "generation,elo,winrate_vs_prev,wr_low,wr_high\n";
+const char* const kRerateLogHeader =
+    "generation,opponents,score_vs_prev,score_vs_strongest,promoted,elo\n";
 
 using Clock = std::chrono::steady_clock;
 
@@ -453,6 +455,71 @@ GenerationStats Trainer::runGeneration() {
 
 void Trainer::runUntil(int lastGeneration) {
     while (generation() < lastGeneration) runGeneration();
+}
+
+int rerateRun(const std::string& runDir, const std::vector<std::string>& overrides,
+              std::ostream* log) {
+    if (!fs::exists(configPath(runDir)))
+        throw ConfigError(runDir + " does not contain a run (no config.cfg)");
+    const Config saved = loadConfigFile(configPath(runDir));
+    Config cfg = saved;
+    for (const std::string& o : overrides) applyOverride(cfg, o);
+    const std::vector<std::string> diff = architectureDiff(saved, cfg);
+    if (!diff.empty()) {
+        std::string keys;
+        for (const std::string& k : diff) keys += (keys.empty() ? "" : ", ") + k;
+        throw ConfigError("cannot change architecture keys when re-rating: " + keys);
+    }
+    if (!fs::exists(checkpointPath(runDir, 0)))
+        throw std::runtime_error(checkpointPath(runDir, 0) + ": missing");
+
+    // Every generation is measured against g-1, so the replay ends at the
+    // first missing checkpoint.
+    int last = 0;
+    while (fs::exists(checkpointPath(runDir, last + 1))) ++last;
+
+    const std::string outDir = (fs::path(runDir) / "rerate").string();
+    fs::create_directories(outDir);
+    ResultsTable results;
+    std::vector<int> references = initialReferences(static_cast<int>(cfg.botSimulations.size()));
+    const ArenaRoundSettings settings = roundSettings(cfg, std::nullopt);   // gating ignored
+    const MatchFn play = runMatches(cfg, runDir, -1, nullptr);   // every network from disk
+    calibrateBots(results, references, settings, play);
+    writeRatingFiles(outDir, results, references, cfg.botSimulations);
+    std::string logCsv = kRerateLogHeader;
+    writeFileAtomically(logPath(outDir), logCsv);
+
+    for (int g = 1; g <= last; ++g) {
+        if (cfg.arenaEvery == 0 || g % cfg.arenaEvery != 0) continue;
+        const auto start = Clock::now();
+        const ArenaRoundResult round = runArenaRound(g, results, references, settings, play);
+        writeRatingFiles(outDir, results, references, cfg.botSimulations);
+
+        // generation,opponents,score_vs_prev,score_vs_strongest,promoted,elo
+        // opponents are player IDs separated by spaces; matches[0] is g-1.
+        std::string ids;
+        double vsStrongest = 0;
+        for (const ArenaMatch& m : round.matches) {
+            ids += (ids.empty() ? "" : " ") + std::to_string(m.opponent);
+            if (m.opponent == round.strongest) vsStrongest = m.result.scoreA / m.result.games;
+        }
+        const MatchResult& prev = round.matches.front().result;
+        const double elo = fitBradleyTerry(results, 0).at(g) + 0.0;
+        char row[128];
+        std::snprintf(row, sizeof row, ",%.4f,%.4f,%d,%.1f\n", prev.scoreA / prev.games, vsStrongest,
+                      round.promoted ? 1 : 0, elo);
+        logCsv += std::to_string(g) + "," + ids + row;
+        writeFileAtomically(logPath(outDir), logCsv);
+
+        if (log) {
+            char head[64], tail[48];
+            std::snprintf(head, sizeof head, "rerate gen %d | elo %.1f ", g, elo);
+            std::snprintf(tail, sizeof tail, "%s %.1fs", round.promoted ? " promoted" : "",
+                          secondsSince(start));
+            *log << head << opponentSummary(round, cfg.botSimulations) << tail << std::endl;
+        }
+    }
+    return last;
 }
 
 } // namespace azgo

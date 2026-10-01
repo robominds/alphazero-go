@@ -426,6 +426,73 @@ static void test_no_bots_no_extras() {
     assert(refs[1] == "0,checkpoint,,0,0.0");
 }
 
+// --rerate replays the arena over the checkpoints. With gating off the arena
+// never feeds back into training, so a re-rate of a finished run must play
+// exactly the games the live run played: the same results.csv, byte for byte.
+static void test_rerate_reproduces_live_results() {
+    TempDir dir("rerate");
+    startQuiet(tinyConfig(), dir)->runUntil(3);
+    const std::string state = readFile(statePath(dir.str()));
+    const std::string config = readFile(configPath(dir.str()));
+
+    assert(rerateRun(dir.str(), {}, nullptr) == 3);
+    for (const char* f : {"results.csv", "elo.csv", "references.csv"})
+        assert(readFile(dir.file(std::string("rerate/") + f)) == readFile(dir.file(f)));
+    // It trains nothing and changes nothing outside rerate/.
+    assert(readFile(statePath(dir.str())) == state);
+    assert(readFile(configPath(dir.str())) == config);
+    assert(!fs::exists(checkpointPath(dir.str(), 4)));
+
+    // log.csv: one row per generation; the opponents start with g-1.
+    const std::vector<std::string> rows = splitLines(readFile(dir.file("rerate/log.csv")));
+    assert(rows.size() == 4);
+    assert(rows[0] == "generation,opponents,score_vs_prev,score_vs_strongest,promoted,elo");
+    for (int g = 1; g <= 3; ++g) {
+        const std::string& row = rows[static_cast<size_t>(g)];
+        assert(row.rfind(std::to_string(g) + "," + std::to_string(g - 1), 0) == 0);
+        assert(std::count(row.begin(), row.end(), ',') == 5);
+    }
+
+    // Independent of the worker count, log.csv included (it has no timings).
+    std::map<std::string, std::string> one;
+    rerateRun(dir.str(), {"workers=1"}, nullptr);
+    for (const char* f : {"results.csv", "elo.csv", "references.csv", "log.csv"})
+        one[f] = readFile(dir.file(std::string("rerate/") + f));
+    rerateRun(dir.str(), {"workers=3"}, nullptr);
+    for (const char* f : {"results.csv", "elo.csv", "references.csv", "log.csv"})
+        assert(readFile(dir.file(std::string("rerate/") + f)) == one[f]);
+}
+
+// Review Focus 5: re-rating something that is not a complete run.
+static void test_rerate_refusals_and_gaps() {
+    TempDir empty("rerate_empty");
+    fs::create_directories(empty.path);
+    bool threw = false;
+    try {
+        rerateRun(empty.str(), {}, nullptr);
+    } catch (const ConfigError& e) {
+        threw = std::string(e.what()).find(empty.str()) != std::string::npos;
+    }
+    assert(threw);
+
+    TempDir dir("rerate_gap");
+    startQuiet(tinyConfig(), dir)->runUntil(3);
+    threw = false;
+    try {
+        rerateRun(dir.str(), {"filters=16"}, nullptr);   // would not match the checkpoints
+    } catch (const ConfigError& e) {
+        threw = std::string(e.what()).find("filters") != std::string::npos;
+    }
+    assert(threw);
+    assert(!fs::exists(dir.path / "rerate"));
+
+    // Every generation is measured against g-1, so a missing checkpoint ends
+    // the replay: with gen_0002 gone only generation 1 is re-rated.
+    fs::remove(checkpointPath(dir.str(), 2));
+    assert(rerateRun(dir.str(), {}, nullptr) == 1);
+    assert(countLines(readFile(dir.file("rerate/log.csv"))) == 2);
+}
+
 // A blown-up learning rate must abort the generation before anything of it is
 // committed: state.bin stays at generation 0 and no gen_0001 checkpoint exists.
 static void test_non_finite_weights_keep_last_good_state() {
@@ -457,6 +524,8 @@ int main() {
     test_progress_line_lists_opponents();
     test_resume_from_version1_state();
     test_no_bots_no_extras();
+    test_rerate_reproduces_live_results();
+    test_rerate_refusals_and_gaps();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }

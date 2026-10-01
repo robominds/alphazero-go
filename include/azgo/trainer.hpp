@@ -61,4 +61,18 @@ private:
     // Further members: implementation-defined (Task 21).
 };
 
+// Re-rates the run in runDir without training it: replays the arena phase of
+// generations 1, 2, ... for as long as their checkpoints exist, with today's
+// opponent selection, starting from an empty results table, the initial
+// reference set and bot calibration, and with the seeds of live training
+// (every arena_every-th generation, as live). Gating is ignored. `overrides`
+// change tunable keys for the replay only; architecture keys are refused
+// (ConfigError). Writes runDir/rerate/{results.csv, elo.csv, references.csv,
+// log.csv}, rewritten after each generation; never touches state.bin or
+// config.cfg. With gating off, a run's checkpoints do not depend on its
+// arena, so this is exactly what a live run would have measured. Progress
+// lines go to `log` (nullptr = silent). Returns the last generation replayed.
+int rerateRun(const std::string& runDir, const std::vector<std::string>& overrides,
+              std::ostream* log);
+
 } // namespace azgo

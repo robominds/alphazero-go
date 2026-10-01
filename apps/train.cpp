@@ -2,6 +2,7 @@
 //
 //   train --config configs/9x9.cfg --run runs/nine [--set key=value]... [--generations N]
 //   train --run runs/nine --resume [--set key=value]... [--generations N]
+//   train --run runs/nine --rerate [--set key=value]...
 #include <cstdio>
 #include <exception>
 #include <iostream>
@@ -21,10 +22,15 @@ const char* const kUsage =
     "usage:\n"
     "  train --config FILE --run DIR [--set key=value]... [--generations N]\n"
     "  train --run DIR --resume [--set key=value]... [--generations N]\n"
+    "  train --run DIR --rerate [--set key=value]...\n"
     "\n"
     "A new run copies FILE (plus overrides) to DIR/config.cfg. --resume continues\n"
     "from DIR/state.bin; tunable keys may be overridden, architecture keys may not.\n"
-    "--generations N is shorthand for --set generations=N (train until generation N).\n";
+    "--generations N is shorthand for --set generations=N (train until generation N).\n"
+    "--rerate trains nothing: it replays the arena over DIR's checkpoints with the\n"
+    "current opponent selection and writes DIR/rerate/ (results.csv, elo.csv,\n"
+    "references.csv, log.csv). state.bin and config.cfg are left as they are;\n"
+    "--set applies to the replay only.\n";
 
 int usageError(const std::string& message) {
     std::fprintf(stderr, "error: %s\n\n%s", message.c_str(), kUsage);
@@ -38,7 +44,7 @@ int main(int argc, char** argv) {
     try {
         args = std::make_unique<ArgParser>(argc, argv,
                                            std::vector<std::string>{"config", "run", "set", "generations"},
-                                           std::vector<std::string>{"resume", "help"});
+                                           std::vector<std::string>{"resume", "rerate", "help"});
     } catch (const std::invalid_argument& e) {
         return usageError(e.what());
     }
@@ -48,6 +54,20 @@ int main(int argc, char** argv) {
     }
     if (!args->has("run")) return usageError("--run DIR is required");
     const bool resume = args->flag("resume");
+    if (args->flag("rerate")) {
+        if (resume || args->has("config") || args->has("generations"))
+            return usageError("--rerate cannot be combined with --resume, --config or --generations");
+        try {
+            const std::string runDir = args->get("run");
+            std::cout << "re-rating " << runDir << " (results in " << runDir << "/rerate)" << std::endl;
+            const int last = azgo::rerateRun(runDir, args->sets(), &std::cout);
+            std::cout << "done: re-rated generations 1-" << last << " of " << runDir << std::endl;
+            return 0;
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "error: %s\n", e.what());
+            return 1;
+        }
+    }
     if (resume && args->has("config"))
         return usageError("--config cannot be combined with --resume (the run's config.cfg is used)");
     if (!resume && !args->has("config"))

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test of the four executables on a tiny 5x5 run:
-# train -> resume -> arena (checkpoint and bot) -> analyze (good and bad input)
-# -> bench, plus the refusal to change the architecture on resume.
+# train -> resume -> re-rate -> arena (checkpoint and bot) -> analyze (good and
+# bad input) -> bench, plus the refusal to change the architecture on resume.
 #
 # usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR
 set -euo pipefail
@@ -33,6 +33,19 @@ echo "== train: resume to generation 3 =="
 "$BUILD/train" --run "$RUN" --resume --generations 3
 test -s "$CK/gen_0003.azn" || fail "gen_0003.azn missing after resume"
 [ "$(wc -l < "$RUN/log.csv" | tr -d ' ')" = "4" ] || fail "log.csv should have a header and 3 rows"
+
+echo "== train: re-rate the finished run =="
+state_before="$(cksum < "$RUN/state.bin")"
+"$BUILD/train" --run "$RUN" --rerate
+# Gating is off, so the replay plays exactly the live run's arena games.
+cmp "$RUN/results.csv" "$RUN/rerate/results.csv" || fail "rerate/results.csv differs from the live run's"
+cmp "$RUN/references.csv" "$RUN/rerate/references.csv" || fail "rerate/references.csv differs"
+[ "$(wc -l < "$RUN/rerate/log.csv" | tr -d ' ')" = "4" ] || fail "rerate/log.csv should have a header and 3 rows"
+[ "$(cksum < "$RUN/state.bin")" = "$state_before" ] || fail "--rerate changed state.bin"
+status=0
+out="$("$BUILD/train" --run "$RUN" --rerate --resume 2>&1)" || status=$?
+[ "$status" -eq 1 ] || fail "--rerate --resume exited $status, expected 1"
+echo "$out" | grep -q -- "--rerate cannot be combined" || fail "unexpected refusal message: $out"
 
 echo "== arena =="
 out="$("$BUILD/arena" --a "$CK/gen_0000.azn" --b "$CK/gen_0003.azn" --games 4 --simulations 4 --workers 2)"
