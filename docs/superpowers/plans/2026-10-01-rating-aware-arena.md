@@ -3435,7 +3435,7 @@ with:
 > stays the anchor at 0 Elo.
 ```
 
-Keep one blank line between the quote and the bullet list that follows it.
+Then insert one blank line after the quote: the original has none between the heading and the bullet list that follows it.
 
 - [ ] **Step 2: Rewrite the ladder section of the Markdown explainer**
 
