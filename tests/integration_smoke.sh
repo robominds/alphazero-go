@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test of the executables on a tiny 5x5 run:
 # train -> resume -> re-rate -> arena (checkpoint and bot) -> analyze (good and
-# bad input) -> bench, plus the refusal to change the architecture on resume.
+# bad input) -> bench -> grow (and a run started from the grown network), plus the refusal to change the architecture on resume.
 #
 # usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR
 set -euo pipefail
@@ -166,6 +166,10 @@ out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --blocks 0 --out "$W/shrunk.azn" 
 [ "$status" -eq 1 ] || fail "grow to fewer blocks exited $status, expected 1"
 echo "$out" | grep -q "^error: " || fail "grow refusal is not an error line: $out"
 test ! -e "$W/shrunk.azn" || fail "a refused grow still wrote a checkpoint"
+status=0
+out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --blocks 41 --out "$W/huge.azn" 2>&1)" || status=$?
+[ "$status" -eq 1 ] || fail "grow beyond the block limit exited $status, expected 1"
+echo "$out" | grep -q "^error: .*maximum" || fail "grow limit refusal unexpected: $out"
 
 echo "== train: resume must refuse an architecture change =="
 status=0

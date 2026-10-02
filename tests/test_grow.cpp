@@ -149,6 +149,20 @@ void test_new_blocks_are_zero_gamma_and_learn() {
         if (p.name == "block1.bn2.gamma" || p.name == "block2.bn2.gamma")
             for (size_t k = 0; k < p.size; ++k) gammaGrad = gammaGrad || p.grad[k] != 0.0f;
     assert(gammaGrad);
+
+    // After one SGD step gamma is nonzero, so the gradient now reaches the
+    // new block's convolutions (it was exactly zero on the first step).
+    for (ParamView& p : grown.params())
+        for (size_t k = 0; k < p.size; ++k) p.value[k] -= 0.1f * p.grad[k];
+    grown.trainStep(ws, b.input.data(), b.pi.data(), b.z.data(), 16);
+    bool conv1Grad = false, conv2Grad = false;
+    for (ParamView& p : grown.params()) {
+        if (p.name == "block2.conv1.w")
+            for (size_t k = 0; k < p.size; ++k) conv1Grad = conv1Grad || p.grad[k] != 0.0f;
+        if (p.name == "block2.conv2.w")
+            for (size_t k = 0; k < p.size; ++k) conv2Grad = conv2Grad || p.grad[k] != 0.0f;
+    }
+    assert(conv1Grad && conv2Grad);
 }
 
 } // namespace

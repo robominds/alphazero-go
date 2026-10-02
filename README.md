@@ -31,8 +31,8 @@ cmake --build build-blas -j
 ctest --test-dir build-blas --output-on-failure
 ```
 
-Each build has 24 component tests plus an integration smoke test (25 in
-ctest; `ctest -N | tail -1` prints `Total Tests: 25`).
+Each build has 25 component tests plus an integration smoke test (26 in
+ctest; `ctest -N | tail -1` prints `Total Tests: 26`).
 
 **The presets in `configs/` say `backend = blas`**, because BLAS is 2.9×
 faster on 5×5 and 18× faster on 19×19 (`docs/results/bench.txt`). Use them
@@ -177,7 +177,10 @@ history, and trims it to `buffer_positions`. The optimizer's momentum
 starts at zero. `DIR/init.txt` records where the start came from and how
 many positions and games the buffer held. Both options are for new runs
 only: `--resume` refuses architecture changes, so growth always starts a
-new run rather than continuing the old one.
+new run rather than continuing the old one. The new run's Elo is anchored
+at its own generation 0 (the grown network), so its `elo.csv` is not on
+the donor run's scale; compare the two runs with `arena` or by rating
+them together.
 
 The presets' learning-rate schedule restarts at 0.02, which is the rate
 for a network that knows nothing; for a trained one it would wreck what

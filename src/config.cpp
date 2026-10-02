@@ -164,7 +164,7 @@ const KeyEntry kKeys[] = {
     {"max_moves", false, intKey<&Config::maxMoves, 0, 100000>, printInt<&Config::maxMoves>},
     // network
     {"history", true, intKey<&Config::history, 1, 16>, printInt<&Config::history>},
-    {"blocks", true, intKey<&Config::blocks, 0, 40>, printInt<&Config::blocks>},
+    {"blocks", true, intKey<&Config::blocks, 0, kMaxBlocks>, printInt<&Config::blocks>},
     {"filters", true, intKey<&Config::filters, 1, 512>, printInt<&Config::filters>},
     {"value_hidden", true, intKey<&Config::valueHidden, 1, 1024>, printInt<&Config::valueHidden>},
     // self-play and search

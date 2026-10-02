@@ -17,6 +17,7 @@
 
 #include "azgo/backend.hpp"
 #include "azgo/checkpoint.hpp"
+#include "azgo/config.hpp"
 #include "azgo/grow.hpp"
 #include "azgo/network.hpp"
 #include "azgo/rng.hpp"
@@ -87,6 +88,9 @@ int main(int argc, char** argv) {
         if (!args->has("blocks")) return usageError("--blocks N is required");
         if (!args->has("out")) return usageError("--out PATH is required");
         const int blocks = args->getInt("blocks", 0);
+        if (blocks > azgo::kMaxBlocks)
+            throw std::runtime_error("--blocks " + std::to_string(blocks) + " exceeds the maximum of " +
+                                     std::to_string(azgo::kMaxBlocks));
         const int seed = args->getInt("seed", 1);
         if (seed < 0) return usageError("--seed must be >= 0");
 

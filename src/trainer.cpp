@@ -244,8 +244,8 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     if (given || donorBuffer)
         writeFileAtomically(
             (fs::path(runDir) / "init.txt").string(),
-            "init_from = " + (init.initFrom.empty() ? std::string("none") : init.initFrom) + "\n" +
-                "buffer_from = " + (init.bufferFrom.empty() ? std::string("none") : init.bufferFrom) + "\n" +
+            "init_from = " + (init.initFrom.empty() ? std::string("none") : fs::absolute(init.initFrom).string()) + "\n" +
+                "buffer_from = " + (init.bufferFrom.empty() ? std::string("none") : fs::absolute(init.bufferFrom).string()) + "\n" +
                 "buffer_positions = " + std::to_string(state.buffer.positions()) + "\n" +
                 "buffer_games = " + std::to_string(state.buffer.games()) + "\n");
 
