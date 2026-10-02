@@ -156,11 +156,11 @@ size   random-playout moves/s
 
 ### Growing a network
 
-A trained network can be made deeper without losing what it learned.
-`grow` appends residual blocks that start as exact identities (a
+A trained network can be made deeper or wider without losing what it
+learned. `grow` appends residual blocks that start as exact identities (a
 zero-initialized second batch norm in each, see
 `include/azgo/grow.hpp`), checks on 8 random positions that the grown
-network's outputs match the original's within 1e-5, and saves it. Then a
+network's outputs match the original's within 1e-4, and saves it. Then a
 new run starts from it, optionally seeded with the old run's replay
 buffer. Growing 6 blocks to 10 on 9x9:
 
@@ -170,11 +170,24 @@ $ ./build-blas/train --config configs/9x9.cfg --run runs/9x9-ten --set blocks=10
       --set lr_schedule=0:0.002 --init-from runs/9x9-ten/start.azn --buffer-from runs/9x9-main
 ```
 
+`grow --filters 96` widens instead (given `--blocks` too, it widens
+first). Each new channel starts as a copy of an old one and every weight
+that reads the old channel is split among the copies in random shares
+that sum to it, so the outputs are unchanged while the copies receive
+different gradients and grow apart. Width costs more than depth: a
+layer's compute grows as filters², so 96 filters cost about (96/64)² ≈
+2.25× as much as 64. Widening reorders float32 additions, so its outputs
+agree to about 1e-5 rather than bit for bit, hence the 1e-4 limit.
+
+```
+$ ./build-blas/grow --from runs/9x9-main/checkpoints/gen_0250.azn --filters 96 --out runs/9x9-wide/start.azn
+```
+
 `--init-from` makes the checkpoint generation 0 of the new run (its shape
-must equal the config's, so pass `--set blocks=10`); `--buffer-from` loads
-the donor run's replay buffer, which must have the same board size and
-history, and trims it to `buffer_positions`. The optimizer's momentum
-starts at zero. `DIR/init.txt` records where the start came from and how
+must equal the config's, so pass `--set blocks=10` or `--set filters=96`);
+`--buffer-from` loads the donor run's replay buffer, which must have the
+same board size and history, and trims it to `buffer_positions`. The
+optimizer's momentum starts at zero. `DIR/init.txt` records where the start came from and how
 many positions and games the buffer held. Both options are for new runs
 only: `--resume` refuses architecture changes, so growth always starts a
 new run rather than continuing the old one. The new run's Elo is anchored

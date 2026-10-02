@@ -1002,7 +1002,20 @@ output         12 21 16
     }
     /* ... copy the BN running statistics the same way ... */
 }</code></pre>
-<span class="src">src/grow.cpp:10 — <code>growBlocks</code> (abridged)</span>
+<span class="src">src/grow.cpp:16 — <code>growBlocks</code> (abridged)</span>
+<p><strong>Widening it.</strong> Width grows the same way, by copying instead of zeroing (Net2WiderNet). A new channel starts as a copy of an old one: the layer that writes it gets the old channel's convolution weights and batch-norm parameters, so it carries exactly the same values. Every layer that reads the old channel now sees it more than once, so <code>widenFilters</code> splits each weight on it among the copies in random positive shares that sum to the old weight, and the sum the layer computes is unchanged. Halving would be exact too, but then the copies would get equal gradients forever and stay one feature; unequal shares send them different gradients, and they grow apart. The stem and every block's second convolution all write the residual stream, and the skip connections add up their writes, so they must all copy the same channels.</p>
+<pre><code>Network widenFilters(const Network&amp; net, int newFilters, uint64_t seed) {
+    /* ... throw if narrower or above kMaxFilters; build Network(cfg, seed) ... */
+    g = channelMap(F, newFilters, rng);       // stream channel j copies old g(j)
+    stem conv rows and stem.bn: from g;
+    for (each block) {
+        h = channelMap(F, newFilters, rng);   // the block's own inner channels
+        conv1: rows from h, inputs split over g;   bn1 from h;
+        conv2: rows from g, inputs split over h;   bn2 from g;
+    }
+    policy and value 1x1 convs: inputs split over g;   the rest copied as is
+}</code></pre>
+<span class="src">src/grow.cpp:158 — <code>widenFilters</code> (abridged)</span>
 <p><strong>The heads.</strong> The policy head squeezes the trunk to 2 channels with a 1×1 convolution and then a fully connected layer maps those 2n² numbers to n² + 1 logits: one per point plus one for <strong>pass</strong>. It knows nothing about legality — occupied points get logits too — so something downstream must mask them (chapter 02). The value head squeezes to one channel, then a hidden layer of V units and a single <code>tanh</code> output, so the value lives in the same [−1, 1] units as the game result it is trained against.</p>
 <p><strong>What depth and width buy, and what they cost.</strong> Each 3×3 convolution widens the window a unit can see by 2 points, so the trunk's receptive field is 1 + 2 × (number of 3×3 convs) = 1 + 2(2·blocks + 1) points wide: 15 on 5×5, 27 on 9×9 and 43 on 19×19. In each preset that is at least 2n − 1, enough for every point to be influenced by every other, even corner to corner. Width (F) is how many distinct features each point can carry. A 3×3 layer costs 9 · F² · n² multiply-adds per position, so the trunk costs roughly blocks · F² · n²: 10 · 128² · 361 ≈ 59.1 million for 19×19's preset against 3 · 32² · 25 = 76,800 for 5×5's, about 770 times the arithmetic per evaluation. Measured on the M4 (<code>docs/results/bench.txt</code>; inference at batch 8 on one thread; a training step at batch 128, which the naive backend splits across all 10 cores while BLAS runs on one thread):</p>
 <div class="wrap-table"><table>
@@ -2010,8 +2023,8 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dd><code>BatchNorm2d::forwardTrain</code>, <code>BatchNorm2d::forwardInfer</code>, <code>BatchNorm2d::backward</code> <span class="loc">— src/layers.cpp:85, 74, 119</span></dd>
   <dt>Residual ResNet, policy and value heads</dt>
   <dd><code>Network::forward</code>, <code>Network::backward</code> <span class="loc">— src/network.cpp:177, 277</span></dd>
-  <dt>Growing a network without changing its function</dt>
-  <dd><code>growBlocks</code> <span class="loc">— src/grow.cpp:10</span></dd>
+  <dt>Growing a network (deeper or wider) without changing its function</dt>
+  <dd><code>growBlocks</code>, <code>widenFilters</code> <span class="loc">— src/grow.cpp:16, 158</span></dd>
   <dt>The loss</dt>
   <dd><code>Network::loss</code>, <code>Network::trainStep</code> <span class="loc">— src/network.cpp:243, 162</span></dd>
   <dt>Gradient checking</dt>

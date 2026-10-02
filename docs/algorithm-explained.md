@@ -600,7 +600,36 @@ Network growBlocks(const Network& net, int newBlocks, uint64_t seed) {
     /* ... copy the BN running statistics the same way ... */
 }
 ```
-*src/grow.cpp:10 — `growBlocks` (abridged)*
+*src/grow.cpp:16 — `growBlocks` (abridged)*
+
+**Widening it.** Width grows the same way, by copying instead of zeroing
+(Net2WiderNet). A new channel starts as a copy of an old one: the layer
+that writes it gets the old channel's convolution weights and batch-norm
+parameters, so it carries exactly the same values. Every layer that
+reads the old channel now sees it more than once, so `widenFilters`
+splits each weight on it among the copies in random positive shares that
+sum to the old weight, and the sum the layer computes is unchanged.
+Halving would be exact too, but then the copies would get equal
+gradients forever and stay one feature; unequal shares send them
+different gradients, and they grow apart. The stem and every block's
+second convolution all write the residual stream, and the skip
+connections add up their writes, so they must all copy the same
+channels.
+
+```cpp
+Network widenFilters(const Network& net, int newFilters, uint64_t seed) {
+    /* ... throw if narrower or above kMaxFilters; build Network(cfg, seed) ... */
+    g = channelMap(F, newFilters, rng);       // stream channel j copies old g(j)
+    stem conv rows and stem.bn: from g;
+    for (each block) {
+        h = channelMap(F, newFilters, rng);   // the block's own inner channels
+        conv1: rows from h, inputs split over g;   bn1 from h;
+        conv2: rows from g, inputs split over h;   bn2 from g;
+    }
+    policy and value 1x1 convs: inputs split over g;   the rest copied as is
+}
+```
+*src/grow.cpp:158 — `widenFilters` (abridged)*
 
 **The heads.** The policy head squeezes the trunk to 2 channels with a
 1×1 convolution and then a fully connected layer maps those 2n² numbers
@@ -2318,7 +2347,7 @@ see again in place.
 | The compute backend seam | `Backend` — `include/azgo/backend.hpp:16`; `NaiveBackend::gemm` — `src/backend.cpp:138` |
 | Batch norm, training vs. inference | `BatchNorm2d::forwardTrain`, `BatchNorm2d::forwardInfer`, `BatchNorm2d::backward` — `src/layers.cpp:85, 74, 119` |
 | Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:177, 277` |
-| Growing a network without changing its function | `growBlocks` — `src/grow.cpp:10` |
+| Growing a network (deeper or wider) without changing its function | `growBlocks`, `widenFilters` — `src/grow.cpp:16, 158` |
 | The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:243, 162` |
 | Gradient checking | `checkGradient` — `tests/test_layers.cpp:36` |
 | PUCT selection | `Mcts::selectEdge` — `src/mcts.cpp:54` |
