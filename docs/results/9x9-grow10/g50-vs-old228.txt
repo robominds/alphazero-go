@@ -1,0 +1,2 @@
+A runs/9x9-grow10/checkpoints/gen_0050.azn vs B runs/grown/gen228-10blocks.azn: A scored 70/100 = 0.700 (95% CI 0.604-0.781), distinct games 100
+A wins 70, B wins 30, draws 0

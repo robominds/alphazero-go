@@ -309,6 +309,97 @@ Three caveats about reading these files:
   covers the 20 arena games. In these three runs the two columns agree
   for every generation (`rerate/elo.csv`, `rerate/log.csv`).
 
+### 9×9 continued to 250 and grown to 10 blocks
+
+The 9×9 run was continued from generation 150 to 250 with the same
+6-block network, re-rated with `arena_opponents = 2`, and generation 250
+was then grown into a 10-block network and trained for 50 more
+generations. Nothing here changes the verdict on the criterion: the
+network still fails the eye check.
+
+**The 6-block continuation, 150 to 250.** The re-rate replays the arena
+over generations 1–250 (`9x9/rerate-250/`: `elo.csv`, `references.csv`,
+`log.csv`, `results.csv`, `progress.txt`). It is a different file from
+`9x9/rerate/`, which covers 1–150 only.
+
+- Re-rated Elo: 1532.3 at generation 100, 1728.3 at 150, 1758.1 at 200,
+  a peak of 1870.0 at generation 223 (1865.3 at 225), and 1799.5 at 250
+  (`9x9/rerate-250/elo.csv`).
+- Least-squares slope: +2.47 Elo per generation over generations
+  101–150 and +1.10 over 151–250 (computed from `elo.csv`). Progress
+  slows but does not stop.
+- Promoted references: generations 170 and 228 (`references.csv`, rated
+  1723.3 and 1791.5). Generation 250 scored 0.60 against 228 in its
+  20-game re-rate match (`log.csv`).
+- The eye check on the 6-block generation 250 also fails: the group's
+  one two-eye move B1 is not among the ten most visited moves.
+
+**The grown run** (`9x9-grow10/`).
+
+- *Setup.* `grow` copied generation 250 into a 10-block, 64-filter
+  network (473,277 → 769,213 parameters) with the four new blocks
+  initialised so the function is unchanged; on 8 random positions the
+  maximum output difference was 0. Training started from it, with the
+  6-block run's replay buffer (199,966 positions from 2,262 games,
+  `init.txt`):
+
+  ```bash
+  train --init-from runs/grown/gen250-10blocks.azn --buffer-from runs/9x9-main \
+      --set blocks=10 --set lr_schedule=0:0.002 --generations 50
+  ```
+
+  Everything else is the 9×9 preset (100 games of 200 simulations per
+  generation, `arena_opponents = 2`, gating off). `init.txt` is the
+  run's file with the absolute paths made repo-relative. Generation 0 of
+  this run is exactly the old generation 250, since growing preserves
+  the function.
+- *Time.* Mean 322.2 s per generation: 176.0 s self-play, 97.1 s
+  training and 49.1 s arena (`9x9-grow10/log.csv`); 4.47 h for the 50
+  generations.
+- *No promotions.* No generation scored 0.85 against generation 0, so
+  `references.csv` holds only the bot and generation 0. `elo.csv` is
+  anchored at this run's own generation 0 (peak 141.5, 28.4 at
+  generation 50), a noisy 20-game ladder; it is not comparable to
+  `9x9/`'s or `9x9/rerate-250/`'s scale.
+- *Losses stay flat.* Policy loss 2.406 at generation 1 and 2.415 at 50
+  (range 2.395–2.415); value loss 0.381 and 0.364 (range 0.354–0.393);
+  average game length 88.8 and 87.8 plies (`log.csv`).
+
+**Three 100-game matches** (200 simulations, colors alternating; 95%
+Wilson intervals as `arena` prints them; Elo is 400·log10(p/(1−p)) and
+approximate; files in `9x9-grow10/`):
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| gen 50 vs old gen 250 (`g50-vs-old250.txt`) | 59/100 | 0.492–0.681 | +63 (−6 to +132) |
+| gen 25 vs old gen 250 (`g25-vs-old250.txt`) | 61/100 | 0.512–0.700 | +78 (+8 to +147) |
+| gen 50 vs old gen 228 (`g50-vs-old228.txt`) | 70/100 | 0.604–0.781 | +147 (+73 to +221) |
+
+The arena needs equal shapes, so generation 228 was compared through a
+grown copy of it, `runs/grown/gen228-10blocks.azn` (not in the
+repository).
+
+**Verdict.** The 10-block network is modestly stronger than the 6-block
+generation 250: roughly +60 to +80 Elo, with the interval's lower end at
+or near 0.5 (0.492 for generation 50, 0.512 for generation 25). That is
+about what the 6-block run gained over its last 50–100 generations
+(1728.3 at 150 to 1799.5 at 250 is +71; the 1.10 Elo per generation
+slope gives +55 over 50). The generation 50 eye check
+(`analyze-eye.txt`) still fails: B1 is not in the top ten priors (the
+top is C7 at 23.5%) or the top ten visited moves, and the network gives
+the position −0.54 (value) and −0.72 (after 200 simulations). So
+capacity alone is not the bottleneck at this compute budget.
+
+**Next levers, all untested hypotheses.** None of these was run.
+
+- More simulations per move, for self-play and training targets.
+- Learning-rate changes (the grown run held 0.002 constant).
+- More self-play games per generation (100 now, with a replay ratio of
+  about 5.8).
+- A targeted analysis of why the eye shape is rare in self-play: if the
+  network never reaches such positions, no amount of capacity adds the
+  training signal.
+
 ### 19×19: criterion met (it runs)
 
 The criterion is that both generations complete, the losses are finite
@@ -389,6 +480,13 @@ Two generations say nothing about strength, and none is claimed.
     g − 1 and the strongest reference, whether it was promoted, and its
     rating at the time;
   - `progress.txt`, the per-generation lines `train --rerate` printed.
+- `9x9/rerate-250/`: the same files for the continued 6-block run re-rated over
+  generations 1–250 (`elo.csv`, `references.csv`, `log.csv`, `results.csv`,
+  `progress.txt`).
+- `9x9-grow10/`: the grown 10-block run: `log.csv`, `elo.csv`, `results.csv`,
+  `references.csv`, `init.txt` (paths made repo-relative), `progress.txt`, and
+  the evaluations `g50-vs-old250.txt`, `g25-vs-old250.txt`,
+  `g50-vs-old228.txt`, `analyze-eye.txt`.
 - `5x5/rerate-opp4/`: `elo.csv`, `references.csv` and `log.csv` of a
   re-rate of 5×5 seed 1 with `--set arena_opponents=4`, made on a copy of
   the run, for the scale caveat above.

@@ -235,6 +235,13 @@ From `docs/results/README.md`, which has the details and the sources.
   with a slope of +2.83 Elo per generation over the last third, and
   generation 150 is +634 above generation 50, against the head-to-head's
   +676.
+- **9×9 continued to 250 and grown to 10 blocks.** The 6-block run was
+  continued to generation 250 (re-rated Elo 1728.3 at 150, 1799.5 at 250),
+  then grown to 10 blocks and trained 50 more generations. The grown
+  network beats the old generation 250 59/100 (0.492–0.681) and 61/100
+  at generation 25, about +60 to +80 Elo, and still fails the eye check:
+  capacity alone is not the bottleneck at this budget. See
+  [the section](docs/results/README.md#9x9-continued-to-250-and-grown-to-10-blocks).
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is
