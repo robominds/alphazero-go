@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end smoke test of the four executables on a tiny 5x5 run:
+# End-to-end smoke test of the executables on a tiny 5x5 run:
 # train -> resume -> re-rate -> arena (checkpoint and bot) -> analyze (good and
 # bad input) -> bench, plus the refusal to change the architecture on resume.
 #
@@ -143,6 +143,18 @@ expect_error "error: the game is over" --moves "pass pass"
 
 echo "== bench =="
 "$BUILD/bench" --sizes 5 --seconds 0.2 --configs "$SRC/configs"
+
+echo "== grow: deepen the tiny network, then use the grown checkpoint =="
+out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --blocks 3 --out "$W/grown.azn")"
+echo "$out"
+echo "$out" | grep -q "new: 5x5, history 2, 3 blocks" || fail "grow did not report the new shape: $out"
+"$BUILD/analyze" --checkpoint "$W/grown.azn" --moves "C3 D4" --simulations 8 | grep -q "MCTS value" \
+    || fail "analyze rejected the grown checkpoint"
+status=0
+out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --blocks 0 --out "$W/shrunk.azn" 2>&1)" || status=$?
+[ "$status" -eq 1 ] || fail "grow to fewer blocks exited $status, expected 1"
+echo "$out" | grep -q "^error: " || fail "grow refusal is not an error line: $out"
+test ! -e "$W/shrunk.azn" || fail "a refused grow still wrote a checkpoint"
 
 echo "== train: resume must refuse an architecture change =="
 status=0

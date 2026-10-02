@@ -1,0 +1,118 @@
+// grow: deepens a checkpoint by appending residual blocks that start as exact
+// identities (see include/azgo/grow.hpp), so the new network plays exactly as
+// the old one did and training can continue from there.
+//
+//   grow --from runs/nine/checkpoints/gen_0100.azn --blocks 10 --out runs/ten/start.azn
+//
+// Before saving, the tool checks the claim on 8 random positions: the grown
+// network's policy and value must match the original's within 1e-5.
+#include <cmath>
+#include <cstdio>
+#include <exception>
+#include <filesystem>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "azgo/backend.hpp"
+#include "azgo/checkpoint.hpp"
+#include "azgo/grow.hpp"
+#include "azgo/network.hpp"
+#include "azgo/rng.hpp"
+#include "cli.hpp"
+
+namespace {
+
+const char* const kUsage =
+    "usage: grow --from CKPT --blocks N --out PATH [--seed 1]\n"
+    "\n"
+    "Writes PATH: CKPT with residual blocks appended up to N. The new blocks are\n"
+    "exact identities, so PATH computes what CKPT computed. N must be at least\n"
+    "CKPT's block count. --seed seeds the new blocks' convolution weights.\n";
+
+int usageError(const std::string& message) {
+    std::fprintf(stderr, "error: %s\n\n%s", message.c_str(), kUsage);
+    return 1;
+}
+
+size_t parameterCount(azgo::Network& net) {
+    size_t total = 0;
+    for (const azgo::ParamView& p : net.params()) total += p.size;
+    return total;
+}
+
+std::string shape(const azgo::NetConfig& c) {
+    return std::to_string(c.boardSize) + "x" + std::to_string(c.boardSize) +
+           ", history " + std::to_string(c.history) + ", " + std::to_string(c.blocks) +
+           " blocks, " + std::to_string(c.filters) + " filters, value_hidden " +
+           std::to_string(c.valueHidden);
+}
+
+// Largest difference between the two networks' logits and values over `count`
+// random {0, 1} input positions.
+double maxOutputDifference(const azgo::Network& a, const azgo::Network& b, int count, azgo::Rng& rng) {
+    const azgo::NetConfig& cfg = a.config();
+    std::unique_ptr<azgo::Backend> backend = azgo::makeBackend("naive", 1);
+    azgo::Workspace wa(a.config(), count, *backend), wb(b.config(), count, *backend);
+    std::vector<float> input(static_cast<size_t>(count) * cfg.planes() * cfg.area());
+    for (float& v : input) v = rng.uniform() < 0.5 ? 0.0f : 1.0f;
+    std::vector<float> la(static_cast<size_t>(count) * cfg.actions()), lb(la.size());
+    std::vector<float> va(count), vb(count);
+    a.infer(wa, input.data(), count, la.data(), va.data());
+    b.infer(wb, input.data(), count, lb.data(), vb.data());
+    double worst = 0;
+    for (size_t i = 0; i < la.size(); ++i) worst = std::fmax(worst, std::fabs(la[i] - lb[i]));
+    for (int i = 0; i < count; ++i) worst = std::fmax(worst, std::fabs(va[i] - vb[i]));
+    return worst;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    std::unique_ptr<ArgParser> args;
+    try {
+        args = std::make_unique<ArgParser>(argc, argv,
+                                           std::vector<std::string>{"from", "blocks", "out", "seed"},
+                                           std::vector<std::string>{"help"});
+    } catch (const std::invalid_argument& e) {
+        return usageError(e.what());
+    }
+    if (args->flag("help")) {
+        std::fputs(kUsage, stdout);
+        return 0;
+    }
+    try {
+        if (!args->has("from")) return usageError("--from CKPT is required");
+        if (!args->has("blocks")) return usageError("--blocks N is required");
+        if (!args->has("out")) return usageError("--out PATH is required");
+        const int blocks = args->getInt("blocks", 0);
+        const int seed = args->getInt("seed", 1);
+        if (seed < 0) return usageError("--seed must be >= 0");
+
+        azgo::Network net = azgo::loadNetwork(args->get("from"));
+        if (blocks < net.config().blocks)
+            throw std::runtime_error("--blocks " + std::to_string(blocks) + " is fewer than the checkpoint's " +
+                                     std::to_string(net.config().blocks) + "; growing only adds blocks");
+        azgo::Network grown = azgo::growBlocks(net, blocks, static_cast<uint64_t>(seed));
+
+        azgo::Rng rng(static_cast<uint64_t>(seed));
+        const double diff = maxOutputDifference(net, grown, 8, rng);
+        if (!(diff <= 1e-5))
+            throw std::runtime_error("the grown network's outputs differ from the original's by " +
+                                     std::to_string(diff) + " (limit 1e-5); not saving");
+
+        const std::filesystem::path out = args->get("out");
+        if (out.has_parent_path()) std::filesystem::create_directories(out.parent_path());
+        azgo::saveNetwork(grown, out.string());
+
+        std::printf("old: %s, %zu parameters\n", shape(net.config()).c_str(), parameterCount(net));
+        std::printf("new: %s, %zu parameters\n", shape(grown.config()).c_str(), parameterCount(grown));
+        std::printf("verified on 8 random positions (max difference %.2g); wrote %s\n", diff,
+                    out.string().c_str());
+        return 0;
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "error: %s\n", e.what());
+        return 1;
+    }
+}

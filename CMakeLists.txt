@@ -77,12 +77,12 @@ add_executable(train apps/train.cpp)
 target_link_libraries(train PRIVATE azgo)
 target_include_directories(train PRIVATE ${CMAKE_SOURCE_DIR}/apps)
 
-# End-to-end check of all four executables. ctest does not build targets:
+# End-to-end check of all the executables. ctest does not build targets:
 # run `cmake --build build` first, as the usual workflow does.
 add_test(NAME integration_smoke
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration_smoke.sh ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR})
 
-foreach(app arena analyze bench)
+foreach(app arena analyze bench grow)
   add_executable(${app} apps/${app}.cpp)
   target_link_libraries(${app} PRIVATE azgo)
   target_include_directories(${app} PRIVATE ${CMAKE_SOURCE_DIR}/apps)

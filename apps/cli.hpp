@@ -1,5 +1,5 @@
 #pragma once
-// Command-line parsing shared by the four apps. It is deliberately strict: a
+// Command-line parsing shared by the apps. It is deliberately strict: a
 // typo such as "--simulation 800" or "--games 4O" must stop the program with a
 // message naming the option, not silently run with a default -- a mistake
 // like that can waste an overnight training run. Header-only because only the
