@@ -43,7 +43,7 @@ with the `build-blas` binaries. On the default build, add
 
 ## Usage
 
-Four programs are built next to the tests. Each prints its options with
+Five programs are built next to the tests. Each prints its options with
 `--help`.
 
 **`train`** runs the generation loop (self-play, training, checkpoint,
@@ -153,6 +153,36 @@ size   random-playout moves/s
 5x5                   1306178
 ...
 ```
+
+### Growing a network
+
+A trained network can be made deeper without losing what it learned.
+`grow` appends residual blocks that start as exact identities (a
+zero-initialized second batch norm in each, see
+`include/azgo/grow.hpp`), checks on 8 random positions that the grown
+network's outputs match the original's within 1e-5, and saves it. Then a
+new run starts from it, optionally seeded with the old run's replay
+buffer. Growing 6 blocks to 10 on 9x9:
+
+```
+$ ./build-blas/grow --from runs/9x9-main/checkpoints/gen_0150.azn --blocks 10 --out runs/9x9-ten/start.azn
+$ ./build-blas/train --config configs/9x9.cfg --run runs/9x9-ten --set blocks=10 \
+      --set lr_schedule=0:0.002 --init-from runs/9x9-ten/start.azn --buffer-from runs/9x9-main
+```
+
+`--init-from` makes the checkpoint generation 0 of the new run (its shape
+must equal the config's, so pass `--set blocks=10`); `--buffer-from` loads
+the donor run's replay buffer, which must have the same board size and
+history, and trims it to `buffer_positions`. The optimizer's momentum
+starts at zero. `DIR/init.txt` records where the start came from and how
+many positions and games the buffer held. Both options are for new runs
+only: `--resume` refuses architecture changes, so growth always starts a
+new run rather than continuing the old one.
+
+The presets' learning-rate schedule restarts at 0.02, which is the rate
+for a network that knows nothing; for a trained one it would wreck what
+the network learned. Override it, for example `--set lr_schedule=0:0.002`
+(the 9x9 preset's late-training rate).
 
 ## Presets
 

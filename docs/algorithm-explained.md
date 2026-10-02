@@ -577,6 +577,31 @@ passes straight through and the convolution path adds to it. AlphaGo
 Zero's 40-block network would be very hard to train without it; this
 project's 3 to 10 blocks benefit the same way.
 
+**Growing a network without changing it.** A residual block whose
+correction F(x) is exactly zero is an exact identity: the block computes
+`relu(x + 0)`, and x is already the output of a ReLU, so `relu(x) = x`.
+F ends in a batch norm, `y = gamma * xhat + beta`, so setting `gamma = 0`
+and `beta = 0` in a block's second norm forces F(x) = 0 whatever its
+convolutions hold. `growBlocks` appends blocks built this way, so a
+trained 6-block network becomes a 10-block network that computes exactly
+the same policy and value, and training continues from there instead of
+from scratch. The new blocks are not stuck: the gradient of the loss with
+respect to `gamma` is `sum(dy * xhat)`, which does not depend on `gamma`,
+so `gamma` and `beta` move on the first step, and once `gamma` is nonzero
+the gradient reaches the convolutions too.
+
+```cpp
+Network growBlocks(const Network& net, int newBlocks, uint64_t seed) {
+    /* ... throw if newBlocks < net's blocks; build Network(cfg, seed) ... */
+    for (const ParamView& p : grown.params()) {
+        if (name exists in net)         copy it;       // old blocks keep their indices
+        else if (p is "...bn2.gamma")   fill with 0;   // new block: F(x) = 0
+    }
+    /* ... copy the BN running statistics the same way ... */
+}
+```
+*src/grow.cpp:10 — `growBlocks` (abridged)*
+
 **The heads.** The policy head squeezes the trunk to 2 channels with a
 1×1 convolution and then a fully connected layer maps those 2n² numbers
 to n² + 1 logits: one per point plus one for **pass**. It knows nothing
@@ -2082,7 +2107,7 @@ GenerationStats Trainer::runGeneration() {
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:270 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:313 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not. The
@@ -2293,6 +2318,7 @@ see again in place.
 | The compute backend seam | `Backend` — `include/azgo/backend.hpp:16`; `NaiveBackend::gemm` — `src/backend.cpp:138` |
 | Batch norm, training vs. inference | `BatchNorm2d::forwardTrain`, `BatchNorm2d::forwardInfer`, `BatchNorm2d::backward` — `src/layers.cpp:85, 74, 119` |
 | Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:177, 277` |
+| Growing a network without changing its function | `growBlocks` — `src/grow.cpp:10` |
 | The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:243, 162` |
 | Gradient checking | `checkGradient` — `tests/test_layers.cpp:36` |
 | PUCT selection | `Mcts::selectEdge` — `src/mcts.cpp:54` |
@@ -2316,11 +2342,11 @@ see again in place.
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
 | `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:91, 64` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:258` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:313` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:12` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:27`; `Trainer::resume` — `src/trainer.cpp:211` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:27`; `Trainer::resume` — `src/trainer.cpp:261` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:70, 91` |
 
 ---

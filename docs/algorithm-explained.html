@@ -993,6 +993,16 @@ output         12 21 16
 <span class="src">src/layers.cpp:74 — <code>BatchNorm2d::forwardInfer</code></span>
 <p>Mixing the two up fails in two different, quiet ways. Use batch statistics during search, and a position's evaluation depends on which other leaves happen to share its batch of 8 — or, at batch 1, every channel of a lone position gets normalized to mean 0 over its own n² points, erasing exactly the "is there more of this feature here than usual" information the network relies on. Forget to update the running statistics during training, and inference normalizes with the initial mean 0 and variance 1, so every layer sees activations at a scale it was never trained on. Neither bug crashes and both still produce legal moves. That is why <code>Network</code> has three explicit modes — <code>Infer</code> (running statistics), <code>Train</code> (batch statistics, running statistics updated) and <code>Probe</code> (batch statistics, nothing updated, for gradient checks) — and why <code>tests/test_network.cpp</code> checks that inference is per-sample: the same position evaluated alone and inside a batch of four gives the same output.</p>
 <p><strong>Residual blocks.</strong> Each block computes <code>relu(x + F(x))</code>, where F is two convolutions: the block learns a <em>correction</em> to its input rather than a whole new representation. The payoff is in the backward pass. Gradients flowing back through a plain stack of layers are multiplied by each layer's Jacobian in turn and tend to shrink or blow up with depth; through a residual block they also flow along the skip connection unchanged. You can see that line in the backward code below: <code>dTrunk</code> passes straight through and the convolution path adds to it. AlphaGo Zero's 40-block network would be very hard to train without it; this project's 3 to 10 blocks benefit the same way.</p>
+<p><strong>Growing a network without changing it.</strong> A residual block whose correction F(x) is exactly zero is an exact identity: the block computes <code>relu(x + 0)</code>, and x is already the output of a ReLU, so <code>relu(x) = x</code>. F ends in a batch norm, <code>y = gamma * xhat + beta</code>, so setting <code>gamma = 0</code> and <code>beta = 0</code> in a block's second norm forces F(x) = 0 whatever its convolutions hold. <code>growBlocks</code> appends blocks built this way, so a trained 6-block network becomes a 10-block network that computes exactly the same policy and value, and training continues from there instead of from scratch. The new blocks are not stuck: the gradient of the loss with respect to <code>gamma</code> is <code>sum(dy * xhat)</code>, which does not depend on <code>gamma</code>, so <code>gamma</code> and <code>beta</code> move on the first step, and once <code>gamma</code> is nonzero the gradient reaches the convolutions too.</p>
+<pre><code>Network growBlocks(const Network&amp; net, int newBlocks, uint64_t seed) {
+    /* ... throw if newBlocks &lt; net's blocks; build Network(cfg, seed) ... */
+    for (const ParamView&amp; p : grown.params()) {
+        if (name exists in net)         copy it;       // old blocks keep their indices
+        else if (p is "...bn2.gamma")   fill with 0;   // new block: F(x) = 0
+    }
+    /* ... copy the BN running statistics the same way ... */
+}</code></pre>
+<span class="src">src/grow.cpp:10 — <code>growBlocks</code> (abridged)</span>
 <p><strong>The heads.</strong> The policy head squeezes the trunk to 2 channels with a 1×1 convolution and then a fully connected layer maps those 2n² numbers to n² + 1 logits: one per point plus one for <strong>pass</strong>. It knows nothing about legality — occupied points get logits too — so something downstream must mask them (chapter 02). The value head squeezes to one channel, then a hidden layer of V units and a single <code>tanh</code> output, so the value lives in the same [−1, 1] units as the game result it is trained against.</p>
 <p><strong>What depth and width buy, and what they cost.</strong> Each 3×3 convolution widens the window a unit can see by 2 points, so the trunk's receptive field is 1 + 2 × (number of 3×3 convs) = 1 + 2(2·blocks + 1) points wide: 15 on 5×5, 27 on 9×9 and 43 on 19×19. In each preset that is at least 2n − 1, enough for every point to be influenced by every other, even corner to corner. Width (F) is how many distinct features each point can carry. A 3×3 layer costs 9 · F² · n² multiply-adds per position, so the trunk costs roughly blocks · F² · n²: 10 · 128² · 361 ≈ 59.1 million for 19×19's preset against 3 · 32² · 25 = 76,800 for 5×5's, about 770 times the arithmetic per evaluation. Measured on the M4 (<code>docs/results/bench.txt</code>; inference at batch 8 on one thread; a training step at batch 128, which the naive backend splits across all 10 cores while BLAS runs on one thread):</p>
 <div class="wrap-table"><table>
@@ -1884,7 +1894,7 @@ A wins 4, B wins 0, draws 0</code></pre>
         });
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }</code></pre>
-<span class="src">src/trainer.cpp:270 — <code>Trainer::runGeneration</code> (abridged)</span>
+<span class="src">src/trainer.cpp:313 — <code>Trainer::runGeneration</code> (abridged)</span>
 <p><code>parallelFor</code> hands out indices from an atomic counter; which worker plays game 17 varies from run to run, but game 17 itself does not. The row split in the naive gemm keeps the arithmetic identical too:</p>
 <pre><code>void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alpha,
                         const float* A, const float* B, float beta, float* C) const {
@@ -2000,6 +2010,8 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dd><code>BatchNorm2d::forwardTrain</code>, <code>BatchNorm2d::forwardInfer</code>, <code>BatchNorm2d::backward</code> <span class="loc">— src/layers.cpp:85, 74, 119</span></dd>
   <dt>Residual ResNet, policy and value heads</dt>
   <dd><code>Network::forward</code>, <code>Network::backward</code> <span class="loc">— src/network.cpp:177, 277</span></dd>
+  <dt>Growing a network without changing its function</dt>
+  <dd><code>growBlocks</code> <span class="loc">— src/grow.cpp:10</span></dd>
   <dt>The loss</dt>
   <dd><code>Network::loss</code>, <code>Network::trainStep</code> <span class="loc">— src/network.cpp:243, 162</span></dd>
   <dt>Gradient checking</dt>
@@ -2047,7 +2059,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
   <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:91, 64</span></dd>
   <dt>One generation</dt>
-  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:270</span></dd>
+  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:313</span></dd>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
@@ -2055,7 +2067,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
-  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:27</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:218</span></dd>
+  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:27</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:261</span></dd>
   <dt>Inspecting a position</dt>
   <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:70, 91</span></dd>
 </dl>
