@@ -256,6 +256,10 @@ From `docs/results/README.md`, which has the details and the sources.
   at generation 25, about +60 to +80 Elo, and still fails the eye check:
   capacity alone is not the bottleneck at this budget. See
   [the section](docs/results/README.md#9x9-continued-to-250-and-grown-to-10-blocks).
+  A 6×96 widening of the same network scored 70/100 against the old 250
+  (+147 Elo) but only 52/100 against the 10-block net, so width and depth
+  are not separated (see
+  [the section](docs/results/README.md#grown-to-696-wider-and-width-vs-depth)).
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is

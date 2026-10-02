@@ -1,0 +1,2 @@
+A runs/9x9-wide96/checkpoints/gen_0025.azn vs B runs/9x9-wide96/checkpoints/gen_0000.azn: A scored 60/100 = 0.600 (95% CI 0.502-0.691), distinct games 98
+A wins 60, B wins 40, draws 0

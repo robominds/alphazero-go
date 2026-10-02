@@ -400,6 +400,87 @@ capacity alone is not the bottleneck at this compute budget.
   network never reaches such positions, no amount of capacity adds the
   training signal.
 
+### Grown to 6×96 (wider) and width vs depth
+
+The same generation 250 was also widened instead of deepened, to ask
+whether width or depth is the better way to add capacity. Nothing here
+changes the verdict: the network still fails the eye check, and the data
+does not separate width from depth.
+
+- *Setup.* `grow --filters 96` copied generation 250 into a 6-block,
+  96-filter network (473,277 → 1,032,349 parameters; the 10-block,
+  64-filter network has 769,213). The maximum output difference on the
+  check positions was 7.2e-06 (not exactly 0, unlike the depth growth).
+  Training started from it with the same replay buffer (199,966
+  positions from 2,262 games), for 50 generations (`9x9-wide96/`):
+
+  ```bash
+  train --config configs/9x9.cfg --run runs/9x9-wide96 \
+      --init-from runs/grown/gen250-6x96.azn --buffer-from runs/9x9-main \
+      --set filters=96 --set lr_schedule=0:0.002 --generations 50
+  ```
+
+  Everything else is as in the 10-block run (100 games of 200
+  simulations, `arena_opponents = 2`, gating off). The files are the
+  run's own with absolute paths in `init.txt` made repo-relative;
+  `progress.txt` is the `gen`, `calibrat` and `done` lines of the
+  run's console output.
+- *Time.* Mean 383.0 s per generation (self-play + training + arena):
+  201.9 s, 95.0 s and 86.1 s (`9x9-wide96/log.csv`), 5.32 h for the 50
+  generations, against 322.2 s for the 10-block run. Part of the arena
+  figure is calibration games after promotions.
+- *Promotions.* Generations 1 and 14 were promoted (`references.csv`).
+  Each scored at least 0.85 against generation 0 in a 20-game test
+  (19/20 at generation 1, 17/20 at 14, `progress.txt`). A 20-game test
+  at that threshold can pass by chance for a network of equal strength,
+  and these promotions are not jumps: in the final `elo.csv` they sit at
+  -1.1 and 8.6, while the ladder as a whole is noisy (-41.8 to 130.4,
+  118.0 at generation 50, a 20-game ladder anchored at this run's
+  generation 0; not comparable to other runs' scales). The 100-game
+  matches below are the evidence for strength.
+- *Losses stay flat.* Policy loss 2.406 at generation 1 and 2.404 at 50
+  (range 2.388-2.415); value loss 0.382 and 0.361 (range 0.358-0.393);
+  average game length 88.8 and 88.7 plies (`log.csv`).
+
+**Matches** (100 games, 200 simulations, colors alternating; 95% Wilson
+intervals as `arena` prints them; Elo is 400·log10(p/(1−p)) and
+approximate; files in `9x9-wide96/`; generation 0 of this run is the old
+generation 250):
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| gen 50 vs old gen 250 (`w50-vs-old250.txt`) | 70/100 | 0.604-0.781 | +147 (+73 to +221) |
+| gen 25 vs old gen 250 (`w25-vs-old250.txt`) | 60/100 | 0.502-0.691 | +70 (+1 to +140) |
+| wide gen 50 vs deep gen 50, both as 10×96 (`wide50-vs-deep50.txt`) | 52/100 | 0.423-0.615 | +14 (−54 to +81) |
+
+The arena needs equal shapes, so for the head-to-head both generation 50
+networks were converted to 10 blocks of 96 filters: the wide one by
+deepening (maximum difference 0) and the 10×64 one by widening (8.1e-06;
+`runs/grown/*.azn`, not in the repository).
+
+**Width vs depth**, each against the old generation 250:
+
+| | 10×64 (depth) | 6×96 (width) |
+|---|---|---|
+| parameters | 769,213 | 1,032,349 |
+| seconds per generation | 322.2 | 383.0 |
+| gen 25 | 61/100 (+78) | 60/100 (+70) |
+| gen 50 | 59/100 (+63) | 70/100 (+147) |
+| gen 50 eye check | fails | fails |
+
+**Verdict.** Width gave +147 Elo at generation 50 (interval about +73
+to +221) against depth's +63 (−6 to +132), and the intervals overlap.
+The direct head-to-head, the cleaner test, is 52/100 (0.423-0.615): it
+cannot tell the two apart. The data therefore does not separate width
+from depth; at generation 25 they are indistinguishable too (60 and 61).
+The wide network costs about 19% more time per generation and has 34%
+more parameters. The generation 50 eye check (`analyze-eye.txt`) still
+fails: B1 is not among the top ten moves by prior (the top is C6 at
+14.8%) or by visits (the top is C6, 35 visits), and the value is −0.72
+(−0.73 after 200 simulations). Neither shape fixes the eye, and capacity
+is not the main bottleneck at this budget. The "next levers" above
+remain untested.
+
 ### 19×19: criterion met (it runs)
 
 The criterion is that both generations complete, the losses are finite

@@ -1,0 +1,2 @@
+A runs/grown/wide96-g50-10x96.azn vs B runs/grown/deep10-g50-10x96.azn: A scored 52/100 = 0.520 (95% CI 0.423-0.615), distinct games 98
+A wins 52, B wins 48, draws 0
