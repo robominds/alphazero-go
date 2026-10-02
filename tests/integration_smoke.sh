@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test of the executables on a tiny 5x5 run:
 # train -> resume -> re-rate -> arena (checkpoint and bot) -> analyze (good and
-# bad input) -> bench -> grow (and a run started from the grown network), plus the refusal to change the architecture on resume.
+# bad input) -> bench -> grow (deeper, wider, and a run started from the grown network), plus the refusal to change the architecture on resume.
 #
 # usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR
 set -euo pipefail
@@ -150,6 +150,25 @@ echo "$out"
 echo "$out" | grep -q "new: 5x5, history 2, 3 blocks" || fail "grow did not report the new shape: $out"
 "$BUILD/analyze" --checkpoint "$W/grown.azn" --moves "C3 D4" --simulations 8 | grep -q "MCTS value" \
     || fail "analyze rejected the grown checkpoint"
+
+echo "== grow: widen the tiny network (alone and with deepening), then analyze it =="
+out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --filters 12 --out "$W/wide.azn")"
+echo "$out"
+echo "$out" | grep -q "new: 5x5, history 2, 1 blocks, 12 filters" || fail "grow --filters did not report the new shape: $out"
+"$BUILD/analyze" --checkpoint "$W/wide.azn" --moves "C3 D4" --simulations 8 | grep -q "MCTS value" \
+    || fail "analyze rejected the widened checkpoint"
+out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --filters 12 --blocks 2 --out "$W/wide_deep.azn")"
+echo "$out" | grep -q "new: 5x5, history 2, 2 blocks, 12 filters" || fail "grow --filters --blocks: $out"
+out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --out "$W/copy.azn")"
+echo "$out" | grep -q "plain copy" || fail "a no-op grow did not say so: $out"
+status=0
+out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --filters 513 --out "$W/too_wide.azn" 2>&1)" || status=$?
+[ "$status" -eq 1 ] || fail "grow beyond the filter limit exited $status, expected 1"
+echo "$out" | grep -q "^error: .*maximum" || fail "grow filter limit refusal unexpected: $out"
+test ! -e "$W/too_wide.azn" || fail "a refused widen still wrote a checkpoint"
+status=0
+out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --filters 4 --out "$W/narrow.azn" 2>&1)" || status=$?
+[ "$status" -eq 1 ] || fail "grow to fewer filters exited $status, expected 1"
 
 echo "== train: a new run from the grown network and the old run's buffer =="
 GROWN_TINY=("${TINY[@]}" --set blocks=3)

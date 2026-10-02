@@ -15,8 +15,9 @@
 
 namespace azgo {
 
-// Upper limit of the `blocks` key; grow refuses to exceed it too.
+// Upper limits of the `blocks` and `filters` keys; grow refuses to exceed them too.
 constexpr int kMaxBlocks = 40;
+constexpr int kMaxFilters = 512;
 
 struct ConfigError : std::runtime_error { using std::runtime_error::runtime_error; };
 
