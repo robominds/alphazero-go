@@ -169,6 +169,14 @@ void appendLogRow(const std::string& runDir, const GenerationStats& s) {
     if (!out) throw std::runtime_error("cannot append to " + logPath(runDir));
 }
 
+// "9x9, history 8, 6 blocks, 64 filters, value_hidden 64": the keys a
+// checkpoint's shape depends on, for messages about a mismatch.
+std::string shapeString(const NetConfig& c) {
+    return std::to_string(c.boardSize) + "x" + std::to_string(c.boardSize) + ", history " +
+           std::to_string(c.history) + ", " + std::to_string(c.blocks) + " blocks, " +
+           std::to_string(c.filters) + " filters, value_hidden " + std::to_string(c.valueHidden);
+}
+
 std::string joinInts(const std::vector<int>& v) {
     std::string out;
     for (int x : v) out += (out.empty() ? "" : ",") + std::to_string(x);
@@ -181,7 +189,8 @@ Trainer::Trainer(const Config& cfg, const std::string& runDir, Network net, Trai
     : cfg_(cfg), runDir_(runDir), net_(std::move(net)), state_(std::move(state)),
       log_(&std::cout) {}
 
-std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string& runDir) {
+std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string& runDir,
+                                           const RunInit& init) {
     try {
         LrSchedule::parse(cfg.lrSchedule);
     } catch (const std::invalid_argument& e) {
@@ -190,21 +199,55 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     if (fs::exists(statePath(runDir)))
         throw ConfigError(runDir + " already contains a run; use --resume");
 
+    // Everything that can refuse is loaded and checked before the first file
+    // is written, so a refused start leaves nothing behind.
+    std::optional<Network> given;
+    if (!init.initFrom.empty()) {
+        given.emplace(loadNetwork(init.initFrom));
+        if (given->config() != cfg.netConfig())
+            throw ConfigError(init.initFrom + " has shape " + shapeString(given->config()) +
+                              " but the config asks for " + shapeString(cfg.netConfig()));
+    }
+    std::optional<ReplayBuffer> donorBuffer;
+    if (!init.bufferFrom.empty()) {
+        if (!fs::exists(statePath(init.bufferFrom)))
+            throw ConfigError(init.bufferFrom + " does not contain a run (no state.bin)");
+        const Config donor = loadConfigFile(configPath(init.bufferFrom));
+        if (donor.boardSize != cfg.boardSize || donor.history != cfg.history)
+            throw ConfigError("--buffer-from run " + init.bufferFrom + " has board_size " +
+                              std::to_string(donor.boardSize) + ", history " +
+                              std::to_string(donor.history) + " but the config has board_size " +
+                              std::to_string(cfg.boardSize) + ", history " +
+                              std::to_string(cfg.history));
+        TrainingState donorState = loadTrainingState(statePath(init.bufferFrom), donor.botSimulations);
+        donorBuffer.emplace(std::move(donorState.buffer));
+        donorBuffer->setCapacity(static_cast<size_t>(cfg.bufferPositions));
+    }
+
     fs::create_directories(fs::path(runDir) / "checkpoints");
     fs::create_directories(fs::path(runDir) / "sgf");
     writeFileAtomically(configPath(runDir), configToString(cfg));
 
-    Network net(cfg.netConfig(), deriveSeed(cfg.seed, 0, kPhaseInit));
+    Network net = given ? std::move(*given) : Network(cfg.netConfig(), deriveSeed(cfg.seed, 0, kPhaseInit));
     saveNetwork(net, checkpointPath(runDir, 0));
 
     TrainingState state;
-    state.buffer = ReplayBuffer(static_cast<size_t>(cfg.bufferPositions));
+    state.buffer = donorBuffer ? std::move(*donorBuffer)
+                               : ReplayBuffer(static_cast<size_t>(cfg.bufferPositions));
     state.velocity = SgdMomentum(net, cfg.momentum, cfg.weightDecay).velocity();   // all zeros
     state.botSimulations = cfg.botSimulations;
     state.references = initialReferences(static_cast<int>(cfg.botSimulations.size()));
     // Each bot plays generation 0 now, so it has a rating before it can be chosen.
     calibrateBots(state.results, state.references, roundSettings(cfg, std::nullopt),
                   runMatches(cfg, runDir, 0, &net));
+
+    if (given || donorBuffer)
+        writeFileAtomically(
+            (fs::path(runDir) / "init.txt").string(),
+            "init_from = " + (init.initFrom.empty() ? std::string("none") : init.initFrom) + "\n" +
+                "buffer_from = " + (init.bufferFrom.empty() ? std::string("none") : init.bufferFrom) + "\n" +
+                "buffer_positions = " + std::to_string(state.buffer.positions()) + "\n" +
+                "buffer_games = " + std::to_string(state.buffer.games()) + "\n");
 
     writeFileAtomically(logPath(runDir), kLogHeader);
     writeRatingFiles(runDir, state.results, state.references, cfg.botSimulations);

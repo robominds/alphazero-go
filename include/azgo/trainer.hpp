@@ -35,10 +35,23 @@ struct GenerationStats {
 // The generation loop: self-play -> train -> arena/Elo -> checkpoint + state.
 class Trainer {
 public:
+    // Optional starting material for a new run. initFrom: a checkpoint that
+    // becomes generation 0 instead of a fresh random network (its shape must
+    // equal the config's); this is how a grown or pre-trained network starts a
+    // run. bufferFrom: another run's directory whose replay buffer seeds the
+    // new one, so the first generations train on real games rather than an
+    // empty buffer (board size and history must match). Empty = not used.
+    struct RunInit {
+        std::string initFrom;
+        std::string bufferFrom;
+    };
     // New run. Creates runDir (and checkpoints/, sgf/); throws ConfigError if
-    // runDir already contains state.bin. Writes config.cfg, gen_0000.azn and
-    // an initial state.bin (generation 0).
-    static std::unique_ptr<Trainer> startNew(const Config& cfg, const std::string& runDir);
+    // runDir already contains state.bin or `init` does not fit cfg. Writes
+    // config.cfg, gen_0000.azn and an initial state.bin (generation 0); with
+    // `init` also init.txt recording where the start came from. Optimizer
+    // momentum starts at zero either way.
+    static std::unique_ptr<Trainer> startNew(const Config& cfg, const std::string& runDir,
+                                             const RunInit& init = {});
     // Loads config.cfg, applies overrides, refuses (ConfigError listing keys)
     // if an architecture key changed, loads state.bin and the latest checkpoint.
     // Rewrites config.cfg with the overridden values.

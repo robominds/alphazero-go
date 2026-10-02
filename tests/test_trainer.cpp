@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -554,6 +555,134 @@ static void test_non_finite_weights_keep_last_good_state() {
     assert(!fs::exists(checkpointPath(dir.str(), 1)));
 }
 
+// ---- starting from a given network and a donor buffer ----------------------
+
+static bool sameWeights(Network& a, Network& b) {
+    std::vector<ParamView> pa = a.params(), pb = b.params();
+    if (pa.size() != pb.size()) return false;
+    for (size_t i = 0; i < pa.size(); ++i)
+        if (pa[i].size != pb[i].size ||
+            std::memcmp(pa[i].value, pb[i].value, pa[i].size * sizeof(float)) != 0)
+            return false;
+    return true;
+}
+
+static void test_start_from_network_and_buffer() {
+    TempDir donor("donor"), fresh("init_from"), small("init_small");
+    {
+        std::unique_ptr<Trainer> t = startQuiet(tinyConfig(), donor);
+        t->runUntil(1);
+    }
+    const std::string donorCkpt = checkpointPath(donor.str(), 1);
+    const TrainingState donorState = loadTrainingState(statePath(donor.str()), {8});
+    assert(donorState.buffer.positions() > 0);
+
+    // Network only: gen_0000 is the donor's weights, the buffer is empty.
+    Config c = tinyConfig();
+    c.seed = 5;   // a different seed would otherwise give a different random gen 0
+    Trainer::RunInit init;
+    init.initFrom = donorCkpt;
+    {
+        std::unique_ptr<Trainer> t = Trainer::startNew(c, fresh.str(), init);
+        t->setLog(nullptr);
+        assert(t->generation() == 0);
+    }
+    Network src = loadNetwork(donorCkpt), gen0 = loadNetwork(checkpointPath(fresh.str(), 0));
+    assert(sameWeights(src, gen0));
+    TrainingState s = loadTrainingState(statePath(fresh.str()), {8});
+    assert(s.buffer.positions() == 0);
+    const std::string initTxt = readFile(fresh.file("init.txt"));
+    assert(initTxt.find(donorCkpt) != std::string::npos);
+    assert(initTxt.find("none") != std::string::npos);
+
+    // Network and buffer: the donor's games, up to the new capacity.
+    TempDir both("init_both");
+    init.bufferFrom = donor.str();
+    {
+        std::unique_ptr<Trainer> t = Trainer::startNew(c, both.str(), init);
+        t->setLog(nullptr);
+    }
+    TrainingState b = loadTrainingState(statePath(both.str()), {8});
+    assert(b.generation == 0);
+    assert(b.buffer.positions() == donorState.buffer.positions());
+    assert(b.buffer.games() == donorState.buffer.games());
+    assert(b.buffer.game(0).moves == donorState.buffer.game(0).moves);
+    for (const std::vector<float>& v : b.velocity)
+        for (float x : v) assert(x == 0.0f);
+    const std::string bothTxt = readFile(both.file("init.txt"));
+    assert(bothTxt.find(donor.str()) != std::string::npos);
+    assert(bothTxt.find("positions") != std::string::npos);
+
+    // A smaller capacity evicts the oldest games, as setCapacity does.
+    Config smallCfg = c;
+    smallCfg.bufferPositions = static_cast<int>(donorState.buffer.positions() / 2 + 1);
+    {
+        std::unique_ptr<Trainer> t = Trainer::startNew(smallCfg, small.str(), init);
+        t->setLog(nullptr);
+    }
+    TrainingState sm = loadTrainingState(statePath(small.str()), {8});
+    assert(sm.buffer.capacity() == static_cast<size_t>(smallCfg.bufferPositions));
+    assert(sm.buffer.positions() < donorState.buffer.positions());
+
+    // The run is an ordinary one: it trains, and resumes from where it stopped.
+    {
+        std::unique_ptr<Trainer> t = resumeQuiet(both, {});
+        assert(t->generation() == 0);
+        t->runUntil(1);
+    }
+    std::unique_ptr<Trainer> t = resumeQuiet(both, {});
+    assert(t->generation() == 1);
+    t->runUntil(2);
+    assert(t->generation() == 2);
+    assert(fs::exists(checkpointPath(both.str(), 2)));
+}
+
+static void test_start_from_refusals() {
+    TempDir donor("donor_refuse"), target("target_refuse");
+    startQuiet(tinyConfig(), donor);
+
+    // A network of another shape names the shape and leaves no run behind.
+    Config c = tinyConfig();
+    c.blocks = 2;
+    Trainer::RunInit init;
+    init.initFrom = checkpointPath(donor.str(), 0);
+    bool threw = false;
+    try {
+        Trainer::startNew(c, target.str(), init);
+    } catch (const ConfigError& e) {
+        const std::string msg = e.what();
+        threw = msg.find("shape") != std::string::npos && msg.find("blocks") != std::string::npos;
+    }
+    assert(threw);
+    assert(!fs::exists(statePath(target.str())));
+
+    // A donor buffer from another board or history is refused.
+    c = tinyConfig();
+    c.history = 3;
+    init.initFrom.clear();
+    init.bufferFrom = donor.str();
+    threw = false;
+    try {
+        Trainer::startNew(c, target.str(), init);
+    } catch (const ConfigError& e) {
+        threw = std::string(e.what()).find("history") != std::string::npos;
+    }
+    assert(threw);
+    assert(!fs::exists(statePath(target.str())));
+
+    // A missing checkpoint is a plain error, again with no run left behind.
+    init = {};
+    init.initFrom = target.file("nope.azn");
+    threw = false;
+    try {
+        Trainer::startNew(tinyConfig(), target.str(), init);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    assert(threw);
+    assert(!fs::exists(statePath(target.str())));
+}
+
 int main() {
     test_start_new_writes_run_files();
     test_two_generations();
@@ -569,6 +698,8 @@ int main() {
     test_no_bots_no_extras();
     test_rerate_reproduces_live_results();
     test_rerate_refusals_and_gaps();
+    test_start_from_network_and_buffer();
+    test_start_from_refusals();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }

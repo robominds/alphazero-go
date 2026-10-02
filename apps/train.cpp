@@ -1,6 +1,7 @@
 // train: runs the AlphaZero generation loop for a new or resumed run.
 //
 //   train --config configs/9x9.cfg --run runs/nine [--set key=value]... [--generations N]
+//   train --config configs/9x9.cfg --run runs/ten --init-from CKPT [--buffer-from RUNDIR]
 //   train --run runs/nine --resume [--set key=value]... [--generations N]
 //   train --run runs/nine --rerate [--set key=value]...
 #include <cstdio>
@@ -21,11 +22,15 @@ namespace {
 const char* const kUsage =
     "usage:\n"
     "  train --config FILE --run DIR [--set key=value]... [--generations N]\n"
+    "  train --config FILE --run DIR --init-from CKPT [--buffer-from RUNDIR] [--set key=value]...\n"
     "  train --run DIR --resume [--set key=value]... [--generations N]\n"
     "  train --run DIR --rerate [--set key=value]...\n"
     "\n"
     "A new run copies FILE (plus overrides) to DIR/config.cfg. --resume continues\n"
     "from DIR/state.bin; tunable keys may be overridden, architecture keys may not.\n"
+    "--init-from CKPT makes CKPT (whose shape must match the config) generation 0 of a\n"
+    "new run, e.g. a network made by grow; --buffer-from RUNDIR seeds the replay\n"
+    "buffer with that run's games. Both are for new runs only.\n"
     "--generations N is shorthand for --set generations=N (train until generation N).\n"
     "--rerate trains nothing: it replays the arena over DIR's checkpoints with the\n"
     "current opponent selection and writes DIR/rerate/ (results.csv, elo.csv,\n"
@@ -43,7 +48,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<ArgParser> args;
     try {
         args = std::make_unique<ArgParser>(argc, argv,
-                                           std::vector<std::string>{"config", "run", "set", "generations"},
+                                           std::vector<std::string>{"config", "run", "set", "generations", "init-from", "buffer-from"},
                                            std::vector<std::string>{"resume", "rerate", "help"});
     } catch (const std::invalid_argument& e) {
         return usageError(e.what());
@@ -55,8 +60,10 @@ int main(int argc, char** argv) {
     if (!args->has("run")) return usageError("--run DIR is required");
     const bool resume = args->flag("resume");
     if (args->flag("rerate")) {
-        if (resume || args->has("config") || args->has("generations"))
-            return usageError("--rerate cannot be combined with --resume, --config or --generations");
+        if (resume || args->has("config") || args->has("generations") || args->has("init-from") ||
+            args->has("buffer-from"))
+            return usageError("--rerate cannot be combined with --resume, --config, --generations, "
+                              "--init-from or --buffer-from");
         try {
             const std::string runDir = args->get("run");
             std::cout << "re-rating " << runDir << " (results in " << runDir << "/rerate)" << std::endl;
@@ -70,6 +77,9 @@ int main(int argc, char** argv) {
     }
     if (resume && args->has("config"))
         return usageError("--config cannot be combined with --resume (the run's config.cfg is used)");
+    if (resume && (args->has("init-from") || args->has("buffer-from")))
+        return usageError("--init-from and --buffer-from start a new run; they cannot be combined with "
+                          "--resume (a resumed run keeps its network and buffer)");
     if (!resume && !args->has("config"))
         return usageError("a new run needs --config FILE (or pass --resume to continue one)");
 
@@ -85,7 +95,10 @@ int main(int argc, char** argv) {
         } else {
             azgo::Config cfg = azgo::loadConfigFile(args->get("config"));
             for (const std::string& o : overrides) azgo::applyOverride(cfg, o);
-            trainer = azgo::Trainer::startNew(cfg, runDir);
+            azgo::Trainer::RunInit init;
+            init.initFrom = args->get("init-from");
+            init.bufferFrom = args->get("buffer-from");
+            trainer = azgo::Trainer::startNew(cfg, runDir, init);
         }
 
         std::cout << (resume ? "resuming " : "starting ") << runDir << " at generation "

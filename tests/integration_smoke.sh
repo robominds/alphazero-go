@@ -150,6 +150,17 @@ echo "$out"
 echo "$out" | grep -q "new: 5x5, history 2, 3 blocks" || fail "grow did not report the new shape: $out"
 "$BUILD/analyze" --checkpoint "$W/grown.azn" --moves "C3 D4" --simulations 8 | grep -q "MCTS value" \
     || fail "analyze rejected the grown checkpoint"
+
+echo "== train: a new run from the grown network and the old run's buffer =="
+GROWN_TINY=("${TINY[@]}" --set blocks=3)
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/grown_run" "${GROWN_TINY[@]}" \
+    --init-from "$W/grown.azn" --buffer-from "$RUN" --generations 1
+cmp "$W/grown.azn" "$W/grown_run/checkpoints/gen_0000.azn" || fail "gen_0000 is not the grown checkpoint"
+grep -q "^buffer_from = $RUN" "$W/grown_run/init.txt" || fail "init.txt does not name the donor run"
+test -s "$W/grown_run/checkpoints/gen_0001.azn" || fail "the grown run did not train"
+status=0
+out="$("$BUILD/train" --run "$W/grown_run" --resume --init-from "$W/grown.azn" 2>&1)" || status=$?
+[ "$status" -eq 1 ] || fail "--resume --init-from exited $status, expected 1"
 status=0
 out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --blocks 0 --out "$W/shrunk.azn" 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "grow to fewer blocks exited $status, expected 1"
