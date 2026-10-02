@@ -10,13 +10,13 @@
 // built at the new width; the other order gives an equally exact network.
 // Before saving, the tool checks the claim on 8 random positions: the grown
 // network's policy and value must match the original's within kTolerance.
-// Deepening reproduces them bit for bit. Widening is exact in real arithmetic
-// but changes how many terms each convolution adds up, and in what order, so
-// float32 rounding differs: on the 9x9 run's 6x64 network, widening to 96
-// filters moves outputs by 5e-6 to 1e-5, about as much as nudging every conv
-// weight of the original by one unit in the last place (6e-6 to 7e-6). The
-// limit sits ten times above that noise and far below what a real mistake
-// (a wrong channel, a missed split) produces, which is 0.1 or more.
+// Deepening reproduces them bit for bit. Widening is exact in real arithmetic,
+// but float32 is not: on the 9x9 run's 6x64 network the original's own float32
+// outputs are already about 6.5e-6 away from exact (float64) arithmetic, and
+// widening changes how many terms each convolution adds up, so the float32
+// results move by about 1e-5. The limit sits ten times above that noise and
+// well below what a real mistake produces: a single mis-split weight gives
+// about 1e-3, a wrong BN or channel 0.08 to 0.4.
 #include <cmath>
 #include <cstdio>
 #include <exception>
@@ -124,9 +124,11 @@ int main(int argc, char** argv) {
 
         azgo::Rng rng(static_cast<uint64_t>(seed));
         const double diff = maxOutputDifference(net, grown, 8, rng);
+        char limit[32];
+        std::snprintf(limit, sizeof limit, "%.2g", kTolerance);
         if (!(diff <= kTolerance))
             throw std::runtime_error("the grown network's outputs differ from the original's by " +
-                                     std::to_string(diff) + " (limit 1e-4); not saving");
+                                     std::to_string(diff) + " (limit " + limit + "); not saving");
 
         const std::filesystem::path out = args->get("out");
         if (out.has_parent_path()) std::filesystem::create_directories(out.parent_path());

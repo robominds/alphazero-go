@@ -169,6 +169,7 @@ test ! -e "$W/too_wide.azn" || fail "a refused widen still wrote a checkpoint"
 status=0
 out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --filters 4 --out "$W/narrow.azn" 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "grow to fewer filters exited $status, expected 1"
+test ! -e "$W/narrow.azn" || fail "a refused narrowing still wrote a checkpoint"
 
 echo "== train: a new run from the grown network and the old run's buffer =="
 GROWN_TINY=("${TINY[@]}" --set blocks=3)

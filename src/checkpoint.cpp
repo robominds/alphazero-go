@@ -3,6 +3,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+#include "azgo/config.hpp"
 #include "azgo/serialize.hpp"
 
 namespace azgo {
@@ -44,7 +45,7 @@ NetConfig readHeader(BinaryReader& r) {
     // Same ranges as the config file accepts; also keeps a corrupt header
     // from asking for an absurd allocation.
     if (cfg.boardSize < 5 || cfg.boardSize > 19 || cfg.history < 1 || cfg.history > 16 ||
-        cfg.blocks < 0 || cfg.blocks > 40 || cfg.filters < 1 || cfg.filters > 512 ||
+        cfg.blocks < 0 || cfg.blocks > kMaxBlocks || cfg.filters < 1 || cfg.filters > kMaxFilters ||
         cfg.valueHidden < 1 || cfg.valueHidden > 1024) {
         throw FormatError("invalid network shape in header");
     }

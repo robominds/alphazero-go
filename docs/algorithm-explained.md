@@ -605,7 +605,10 @@ Network growBlocks(const Network& net, int newBlocks, uint64_t seed) {
 **Widening it.** Width grows the same way, by copying instead of zeroing
 (Net2WiderNet). A new channel starts as a copy of an old one: the layer
 that writes it gets the old channel's convolution weights and batch-norm
-parameters, so it carries exactly the same values. Every layer that
+parameters, so it carries exactly the same values. (Only the stem's
+weights are bitwise copies; a block's convolutions also read widened
+channels, so their copied rows are re-split too: the same sums, not the
+same bits.) Every layer that
 reads the old channel now sees it more than once, so `widenFilters`
 splits each weight on it among the copies in random positive shares that
 sum to the old weight, and the sum the layer computes is unchanged.

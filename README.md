@@ -174,10 +174,11 @@ $ ./build-blas/train --config configs/9x9.cfg --run runs/9x9-ten --set blocks=10
 first). Each new channel starts as a copy of an old one and every weight
 that reads the old channel is split among the copies in random shares
 that sum to it, so the outputs are unchanged while the copies receive
-different gradients and grow apart. Width costs more than depth: a
-layer's compute grows as filters², so 96 filters cost about (96/64)² ≈
-2.25× as much as 64. Widening reorders float32 additions, so its outputs
-agree to about 1e-5 rather than bit for bit, hence the 1e-4 limit.
+different gradients and grow apart. Width costs more than depth: compute
+grows linearly with blocks but quadratically with filters, so 96 filters
+cost about (96/64)² ≈ 2.25× as much as 64. Widening changes how many terms
+each convolution adds up, so in float32 its outputs agree to about 1e-5
+rather than bit for bit, hence the 1e-4 limit.
 
 ```
 $ ./build-blas/grow --from runs/9x9-main/checkpoints/gen_0250.azn --filters 96 --out runs/9x9-wide/start.azn

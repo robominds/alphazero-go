@@ -64,15 +64,15 @@ namespace {
 struct Tensors {
     std::map<std::string, ParamView> params;
     std::map<std::string, BufferView> buffers;
-    mutable std::set<std::string> written;
+    std::set<std::string> written;
     explicit Tensors(Network& net) {
         for (const ParamView& p : net.params()) params[p.name] = p;
         for (const BufferView& b : net.buffers()) buffers[b.name] = b;
     }
     const float* param(const std::string& name) const { return params.at(name).value; }
     const float* buffer(const std::string& name) const { return buffers.at(name).value; }
-    float* writeParam(const std::string& name) const { written.insert(name); return params.at(name).value; }
-    float* writeBuffer(const std::string& name) const { written.insert(name); return buffers.at(name).value; }
+    float* writeParam(const std::string& name) { written.insert(name); return params.at(name).value; }
+    float* writeBuffer(const std::string& name) { written.insert(name); return buffers.at(name).value; }
 };
 
 // copies[c] lists the new channels that are copies of old channel c.
@@ -124,7 +124,7 @@ void widenConv(const float* src, int oldIn, int taps, const std::vector<int>& ou
 
 // Widens a batch norm over channels: new channel j copies old channel map[j]
 // (gamma, beta, running mean and variance).
-void widenNorm(const Tensors& from, const Tensors& to, const std::string& prefix,
+void widenNorm(const Tensors& from, Tensors& to, const std::string& prefix,
                const std::vector<int>& map) {
     for (const char* suffix : {".gamma", ".beta"}) {
         const float* src = from.param(prefix + suffix);
@@ -138,7 +138,7 @@ void widenNorm(const Tensors& from, const Tensors& to, const std::string& prefix
     }
 }
 
-void copyTensor(const Tensors& from, const Tensors& to, const std::string& name, bool isParam) {
+void copyTensor(const Tensors& from, Tensors& to, const std::string& name, bool isParam) {
     const float* src = isParam ? from.param(name) : from.buffer(name);
     float* dst = isParam ? to.writeParam(name) : to.writeBuffer(name);
     const size_t size = isParam ? from.params.at(name).size : from.buffers.at(name).size;
@@ -168,7 +168,8 @@ Network widenFilters(const Network& net, int newFilters, uint64_t seed) {
     cfg.filters = newFilters;
     Network wide(cfg, seed);   // every tensor is overwritten below
     Network source = net;      // params() is non-const; see growBlocks
-    const Tensors from(source), to(wide);
+    const Tensors from(source);
+    Tensors to(wide);
 
     Rng rng(seed);
     const int F = old.filters, P = old.planes();

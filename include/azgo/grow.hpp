@@ -23,12 +23,16 @@
 // Widening: more filters per layer without changing what the network computes
 // (Net2WiderNet, Chen, Goodfellow and Shlens 2015, here with batch norm).
 // A new channel j starts as a copy of an old channel g(j): the layer that
-// writes it gets a copy of g(j)'s conv weights and of its BN's gamma, beta
-// and running statistics, so j carries exactly g(j)'s values, in inference
+// writes it gets g(j)'s row of conv weights and its BN's gamma, beta and
+// running statistics, so j carries exactly g(j)'s values, in inference
 // (running statistics) and in training (identical channels have identical
 // batch statistics). A layer that reads the old channel c now sees it k
 // times, so each of its weights on c is split among the k copies in shares
 // that sum to the old weight: the sum over the copies is the old term.
+// Only the stem's rows are bitwise copies (its inputs, the board planes, are
+// not widened). A block's convolutions both read and write widened channels,
+// so a copied row's inputs are re-split with fresh shares: the same sums,
+// not the same bits.
 //
 // The residual stream is written by the stem and by every block's second
 // conv + BN, and the skip connections add those writes together, so all
