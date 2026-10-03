@@ -272,29 +272,32 @@ area scoring**: each player gets one point per stone on the board plus
 one point per empty point in regions that touch only that player's
 stones. Empty regions that touch both colors count for nobody. There is
 no judgment of which stones are "dead" — chapter 05 shows what that
-does to the games.
+does to the games. The code first decides who owns each point (chapter 06
+reuses that as a training target), and the score is the sum:
 
 ```cpp
-int Board::areaScore() const {
-    // Every stone counts for its color. Every maximal empty region is flood
-    // filled once; it counts for a color only if all stones it touches have
-    // that color (seki liberties and dame touch both and count for nobody).
-    /* ... stack, mark, black = 0, white = 0 ... */
+void Board::ownership(int8_t* out) const {
+    // Every stone belongs to its color. Every maximal empty region is flood
+    // filled once and belongs to a color only if all the stones it touches
+    // have that color (seki liberties and dame touch both and belong to nobody).
+    /* ... region, mark ... */
     for (int point = 0; point < area(); ++point) {
         const int start = pad(point);
         const Color c = cells_[start];
-        if (c == Color::Black) { ++black; continue; }
-        if (c == Color::White) { ++white; continue; }
-        if (mark[start]) continue;
-        /* ... flood fill the empty region from start, counting regionSize
-               and noting whether it touches Black and/or White ... */
-        if (reachesBlack && !reachesWhite) black += regionSize;
-        if (reachesWhite && !reachesBlack) white += regionSize;
+        if (c == Color::Black) { out[point] = 1; continue; }
+        if (c == Color::White) { out[point] = -1; continue; }
+        if (mark[start]) continue;   // written with the region that reached it first
+        /* ... flood fill the empty region from start, noting whether it
+               touches Black and/or White ... */
+        const int8_t owner = reachesBlack == reachesWhite ? 0 : (reachesBlack ? 1 : -1);
+        /* ... write owner at every point of the region ... */
     }
-    return black - white;
 }
 ```
-*src/board.cpp:201 — `Board::areaScore` (abridged)*
+*src/board.cpp:201 — `Board::ownership` (abridged)*
+
+`Board::areaScore()` adds up those n² values: +1 for every point that is
+Black's, −1 for every point that is White's.
 
 Black moves first, which is worth several points on 19×19, so White
 receives **komi**: `Game::scoreForBlack()` is `areaScore() − komi`, and
@@ -494,10 +497,10 @@ void Network::forward(Workspace& ws, const float* input, int B, Mode mode) {
         norm(blk.bn2, convOut, buf.out.data(), buf.xhat2.data(), buf.invStd2.data());
         for (size_t j = 0; j < trunk; ++j) buf.out[j] += x[j];   // the skip connection
         reluForward(buf.out.data(), trunk);
-    /* ... policy head and value head ... */
+    /* ... policy head, value head and (chapter 06) the ownership head ... */
 }
 ```
-*src/network.cpp:177 — `Network::forward` (abridged)*
+*src/network.cpp:200 — `Network::forward` (abridged)*
 
 With this layout the column matrix of a batch is just wider: M = B·n²
 columns instead of n², and one gemm computes the layer for every sample
@@ -738,7 +741,7 @@ void Network::backward(Workspace& ws, int B) {
     /* ... stem backward; no gradient needed for the input planes ... */
 }
 ```
-*src/network.cpp:277 — `Network::backward` (abridged)*
+*src/network.cpp:326 — `Network::backward` (abridged)*
 
 One memory detail: all 3×3 convolutions share a single `im2col` buffer,
 so by the time the backward pass reaches a convolution its columns have
@@ -803,15 +806,19 @@ gradients, then backward:
 
 ```cpp
 LossStats Network::trainStep(Workspace& ws, const float* input, const float* pi, const float* z,
-                             int B) {
+                             int B, const float* ownership, float ownershipWeight) {
+    assert(ownership == nullptr || cfg_.ownership);
     zeroGrad();
     forward(ws, input, B, Mode::Train);
-    LossStats stats = loss(ws, pi, z, B, true);
-    backward(ws, B);
+    LossStats stats = loss(ws, pi, z, ownership, ownershipWeight, B, true);
+    backward(ws, B, cfg_.ownership && ownership != nullptr && ownershipWeight != 0.0f);
     return stats;
 }
 ```
-*src/network.cpp:162 — `Network::trainStep`*
+*src/network.cpp:183 — `Network::trainStep`*
+
+(The `ownership` arguments are chapter 06's auxiliary target. Without
+them the loss is the two terms above.)
 
 `Network::loss` computes the log-softmax with the usual guard
 (subtract the largest logit before `exp`, so nothing overflows) and the
@@ -1310,7 +1317,7 @@ GameRecord playSelfPlayGame(Evaluator& evaluator, const SelfPlayConfig& cfg, Rng
     return rec;
 }
 ```
-*src/selfplay.cpp:14 — `playSelfPlayGame` (abridged)*
+*src/selfplay.cpp:17 — `playSelfPlayGame` (abridged)*
 
 The presets sample 8 plies on 5×5, 20 on 9×9 and 30 on 19×19 (AlphaGo
 Zero's value), roughly the first fifth of a typical game on each board
@@ -1572,7 +1579,7 @@ drawn:
 
 ```cpp
 void ReplayBuffer::encodeSample(size_t gameIndex, int ply, int history, int sym,
-                                float* input, float* pi, float* z) const {
+                                float* input, float* pi, float* z, float* ownership) const {
     const GameRecord& g = games_[gameIndex];
     assert(ply >= 0 && ply < g.positions());
     const int n = g.boardSize;
@@ -1588,9 +1595,10 @@ void ReplayBuffer::encodeSample(size_t gameIndex, int ply, int history, int sym,
         pi[transformAction(sym, av.first, n)] = static_cast<float>(av.second) / static_cast<float>(total);
 
     *z = g.zAt(ply);
+    /* ... the ownership target (end of this chapter) ... */
 }
 ```
-*src/replay_buffer.cpp:53 — `ReplayBuffer::encodeSample` (abridged)*
+*src/replay_buffer.cpp:54 — `ReplayBuffer::encodeSample` (abridged)*
 
 `sample` draws each of a batch's positions uniformly over all positions
 in the window (so long games contribute more samples, in proportion to
@@ -1680,6 +1688,85 @@ progress first, finer steps later. On 5×5 seed 1 the value loss kept
 falling after the drop at generation 40, from 0.147 to 0.092 at
 generation 60, while the policy loss stayed flat at 1.73–1.75
 (`docs/results/5x5/log.csv`).
+
+**An auxiliary target: ownership.** Every 9×9 network so far fails the
+eye check (`docs/results/README.md`): it rates White's B1, which kills a
+Black group on the bottom edge, about the same as Black's B1, which gives
+the group two eyes. That is a life-and-death judgment, the value head's
+job, and the value head learns it from one number per position, the
+game's result `z = ±1`. That signal is weak in two ways. It is noisy: a
+position's `z` also depends on every later move of both sides, so a
+position that was won gets −1 whenever the game was thrown away
+afterwards. And it is slow: under Tromp-Taylor rules a dead group only
+costs points once it has actually been captured (chapter 05), so "this
+group has one eye" and "this game was lost" can be dozens of moves apart.
+
+KataGo (David J. Wu, *Accelerating Self-Play Learning in Go*, 2019,
+arXiv:1902.10565) trains its network on auxiliary targets next to `π`
+and `z`. The simplest is **ownership**: for every point, who owns it when
+the game ends. The final board already holds the answer, and chapter
+00's `Board::ownership` computes it, so each game now carries n² labels
+(`GameRecord::finalOwnership`, from Black's view) instead of one. Every
+point of a group that died is labelled with the opponent's color, which
+is the life-and-death lesson in its most direct form.
+
+The **ownership head** is the smallest head that can say this: a 1×1
+convolution from the trunk's filters to one channel, batch norm, and a
+`tanh` at every point, n² numbers in [−1, 1] from the side to move's view,
+like the value. It has `filters` + 2 parameters (96 + 2 on the 6×96
+network, next to its 1,032,349) and is optional (`ownership = true`):
+
+```cpp
+    if (cfg_.ownership) {
+        ownershipConv_.forward(be, x, B, n, col, convOut);
+        norm(ownershipBn_, convOut, ws.ownership_.data(), ws.ownershipXhat_.data(),
+             ws.ownershipInvStd_.data());
+        for (int j = 0; j < M; ++j) ws.ownership_[j] = std::tanh(ws.ownership_[j]);
+    }
+```
+*src/network.cpp:200 — `Network::forward` (abridged)*
+
+The loss gains a third term, the squared error averaged over the n²
+points and weighted by `w = ownership_weight` (1.5 by default):
+
+```
+L = (z − v)²  −  Σₐ π(a) · log softmax(logits)ₐ  +  w · (1/n²) · Σₚ (ôₚ − oₚ)²
+```
+
+Through the `tanh` its gradient is the value head's formula once per
+point, `2w(ô − o)(1 − ô²)`, divided by the batch size and n². With
+`w = 0` the head exists but nothing trains it. KataGo's own ownership
+loss differs in its details; the idea is the same.
+
+**Perspective and symmetry.** A sample turns the stored ownership to the
+side to move's view, as `z` is turned, and moves every point to where the
+symmetry moves the input planes:
+
+```cpp
+    if (ownership) {
+        assert(g.finalOwnership.size() == static_cast<size_t>(n) * n);
+        const float sign = g.toMoveAt(ply) == Color::Black ? 1.0f : -1.0f;
+        for (int p = 0; p < n * n; ++p)
+            ownership[transformPoint(sym, p, n)] = sign * g.finalOwnership[static_cast<size_t>(p)];
+    }
+```
+*src/replay_buffer.cpp:54 — `ReplayBuffer::encodeSample` (abridged)*
+
+Either mistake would teach nonsense without any error: a target from the
+wrong side's view says that every living group is dead, and one that is
+not moved with the planes puts each point's label on another point.
+`tests/test_replay_buffer.cpp` checks both by hand on small games, for
+all 8 symmetries.
+
+Search does not read the head; MCTS still asks only for the policy and
+the value. The head's effect is on the shared trunk: features that
+predict which groups live are the features the value head was missing.
+Two tools make it usable on existing runs. `grow --ownership` adds a
+fresh head to a trained checkpoint without changing what it plays, and a
+replay buffer saved before ownership existed gets its targets by
+replaying each game's moves (`replayFinalOwnership`), so an old run can
+still donate its games. Whether the extra signal fixes the eye check is
+an experiment; `docs/results/README.md` reports it.
 
 ---
 
@@ -2139,7 +2226,7 @@ GenerationStats Trainer::runGeneration() {
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:313 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:350 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not. The
@@ -2344,14 +2431,14 @@ see again in place.
 | Groups, liberties, capture, suicide | `Board::isLegal`, `Board::play` — `src/board.cpp:131, 152` |
 | Padded board and the `Off` sentinel | `Board::Board`, `Board::pad` — `src/board.cpp:47, 56` |
 | Zobrist hashing and positional superko | `Board::hashAfter` — `src/board.cpp:174`; `Game::isLegal` — `src/game.cpp:19` |
-| Tromp-Taylor area scoring, komi, the draw | `Board::areaScore` — `src/board.cpp:201`; `Game::resultForBlack` — `src/game.cpp:61` |
+| Tromp-Taylor area scoring, komi, the draw | `Board::ownership`, `Board::areaScore` — `src/board.cpp:201, 236`; `Game::resultForBlack` — `src/game.cpp:61` |
 | Input planes and the all-ones color plane | `encodePlanes` — `src/encode.cpp:14` |
 | Convolution as im2col + gemm | `Conv2d::forward`, `Conv2d::backward` — `src/layers.cpp:34, 46`; `Backend::im2col`, `Backend::col2im` — `src/backend.cpp:17, 50` |
 | The compute backend seam | `Backend` — `include/azgo/backend.hpp:16`; `NaiveBackend::gemm` — `src/backend.cpp:138` |
 | Batch norm, training vs. inference | `BatchNorm2d::forwardTrain`, `BatchNorm2d::forwardInfer`, `BatchNorm2d::backward` — `src/layers.cpp:85, 74, 119` |
-| Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:177, 277` |
+| Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:200, 326` |
 | Growing a network (deeper or wider) without changing its function | `growBlocks`, `widenFilters` — `src/grow.cpp:16, 158` |
-| The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:243, 162` |
+| The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:276, 183` |
 | Gradient checking | `checkGradient` — `tests/test_layers.cpp:36` |
 | PUCT selection | `Mcts::selectEdge` — `src/mcts.cpp:54` |
 | Legal masking, superko in the tree | `Mcts::expand` — `src/mcts.cpp:133` |
@@ -2360,12 +2447,13 @@ see again in place.
 | Virtual loss and batched search | `Mcts::search`, `Mcts::addVirtualLoss` — `src/mcts.cpp:196, 105` |
 | The evaluator seam | `Evaluator` — `include/azgo/evaluator.hpp:17`; `LocalEvaluator::evaluate` — `src/evaluator.cpp:19` |
 | Dirichlet root noise | `Mcts::setRootPriors` — `src/mcts.cpp:319`; `dirichlet` — `src/rng.cpp:122` |
-| Temperature | `Mcts::selectAction` — `src/mcts.cpp:282`; `playSelfPlayGame` — `src/selfplay.cpp:14` |
+| Temperature | `Mcts::selectAction` — `src/mcts.cpp:282`; `playSelfPlayGame` — `src/selfplay.cpp:17` |
 | Tree reuse and compaction | `Mcts::advance` — `src/mcts.cpp:336` |
 | Passes and the end of the game | `Game::play`, `Game::isTerminal` — `src/game.cpp:39, 53` |
-| The value target z | `GameRecord::zAt` — `src/selfplay.cpp:9` |
-| Replay buffer of whole games | `ReplayBuffer::encodeSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:53, 75` |
+| The value target z | `GameRecord::zAt` — `src/selfplay.cpp:12` |
+| Replay buffer of whole games | `ReplayBuffer::encodeSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:54, 85` |
 | Symmetry augmentation | `transformPoint`, `transformAction` — `src/symmetry.cpp:6, 21` |
+| Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:61`; `addOwnershipHead` — `src/grow.cpp:218`; `printOwnershipMap` — `apps/analyze.cpp:96` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:19` |
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:100` |
 | Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:50, 86` |
@@ -2373,13 +2461,13 @@ see again in place.
 | Arena rounds: calibration, promotion | `calibrateBots`, `runArenaRound` — `src/arena_round.cpp:22, 39` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:91, 64` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:313` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:99, 72` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:350` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:12` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:27`; `Trainer::resume` — `src/trainer.cpp:261` |
-| Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:70, 91` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:28`; `Trainer::resume` — `src/trainer.cpp:297` |
+| Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:73, 113` |
 
 ---
 

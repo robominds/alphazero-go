@@ -120,7 +120,11 @@ A wins 100, B wins 0, draws 0
 
 **`analyze`** plays a move list (GTP coordinates) or an SGF file, then
 prints the board, the network's value and policy, and an MCTS search
-(`docs/results/9x9/analyze-atari.txt`):
+(`docs/results/9x9/analyze-atari.txt`). For a checkpoint with an
+ownership head (below) it also prints, after the value line, an
+ownership map: who the network expects to own each point at the end, in
+Black's terms, from +9 (surely Black's) to −9 (surely White's), with `.`
+where it is unsure (|ownership| < 0.1):
 
 ```
 $ ./build-blas/analyze --checkpoint runs/9x9-main/checkpoints/gen_0150.azn --moves "D5 E5 F5 C3 E6 G3" --simulations 200 --komi 7.5 --backend blas
@@ -200,6 +204,43 @@ The presets' learning-rate schedule restarts at 0.02, which is the rate
 for a network that knows nothing; for a trained one it would wreck what
 the network learned. Override it, for example `--set lr_schedule=0:0.002`
 (the 9x9 preset's late-training rate).
+
+### The ownership head
+
+An optional third head predicts, for every point, who owns it when the
+game ends: KataGo's auxiliary ownership target, explained in chapter 06
+of the explainer. It is off in every preset. Two config keys control it:
+
+- `ownership = true` adds the head. It is an architecture key, so it
+  cannot change on resume.
+- `ownership_weight` (0–10, default 1.5) weights the head's loss; 0 keeps
+  the head but does not train it.
+
+A run with the head shows its loss in the progress line
+(`train loss p 2.42 v 0.36 o 0.590 lr 0.002`) and in the last column of
+`log.csv`, `ownership_loss`, which stays empty for a run without the
+head. A run started before that column existed gets it, empty, on resume.
+
+`grow --ownership` adds a randomly initialized head to a trained
+checkpoint. The head changes neither the policy nor the value, so the
+usual check of 8 random positions still applies, and it combines with
+`--blocks` and `--filters`. A new run starts from the result like from
+any grown network. Its donor buffer may come from a run made before
+ownership existed: each game's final ownership is then recomputed by
+replaying its moves.
+
+```
+$ ./build-blas/grow --from runs/9x9-wide96/checkpoints/gen_0050.azn --ownership --out runs/grown/wide96-g50-own.azn
+old: 9x9, history 8, 6 blocks, 96 filters, value_hidden 64, 1032349 parameters
+new: 9x9, history 8, 6 blocks, 96 filters, value_hidden 64, ownership head, 1032447 parameters
+verified on 8 random positions (max difference 0); wrote runs/grown/wide96-g50-own.azn
+$ ./build-blas/train --config configs/9x9.cfg --run runs/9x9-ownership --set filters=96 \
+      --set ownership=true --set lr_schedule=0:0.002 --init-from runs/grown/wide96-g50-own.azn \
+      --buffer-from runs/9x9-wide96
+```
+
+`--init-from` refuses a checkpoint whose head does not match the config,
+and says how to fix it (`grow --ownership`, or `--set ownership=true`).
 
 ## Presets
 
@@ -315,6 +356,9 @@ python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-mai
 - [`docs/superpowers/specs/2026-10-01-rating-aware-arena-design.md`](docs/superpowers/specs/2026-10-01-rating-aware-arena-design.md)
   and [`docs/superpowers/plans/2026-10-01-rating-aware-arena.md`](docs/superpowers/plans/2026-10-01-rating-aware-arena.md)
   — the rating-aware arena: opponents chosen by rating, the uniform bot and `--rerate`.
+- [`docs/superpowers/specs/2026-10-03-ownership-head-design.md`](docs/superpowers/specs/2026-10-03-ownership-head-design.md)
+  and [`docs/superpowers/plans/2026-10-03-ownership-head.md`](docs/superpowers/plans/2026-10-03-ownership-head.md)
+  — the ownership head: an auxiliary per-point target, `grow --ownership` and the analyze map.
 
 `python3 tools/check_citations.py` checks that every `file:line` citation
 in both explainers still points at the quoted definition.
