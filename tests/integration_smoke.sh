@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end smoke test of the executables on a tiny 5x5 run:
 # train -> resume -> re-rate -> arena (checkpoint and bot) -> analyze (good and
-# bad input) -> bench -> grow (deeper, wider, and a run started from the grown network), plus the refusal to change the architecture on resume.
+# bad input) -> bench -> grow (deeper, wider, and a run started from the grown network), plus the refusal to change the architecture on resume,
+# then the ownership head: a run with it, grow --ownership, and analyze's ownership map.
 #
 # usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR
 set -euo pipefail
@@ -228,5 +229,17 @@ test ! -e "$W/owner2.azn" || fail "a refused grow still wrote a checkpoint"
     --init-from "$W/owner.azn" --buffer-from "$RUN" --generations 1
 cmp "$W/owner.azn" "$W/owner_run/checkpoints/gen_0000.azn" || fail "gen_0000 is not the checkpoint with the head"
 test -s "$W/owner_run/checkpoints/gen_0001.azn" || fail "the run from the grown head did not train"
+
+echo "== analyze: the ownership map, only for a checkpoint with the head =="
+out="$("$BUILD/analyze" --checkpoint "$W/owner_run/checkpoints/gen_0001.azn" --moves "C3 D4" --simulations 8)"
+echo "$out"
+echo "$out" | grep -q '^Ownership, Black + / White - ' || fail "analyze printed no ownership map"
+# Five rows of five cells after the column letters, each " +9" .. " -9" or "  .".
+rows="$(echo "$out" | sed -n '/^Ownership/,/^$/p' | grep -Ec '^ [1-5] ( [+-][1-9]|  \.){5}$')"
+[ "$rows" = "5" ] || fail "the ownership map should have 5 rows of 5 cells, found $rows"
+[ "$(echo "$out" | grep -n '^Value' | cut -d: -f1)" -lt "$(echo "$out" | grep -n '^Ownership' | cut -d: -f1)" ] \
+    || fail "the ownership map should follow the value line"
+"$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --simulations 8 | grep -q '^Ownership' \
+    && fail "analyze printed an ownership map for a checkpoint without the head"
 
 echo "integration_smoke: all checks passed"

@@ -2,6 +2,8 @@
 // (value and policy heat map) next to what search makes of it (MCTS visits).
 // The gap between the two is the whole point of AlphaZero: search corrects
 // the network's guess, and training teaches the network to guess the result.
+// A checkpoint with an ownership head also shows who it thinks will own each
+// point at the end, which shows how it judges every group on the board.
 //
 //   analyze --checkpoint runs/nine/checkpoints/gen_0040.azn --moves "E5 C3 pass"
 //   analyze --checkpoint gen_0040.azn --sgf game.sgf --simulations 800
@@ -37,9 +39,10 @@ const char* const kUsage =
     "               [--simulations 400] [--komi 7.5] [--backend naive]\n"
     "\n"
     "Plays the moves (GTP coordinates, or the main line of an SGF file) from the\n"
-    "empty board, then prints the network's value and policy for the position\n"
-    "and the result of an MCTS search. With --sgf the file's komi is used unless\n"
-    "--komi is given.\n";
+    "empty board, then prints the network's value, its ownership map (only for a\n"
+    "checkpoint with an ownership head) and policy for the position, and the\n"
+    "result of an MCTS search. With --sgf the file's komi is used unless --komi\n"
+    "is given.\n";
 
 constexpr char kColumns[] = "ABCDEFGHJKLMNOPQRST";   // GTP skips I
 constexpr int kMctsBatch = 8;
@@ -81,6 +84,25 @@ void printHeatMap(const azgo::Board& board, const std::vector<double>& prior) {
             else if (stone == azgo::Color::White) std::printf("  O");
             else if (prior[static_cast<size_t>(p)] < 0.01) std::printf("  .");
             else std::printf("%3ld", std::lround(100.0 * prior[static_cast<size_t>(p)]));
+        }
+        std::printf("\n");
+    }
+}
+
+// Who the network expects to own each point when the game ends, in Black's
+// terms: 9 * ownership rounded, from +9 (surely Black's) to -9 (surely
+// White's), "." when |ownership| < 0.1. Stones are not drawn: whether a stone
+// survives is exactly what the map answers. Same frame as printHeatMap.
+void printOwnershipMap(int n, const std::vector<float>& owner) {
+    std::printf("   ");
+    for (int c = 0; c < n; ++c) std::printf("  %c", kColumns[c]);
+    std::printf("\n");
+    for (int r = 0; r < n; ++r) {
+        std::printf("%2d ", n - r);
+        for (int c = 0; c < n; ++c) {
+            const float o = owner[static_cast<size_t>(r * n + c)];
+            if (std::fabs(o) < 0.1f) std::printf("  .");
+            else std::printf("%+3ld", std::lround(9.0 * o));
         }
         std::printf("\n");
     }
@@ -175,6 +197,20 @@ int main(int argc, char** argv) {
         float value = 0;
         evaluator.evaluate(input.data(), 1, logits.data(), &value);
         std::printf("Value (side to move): %+.2f\n\n", value);
+
+        if (nc.ownership) {
+            // The evaluator interface carries no ownership, so ask the network
+            // directly; it answers for the side to move, the map is Black's.
+            azgo::Workspace ws(nc, 1, *backend);
+            std::vector<float> headLogits(static_cast<size_t>(actions)), owner(static_cast<size_t>(n) * n);
+            float headValue = 0;
+            net.infer(ws, input.data(), 1, headLogits.data(), &headValue, owner.data());
+            if (board.toMove() == azgo::Color::White)
+                for (float& o : owner) o = -o;
+            std::printf("Ownership, Black + / White - (9 = certain, \".\" below 0.1):\n");
+            printOwnershipMap(n, owner);
+            std::printf("\n");
+        }
 
         // Priors as MCTS sees them: softmax over the legal actions only.
         const std::vector<int> legal = game.legalActions();
