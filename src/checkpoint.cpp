@@ -11,7 +11,8 @@ namespace azgo {
 namespace {
 
 constexpr uint32_t kMagic = 0x4F475A41;   // bytes 'A' 'Z' 'G' 'O' when written little-endian
-constexpr uint32_t kVersion = 1;
+// Version 2 added the ownership flag to the header.
+constexpr uint32_t kVersionPlain = 1, kVersionOwnership = 2;
 
 // A problem found in the file's contents (as opposed to running out of data).
 struct FormatError : std::runtime_error {
@@ -35,13 +36,19 @@ std::vector<Tensor> tensorsOf(Network& net) {
 NetConfig readHeader(BinaryReader& r) {
     if (r.u32() != kMagic) throw FormatError("not an AZGO checkpoint");
     const uint32_t version = r.u32();
-    if (version != kVersion) throw FormatError("unsupported version " + std::to_string(version));
+    if (version != kVersionPlain && version != kVersionOwnership)
+        throw FormatError("unsupported version " + std::to_string(version));
     NetConfig cfg;
     cfg.boardSize = r.i32();
     cfg.history = r.i32();
     cfg.blocks = r.i32();
     cfg.filters = r.i32();
     cfg.valueHidden = r.i32();
+    if (version == kVersionOwnership) {
+        const int32_t flag = r.i32();
+        if (flag != 0 && flag != 1) throw FormatError("invalid ownership flag in header");
+        cfg.ownership = flag == 1;
+    }
     // Same ranges as the config file accepts; also keeps a corrupt header
     // from asking for an absurd allocation.
     if (cfg.boardSize < 5 || cfg.boardSize > 19 || cfg.history < 1 || cfg.history > 16 ||
@@ -76,12 +83,13 @@ void saveNetwork(Network& net, const std::string& path) {
     BinaryWriter w(buffer);
     const NetConfig& cfg = net.config();
     w.u32(kMagic);
-    w.u32(kVersion);
+    w.u32(cfg.ownership ? kVersionOwnership : kVersionPlain);
     w.i32(cfg.boardSize);
     w.i32(cfg.history);
     w.i32(cfg.blocks);
     w.i32(cfg.filters);
     w.i32(cfg.valueHidden);
+    if (cfg.ownership) w.i32(1);
     const std::vector<Tensor> tensors = tensorsOf(net);
     w.u32(static_cast<uint32_t>(tensors.size()));
     for (const Tensor& t : tensors) {

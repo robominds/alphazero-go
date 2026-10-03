@@ -167,6 +167,8 @@ const KeyEntry kKeys[] = {
     {"blocks", true, intKey<&Config::blocks, 0, kMaxBlocks>, printInt<&Config::blocks>},
     {"filters", true, intKey<&Config::filters, 1, kMaxFilters>, printInt<&Config::filters>},
     {"value_hidden", true, intKey<&Config::valueHidden, 1, 1024>, printInt<&Config::valueHidden>},
+    {"ownership", true, [](Config& c, const std::string& v) { return parseBool(v, c.ownership); },
+     [](const Config& c) { return std::string(c.ownership ? "true" : "false"); }},
     // self-play and search
     {"games_per_generation", false, intKey<&Config::gamesPerGeneration, 1, 1000000>,
      printInt<&Config::gamesPerGeneration>},
@@ -204,6 +206,9 @@ const KeyEntry kKeys[] = {
     {"weight_decay", false,
      [](Config& c, const std::string& v) { return parseFloat(v, 0, 1, c.weightDecay); },
      printFloat<&Config::weightDecay>},
+    {"ownership_weight", false,
+     [](Config& c, const std::string& v) { return parseFloat(v, 0, 10, c.ownershipWeight); },
+     printFloat<&Config::ownershipWeight>},
     // arena
     {"arena_every", false, intKey<&Config::arenaEvery, 0, 1000000>, printInt<&Config::arenaEvery>},
     {"arena_games", false, [](Config& c, const std::string& v) { return parseEvenGames(v, c.arenaGames); },
@@ -275,6 +280,7 @@ NetConfig Config::netConfig() const {
     net.blocks = blocks;
     net.filters = filters;
     net.valueHidden = valueHidden;
+    net.ownership = ownership;
     return net;
 }
 

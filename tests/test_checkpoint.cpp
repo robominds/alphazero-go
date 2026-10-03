@@ -219,6 +219,53 @@ static void test_leftover_tmp_is_ignored_and_overwritten() {
     assert(!sameTensors(first, reloaded));
 }
 
+// A network without an ownership head is saved exactly as before (version 1,
+// no flag); one with the head as version 2 with the flag after the shape.
+static void test_ownership_flag_and_versions() {
+    NetConfig withHead = smallConfig();
+    withHead.ownership = true;
+    Network plain(smallConfig(), 1), owner(withHead, 1);
+    const std::string plainPath = pathFor("plain.azn"), ownerPath = pathFor("owner.azn");
+    saveNetwork(plain, plainPath);
+    saveNetwork(owner, ownerPath);
+    const std::string p = readFile(plainPath), o = readFile(ownerPath);
+    auto u32At = [](const std::string& bytes, size_t at) {   // little-endian, as written
+        uint32_t v = 0;
+        for (int k = 3; k >= 0; --k) v = (v << 8) | static_cast<uint8_t>(bytes[at + k]);
+        return v;
+    };
+
+    // Version 1: the tensor count follows the 5 shape fields directly.
+    const size_t header = 4 + 4 + 5 * 4;
+    assert(u32At(p, 4) == 1);
+    assert(u32At(p, header) == plain.params().size() + plain.buffers().size());
+    assert(!readCheckpointConfig(plainPath).ownership);
+
+    // Version 2: an i32 flag of 1, then the tensor count.
+    assert(u32At(o, 4) == 2 && u32At(o, header) == 1);
+    assert(u32At(o, header + 4) == owner.params().size() + owner.buffers().size());
+    assert(readCheckpointConfig(ownerPath) == withHead);
+    Network loaded = loadNetwork(ownerPath);
+    assert(loaded.config() == withHead && sameTensors(owner, loaded));
+
+    // A version-2 file whose flag is 0 is a plain network.
+    std::string v2plain = p;
+    v2plain[4] = 2;
+    v2plain.insert(header, std::string(4, '\0'));
+    const std::string v2Path = pathFor("v2plain.azn");
+    writeFile(v2Path, v2plain);
+    assert(readCheckpointConfig(v2Path) == smallConfig());
+    Network fromV2 = loadNetwork(v2Path);
+    assert(sameTensors(plain, fromV2));
+
+    // Any other flag is a corrupt header.
+    std::string badFlag = o;
+    badFlag[header] = 2;
+    const std::string badPath = pathFor("bad_flag.azn");
+    writeFile(badPath, badFlag);
+    expectLoadError(badPath, "invalid ownership flag");
+}
+
 int main() {
     gDir = fs::temp_directory_path() / ("azgo_test_checkpoint_" + std::to_string(getpid()));
     fs::remove_all(gDir);
@@ -229,6 +276,7 @@ int main() {
     test_header_does_not_match_tensors();
     test_truncated_checkpoint_names_file();
     test_leftover_tmp_is_ignored_and_overwritten();
+    test_ownership_flag_and_versions();
     fs::remove_all(gDir);
     std::printf("test_checkpoint: all tests passed\n");
     return 0;

@@ -9,7 +9,7 @@ namespace azgo {
 
 bool NetConfig::operator==(const NetConfig& o) const {
     return boardSize == o.boardSize && history == o.history && blocks == o.blocks &&
-           filters == o.filters && valueHidden == o.valueHidden;
+           filters == o.filters && valueHidden == o.valueHidden && ownership == o.ownership;
 }
 
 // ---------------------------------------------------------------- Workspace

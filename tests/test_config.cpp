@@ -234,6 +234,43 @@ static void test_resume_locked_diff() {
     assert((resumeLockedDiff(a, b) == std::vector<std::string>{"bot_simulations"}));
 }
 
+static void test_ownership_keys() {
+    Config c;
+    assert(!c.ownership && c.ownershipWeight == 1.5f && !c.netConfig().ownership);
+    // ownership sits with the network keys, ownership_weight with the training keys.
+    assert(contains(configToString(c), "value_hidden = 64\nownership = false\n"));
+    assert(contains(configToString(c), "weight_decay = 0.0001\nownership_weight = 1.5\n"));
+
+    c = parseConfigText("ownership = on\nownership_weight = 0\n", "t.cfg");
+    assert(c.ownership && c.ownershipWeight == 0.0f && c.netConfig().ownership);
+    assert(contains(configToString(c), "ownership = true\n"));
+    assert(contains(configToString(c), "ownership_weight = 0\n"));
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    assert(parseConfigText("ownership_weight = 10", "t.cfg").ownershipWeight == 10.0f);
+    assert(contains(errorOf("ownership = maybe"), "t.cfg:1: ownership: "));
+    assert(contains(errorOf("ownership_weight = -0.5"), "t.cfg:1: ownership_weight: "));
+    assert(contains(errorOf("ownership_weight = 10.5"), "t.cfg:1: ownership_weight: "));
+
+    // The head changes the parameter set, so ownership is an architecture key
+    // (and NetConfig tells the two shapes apart); its weight is tunable.
+    Config a, b;
+    b.ownership = true;
+    assert((architectureDiff(a, b) == std::vector<std::string>{"ownership"}));
+    assert((resumeLockedDiff(a, b) == std::vector<std::string>{"ownership"}));
+    assert(a.netConfig() != b.netConfig());
+    b = a;
+    b.ownershipWeight = 3.0f;
+    assert(architectureDiff(a, b).empty() && resumeLockedDiff(a, b).empty());
+
+    // A config.cfg written before these keys existed leaves ownership off,
+    // and the presets do not turn it on.
+    assert(!parseConfigText("filters = 96\n", "old.cfg").ownership);
+    for (const char* name : {"5x5.cfg", "9x9.cfg", "19x19.cfg"}) {
+        const Config p = loadConfigFile(preset(name));
+        assert(!p.ownership && p.ownershipWeight == 1.5f);
+    }
+}
+
 static void test_errors_name_key_and_line() {
     std::string msg = errorOf("komi = 7.5\nfoo = 1\n");
     assert(contains(msg, "t.cfg:2") && contains(msg, "foo") && contains(msg, "unknown key"));
@@ -305,6 +342,7 @@ int main() {
     test_arena_keys();
     test_bot_simulations_rejects_bad_lists();
     test_resume_locked_diff();
+    test_ownership_keys();
     test_errors_name_key_and_line();
     test_hand_edited_files();
     std::printf("test_config: all tests passed\n");

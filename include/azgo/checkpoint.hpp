@@ -9,10 +9,13 @@
 
 namespace azgo {
 
-// Format: magic "AZGO" (u32 0x4F475A41), version u32 = 1, NetConfig as 5 x i32
-// (boardSize, history, blocks, filters, valueHidden), u32 tensor count, then
-// per tensor: name (str), u64 size, floats. Params in params() order, then
-// buffers in buffers() order. Saved atomically.
+// Format: magic "AZGO" (u32 0x4F475A41), version u32, NetConfig as 5 x i32
+// (boardSize, history, blocks, filters, valueHidden), in version 2 followed by
+// the ownership flag (i32, 0 or 1), then u32 tensor count, then per tensor:
+// name (str), u64 size, floats. Params in params() order, then buffers in
+// buffers() order. Saved atomically. A network without an ownership head is
+// written as version 1, byte for byte what older builds wrote (and can still
+// read); one with the head as version 2. Version 1 loads as ownership = false.
 void saveNetwork(Network& net, const std::string& path);
 
 // Throws std::runtime_error naming the problem: missing file, bad magic,

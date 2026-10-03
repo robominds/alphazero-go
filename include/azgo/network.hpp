@@ -20,6 +20,7 @@ struct NetConfig {
     int blocks = 6;        // residual blocks, >= 0
     int filters = 64;
     int valueHidden = 64;
+    bool ownership = false;   // an ownership head: who owns each point at the end
     int planes() const { return 2 * history + 2; }
     int area() const { return boardSize * boardSize; }
     int actions() const { return area() + 1; }

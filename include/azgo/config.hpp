@@ -36,6 +36,7 @@ struct Config {
     int blocks = 6;
     int filters = 64;
     int valueHidden = 64;
+    bool ownership = false;            // ownership head (KataGo's auxiliary target)
     // self-play and search
     int gamesPerGeneration = 100;
     int simulations = 200;
@@ -51,6 +52,7 @@ struct Config {
     std::string lrSchedule = "0:0.02";
     float momentum = 0.9f;
     float weightDecay = 1e-4f;
+    float ownershipWeight = 1.5f;      // weight w of the ownership loss; 0 = the head does not train
     // arena
     int arenaEvery = 1;                // 0 = never
     int arenaGames = 20;               // per opponent, even
@@ -84,7 +86,8 @@ void applyOverride(Config& cfg, const std::string& keyEqualsValue);
 // through parseConfigText exactly.
 std::string configToString(const Config& cfg);
 
-// Keys that fix the network's shape: board_size, history, blocks, filters, value_hidden.
+// Keys that fix the network's shape: board_size, history, blocks, filters,
+// value_hidden, ownership.
 std::vector<std::string> architectureDiff(const Config& a, const Config& b);
 
 // Keys a resume must refuse to change: architectureDiff, then bot_simulations.
