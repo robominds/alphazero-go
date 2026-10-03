@@ -43,14 +43,21 @@ Batch randomBatch(const NetConfig& cfg, int B, Rng& rng) {
 }
 
 // Gives every BN of `net` non-trivial running statistics and affine
-// parameters, as a trained network would have, by training a few steps.
+// parameters, as a trained network would have, by training a few steps. A
+// network with an ownership head trains it too, on random targets.
 void trainABit(Network& net, Rng& rng) {
     const NetConfig& cfg = net.config();
     std::unique_ptr<Backend> be = makeBackend("naive", 1);
     Workspace ws(cfg, 16, *be);
     for (int i = 0; i < 3; ++i) {
         Batch b = randomBatch(cfg, 16, rng);
-        net.trainStep(ws, b.input.data(), b.pi.data(), b.z.data(), 16);
+        std::vector<float> own;
+        if (cfg.ownership) {
+            own.resize(static_cast<size_t>(16) * cfg.area());
+            for (float& v : own) v = static_cast<float>(rng.below(3) - 1);
+        }
+        net.trainStep(ws, b.input.data(), b.pi.data(), b.z.data(), 16,
+                      cfg.ownership ? own.data() : nullptr, 1.5f);
         for (ParamView& p : net.params())
             for (size_t k = 0; k < p.size; ++k) p.value[k] -= 0.05f * p.grad[k];
     }
@@ -321,6 +328,116 @@ void test_widening_is_deterministic() {
     assert(seedMatters);
 }
 
+// ---------------------------------------------------------------- ownership
+
+NetConfig withOwnership(NetConfig cfg) {
+    cfg.ownership = true;
+    return cfg;
+}
+
+// Inference outputs of all three heads, for exact or near comparisons.
+struct Outputs {
+    std::vector<float> logits, values, ownership;
+};
+
+Outputs outputsOf(const Network& net, const Batch& batch, int B) {
+    const NetConfig& cfg = net.config();
+    std::unique_ptr<Backend> be = makeBackend("naive", 1);
+    Workspace ws(cfg, B, *be);
+    Outputs out;
+    out.logits.resize(static_cast<size_t>(B) * cfg.actions());
+    out.values.resize(B);
+    if (cfg.ownership) out.ownership.resize(static_cast<size_t>(B) * cfg.area());
+    net.infer(ws, batch.input.data(), B, out.logits.data(), out.values.data(),
+              cfg.ownership ? out.ownership.data() : nullptr);
+    return out;
+}
+
+double maxDifference(const std::vector<float>& a, const std::vector<float>& b) {
+    assert(a.size() == b.size());
+    double worst = 0;
+    for (size_t i = 0; i < a.size(); ++i) worst = std::fmax(worst, std::fabs(a[i] - b[i]));
+    return worst;
+}
+
+// A new head cannot change the policy or the value: bit for bit the same
+// outputs, every old tensor copied, and a second head refused.
+void test_add_ownership_head_keeps_policy_and_value() {
+    Rng rng(16);
+    Network net(makeConfig(5, 2), 7);
+    trainABit(net, rng);
+    Network owner = addOwnershipHead(net, 3);
+    assert(owner.config() == withOwnership(net.config()));
+    std::vector<ParamView> a = net.params(), b = owner.params();
+    assert(b.size() == a.size() + 3 && b.back().name == "ownership.bn.beta");
+    for (size_t i = 0; i < a.size(); ++i)
+        assert(a[i].name == b[i].name && std::memcmp(a[i].value, b[i].value, a[i].size * sizeof(float)) == 0);
+    std::vector<BufferView> ba = net.buffers(), bb = owner.buffers();
+    for (size_t i = 0; i < ba.size(); ++i)
+        assert(std::memcmp(ba[i].value, bb[i].value, ba[i].size * sizeof(float)) == 0);
+
+    Batch batch = randomBatch(net.config(), 8, rng);
+    const Outputs before = outputsOf(net, batch, 8), after = outputsOf(owner, batch, 8);
+    assert(after.logits == before.logits && after.values == before.values);
+    for (float o : after.ownership) assert(std::isfinite(o) && o >= -1.0f && o <= 1.0f);
+
+    bool threw = false;
+    try {
+        addOwnershipHead(owner, 3);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    assert(threw);
+}
+
+// Deepening copies an existing head by name: all three heads bit for bit.
+void test_deepening_carries_the_ownership_head() {
+    Rng rng(17);
+    Network net(withOwnership(makeConfig(5, 2)), 7);
+    trainABit(net, rng);
+    Network deep = growBlocks(net, 4, 99);
+    assert(deep.config().ownership && deep.config().blocks == 4);
+    Batch batch = randomBatch(net.config(), 8, rng);
+    const Outputs a = outputsOf(net, batch, 8), b = outputsOf(deep, batch, 8);
+    assert(a.logits == b.logits && a.values == b.values && a.ownership == b.ownership);
+}
+
+// Widening splits the head's input weights like the other heads': all three
+// heads agree within float rounding, in inference and in the training loss.
+// A network without the head widens exactly as it did before the head existed.
+void test_widening_carries_the_ownership_head() {
+    Rng rng(18);
+    Network net(withOwnership(makeConfig(5, 3)), 7);
+    trainABit(net, rng);
+    Network wide = widenFilters(net, 20, 31);
+    assert(wide.config().ownership && wide.config().filters == 20);
+    Batch batch = randomBatch(net.config(), 8, rng);
+    const Outputs a = outputsOf(net, batch, 8), b = outputsOf(wide, batch, 8);
+    assert(maxDifference(a.logits, b.logits) <= 1e-5 && maxDifference(a.values, b.values) <= 1e-5);
+    assert(maxDifference(a.ownership, b.ownership) <= 1e-5);
+
+    std::vector<float> own(static_cast<size_t>(8) * net.config().area());
+    for (float& v : own) v = static_cast<float>(rng.below(3) - 1);
+    std::unique_ptr<Backend> be = makeBackend("naive", 1);
+    Workspace wa(net.config(), 8, *be), wb(wide.config(), 8, *be);
+    const LossStats la = net.computeLoss(wa, batch.input.data(), batch.pi.data(), batch.z.data(), 8,
+                                         own.data(), 1.5f);
+    const LossStats lb = wide.computeLoss(wb, batch.input.data(), batch.pi.data(), batch.z.data(), 8,
+                                          own.data(), 1.5f);
+    assert(std::fabs(la.ownershipLoss - lb.ownershipLoss) <= 1e-5);
+    assert(std::fabs(la.valueLoss - lb.valueLoss) <= 1e-5);
+
+    // The same trunk without the head widens to the same tensors (the head's
+    // random shares are drawn after every other layer's).
+    Network plain(makeConfig(5, 3), 7);
+    trainABit(plain, rng);
+    Network plainWide = widenFilters(plain, 20, 31);
+    Network ownerWide = widenFilters(addOwnershipHead(plain, 5), 20, 31);
+    std::vector<ParamView> pp = plainWide.params(), po = ownerWide.params();
+    for (size_t i = 0; i < pp.size(); ++i)
+        assert(pp[i].name == po[i].name && std::memcmp(pp[i].value, po[i].value, pp[i].size * sizeof(float)) == 0);
+}
+
 } // namespace
 
 int main() {
@@ -337,6 +454,9 @@ int main() {
     test_widened_copies_receive_different_gradients();
     test_widen_and_deepen_compose();
     test_widening_is_deterministic();
+    test_add_ownership_head_keeps_policy_and_value();
+    test_deepening_carries_the_ownership_head();
+    test_widening_carries_the_ownership_head();
     std::printf("test_grow: all tests passed\n");
     return 0;
 }

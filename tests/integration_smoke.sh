@@ -211,4 +211,22 @@ out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/own_bad" "${TINY
 echo "$out" | grep -q -- "--ownership --out" || fail "the refusal does not suggest grow --ownership: $out"
 test ! -e "$W/own_bad/state.bin" || fail "a refused start left a run behind"
 
+echo "== grow: add an ownership head, then train from it =="
+out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --ownership --out "$W/owner.azn")"
+echo "$out"
+echo "$out" | grep -q "new: 5x5, history 2, 1 blocks, 8 filters, value_hidden 8, ownership head" \
+    || fail "grow --ownership did not report the head: $out"
+out="$("$BUILD/grow" --from "$W/owner.azn" --filters 12 --blocks 2 --out "$W/owner_big.azn")"
+echo "$out" | grep -q "new: 5x5, history 2, 2 blocks, 12 filters, value_hidden 8, ownership head" \
+    || fail "widening and deepening did not keep the head: $out"
+status=0
+out="$("$BUILD/grow" --from "$W/owner.azn" --ownership --out "$W/owner2.azn" 2>&1)" || status=$?
+[ "$status" -eq 1 ] || fail "a second --ownership exited $status, expected 1"
+echo "$out" | grep -q "already has an ownership head" || fail "unexpected refusal: $out"
+test ! -e "$W/owner2.azn" || fail "a refused grow still wrote a checkpoint"
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/owner_run" "${TINY[@]}" --set ownership=true \
+    --init-from "$W/owner.azn" --buffer-from "$RUN" --generations 1
+cmp "$W/owner.azn" "$W/owner_run/checkpoints/gen_0000.azn" || fail "gen_0000 is not the checkpoint with the head"
+test -s "$W/owner_run/checkpoints/gen_0001.azn" || fail "the run from the grown head did not train"
+
 echo "integration_smoke: all checks passed"

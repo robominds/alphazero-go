@@ -196,6 +196,14 @@ Network widenFilters(const Network& net, int newFilters, uint64_t seed) {
     // after those convs keeps its shape and is copied as is.
     widenConv(from.param("policy.conv.w"), F, 1, {0, 1}, g, rng, to.writeParam("policy.conv.w"));
     widenConv(from.param("value.conv.w"), F, 1, {0}, g, rng, to.writeParam("value.conv.w"));
+    // The ownership head last, so a network without one draws exactly the
+    // random numbers it did before the head existed.
+    if (old.ownership) {
+        widenConv(from.param("ownership.conv.w"), F, 1, {0}, g, rng, to.writeParam("ownership.conv.w"));
+        for (const char* name : {"ownership.bn.gamma", "ownership.bn.beta"}) copyTensor(from, to, name, true);
+        for (const char* name : {"ownership.bn.runMean", "ownership.bn.runVar"})
+            copyTensor(from, to, name, false);
+    }
     for (const char* name : {"policy.bn.gamma", "policy.bn.beta", "policy.fc.w", "policy.fc.b",
                              "value.bn.gamma", "value.bn.beta", "value.fc1.w", "value.fc1.b",
                              "value.fc2.w", "value.fc2.b"})
@@ -205,6 +213,19 @@ Network widenFilters(const Network& net, int newFilters, uint64_t seed) {
     if (to.written.size() != to.params.size() + to.buffers.size())
         throw std::logic_error("widenFilters: some tensors of the widened network were not filled");
     return wide;
+}
+
+Network addOwnershipHead(const Network& net, uint64_t seed) {
+    if (net.config().ownership) throw std::invalid_argument("the network already has an ownership head");
+    NetConfig cfg = net.config();
+    cfg.ownership = true;
+    Network withHead(cfg, seed);   // the head keeps this initialization
+    Network source = net;          // params() is non-const; see growBlocks
+    const Tensors from(source);
+    Tensors to(withHead);
+    for (const auto& entry : from.params) copyTensor(from, to, entry.first, true);
+    for (const auto& entry : from.buffers) copyTensor(from, to, entry.first, false);
+    return withHead;
 }
 
 } // namespace azgo

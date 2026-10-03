@@ -53,6 +53,13 @@
 //
 // Width is not free: a 3x3 conv costs 9 * F^2 * n^2 multiply-adds per
 // position, so 96 filters cost about (96/64)^2 = 2.25x as much as 64.
+//
+// Adding an ownership head: the head reads the trunk's output and nothing
+// reads the head, so a network with a new, randomly initialized head computes
+// exactly the old policy and value; only training changes them, through the
+// trunk. An existing head is carried along by both growths: deepening copies
+// it by name like every other tensor, and widening splits its 1x1 conv's
+// input weights like the other heads' (it reads the stream too).
 #pragma once
 #include <cstdint>
 #include "azgo/network.hpp"
@@ -75,5 +82,11 @@ Network growBlocks(const Network& net, int newBlocks, uint64_t seed);
 // std::invalid_argument if newFilters is below net's filters or above
 // kMaxFilters.
 Network widenFilters(const Network& net, int newFilters, uint64_t seed);
+
+// `net` plus an ownership head. Every tensor of `net` is copied by name; the
+// head is initialized as Network(cfg, seed) initializes it (He-initialized
+// 1x1 conv; BN gamma 1, beta 0, running mean 0, variance 1). Throws
+// std::invalid_argument if net already has an ownership head.
+Network addOwnershipHead(const Network& net, uint64_t seed);
 
 } // namespace azgo
