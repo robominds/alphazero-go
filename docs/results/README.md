@@ -393,6 +393,9 @@ capacity alone is not the bottleneck at this compute budget.
 **Next levers, all untested hypotheses.** None of these was run.
 
 - More simulations per move, for self-play and training targets.
+  Tested (400 vs 200, 50 generations): no measurable gain per
+  generation and worse per unit of compute; see
+  [the section](#more-simulations-in-self-play-400-vs-200).
 - Learning-rate changes (the grown run held 0.002 constant).
 - More self-play games per generation (100 now, with a replay ratio of
   about 5.8).
@@ -480,6 +483,80 @@ fails: B1 is not among the top ten moves by prior (the top is C6 at
 (−0.73 after 200 simulations). Neither shape fixes the eye, and capacity
 is not the main bottleneck at this budget. The "next levers" above
 remain untested.
+
+### More simulations in self-play (400 vs 200)
+
+Hypothesis, from the "next levers" above: more simulations per move give
+better search targets for the policy and value heads, so a run with
+400 simulations in self-play should learn more per generation than one
+with 200. The result: at equal generations, doubling simulations gave no
+measurable gain at generation 50 and a weak one at generation 25, and the
+eye check still fails.
+
+- *Setup.* Two arms from the same start, the 6×96 generation 50 of
+  `9x9-wide96` and that run's replay buffer (199,972 positions from
+  2,272 games), 50 generations each. The configuration is identical
+  except `simulations`: 400 (`9x9-sims/sims400/`) and 200
+  (`9x9-sims/sims200/`). Both arms keep `arena_opponents = 2` and gating
+  off, as in the earlier runs. The commands are in
+  `9x9-sims/sims-experiment.sh`; the 200 arm was stopped at generation 9
+  when the session ended and finished with `train --resume`
+  (`sims-experiment-resume.sh`). Resume is byte-identical by design, so
+  the 200 arm is the same run it would have been without the stop. Files
+  are each run's own, with absolute paths in `init.txt` made
+  repo-relative and `progress.txt` the `gen`, `calibrat` and `done`
+  lines of the console output (the 200 arm's contains the resume).
+- *Cost.* Mean seconds per generation (self-play + training + arena,
+  `log.csv`): 581.5 for 400 simulations (426.1 + 97.7 + 57.6) and 351.3
+  for 200 (201.4 + 94.4 + 55.4), a factor of 1.66. Self-play alone costs
+  2.12 times as much; training and arena time are unchanged. The 50
+  generations took 8.08 h against 4.88 h of generation time.
+- *Training curves.* Mean policy loss 2.367 (400) and 2.390 (200), value
+  loss 0.375 and 0.362, average game length 90.9 and 88.3 plies. These
+  are on different data and are not a strength measure.
+
+**Matches** (100 games, 200 simulations for both sides, komi 7.5, colors
+alternating; 95% Wilson intervals as `arena` prints them; Elo is
+400·log10(p/(1−p)), approximate; files in `9x9-sims/`; "start" is
+`9x9-wide96` generation 50):
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| 400 vs 200, gen 50 (`s400g50-vs-s200g50.txt`) | 52/100 | 0.423-0.615 | +14 (−54 to +81) |
+| 400 vs 200, gen 25 (`s400g25-vs-s200g25.txt`) | 61/100 | 0.512-0.700 | +78 (+8 to +147) |
+| 400 gen 50 vs start (`s400g50-vs-start.txt`) | 61/100 | 0.512-0.700 | +78 (+8 to +147) |
+| 200 gen 50 vs start (`s200g50-vs-start.txt`) | 64/100 | 0.542-0.727 | +100 (+29 to +170) |
+
+**Eye check** (the 14-move position of the earlier eye checks, generation
+50 of each arm, `eye-*.txt`). Still failing in all four analyses: B1 is
+not among the top ten moves by visits at 200 or 800 simulations, for
+either arm. The value for Black to move is −0.68 (400 arm) and −0.65
+(200 arm) before search:
+
+| arm | simulations | MCTS value | top visits |
+|---|---|---|---|
+| 400 | 200 | −0.65 | D6 46 (23.0%), C6 38 (19.0%) |
+| 400 | 800 | −0.64 | D6 354 (44.2%), C6 132 (16.5%) |
+| 200 | 200 | −0.58 | C6 42 (21.0%), D6 40 (20.0%) |
+| 200 | 800 | −0.57 | C6 412 (51.5%), D6 85 (10.6%) |
+
+**Verdict.** At equal generations, doubling simulations gave no
+measurable gain at generation 50 (52/100, interval 0.423-0.615) and a
+weak edge at generation 25 (61/100, lower bound 0.512, one match). Both
+arms improved over the start by similar amounts, +78 and +100 Elo, with
+overlapping intervals; if anything the 200-simulation arm is nominally
+ahead. Per unit of compute the 200-simulation arm is better: it reached
+about the same strength in 60% of the time per generation. The eye shape
+is untouched: B1 never appears among the top visits, and the value stays
+near −0.6 at every search budget tried (200 and 800 simulations). This
+is consistent with a value-head blind spot about life and death that
+deeper search at analysis time does not fix, though these runs do not
+test that explanation directly.
+
+Not tested here, and no result is claimed for any of them: playout cap
+randomization (full search on only some moves), larger simulation gaps
+than 2×, runs longer than 50 generations, changes to the value targets,
+and more than one seed per arm (each number above is one run).
 
 ### 19×19: criterion met (it runs)
 
