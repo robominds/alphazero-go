@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "azgo/rng.hpp"
 #include "azgo/run_state.hpp"
 #include "azgo/selfplay.hpp"
+#include "azgo/serialize.hpp"
 
 using namespace azgo;
 namespace fs = std::filesystem;
@@ -29,6 +31,24 @@ static std::string readBytes(const fs::path& p) {
 static void writeBytes(const fs::path& p, const std::string& bytes) {
     std::ofstream out(p, std::ios::binary | std::ios::trunc);
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+// The bytes an older version wrote for `state`, given the current (version 3)
+// bytes: the replay buffer without ownership (version 2), and for version 1
+// also without the reference set and the bot list at the end.
+static std::string olderStateBytes(const std::string& v3, const TrainingState& state, int version) {
+    std::ostringstream with, without;
+    BinaryWriter ww(with), wo(without);
+    state.buffer.save(ww, true);
+    state.buffer.save(wo, false);
+    const size_t header = 4 + 4 + 4 + 4 + 8;   // magic, version, generation, best, samples
+    assert(v3.compare(header, with.str().size(), with.str()) == 0);
+    std::string tail = v3.substr(header + with.str().size());
+    if (version == 1)
+        tail.resize(tail.size() - 8 - 4 * (state.references.size() + state.botSimulations.size()));
+    std::string out = v3.substr(0, header) + without.str() + tail;
+    out[4] = static_cast<char>(version);
+    return out;
 }
 
 // A state with real content: two short self-play games, momentum buffers,
@@ -60,7 +80,8 @@ static TrainingState makeState() {
 
 static bool sameGame(const GameRecord& x, const GameRecord& y) {
     return x.boardSize == y.boardSize && x.komi == y.komi && x.moves == y.moves &&
-           x.stones == y.stones && x.visits == y.visits && x.resultForBlack == y.resultForBlack;
+           x.stones == y.stones && x.visits == y.visits && x.resultForBlack == y.resultForBlack &&
+           x.finalOwnership == y.finalOwnership;
 }
 
 static void assertSameState(const TrainingState& x, const TrainingState& y) {
@@ -94,7 +115,7 @@ static void test_round_trip() {
     original.buffer.sample(16, 2, ra, a);
     loaded.buffer.sample(16, 2, rb, b);
     assert(a.size == 16 && b.size == 16);
-    assert(a.input == b.input && a.pi == b.pi && a.z == b.z);
+    assert(a.input == b.input && a.pi == b.pi && a.z == b.z && a.ownership == b.ownership);
 
     // Saving the loaded state reproduces the same bytes.
     std::string path2 = (dir / "again.bin").string();
@@ -156,7 +177,7 @@ static void test_crash_leftovers() {
 
     // A newer format version.
     std::string newer = bytes;
-    newer[4] = 3;   // version is the u32 after the magic, little-endian
+    newer[4] = 4;   // version is the u32 after the magic, little-endian
     writeBytes(wrong, newer);
     msg = loadError(wrong.string());
     assert(msg.find("version") != std::string::npos);
@@ -174,16 +195,13 @@ static void test_initial_references() {
     assert((TrainingState{}.references == std::vector<int>{0}));
 }
 
-// A version-1 file is a version-2 file without the reference set and the bot
-// list at the end: a u32 count and the i32 entries of each.
+// A version-1 file has no ownership in the buffer and no reference set or
+// bot list at the end (a u32 count and the i32 entries of each).
 static void test_version1_gets_default_references() {
     fs::path dir = freshDir("version1");
     TrainingState original = makeState();
-    saveTrainingState((dir / "v2.bin").string(), original);
-    std::string bytes = readBytes(dir / "v2.bin");
-    std::string v1 = bytes.substr(
-        0, bytes.size() - 8 - 4 * (original.references.size() + original.botSimulations.size()));
-    v1[4] = 1;
+    saveTrainingState((dir / "v3.bin").string(), original);
+    std::string v1 = olderStateBytes(readBytes(dir / "v3.bin"), original, 1);
     fs::path path = dir / "v1.bin";
     writeBytes(path, v1);
 
@@ -196,10 +214,41 @@ static void test_version1_gets_default_references() {
     assert((loadTrainingState(path.string()).references == std::vector<int>{0}));   // no bots
     assert(loadTrainingState(path.string()).botSimulations.empty());
 
-    // Saving it again writes version 2.
+    // Saving it again writes version 3.
     saveTrainingState(path.string(), loaded);
-    assert(readBytes(path)[4] == 2);
+    assert(readBytes(path)[4] == 3);
     assert((loadTrainingState(path.string()).references == std::vector<int>{-2, -1, 0}));
+    fs::remove_all(dir);
+}
+
+// A version-2 file has everything but the buffer's ownership, which loading
+// recomputes by replaying each game: the result equals what self-play
+// recorded, and saving writes version 3 again, byte for byte.
+static void test_version2_recomputes_ownership() {
+    fs::path dir = freshDir("version2");
+    TrainingState original = makeState();
+    saveTrainingState((dir / "v3.bin").string(), original);
+    const std::string v3 = readBytes(dir / "v3.bin");
+    fs::path path = dir / "v2.bin";
+    writeBytes(path, olderStateBytes(v3, original, 2));
+    TrainingState loaded = loadTrainingState(path.string());
+    assertSameState(original, loaded);   // finalOwnership included
+    for (size_t i = 0; i < loaded.buffer.games(); ++i)
+        assert(loaded.buffer.game(i).finalOwnership.size() == 25);
+    saveTrainingState(path.string(), loaded);
+    assert(readBytes(path) == v3);
+
+    // A game that does not replay makes the file unreadable, naming it.
+    TrainingState broken = original;
+    broken.buffer = ReplayBuffer(1000);
+    GameRecord bad = original.buffer.game(0);
+    bad.stones[25] ^= 1;   // ply 1, point A5: a position the moves do not produce
+    broken.buffer.add(bad);
+    saveTrainingState(path.string(), broken);
+    writeBytes(path, olderStateBytes(readBytes(path), broken, 2));
+    const std::string msg = loadError(path.string());
+    assert(msg.find(path.string()) != std::string::npos);
+    assert(msg.find("game 0 does not replay: position 1 differs") != std::string::npos);
     fs::remove_all(dir);
 }
 
@@ -234,6 +283,7 @@ int main() {
     test_crash_leftovers();
     test_initial_references();
     test_version1_gets_default_references();
+    test_version2_recomputes_ownership();
     test_rejects_bad_references();
     test_paths();
     std::printf("test_run_state: all tests passed\n");

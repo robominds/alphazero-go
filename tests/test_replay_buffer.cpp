@@ -4,6 +4,7 @@
 #include <cstring>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 #include "azgo/encode.hpp"
 #include "azgo/game.hpp"
@@ -17,7 +18,8 @@ static bool near(double a, double b, double tol = 1e-5) { return std::fabs(a - b
 // Plays `moves` on a 5x5 Game and records it as self-play would: the board
 // before each move, and visit counts {move: 3, pass: 1} (just {pass: 4} when
 // the move is a pass). The result comes from the game unless it is still
-// running, in which case `result` is used.
+// running, in which case `result` is used. finalOwnership is the board after
+// the last move, as self-play records it.
 static GameRecord makeRecord(const std::vector<int>& moves, float komi = 7.5f, float result = 1.0f) {
     const int n = 5, area = 25;
     Game game(n, komi, defaultMaxMoves(n));
@@ -34,6 +36,8 @@ static GameRecord makeRecord(const std::vector<int>& moves, float komi = 7.5f, f
         game.play(m);
     }
     rec.resultForBlack = game.isTerminal() ? game.resultForBlack() : result;
+    rec.finalOwnership.resize(area);
+    game.board().ownership(rec.finalOwnership.data());
     return rec;
 }
 
@@ -195,6 +199,8 @@ static void test_sample_shapes_and_pi_sums() {
     assert(batch.input.size() == static_cast<size_t>(B) * numPlanes(H) * 25);
     assert(batch.pi.size() == static_cast<size_t>(B) * 26);
     assert(batch.z.size() == static_cast<size_t>(B));
+    assert(batch.ownership.size() == static_cast<size_t>(B) * 25);
+    for (float o : batch.ownership) assert(o == -1.0f || o == 0.0f || o == 1.0f);
     for (int b = 0; b < B; ++b) {
         double total = 0.0;
         for (int a = 0; a < 26; ++a) total += batch.pi[b * 26 + a];
@@ -222,6 +228,68 @@ static void test_sampling_is_uniform_over_positions() {
     assert(near(static_cast<double>(fromGame1) / draws, 0.75, 0.03));
 }
 
+// Black C4 (6), White D2 (18), Black C3 (12): the one empty region touches
+// both colors, so only the three stones are owned: +1 on 6 and 12, -1 on 18.
+// The target is then exactly "own stones minus opponent stones" of the final
+// board, which encodePlanes computes independently, for every symmetry and
+// both sides to move.
+static void test_ownership_target_perspective_and_symmetry() {
+    ReplayBuffer buf(100);
+    buf.add(makeRecord({6, 18, 12}));
+    const GameRecord& g = buf.game(0);
+    std::vector<int8_t> expected(25, 0);
+    expected[6] = expected[12] = 1;
+    expected[18] = -1;
+    assert(g.finalOwnership == expected);
+
+    // The final board (after move 3) as stone bytes, for the oracle.
+    std::vector<uint8_t> finalStones(25, static_cast<uint8_t>(Color::Empty));
+    finalStones[6] = finalStones[12] = static_cast<uint8_t>(Color::Black);
+    finalStones[18] = static_cast<uint8_t>(Color::White);
+    const int H = 1, area = 25;
+    std::vector<float> input(numPlanes(H) * area), pi(26), own(area), ref(numPlanes(H) * area);
+    float z;
+    for (int ply = 0; ply < 3; ++ply)
+        for (int sym = 0; sym < kNumSymmetries; ++sym) {
+            buf.encodeSample(0, ply, H, sym, input.data(), pi.data(), &z, own.data());
+            encodePlanes({finalStones.data()}, 5, g.toMoveAt(ply), H, sym, ref.data());
+            for (int p = 0; p < area; ++p) assert(own[p] == ref[p] - ref[area + p]);
+            // By hand: White to move (ply 1) sees every owner negated.
+            const float sign = ply == 1 ? -1.0f : 1.0f;
+            assert(own[transformPoint(sym, 6, 5)] == sign && own[transformPoint(sym, 18, 5)] == -sign);
+        }
+}
+
+// Black walls off columns A-C, White columns D-E:
+//   C5 D5 C4 D4 C3 D3 C2 D2 C1 D1. Every row of the final board is "+++--"
+// (Black's view). The target is not symmetric, so a wrong mapping shows.
+static void test_ownership_target_with_territory() {
+    ReplayBuffer buf(100);
+    buf.add(makeRecord({2, 3, 7, 8, 12, 13, 17, 18, 22, 23}));
+    const GameRecord& g = buf.game(0);
+    for (int p = 0; p < 25; ++p) assert(g.finalOwnership[p] == (p % 5 < 3 ? 1 : -1));
+    std::vector<float> input(numPlanes(2) * 25), pi(26), own(25);
+    float z;
+    auto row = [&](int r) {
+        std::string s;
+        for (int c = 0; c < 5; ++c) s += own[r * 5 + c] > 0 ? '+' : '-';
+        return s;
+    };
+    // Ply 3, White to move, no symmetry: White's view of the same board.
+    buf.encodeSample(0, 3, 2, 0, input.data(), pi.data(), &z, own.data());
+    for (int r = 0; r < 5; ++r) assert(row(r) == "---++");
+    // Symmetry 4 mirrors left-right: White's two columns move to the left.
+    buf.encodeSample(0, 3, 2, 4, input.data(), pi.data(), &z, own.data());
+    for (int r = 0; r < 5; ++r) assert(row(r) == "++---");
+    // Symmetry 1 turns the board a quarter clockwise: columns become rows,
+    // so the top three rows are White's area (column A became row 5).
+    buf.encodeSample(0, 3, 2, 1, input.data(), pi.data(), &z, own.data());
+    for (int r = 0; r < 5; ++r) assert(row(r) == (r < 3 ? "-----" : "+++++"));
+    // Ply 4, Black to move: Black's view.
+    buf.encodeSample(0, 4, 2, 0, input.data(), pi.data(), &z, own.data());
+    for (int r = 0; r < 5; ++r) assert(row(r) == "+++--");
+}
+
 static void test_save_load_round_trip() {
     ReplayBuffer buf(9);
     buf.add(lengthGame(4, 0));
@@ -244,6 +312,7 @@ static void test_save_load_round_trip() {
         const GameRecord& b = back.game(g);
         assert(a.boardSize == b.boardSize && a.komi == b.komi && a.moves == b.moves);
         assert(a.stones == b.stones && a.visits == b.visits && a.resultForBlack == b.resultForBlack);
+        assert(a.finalOwnership == b.finalOwnership);
     }
     TrainingBatch x, y;
     Rng r1(77), r2(77);
@@ -252,6 +321,19 @@ static void test_save_load_round_trip() {
     assert(std::memcmp(x.input.data(), y.input.data(), x.input.size() * sizeof(float)) == 0);
     assert(std::memcmp(x.pi.data(), y.pi.data(), x.pi.size() * sizeof(float)) == 0);
     assert(std::memcmp(x.z.data(), y.z.data(), x.z.size() * sizeof(float)) == 0);
+    assert(x.ownership == y.ownership);
+
+    // The older layout (state.bin versions 1 and 2) has no ownership; loading
+    // it recomputes each game's by replaying the moves, and gets the same.
+    std::ostringstream oldOs;
+    BinaryWriter oldW(oldOs);
+    buf.save(oldW, false);
+    assert(oldOs.str().size() == bytes.size() - 25 * buf.games());
+    std::istringstream oldIs(oldOs.str());
+    BinaryReader oldR(oldIs);
+    ReplayBuffer recomputed = ReplayBuffer::load(oldR, false);
+    for (size_t g = 0; g < buf.games(); ++g)
+        assert(recomputed.game(g).finalOwnership == buf.game(g).finalOwnership);
 
     // A truncated stream is an error, not a crash.
     std::istringstream cut(bytes.substr(0, bytes.size() / 2));
@@ -265,6 +347,28 @@ static void test_save_load_round_trip() {
     assert(threw);
 }
 
+// An older buffer whose moves do not replay cannot get its ownership: an
+// error naming the game, not a wrong target.
+static void test_old_layout_that_does_not_replay() {
+    ReplayBuffer buf(100);
+    buf.add(makeRecord({6, 18, 12}));
+    GameRecord bad = makeRecord({6, 18});
+    bad.moves[1] = 6;   // White on Black's stone
+    buf.add(bad);
+    std::ostringstream os;
+    BinaryWriter w(os);
+    buf.save(w, false);
+    std::istringstream is(os.str());
+    BinaryReader r(is);
+    std::string msg;
+    try {
+        ReplayBuffer::load(r, false);
+    } catch (const std::runtime_error& e) {
+        msg = e.what();
+    }
+    assert(msg == "replay buffer: game 1 does not replay: move 2 (B4) is illegal");
+}
+
 int main() {
     test_add_evicts_oldest_games();
     test_oversized_game_is_kept_alone();
@@ -276,7 +380,10 @@ int main() {
     test_exact_tie_gives_zero_z_everywhere();
     test_sample_shapes_and_pi_sums();
     test_sampling_is_uniform_over_positions();
+    test_ownership_target_perspective_and_symmetry();
+    test_ownership_target_with_territory();
     test_save_load_round_trip();
+    test_old_layout_that_does_not_replay();
     std::printf("test_replay_buffer: all tests passed\n");
     return 0;
 }

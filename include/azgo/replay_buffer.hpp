@@ -4,6 +4,8 @@
 // game's earlier positions, so storing history costs nothing extra. Each
 // sample is shown to the network under a random one of the board's 8
 // symmetries, which multiplies the data for free (Go has no preferred side).
+// The ownership target travels with the position: the final board's owners,
+// turned to the side to move's view and moved by the same symmetry.
 #pragma once
 #include <cstddef>
 #include <deque>
@@ -19,6 +21,7 @@ struct TrainingBatch {
     std::vector<float> input;   // [size][planes][area]
     std::vector<float> pi;      // [size][area + 1]
     std::vector<float> z;       // [size]
+    std::vector<float> ownership;   // [size][area]: final owner of each point, side to move's view
 };
 
 // Sliding window of whole games. A sample is (game, ply); its history planes
@@ -38,12 +41,19 @@ public:
     // B samples uniformly over positions (with replacement), each with a
     // uniformly random symmetry. Asserts positions() > 0.
     void sample(int B, int history, Rng& rng, TrainingBatch& out) const;
-    // One sample into caller buffers: input numPlanes(H)*area, pi area+1, *z.
+    // One sample into caller buffers: input numPlanes(H)*area, pi area+1, *z,
+    // and, unless null, ownership area (finalOwnership, negated when White is
+    // to move, each point moved where the symmetry moves it).
     void encodeSample(size_t gameIndex, int ply, int history, int sym,
-                      float* input, float* pi, float* z) const;
+                      float* input, float* pi, float* z, float* ownership = nullptr) const;
 
-    void save(BinaryWriter& w) const;
-    static ReplayBuffer load(BinaryReader& r);
+    // withOwnership = false writes the layout of state.bin versions 1 and 2,
+    // which stored no ownership; tests use it to make old files.
+    void save(BinaryWriter& w, bool withOwnership = true) const;
+    // withOwnership = false reads that older layout and recomputes each
+    // game's finalOwnership with replayFinalOwnership (a std::runtime_error
+    // naming the game if one does not replay).
+    static ReplayBuffer load(BinaryReader& r, bool withOwnership = true);
 
 private:
     size_t capacity_;

@@ -20,6 +20,7 @@ void ReplayBuffer::add(GameRecord game) {
     assert(game.positions() > 0);
     assert(game.stones.size() == static_cast<size_t>(game.positions()) * area);
     assert(game.visits.size() == static_cast<size_t>(game.positions()));
+    assert(game.finalOwnership.size() == area);
     assert(games_.empty() || games_.front().boardSize == game.boardSize);
     (void)area;
     positions_ += game.positions();
@@ -51,7 +52,7 @@ void ReplayBuffer::rebuildIndex() {
 }
 
 void ReplayBuffer::encodeSample(size_t gameIndex, int ply, int history, int sym,
-                                float* input, float* pi, float* z) const {
+                                float* input, float* pi, float* z, float* ownership) const {
     const GameRecord& g = games_[gameIndex];
     assert(ply >= 0 && ply < g.positions());
     const int n = g.boardSize;
@@ -70,6 +71,15 @@ void ReplayBuffer::encodeSample(size_t gameIndex, int ply, int history, int sym,
         pi[transformAction(sym, av.first, n)] = static_cast<float>(av.second) / static_cast<float>(total);
 
     *z = g.zAt(ply);
+
+    // Ownership, like z, from the side to move's view, and moved like the
+    // input planes, so every point's target stays on its point.
+    if (ownership) {
+        assert(g.finalOwnership.size() == static_cast<size_t>(n) * n);
+        const float sign = g.toMoveAt(ply) == Color::Black ? 1.0f : -1.0f;
+        for (int p = 0; p < n * n; ++p)
+            ownership[transformPoint(sym, p, n)] = sign * g.finalOwnership[static_cast<size_t>(p)];
+    }
 }
 
 void ReplayBuffer::sample(int B, int history, Rng& rng, TrainingBatch& out) const {
@@ -78,10 +88,12 @@ void ReplayBuffer::sample(int B, int history, Rng& rng, TrainingBatch& out) cons
     const int n = games_.front().boardSize;
     const size_t inputStride = static_cast<size_t>(numPlanes(history)) * n * n;
     const size_t piStride = static_cast<size_t>(n) * n + 1;
+    const size_t area = static_cast<size_t>(n) * n;
     out.size = B;
     out.input.resize(B * inputStride);
     out.pi.resize(B * piStride);
     out.z.resize(B);
+    out.ownership.resize(B * area);
     for (int b = 0; b < B; ++b) {
         // Uniform over positions, not games: long games are sampled more.
         const size_t global = static_cast<size_t>(rng.below(static_cast<int>(positions_)));
@@ -91,15 +103,16 @@ void ReplayBuffer::sample(int B, int history, Rng& rng, TrainingBatch& out) cons
             std::upper_bound(firstPosition_.begin(), firstPosition_.end(), global) - firstPosition_.begin() - 1);
         const int ply = static_cast<int>(global - firstPosition_[g]);
         encodeSample(g, ply, history, sym, out.input.data() + b * inputStride,
-                     out.pi.data() + b * piStride, out.z.data() + b);
+                     out.pi.data() + b * piStride, out.z.data() + b, out.ownership.data() + b * area);
     }
 }
 
 // Layout: u64 capacity, u64 totalAdded (two's complement of the i64), u32 games,
 // then per game: i32 boardSize, f32 komi, u32 moves + i32 each, the stones as
 // raw bytes (positions * n * n), per ply u32 count + u32 (action << 16 | count)
-// each, f32 resultForBlack.
-void ReplayBuffer::save(BinaryWriter& w) const {
+// each, f32 resultForBlack, then (withOwnership) finalOwnership as n * n
+// signed bytes.
+void ReplayBuffer::save(BinaryWriter& w, bool withOwnership) const {
     w.u64(capacity_);
     w.u64(static_cast<uint64_t>(totalAdded_));
     w.u32(static_cast<uint32_t>(games_.size()));
@@ -115,10 +128,14 @@ void ReplayBuffer::save(BinaryWriter& w) const {
                 w.u32((static_cast<uint32_t>(static_cast<uint16_t>(av.first)) << 16) | av.second);
         }
         w.f32(g.resultForBlack);
+        if (withOwnership) {
+            assert(g.finalOwnership.size() == static_cast<size_t>(g.boardSize) * g.boardSize);
+            w.bytes(g.finalOwnership.data(), g.finalOwnership.size());
+        }
     }
 }
 
-ReplayBuffer ReplayBuffer::load(BinaryReader& r) {
+ReplayBuffer ReplayBuffer::load(BinaryReader& r, bool withOwnership) {
     const uint64_t capacity = r.u64();
     if (capacity == 0) throw std::runtime_error("replay buffer: capacity is 0");
     ReplayBuffer buf(static_cast<size_t>(capacity));
@@ -156,6 +173,20 @@ ReplayBuffer ReplayBuffer::load(BinaryReader& r) {
             }
         }
         g.resultForBlack = r.f32();
+        if (withOwnership) {
+            g.finalOwnership.resize(static_cast<size_t>(area));
+            r.bytes(g.finalOwnership.data(), g.finalOwnership.size());
+            for (int8_t o : g.finalOwnership)
+                if (o < -1 || o > 1) throw std::runtime_error("replay buffer: bad ownership value");
+        } else {
+            // An older file: recompute what self-play would have recorded.
+            try {
+                g.finalOwnership = replayFinalOwnership(g);
+            } catch (const std::runtime_error& e) {
+                throw std::runtime_error("replay buffer: game " + std::to_string(i) +
+                                         " does not replay: " + e.what());
+            }
+        }
         // Straight into the deque: the saved window already respected the
         // capacity, and totalAdded is restored below rather than recounted.
         buf.positions_ += g.positions();

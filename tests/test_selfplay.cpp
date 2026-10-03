@@ -2,6 +2,8 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
+#include <string>
 #include <vector>
 #include "azgo/game.hpp"
 #include "azgo/parallel.hpp"
@@ -54,6 +56,8 @@ static void test_immediate_pass_pass_game() {
     assert(rec.toMoveAt(0) == Color::Black && rec.toMoveAt(1) == Color::White);
     assert(rec.zAt(0) == -1.0f);   // Black's position: Black lost
     assert(rec.zAt(1) == +1.0f);   // White's position: White won
+    // The final board is empty: nobody owns anything.
+    assert(rec.finalOwnership == std::vector<int8_t>(25, 0));
 }
 
 static void test_z_for_a_black_win_and_a_tie() {
@@ -124,11 +128,61 @@ static void test_record_is_consistent_with_a_replay() {
     assert(rec.resultForBlack == game.resultForBlack());
     for (int ply = 0; ply < rec.positions(); ++ply)
         assert(rec.zAt(ply) == (ply % 2 == 0 ? rec.resultForBlack : -rec.resultForBlack));
+
+    // finalOwnership is the final board's, and replaying the moves finds it too.
+    std::vector<int8_t> own(area);
+    game.board().ownership(own.data());
+    assert(rec.finalOwnership == own);
+    assert(replayFinalOwnership(rec) == own);
+    int sum = 0;
+    for (int8_t o : own) sum += o;
+    assert(sum == game.board().areaScore());
+}
+
+// A record that does not replay is an error that says why. The record is
+// built by hand: Black C3, White D4, Black C4, White D3 on 5x5.
+static void test_replay_rejects_a_bad_record() {
+    const int n = 5, area = 25;
+    Game game(n, 7.5f, defaultMaxMoves(n));
+    GameRecord good;
+    good.boardSize = n;
+    good.komi = 7.5f;
+    for (int move : {12, 8, 7, 13}) {
+        const size_t offset = good.stones.size();
+        good.stones.resize(offset + area);
+        game.board().exportStones(good.stones.data() + offset);
+        good.visits.push_back({{static_cast<int16_t>(move), 1}});
+        good.moves.push_back(move);
+        game.play(move);
+    }
+    auto replayError = [](const GameRecord& r) {
+        try {
+            replayFinalOwnership(r);
+        } catch (const std::runtime_error& e) {
+            return std::string(e.what());
+        }
+        return std::string();
+    };
+    assert(replayError(good).empty());
+    std::vector<int8_t> own(area);
+    game.board().ownership(own.data());
+    assert(replayFinalOwnership(good) == own);
+
+    // Move 2 on the point Black took with move 1: occupied, so illegal.
+    GameRecord occupied = good;
+    occupied.moves[1] = 12;
+    assert(replayError(occupied) == "move 2 (C3) is illegal");
+
+    // A stored position that the moves do not produce: a stone on A5 at ply 2.
+    GameRecord edited = good;
+    edited.stones[2 * area + 0] = static_cast<uint8_t>(Color::Black);
+    assert(replayError(edited) == "position 2 differs from the replayed one");
 }
 
 static bool sameRecord(const GameRecord& a, const GameRecord& b) {
     return a.boardSize == b.boardSize && a.komi == b.komi && a.moves == b.moves &&
-           a.stones == b.stones && a.visits == b.visits && a.resultForBlack == b.resultForBlack;
+           a.stones == b.stones && a.visits == b.visits && a.resultForBlack == b.resultForBlack &&
+           a.finalOwnership == b.finalOwnership;
 }
 
 static std::vector<GameRecord> playGames(const Network& net, const Backend& be, int workers) {
@@ -172,6 +226,7 @@ int main() {
     test_z_for_a_black_win_and_a_tie();
     test_record_is_consistent_with_a_replay();
     test_self_play_is_independent_of_worker_count();
+    test_replay_rejects_a_bad_record();
     std::printf("test_selfplay: all tests passed\n");
     return 0;
 }

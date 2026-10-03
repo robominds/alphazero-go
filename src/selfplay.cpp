@@ -1,7 +1,10 @@
 #include "azgo/selfplay.hpp"
 #include <algorithm>
 #include <cassert>
+#include <cstring>
 #include <limits>
+#include <stdexcept>
+#include <string>
 #include "azgo/game.hpp"
 
 namespace azgo {
@@ -49,7 +52,33 @@ GameRecord playSelfPlayGame(Evaluator& evaluator, const SelfPlayConfig& cfg, Rng
         mcts.advance(action);   // reuse the subtree under the move just played
     }
     rec.resultForBlack = game.resultForBlack();
+    // Who owns each point at the end: the per-point target of the ownership head.
+    rec.finalOwnership.resize(static_cast<size_t>(area));
+    game.board().ownership(rec.finalOwnership.data());
     return rec;
+}
+
+std::vector<int8_t> replayFinalOwnership(const GameRecord& record) {
+    const int n = record.boardSize, area = n * n;
+    // The record's own length as the move cap: the cap cannot end the replay
+    // early, while two passes before the last move (impossible in a record
+    // self-play wrote) make the next move illegal.
+    Game game(n, record.komi, std::max(1, record.positions()));
+    std::vector<uint8_t> stones(static_cast<size_t>(area));
+    for (int ply = 0; ply < record.positions(); ++ply) {
+        game.board().exportStones(stones.data());
+        if (std::memcmp(stones.data(), record.stonesAt(ply), static_cast<size_t>(area)) != 0)
+            throw std::runtime_error("position " + std::to_string(ply) +
+                                     " differs from the replayed one");
+        const int move = record.moves[static_cast<size_t>(ply)];
+        if (!game.isLegal(move))
+            throw std::runtime_error("move " + std::to_string(ply + 1) + " (" +
+                                     actionToString(move, n) + ") is illegal");
+        game.play(move);
+    }
+    std::vector<int8_t> owner(static_cast<size_t>(area));
+    game.board().ownership(owner.data());
+    return owner;
 }
 
 } // namespace azgo

@@ -19,6 +19,7 @@
 #include "azgo/elo.hpp"
 #include "azgo/network.hpp"
 #include "azgo/run_state.hpp"
+#include "azgo/serialize.hpp"
 #include "azgo/trainer.hpp"
 
 using namespace azgo;
@@ -406,10 +407,18 @@ static void test_resume_from_version1_state() {
     c.botSimulations = {};   // the old run had no bots
     startQuiet(c, dir)->runUntil(1);
 
-    // state.bin as version 1: without the reference set {0} (u32 count + one i32)
-    // and the empty bot list (u32 count).
+    // state.bin as version 1: the buffer without ownership, and without the
+    // reference set {0} (u32 count + one i32) and the empty bot list (u32 count).
     const std::string bytes = readFile(statePath(dir.str()));
-    std::string v1 = bytes.substr(0, bytes.size() - 12);
+    const TrainingState current = loadTrainingState(statePath(dir.str()));
+    std::ostringstream with, without;
+    BinaryWriter ww(with), wo(without);
+    current.buffer.save(ww, true);
+    current.buffer.save(wo, false);
+    const size_t header = 24;   // magic, version, generation, best generation, samples trained
+    assert(bytes.compare(header, with.str().size(), with.str()) == 0);
+    std::string v1 = bytes.substr(0, header) + without.str() +
+                     bytes.substr(header + with.str().size(), bytes.size() - header - with.str().size() - 12);
     v1[4] = 1;
     writeFile(statePath(dir.str()), v1);
     // config.cfg without the keys the old code did not know.
@@ -429,7 +438,7 @@ static void test_resume_from_version1_state() {
     assert(!pairs.count({-1, 1}));           // generation 1 ran before the bot existed
     TrainingState s = loadTrainingState(statePath(dir.str()));
     assert(s.references.front() == -1);
-    assert(readFile(statePath(dir.str()))[4] == 2);   // saved as version 2
+    assert(readFile(statePath(dir.str()))[4] == 3);   // saved as version 3
     assert(readFile(dir.file("references.csv")).find("\n-1,bot,100,0,") != std::string::npos);
 }
 

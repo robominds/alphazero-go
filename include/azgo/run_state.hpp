@@ -32,12 +32,16 @@ struct TrainingState {
 // The reference set of a new run: every bot (-numBots, ..., -1) and generation 0.
 std::vector<int> initialReferences(int numBots);
 
-// Binary, magic "AZST" (u32 0x54535A41), version u32 = 2 (references, then the bot list, come last). Atomic replace.
+// Binary, magic "AZST" (u32 0x54535A41), version u32 = 3 (the replay buffer
+// stores each game's final ownership; references, then the bot list, come
+// last). Atomic replace.
 void saveTrainingState(const std::string& path, const TrainingState& state);
-// Reads version 2 and version 1, which predates the reference set and the bot
-// list: a version-1 file gets botSimulations = `bots` and references =
-// initialReferences(bots.size()), so pass the bot list the run's config
-// defines. Throws std::runtime_error naming the path.
+// Reads versions 3, 2 and 1. Versions 1 and 2 predate stored ownership: each
+// game's is recomputed by replaying its moves (a game that does not replay is
+// an error). Version 1 also predates the reference set and the bot list: it
+// gets botSimulations = `bots` and references = initialReferences(bots.size()),
+// so pass the bot list the run's config defines. Throws std::runtime_error
+// naming the path.
 TrainingState loadTrainingState(const std::string& path, const std::vector<int>& bots = {});
 
 // Seed phases for deriveSeed(cfg.seed, generation, phase, index). Part of a

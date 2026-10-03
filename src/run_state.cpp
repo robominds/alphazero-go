@@ -13,7 +13,8 @@ namespace azgo {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x54535A41;   // "AZST" read as little-endian bytes
-constexpr uint32_t kStateVersion = 2;   // 2 added the reference set and bot list
+// 2 added the reference set and bot list, 3 the buffer's ownership targets.
+constexpr uint32_t kStateVersion = 3;
 } // namespace
 
 std::vector<int> initialReferences(int numBots) {
@@ -61,13 +62,13 @@ TrainingState loadTrainingState(const std::string& path, const std::vector<int>&
         BinaryReader r(is);
         if (r.u32() != kStateMagic) throw std::runtime_error("bad magic (not a training state file)");
         uint32_t version = r.u32();
-        if (version != 1 && version != kStateVersion)
+        if (version < 1 || version > kStateVersion)
             throw std::runtime_error("unsupported version " + std::to_string(version));
         TrainingState state;
         state.generation = r.i32();
         state.bestGeneration = r.i32();
         state.samplesTrained = static_cast<long long>(r.u64());
-        state.buffer = ReplayBuffer::load(r);
+        state.buffer = ReplayBuffer::load(r, version >= 3);
         uint32_t tensors = r.u32();
         state.velocity.resize(tensors);
         for (std::vector<float>& v : state.velocity) {
