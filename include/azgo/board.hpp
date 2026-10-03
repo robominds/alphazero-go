@@ -54,8 +54,17 @@ public:
     uint64_t hash() const { return hash_; }  // Zobrist over stones only (positional superko)
     uint64_t computeHashFromScratch() const; // test oracle for the incremental hash
 
-    // Tromp-Taylor area score: (Black stones + empty regions reaching only Black)
-    // minus (White stones + empty regions reaching only White). No komi.
+    // Who owns each point under Tromp-Taylor area rules, from Black's point of
+    // view: +1 for a Black stone or an empty point whose region reaches only
+    // Black, -1 for the White equivalents, 0 for an empty point whose region
+    // reaches both colors (dame, seki liberties) or none (the empty board).
+    // Writes area() values, row-major. A stone counts for its color even if
+    // it is hopelessly dead: Tromp-Taylor only counts what is on the board.
+    void ownership(int8_t* out) const;
+
+    // Tromp-Taylor area score, the sum of ownership(): (Black stones + empty
+    // regions reaching only Black) minus (White stones + empty regions
+    // reaching only White). No komi.
     int areaScore() const;
 
     void exportStones(uint8_t* out) const;   // area() bytes of Color values, row-major

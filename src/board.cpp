@@ -198,40 +198,47 @@ uint64_t Board::computeHashFromScratch() const {
     return h;
 }
 
-int Board::areaScore() const {
-    // Every stone counts for its color. Every maximal empty region is flood
-    // filled once; it counts for a color only if all stones it touches have
-    // that color (seki liberties and dame touch both and count for nobody).
-    std::array<int, kCells> stack;
+void Board::ownership(int8_t* out) const {
+    // Every stone belongs to its color. Every maximal empty region is flood
+    // filled once and belongs to a color only if all the stones it touches
+    // have that color (seki liberties and dame touch both and belong to nobody).
+    // region[0, size) lists the region's padded cells in the order they were
+    // found; region[next, size) is the part still to be expanded.
+    std::array<int, kCells> region;
     std::array<uint8_t, kCells> mark{};
-    int black = 0, white = 0;
     for (int point = 0; point < area(); ++point) {
         const int start = pad(point);
         const Color c = cells_[start];
-        if (c == Color::Black) { ++black; continue; }
-        if (c == Color::White) { ++white; continue; }
-        if (mark[start]) continue;
-        int top = 0, regionSize = 0;
+        if (c == Color::Black) { out[point] = 1; continue; }
+        if (c == Color::White) { out[point] = -1; continue; }
+        if (mark[start]) continue;   // written with the region that reached it first
+        int size = 0;
         bool reachesBlack = false, reachesWhite = false;
-        stack[top++] = start;
+        region[size++] = start;
         mark[start] = 1;
-        while (top > 0) {
-            const int q = stack[--top];
-            ++regionSize;
+        for (int next = 0; next < size; ++next) {
             for (int d : kDirs) {
-                const int r = q + d;
+                const int r = region[next] + d;
                 if (cells_[r] == Color::Black) reachesBlack = true;
                 else if (cells_[r] == Color::White) reachesWhite = true;
                 else if (cells_[r] == Color::Empty && !mark[r]) {
                     mark[r] = 1;
-                    stack[top++] = r;
+                    region[size++] = r;
                 }
             }
         }
-        if (reachesBlack && !reachesWhite) black += regionSize;
-        if (reachesWhite && !reachesBlack) white += regionSize;
+        const int8_t owner = reachesBlack == reachesWhite ? 0 : (reachesBlack ? 1 : -1);
+        for (int k = 0; k < size; ++k)   // padded index -> point (undoes pad())
+            out[(region[k] / kStride - 1) * n_ + (region[k] % kStride - 1)] = owner;
     }
-    return black - white;
+}
+
+int Board::areaScore() const {
+    std::array<int8_t, kMaxBoardSize * kMaxBoardSize> owner;
+    ownership(owner.data());
+    int score = 0;
+    for (int point = 0; point < area(); ++point) score += owner[point];
+    return score;
 }
 
 void Board::exportStones(uint8_t* out) const {

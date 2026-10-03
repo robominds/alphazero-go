@@ -1,8 +1,11 @@
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
 #include "azgo/board.hpp"
+#include "azgo/game.hpp"
+#include "azgo/rng.hpp"
 
 using namespace azgo;
 
@@ -253,6 +256,127 @@ static void test_area_score() {
     assert(fill.play(pt(1, 1)) == 3);
 }
 
+// ownership() as rows of '+' (Black), '-' (White) and '0' (nobody), row 0 first.
+static std::vector<std::string> ownershipRows(const Board& b) {
+    std::vector<int8_t> own(b.area(), 99);
+    b.ownership(own.data());
+    std::vector<std::string> rows;
+    for (int r = 0; r < b.size(); ++r) {
+        std::string row;
+        for (int c = 0; c < b.size(); ++c) {
+            const int8_t o = own[r * b.size() + c];
+            assert(o == -1 || o == 0 || o == 1);
+            row += o > 0 ? '+' : o < 0 ? '-' : '0';
+        }
+        rows.push_back(row);
+    }
+    return rows;
+}
+
+static void test_ownership_hand_examples() {
+    // The empty board: one region that touches no stone belongs to nobody.
+    assert((ownershipRows(Board(5)) == std::vector<std::string>(5, "00000")));
+
+    // One Black stone: the single region reaches only Black.
+    Board one(5);
+    one.setStone(pt(2, 2), Color::Black);
+    assert((ownershipRows(one) == std::vector<std::string>(5, "+++++")));
+
+    // Add a White stone: the region now touches both, so only stones count.
+    Board two = one;
+    two.setStone(pt(0, 0), Color::White);
+    assert((ownershipRows(two) == std::vector<std::string>{"-0000", "00000", "00+00", "00000",
+                                                           "00000"}));
+
+    // Dame: column D touches both walls and belongs to nobody.
+    Board dame = boardFromRows({"..X.O",
+                                "..X.O",
+                                "..X.O",
+                                "..X.O",
+                                "..X.O"}, Color::Black);
+    assert((ownershipRows(dame) == std::vector<std::string>(5, "+++0-")));
+
+    // Seki: the shared liberties B5 and B4 touch both colors; Black's right
+    // column and bottom row reach only Black. Sum: 18 - 5 = 13 = areaScore.
+    Board seki = boardFromRows({"X.OX.",
+                                "X.OX.",
+                                "OOOX.",
+                                "XXXX.",
+                                "....."}, Color::Black);
+    assert((ownershipRows(seki) == std::vector<std::string>{"+0-++", "+0-++", "---++", "+++++",
+                                                            "+++++"}));
+
+    // A dead stone still counts: the lone White stone is surrounded by Black's
+    // area but uncaptured, so it is White's and the region it touches is
+    // nobody's. Below the wall everything is Black's. Score -1 + 15 = 14.
+    Board dead = boardFromRows({".O...",
+                                ".....",
+                                "XXXXX",
+                                ".....",
+                                "....."}, Color::Black);
+    assert((ownershipRows(dead) == std::vector<std::string>{"0-000", "00000", "+++++", "+++++",
+                                                            "+++++"}));
+    assert(dead.areaScore() == 14);
+}
+
+// An independent oracle: for each empty point, a breadth-first search over
+// empty neighbors through the public interface only, noting which colors
+// the region touches.
+static int oracleOwner(const Board& b, int point) {
+    if (b.at(point) == Color::Black) return 1;
+    if (b.at(point) == Color::White) return -1;
+    const int n = b.size();
+    std::vector<int> queue{point};
+    std::vector<bool> seen(b.area(), false);
+    seen[point] = true;
+    bool black = false, white = false;
+    for (size_t i = 0; i < queue.size(); ++i) {
+        const int r = queue[i] / n, c = queue[i] % n;
+        const int nbrs[4][2] = {{r - 1, c}, {r + 1, c}, {r, c - 1}, {r, c + 1}};
+        for (const auto& rc : nbrs) {
+            if (rc[0] < 0 || rc[0] >= n || rc[1] < 0 || rc[1] >= n) continue;
+            const int q = rc[0] * n + rc[1];
+            if (b.at(q) == Color::Black) black = true;
+            else if (b.at(q) == Color::White) white = true;
+            else if (!seen[q]) {
+                seen[q] = true;
+                queue.push_back(q);
+            }
+        }
+    }
+    return black == white ? 0 : (black ? 1 : -1);
+}
+
+static void test_ownership_sums_to_area_score_on_random_games() {
+    Rng rng(2026);
+    int games = 0, withNeutral = 0;
+    for (int n : {5, 7, 9}) {
+        for (int g = 0; g < 40; ++g) {
+            // Random legal play, passing 5% of the time, until two passes or the move cap.
+            Game game(n, 7.5f, defaultMaxMoves(n));
+            while (!game.isTerminal()) {
+                const std::vector<int> legal = game.legalActions();
+                const bool pass = legal.size() == 1 || rng.uniform() < 0.05;
+                game.play(pass ? n * n : legal[static_cast<size_t>(rng.below(static_cast<int>(legal.size()) - 1))]);
+            }
+            const Board& b = game.board();
+            std::vector<int8_t> own(b.area());
+            b.ownership(own.data());
+            int sum = 0;
+            bool neutral = false;
+            for (int p = 0; p < b.area(); ++p) {
+                assert(own[p] == oracleOwner(b, p));
+                sum += own[p];
+                neutral = neutral || own[p] == 0;
+            }
+            assert(sum == b.areaScore());
+            ++games;
+            withNeutral += neutral ? 1 : 0;
+        }
+    }
+    assert(games == 120 && withNeutral > 0);   // the oracle saw neutral points too
+}
+
 static void test_gtp_coordinates() {
     for (int n : {9, 19}) {
         for (int a = 0; a <= n * n; ++a) assert(parseAction(actionToString(a, n), n) == a);
@@ -370,6 +494,8 @@ int main() {
     test_liberties();
     test_hash_after_matches_play();
     test_area_score();
+    test_ownership_hand_examples();
+    test_ownership_sums_to_area_score_on_random_games();
     test_gtp_coordinates();
     test_board_from_rows_round_trip();
     test_set_stone_keeps_hash_valid();
