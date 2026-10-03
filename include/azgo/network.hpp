@@ -5,6 +5,13 @@
 // and a value head into one number in [-1, 1]: the expected result for the
 // side to move. Parameters (Network) are shared read-only by all threads;
 // activations (Workspace) are per thread, so many searches can run at once.
+//
+// Optionally (NetConfig::ownership) a third head predicts, for every point,
+// who will own it when the game ends: a 1x1 conv to one channel, batch norm
+// and a tanh per point, in [-1, 1] from the side to move's view. It is
+// KataGo's auxiliary target: n*n training signals per position instead of
+// one game result, and every point of a dead group is labelled with the
+// opponent's color. Search never reads it; it only shapes the shared trunk.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -31,7 +38,9 @@ struct NetConfig {
 struct ParamView  { std::string name; float* value; float* grad; size_t size; bool decay; };
 struct BufferView { std::string name; float* value; size_t size; };
 
-struct LossStats { float policyLoss = 0; float valueLoss = 0; };  // batch means
+// Batch means. ownershipLoss is the unweighted mean squared error per point,
+// 0 when no ownership target was given.
+struct LossStats { float policyLoss = 0; float valueLoss = 0; float ownershipLoss = 0; };
 
 // Per-thread activation and scratch storage for up to maxBatch samples.
 class Workspace {
@@ -61,10 +70,14 @@ private:
     std::vector<float> valueXhat_, valueInvStd_, valueAct_;      // valueAct_ [1][B][area] = [B][area]
     std::vector<float> valueHidden_;              // [B][valueHidden]
     std::vector<float> values_;                   // [B] (after tanh)
+    // Ownership head, allocated only when cfg.ownership. ownership_ is
+    // [1][B][area] = [B][area], after tanh.
+    std::vector<float> ownershipXhat_, ownershipInvStd_, ownership_;
     // Backward scratch.
     std::vector<float> dTrunk_, dTmp_, dTmp2_;    // [filters][B][area]
     std::vector<float> dLogits_, dPolicyFlat_, dPolicyAct_;
     std::vector<float> dValues_, dValueHidden_, dValueAct_;
+    std::vector<float> dOwnership_;               // [B][area]
 };
 
 class Network {
@@ -72,24 +85,34 @@ public:
     Network(const NetConfig& cfg, uint64_t seed);   // He-initialized from Rng(seed)
     const NetConfig& config() const { return cfg_; }
 
-    // Fixed order, stable names ("stem.conv.w", "block2.bn1.gamma", "policy.fc.b", ...).
+    // Fixed order, stable names ("stem.conv.w", "block2.bn1.gamma", "policy.fc.b", ...),
+    // the ownership head last ("ownership.conv.w", "ownership.bn.gamma", ".beta").
     // decay is true for conv and linear weights only (not biases, not BN).
     std::vector<ParamView> params();
     std::vector<BufferView> buffers();              // BN runMean/runVar, fixed order
     void zeroGrad();
 
     // Inference (BN running statistics). input [B][planes][area],
-    // logits [B][actions], values [B] (tanh). Asserts B <= ws.maxBatch().
-    void infer(Workspace& ws, const float* input, int B, float* logits, float* values) const;
+    // logits [B][actions], values [B] (tanh). ownership, if not null,
+    // receives [B][area] in [-1, 1] from the side to move's view; it needs a
+    // network with the head (asserted). Asserts B <= ws.maxBatch().
+    void infer(Workspace& ws, const float* input, int B, float* logits, float* values,
+               float* ownership = nullptr) const;
 
     // Training step: zeroGrad, forward with batch statistics (updates BN
-    // running stats), loss = mean((z - v)^2) + mean(-sum pi log softmax(logits)),
-    // backward into grads. pi [B][actions], z [B].
-    LossStats trainStep(Workspace& ws, const float* input, const float* pi, const float* z, int B);
+    // running stats), loss = mean((z - v)^2) + mean(-sum pi log softmax(logits))
+    // + w * mean((1/area) sum_p (o_p - t_p)^2), backward into grads.
+    // pi [B][actions], z [B]. ownership: targets t [B][area] in [-1, 1] from
+    // the side to move's view, or null for no ownership loss; it needs a
+    // network with the head (asserted). w = ownershipWeight; with w = 0 the
+    // ownership loss is reported but the head receives no gradient.
+    LossStats trainStep(Workspace& ws, const float* input, const float* pi, const float* z, int B,
+                        const float* ownership = nullptr, float ownershipWeight = 0.0f);
 
     // Same loss as trainStep (batch statistics) without backward and without
     // touching running stats. Used by gradient checks.
-    LossStats computeLoss(Workspace& ws, const float* input, const float* pi, const float* z, int B);
+    LossStats computeLoss(Workspace& ws, const float* input, const float* pi, const float* z, int B,
+                          const float* ownership = nullptr, float ownershipWeight = 0.0f);
 
 private:
     NetConfig cfg_;
@@ -109,13 +132,17 @@ private:
     Conv2d valueConv_;
     BatchNorm2d valueBn_;
     Linear valueFc1_, valueFc2_;
+    Conv2d ownershipConv_;            // in params() only when cfg_.ownership
+    BatchNorm2d ownershipBn_;
 
     // Infer: BN running statistics. Train: batch statistics, running stats
     // updated. Probe: batch statistics, running stats untouched (computeLoss).
     enum class Mode { Infer, Train, Probe };
     void forward(Workspace& ws, const float* input, int B, Mode mode);
-    LossStats loss(Workspace& ws, const float* pi, const float* z, int B, bool withGradients) const;
-    void backward(Workspace& ws, int B);
+    LossStats loss(Workspace& ws, const float* pi, const float* z, const float* ownership,
+                   float ownershipWeight, int B, bool withGradients) const;
+    // withOwnership: backpropagate the ownership head too (a target and w != 0).
+    void backward(Workspace& ws, int B, bool withOwnership);
 };
 
 } // namespace azgo

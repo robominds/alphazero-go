@@ -53,7 +53,18 @@ Batch randomBatch(const NetConfig& cfg, int B, Rng& rng, bool oneHotPi = false) 
     return batch;
 }
 
-double totalLoss(const LossStats& s) { return static_cast<double>(s.policyLoss) + s.valueLoss; }
+// Ownership targets in {-1, 0, +1}, [B][area].
+std::vector<float> randomOwnership(const NetConfig& cfg, int B, Rng& rng) {
+    std::vector<float> own(static_cast<size_t>(B) * cfg.area());
+    for (float& v : own) v = static_cast<float>(rng.below(3) - 1);
+    return own;
+}
+
+// The loss trainStep minimizes: policy + value + w * ownership.
+double totalLoss(const LossStats& s, float ownershipWeight = 0.0f) {
+    return static_cast<double>(s.policyLoss) + s.valueLoss +
+           static_cast<double>(ownershipWeight) * s.ownershipLoss;
+}
 
 enum class Probe { Match, Kink, Mismatch };
 
@@ -89,8 +100,13 @@ bool allFinite(const std::vector<float>& v) {
 
 } // namespace
 
-static void test_whole_network_gradient_check() {
-    const NetConfig cfg = makeConfig(5, 1, 2, 4, 8);
+// With `ownership`, the network has the ownership head and the loss includes
+// it with weight 1.5, so its gradients and the trunk's share of them are
+// checked too.
+static void checkWholeNetworkGradients(bool ownership) {
+    NetConfig cfg = makeConfig(5, 1, 2, 4, 8);
+    cfg.ownership = ownership;
+    const float w = ownership ? 1.5f : 0.0f;
     const int B = 3;
     NaiveBackend be;
     Network net(cfg, 42);
@@ -107,12 +123,19 @@ static void test_whole_network_gradient_check() {
         }
     }
     Batch batch = randomBatch(cfg, B, rng);
+    std::vector<float> own;
+    if (ownership) own = randomOwnership(cfg, B, rng);
+    const float* target = ownership ? own.data() : nullptr;
 
-    const LossStats trained = net.trainStep(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B);
+    const LossStats trained =
+        net.trainStep(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B, target, w);
+    assert(ownership == (trained.ownershipLoss > 0.0f));
     auto loss = [&] {
-        return totalLoss(net.computeLoss(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B));
+        return totalLoss(net.computeLoss(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B,
+                                         target, w),
+                         w);
     };
-    assert(near(totalLoss(trained), loss(), 1e-6));   // same forward, same batch statistics
+    assert(near(totalLoss(trained, w), loss(), 1e-6));   // same forward, same batch statistics
 
     int checked = 0, kinks = 0;
     for (ParamView& p : net.params()) {
@@ -145,6 +168,11 @@ static void test_whole_network_gradient_check() {
     }
     assert(checked > 200);
     assert(kinks * 4 <= checked);   // kinks excuse only a minority of probes
+}
+
+static void test_whole_network_gradient_check() {
+    checkWholeNetworkGradients(false);
+    checkWholeNetworkGradients(true);
 }
 
 static void test_param_names_order_and_decay() {
@@ -315,6 +343,124 @@ static void test_inference_is_per_sample() {
     }
 }
 
+// The head's tensors come last, and it is initialized last, so a network with
+// the head is the network without it plus three tensors: same names, same
+// weights, same policy and value. Its output is n*n values in [-1, 1].
+static void test_ownership_head_params_and_outputs() {
+    NetConfig off = makeConfig(5, 2, 1, 4, 8), on = off;
+    on.ownership = true;
+    Network a(off, 21), b(on, 21);
+    std::vector<ParamView> pa = a.params(), pb = b.params();
+    assert(pb.size() == pa.size() + 3);
+    for (size_t i = 0; i < pa.size(); ++i) {
+        assert(pa[i].name == pb[i].name && pa[i].size == pb[i].size && pa[i].decay == pb[i].decay);
+        assert(std::memcmp(pa[i].value, pb[i].value, pa[i].size * sizeof(float)) == 0);
+    }
+    const size_t k = pa.size();
+    assert(pb[k].name == "ownership.conv.w" && pb[k].size == 4 && pb[k].decay);   // filters weights
+    assert(pb[k + 1].name == "ownership.bn.gamma" && pb[k + 1].size == 1 && !pb[k + 1].decay);
+    assert(pb[k + 2].name == "ownership.bn.beta" && pb[k + 2].size == 1 && !pb[k + 2].decay);
+    std::vector<BufferView> ba = a.buffers(), bb = b.buffers();
+    assert(bb.size() == ba.size() + 2);
+    assert(bb[ba.size()].name == "ownership.bn.runMean" && bb.back().name == "ownership.bn.runVar");
+
+    NaiveBackend be;
+    Workspace wa(off, 3, be), wb(on, 3, be);
+    Rng rng(9);
+    Batch batch = randomBatch(off, 3, rng);
+    const size_t A = static_cast<size_t>(off.area());
+    std::vector<float> la(3 * off.actions()), lb(la.size()), lc(la.size()), va(3), vb(3), vc(3);
+    std::vector<float> own(3 * A, std::numeric_limits<float>::quiet_NaN());
+    a.infer(wa, batch.input.data(), 3, la.data(), va.data());
+    b.infer(wb, batch.input.data(), 3, lb.data(), vb.data(), own.data());
+    assert(std::memcmp(la.data(), lb.data(), la.size() * sizeof(float)) == 0);
+    assert(std::memcmp(va.data(), vb.data(), va.size() * sizeof(float)) == 0);
+    assert(allFinite(own));
+    for (float o : own) assert(o >= -1.0f && o <= 1.0f);
+    assert(*std::min_element(own.begin(), own.end()) < *std::max_element(own.begin(), own.end()));
+    // Without an ownership output the head is simply not read.
+    b.infer(wb, batch.input.data(), 3, lc.data(), vc.data());
+    assert(lc == lb && vc == vb);
+
+    // Every board size: [B][n*n] values, all in range.
+    for (int n : {7, 19}) {
+        NetConfig cfg = makeConfig(n, 2, 1, 2, 4);
+        cfg.ownership = true;
+        Network net(cfg, static_cast<uint64_t>(n));
+        Workspace ws(cfg, 2, be);
+        Batch nb = randomBatch(cfg, 2, rng);
+        std::vector<float> logits(2 * cfg.actions()), values(2);
+        std::vector<float> o(2 * static_cast<size_t>(cfg.area()), std::numeric_limits<float>::quiet_NaN());
+        net.infer(ws, nb.input.data(), 2, logits.data(), values.data(), o.data());
+        assert(allFinite(o));
+        for (float x : o) assert(x >= -1.0f && x <= 1.0f);
+    }
+}
+
+// w = 0: the ownership loss is measured, but the step is exactly the one the
+// network without the head takes, and the head itself gets no gradient.
+static void test_ownership_weight_zero_trains_nothing() {
+    NetConfig off = makeConfig(5, 1, 1, 4, 8), on = off;
+    on.ownership = true;
+    Network a(off, 23), b(on, 23);
+    NaiveBackend be;
+    Workspace wa(off, 4, be), wb(on, 4, be);
+    Rng rng(10);
+    Batch batch = randomBatch(off, 4, rng);
+    const std::vector<float> own = randomOwnership(on, 4, rng);
+    const LossStats sa = a.trainStep(wa, batch.input.data(), batch.pi.data(), batch.z.data(), 4);
+    const LossStats sb =
+        b.trainStep(wb, batch.input.data(), batch.pi.data(), batch.z.data(), 4, own.data(), 0.0f);
+    assert(sa.policyLoss == sb.policyLoss && sa.valueLoss == sb.valueLoss);
+    assert(sa.ownershipLoss == 0.0f && sb.ownershipLoss > 0.0f);
+    std::vector<ParamView> pa = a.params(), pb = b.params();
+    for (size_t i = 0; i < pa.size(); ++i)
+        assert(std::memcmp(pa[i].grad, pb[i].grad, pa[i].size * sizeof(float)) == 0);
+    for (size_t i = pa.size(); i < pb.size(); ++i)
+        for (size_t j = 0; j < pb[i].size; ++j) assert(pb[i].grad[j] == 0.0f);
+
+    // w > 0: the head and, through it, the trunk receive gradient.
+    b.trainStep(wb, batch.input.data(), batch.pi.data(), batch.z.data(), 4, own.data(), 1.5f);
+    pb = b.params();
+    bool headGrad = false;
+    for (size_t j = 0; j < pb[pa.size()].size; ++j) headGrad = headGrad || pb[pa.size()].grad[j] != 0.0f;
+    assert(headGrad);
+    assert(std::memcmp(pa[0].grad, pb[0].grad, pa[0].size * sizeof(float)) != 0);   // stem.conv.w
+}
+
+// A few SGD steps on one batch reduce the ownership loss. The target is one a
+// 1x1 head can learn from the trunk: +1 on the side to move's stones (input
+// plane 0), -1 on the opponent's (plane 1), 0 where both or neither.
+static void test_sgd_reduces_ownership_loss() {
+    NetConfig cfg = makeConfig(5, 1, 1, 8, 16);
+    cfg.ownership = true;
+    const int B = 8, A = cfg.area();
+    NaiveBackend be;
+    Network net(cfg, 11);
+    Workspace ws(cfg, B, be);
+    Rng rng(7);
+    Batch batch = randomBatch(cfg, B, rng, /*oneHotPi=*/true);
+    std::vector<float> own(static_cast<size_t>(B) * A);
+    for (int b = 0; b < B; ++b)
+        for (int p = 0; p < A; ++p) {
+            const float* planes = batch.input.data() + static_cast<size_t>(b) * cfg.planes() * A;
+            own[static_cast<size_t>(b) * A + p] = planes[p] - planes[A + p];
+        }
+    double first = -1.0;
+    for (int step = 0; step < 40; ++step) {
+        const LossStats s =
+            net.trainStep(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B, own.data(), 1.5f);
+        if (step == 0) first = s.ownershipLoss;
+        for (ParamView& p : net.params())
+            for (size_t i = 0; i < p.size; ++i) p.value[i] -= 0.05f * p.grad[i];
+    }
+    const double last =
+        net.computeLoss(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B, own.data(), 1.5f)
+            .ownershipLoss;
+    std::printf("sgd: ownership loss %.4f -> %.4f\n", first, last);
+    assert(last <= 0.5 * first);
+}
+
 int main() {
     test_whole_network_gradient_check();
     test_param_names_order_and_decay();
@@ -325,6 +471,9 @@ int main() {
     test_running_stats_only_change_in_train_step();
     test_sgd_reduces_loss_on_fixed_batch();
     test_inference_is_per_sample();
+    test_ownership_head_params_and_outputs();
+    test_ownership_weight_zero_trains_nothing();
+    test_sgd_reduces_ownership_loss();
     std::printf("test_network: all tests passed\n");
     return 0;
 }

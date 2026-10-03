@@ -62,6 +62,12 @@ Workspace::Workspace(const NetConfig& cfg, int maxBatch, const Backend& backend)
     dValues_.resize(maxBatch);
     dValueHidden_.resize(hidden);
     dValueAct_.resize(M);
+    if (cfg.ownership) {
+        ownershipXhat_.resize(M);
+        ownershipInvStd_.resize(1);
+        ownership_.resize(M);
+        dOwnership_.resize(M);
+    }
 }
 
 // ---------------------------------------------------------------- Network
@@ -76,7 +82,9 @@ Network::Network(const NetConfig& cfg, uint64_t seed)
       valueConv_(cfg.filters, 1, 1),
       valueBn_(1),
       valueFc1_(cfg.area(), cfg.valueHidden),
-      valueFc2_(cfg.valueHidden, 1) {
+      valueFc2_(cfg.valueHidden, 1),
+      ownershipConv_(cfg.filters, 1, 1),
+      ownershipBn_(1) {
     assert(cfg.boardSize >= kMinBoardSize && cfg.boardSize <= kMaxBoardSize);
     assert(cfg.history >= 1 && cfg.blocks >= 0 && cfg.filters >= 1 && cfg.valueHidden >= 1);
     const int F = cfg.filters;
@@ -95,6 +103,9 @@ Network::Network(const NetConfig& cfg, uint64_t seed)
     valueConv_.init(rng);
     valueFc1_.init(rng);
     valueFc2_.init(rng);
+    // Last, so a network with the head has the same other weights as one
+    // without it for the same seed.
+    if (cfg.ownership) ownershipConv_.init(rng);
 }
 
 std::vector<ParamView> Network::params() {
@@ -126,6 +137,10 @@ std::vector<ParamView> Network::params() {
     bn("value.bn", valueBn_);
     linear("value.fc1", valueFc1_);
     linear("value.fc2", valueFc2_);
+    if (cfg_.ownership) {
+        conv("ownership.conv", ownershipConv_);
+        bn("ownership.bn", ownershipBn_);
+    }
     return out;
 }
 
@@ -143,6 +158,7 @@ std::vector<BufferView> Network::buffers() {
     }
     bn("policy.bn", policyBn_);
     bn("value.bn", valueBn_);
+    if (cfg_.ownership) bn("ownership.bn", ownershipBn_);
     return out;
 }
 
@@ -150,28 +166,35 @@ void Network::zeroGrad() {
     for (ParamView& p : params()) std::fill(p.grad, p.grad + p.size, 0.0f);
 }
 
-void Network::infer(Workspace& ws, const float* input, int B, float* logits, float* values) const {
+void Network::infer(Workspace& ws, const float* input, int B, float* logits, float* values,
+                    float* ownership) const {
+    assert(ownership == nullptr || cfg_.ownership);
     // Mode::Infer only reads parameters (BN uses its running statistics via
     // the const forwardInfer), so this cast never writes to the shared
     // network; it lets a single forward() serve inference and training.
     const_cast<Network*>(this)->forward(ws, input, B, Mode::Infer);
     std::copy(ws.logits_.begin(), ws.logits_.begin() + static_cast<size_t>(B) * cfg_.actions(), logits);
     std::copy(ws.values_.begin(), ws.values_.begin() + B, values);
+    if (ownership && cfg_.ownership)
+        std::copy(ws.ownership_.begin(), ws.ownership_.begin() + static_cast<size_t>(B) * cfg_.area(),
+                  ownership);
 }
 
 LossStats Network::trainStep(Workspace& ws, const float* input, const float* pi, const float* z,
-                             int B) {
+                             int B, const float* ownership, float ownershipWeight) {
+    assert(ownership == nullptr || cfg_.ownership);
     zeroGrad();
     forward(ws, input, B, Mode::Train);
-    LossStats stats = loss(ws, pi, z, B, true);
-    backward(ws, B);
+    LossStats stats = loss(ws, pi, z, ownership, ownershipWeight, B, true);
+    backward(ws, B, cfg_.ownership && ownership != nullptr && ownershipWeight != 0.0f);
     return stats;
 }
 
 LossStats Network::computeLoss(Workspace& ws, const float* input, const float* pi, const float* z,
-                               int B) {
+                               int B, const float* ownership, float ownershipWeight) {
+    assert(ownership == nullptr || cfg_.ownership);
     forward(ws, input, B, Mode::Probe);
-    return loss(ws, pi, z, B, false);
+    return loss(ws, pi, z, ownership, ownershipWeight, B, false);
 }
 
 void Network::forward(Workspace& ws, const float* input, int B, Mode mode) {
@@ -238,10 +261,20 @@ void Network::forward(Workspace& ws, const float* input, int B, Mode mode) {
     reluForward(ws.valueHidden_.data(), static_cast<size_t>(B) * cfg_.valueHidden);
     valueFc2_.forward(be, ws.valueHidden_.data(), B, ws.values_.data());
     for (int b = 0; b < B; ++b) ws.values_[b] = std::tanh(ws.values_[b]);
+
+    // Ownership head: conv1x1 (F -> 1) -> BN -> tanh at every point, no
+    // ReLU and no linear layer: each point's owner is read off the trunk's
+    // features at that point. [1][B][A] already is [B][A].
+    if (cfg_.ownership) {
+        ownershipConv_.forward(be, x, B, n, col, convOut);
+        norm(ownershipBn_, convOut, ws.ownership_.data(), ws.ownershipXhat_.data(),
+             ws.ownershipInvStd_.data());
+        for (int j = 0; j < M; ++j) ws.ownership_[j] = std::tanh(ws.ownership_[j]);
+    }
 }
 
-LossStats Network::loss(Workspace& ws, const float* pi, const float* z, int B,
-                        bool withGradients) const {
+LossStats Network::loss(Workspace& ws, const float* pi, const float* z, const float* ownership,
+                        float ownershipWeight, int B, bool withGradients) const {
     const int actions = cfg_.actions();
     double policySum = 0.0, valueSum = 0.0;
     for (int b = 0; b < B; ++b) {
@@ -271,10 +304,26 @@ LossStats Network::loss(Workspace& ws, const float* pi, const float* z, int B,
     LossStats stats;
     stats.policyLoss = static_cast<float>(policySum / B);
     stats.valueLoss = static_cast<float>(valueSum / B);
+
+    // Ownership: w * (1/A) * sum_p (o_p - t_p)^2, averaged over the batch, so
+    // the mean over all B * A points. With o = tanh(u):
+    // dL/du = 2 w (o - t)(1 - o^2) / (B * A).
+    if (cfg_.ownership && ownership) {
+        const size_t points = static_cast<size_t>(B) * cfg_.area();
+        double ownershipSum = 0.0;
+        for (size_t j = 0; j < points; ++j) {
+            const double o = ws.ownership_[j];
+            const double d = o - ownership[j];
+            ownershipSum += d * d;
+            if (withGradients)
+                ws.dOwnership_[j] = static_cast<float>(2.0 * ownershipWeight * d * (1.0 - o * o) / points);
+        }
+        stats.ownershipLoss = static_cast<float>(ownershipSum / points);
+    }
     return stats;
 }
 
-void Network::backward(Workspace& ws, int B) {
+void Network::backward(Workspace& ws, int B, bool withOwnership) {
     const Backend& be = *ws.backend_;
     const int n = cfg_.boardSize, A = cfg_.area(), F = cfg_.filters;
     const int M = B * A;
@@ -307,6 +356,14 @@ void Network::backward(Workspace& ws, int B) {
                        ws.dPolicyAct_.data());
     policyConv_.backward(be, trunkOut, col, ws.dPolicyAct_.data(), B, n, dcol, dTmp);
     for (size_t j = 0; j < trunk; ++j) dTrunk[j] += dTmp[j];   // the trunk feeds both heads
+
+    // Ownership head: through tanh (already in dOwnership_), BN and the 1x1 conv.
+    if (withOwnership) {
+        ownershipBn_.backward(ws.dOwnership_.data(), ws.ownershipXhat_.data(),
+                              ws.ownershipInvStd_.data(), M, ws.dOwnership_.data());
+        ownershipConv_.backward(be, trunkOut, col, ws.dOwnership_.data(), B, n, dcol, dTmp);
+        for (size_t j = 0; j < trunk; ++j) dTrunk[j] += dTmp[j];
+    }
 
     // Residual blocks in reverse; dTrunk holds dL/d(block output). The
     // shared col buffer was overwritten by later convs, so each 3x3 conv's
