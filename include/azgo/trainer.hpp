@@ -24,6 +24,7 @@ struct GenerationStats {
     double passRate = 0;        // passes / plies
     double blackWinRate = 0;
     float policyLoss = 0, valueLoss = 0;   // mean over the generation's steps
+    float ownershipLoss = -1;   // the same mean, unweighted; -1 when the network has no ownership head
     float lr = 0;
     double replayRatio = 0;     // samples drawn this generation / new positions
     double selfPlaySeconds = 0, trainSeconds = 0, arenaSeconds = 0;
@@ -37,8 +38,8 @@ class Trainer {
 public:
     // Optional starting material for a new run. initFrom: a checkpoint that
     // becomes generation 0 instead of a fresh random network (its shape must
-    // equal the config's); this is how a grown or pre-trained network starts a
-    // run. bufferFrom: another run's directory whose replay buffer seeds the
+    // equal the config's, ownership head included); this is how a grown or
+    // pre-trained network starts a run. bufferFrom: another run's directory whose replay buffer seeds the
     // new one, so the first generations train on real games rather than an
     // empty buffer (board size and history must match). Empty = not used.
     struct RunInit {
@@ -54,7 +55,8 @@ public:
                                              const RunInit& init = {});
     // Loads config.cfg, applies overrides, refuses (ConfigError listing keys)
     // if an architecture key changed, loads state.bin and the latest checkpoint.
-    // Rewrites config.cfg with the overridden values.
+    // Rewrites config.cfg with the overridden values, and gives a log.csv
+    // written before the ownership_loss column existed that column (empty).
     static std::unique_ptr<Trainer> resume(const std::string& runDir,
                                            const std::vector<std::string>& overrides);
 

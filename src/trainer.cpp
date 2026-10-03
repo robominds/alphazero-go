@@ -4,11 +4,14 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -32,6 +35,11 @@ namespace fs = std::filesystem;
 namespace {
 
 const char* const kLogHeader =
+    "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
+    "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev,"
+    "ownership_loss\n";
+// The header before ownership_loss was added; Trainer::resume upgrades it.
+const char* const kLogHeaderBeforeOwnership =
     "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
     "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev\n";
 const char* const kEloHeader = "generation,elo,winrate_vs_prev,wr_low,wr_high\n";
@@ -158,23 +166,41 @@ void appendLogRow(const std::string& runDir, const GenerationStats& s) {
     if (s.winRateVsPrev >= 0) std::snprintf(winRate, sizeof winRate, "%.4f", s.winRateVsPrev);
     char distinct[32] = "";
     if (s.distinctVsPrev >= 0) std::snprintf(distinct, sizeof distinct, "%d", s.distinctVsPrev);
+    char ownership[32] = "";
+    if (s.ownershipLoss >= 0) std::snprintf(ownership, sizeof ownership, "%.5f", s.ownershipLoss);
     char line[512];
     std::snprintf(line, sizeof line,
-                  "%d,%d,%.2f,%.4f,%.4f,%.5f,%.5f,%g,%.3f,%.3f,%.3f,%.3f,%.1f,%s,%s\n",
+                  "%d,%d,%.2f,%.4f,%.4f,%.5f,%.5f,%g,%.3f,%.3f,%.3f,%.3f,%.1f,%s,%s,%s\n",
                   s.generation, s.games, s.avgLength, s.passRate, s.blackWinRate,
                   s.policyLoss, s.valueLoss, s.lr, s.replayRatio, s.selfPlaySeconds,
-                  s.trainSeconds, s.arenaSeconds, s.elo, winRate, distinct);
+                  s.trainSeconds, s.arenaSeconds, s.elo, winRate, distinct, ownership);
     std::ofstream out(logPath(runDir), std::ios::app | std::ios::binary);
     out << line;
     if (!out) throw std::runtime_error("cannot append to " + logPath(runDir));
 }
 
-// "9x9, history 8, 6 blocks, 64 filters, value_hidden 64": the keys a
-// checkpoint's shape depends on, for messages about a mismatch.
+// "9x9, history 8, 6 blocks, 64 filters, value_hidden 64[, ownership head]":
+// the keys a checkpoint's shape depends on, for messages about a mismatch.
 std::string shapeString(const NetConfig& c) {
     return std::to_string(c.boardSize) + "x" + std::to_string(c.boardSize) + ", history " +
            std::to_string(c.history) + ", " + std::to_string(c.blocks) + " blocks, " +
-           std::to_string(c.filters) + " filters, value_hidden " + std::to_string(c.valueHidden);
+           std::to_string(c.filters) + " filters, value_hidden " + std::to_string(c.valueHidden) +
+           (c.ownership ? ", ownership head" : "");
+}
+
+// A run started before log.csv had the ownership_loss column gets it, empty
+// in every old row (those generations had no ownership head), so every row
+// has as many fields as the header. Anything else is left alone.
+void addOwnershipColumn(const std::string& runDir) {
+    std::ifstream in(logPath(runDir), std::ios::binary);
+    if (!in) return;
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (text.compare(0, std::strlen(kLogHeaderBeforeOwnership), kLogHeaderBeforeOwnership) != 0) return;
+    std::string out = kLogHeader;
+    std::istringstream rows(text.substr(std::strlen(kLogHeaderBeforeOwnership)));
+    for (std::string row; std::getline(rows, row);)
+        if (!row.empty()) out += row + ",\n";
+    writeFileAtomically(logPath(runDir), out);
 }
 
 std::string joinInts(const std::vector<int>& v) {
@@ -204,9 +230,19 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     std::optional<Network> given;
     if (!init.initFrom.empty()) {
         given.emplace(loadNetwork(init.initFrom));
-        if (given->config() != cfg.netConfig())
+        if (given->config() != cfg.netConfig()) {
+            NetConfig sameHead = given->config();
+            sameHead.ownership = cfg.ownership;
+            if (sameHead == cfg.netConfig() && cfg.ownership)   // only the head is missing
+                throw ConfigError(init.initFrom + " has no ownership head but the config sets "
+                                  "ownership = true; add one with: grow --from " + init.initFrom +
+                                  " --ownership --out NEW.azn");
+            if (sameHead == cfg.netConfig())                    // only the head is extra
+                throw ConfigError(init.initFrom + " has an ownership head but the config sets "
+                                  "ownership = false; train it with --set ownership=true");
             throw ConfigError(init.initFrom + " has shape " + shapeString(given->config()) +
                               " but the config asks for " + shapeString(cfg.netConfig()));
+        }
     }
     std::optional<ReplayBuffer> donorBuffer;
     if (!init.bufferFrom.empty()) {
@@ -306,6 +342,7 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     // Rewritten only after every check passed, so a refused resume leaves the
     // run directory untouched.
     writeFileAtomically(configPath(runDir), configToString(cfg));
+    addOwnershipColumn(runDir);
 
     return std::unique_ptr<Trainer>(new Trainer(cfg, runDir, std::move(net), std::move(state)));
 }
@@ -399,24 +436,31 @@ GenerationStats Trainer::runGeneration() {
         opt.velocity() = state_.velocity;
         Rng rng(deriveSeed(cfg_.seed, static_cast<uint64_t>(g), kPhaseTrain));
         TrainingBatch batch;
-        double policySum = 0, valueSum = 0;
+        double policySum = 0, valueSum = 0, ownershipSum = 0;
         for (int s = 0; s < cfg_.trainSteps; ++s) {
             state_.buffer.sample(cfg_.batchSize, cfg_.history, rng, batch);
-            const LossStats loss = net_.trainStep(ws, batch.input.data(), batch.pi.data(),
-                                                  batch.z.data(), batch.size);
+            // The batch always carries ownership targets; only a network
+            // with the head learns from them, with weight ownership_weight.
+            const LossStats loss = net_.trainStep(
+                ws, batch.input.data(), batch.pi.data(), batch.z.data(), batch.size,
+                cfg_.ownership ? batch.ownership.data() : nullptr, cfg_.ownershipWeight);
             // Nothing of generation g is committed yet (state.bin is the
             // commit point), so the last good state (generation g-1) stays.
-            if (!std::isfinite(loss.policyLoss) || !std::isfinite(loss.valueLoss))
+            if (!std::isfinite(loss.policyLoss) || !std::isfinite(loss.valueLoss) ||
+                !std::isfinite(loss.ownershipLoss))
                 throw std::runtime_error("non-finite loss at generation " + std::to_string(g) +
                                          " step " + std::to_string(s) +
                                          "; last good state kept");
             opt.step(net_, lr);
             policySum += loss.policyLoss;
             valueSum += loss.valueLoss;
+            ownershipSum += loss.ownershipLoss;
         }
+        if (cfg_.ownership) stats.ownershipLoss = 0;
         if (cfg_.trainSteps > 0) {
             stats.policyLoss = static_cast<float>(policySum / cfg_.trainSteps);
             stats.valueLoss = static_cast<float>(valueSum / cfg_.trainSteps);
+            if (cfg_.ownership) stats.ownershipLoss = static_cast<float>(ownershipSum / cfg_.trainSteps);
         }
         // The per-step loss check cannot see the weights written by the last
         // optimizer step, so scan the parameters and momentum before anything
@@ -483,12 +527,17 @@ GenerationStats Trainer::runGeneration() {
     appendLogRow(runDir_, stats);
 
     if (log_) {
+        // e.g. "train loss p 1.73 v 0.09 lr 0.002 2.5s", with "o 0.412" after
+        // the value loss when the network has an ownership head.
+        char ownership[32] = "";
+        if (stats.ownershipLoss >= 0)
+            std::snprintf(ownership, sizeof ownership, " o %.3f", stats.ownershipLoss);
         char line[512];
         std::snprintf(line, sizeof line,
                       "gen %d | selfplay %d games avg %.1f plies %.1fs | "
-                      "train loss p %.2f v %.2f lr %g %.1fs | ",
+                      "train loss p %.2f v %.2f%s lr %g %.1fs | ",
                       g, stats.games, stats.avgLength, stats.selfPlaySeconds, stats.policyLoss,
-                      stats.valueLoss, stats.lr, stats.trainSeconds);
+                      stats.valueLoss, ownership, stats.lr, stats.trainSeconds);
         *log_ << line;
         if (arenaThisGeneration) {
             // e.g. "arena elo 512.3 vs 149:0.55 120:0.70 bot100:1.00 (distinct 19/20) promoted 3.2s"

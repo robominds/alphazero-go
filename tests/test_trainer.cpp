@@ -147,7 +147,8 @@ static void test_start_new_writes_run_files() {
 
     assert(readFile(dir.file("log.csv")) ==
            "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
-           "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev\n");
+           "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev,"
+           "ownership_loss\n");
     assert(readFile(dir.file("elo.csv")) ==
            "generation,elo,winrate_vs_prev,wr_low,wr_high\n0,0.0,,,\n");
 }
@@ -171,13 +172,16 @@ static void test_two_generations() {
     assert(std::isfinite(st.elo));
     assert(st.distinctVsPrev >= 1 && st.distinctVsPrev <= 2);   // arena_games = 2
 
+    assert(st.ownershipLoss == -1.0f);   // no ownership head
     {
-        // The log row's last field is the same diversity count.
-        const std::string log = readFile(dir.file("log.csv"));
-        const size_t end = log.find_last_not_of('\n');
-        const std::string row = log.substr(log.find_last_of('\n', end) + 1, end);
-        const std::string last = row.substr(row.find_last_of(',') + 1);
-        assert(!last.empty() && std::stoi(last) == st.distinctVsPrev);
+        // The log row ends with the same diversity count and an empty
+        // ownership_loss field.
+        const std::vector<std::string> rows = splitLines(readFile(dir.file("log.csv")));
+        const std::string& row = rows.back();
+        assert(std::count(row.begin(), row.end(), ',') == 15 && row.back() == ',');
+        const std::string fields = row.substr(0, row.size() - 1);
+        const std::string distinct = fields.substr(fields.find_last_of(',') + 1);
+        assert(!distinct.empty() && std::stoi(distinct) == st.distinctVsPrev);
     }
 
     t->runUntil(2);
@@ -692,6 +696,168 @@ static void test_start_from_refusals() {
     assert(!fs::exists(statePath(target.str())));
 }
 
+// ---- the ownership head ------------------------------------------------------
+
+static Config ownershipConfig() {
+    Config c = tinyConfig();
+    c.ownership = true;
+    return c;
+}
+
+// A run with the head trains it: the loss is logged, the progress line shows
+// it, and the head's weights move.
+static void test_ownership_run_trains_the_head() {
+    TempDir dir("ownership");
+    std::unique_ptr<Trainer> t = startQuiet(ownershipConfig(), dir);
+    assert(readCheckpointConfig(checkpointPath(dir.str(), 0)).ownership);
+    std::ostringstream out;
+    t->setLog(&out);
+    const GenerationStats st = t->runGeneration();
+    // A mean squared error of values in [-1, 1].
+    assert(std::isfinite(st.ownershipLoss) && st.ownershipLoss > 0 && st.ownershipLoss < 4);
+    const std::string row = splitLines(readFile(dir.file("log.csv"))).back();
+    const std::string last = row.substr(row.find_last_of(',') + 1);
+    char expected[32];
+    std::snprintf(expected, sizeof expected, "%.5f", st.ownershipLoss);
+    assert(last == expected);
+    assert(out.str().find(" v ") != std::string::npos && out.str().find(" o ") != std::string::npos);
+
+    Network gen0 = loadNetwork(checkpointPath(dir.str(), 0));
+    Network gen1 = loadNetwork(checkpointPath(dir.str(), 1));
+    std::vector<ParamView> p0 = gen0.params(), p1 = gen1.params();
+    assert(p1.back().name == "ownership.bn.beta" && p1[p1.size() - 3].name == "ownership.conv.w");
+    const ParamView& w0 = p0[p0.size() - 3];
+    const ParamView& w1 = p1[p1.size() - 3];
+    assert(std::memcmp(w0.value, w1.value, w0.size * sizeof(float)) != 0);
+}
+
+// Determinism holds with the head: resume continues byte-identically and the
+// worker count changes nothing.
+static void test_ownership_determinism() {
+    TempDir a("own_resume_a"), b("own_resume_b");
+    const Config c = ownershipConfig();
+    startQuiet(c, a)->runUntil(3);
+    startQuiet(c, b)->runUntil(1);
+    resumeQuiet(b, {})->runUntil(3);
+    for (const char* f : {"checkpoints/gen_0003.azn", "state.bin", "elo.csv", "results.csv",
+                          "references.csv", "sgf/gen_0003_game_00.sgf"})
+        assert(readFile(a.file(f)) == readFile(b.file(f)));
+
+    TempDir one("own_workers1"), three("own_workers3");
+    Config w = c;
+    w.workers = 1;
+    startQuiet(w, one)->runUntil(2);
+    w.workers = 3;
+    startQuiet(w, three)->runUntil(2);
+    for (const char* f : {"checkpoints/gen_0002.azn", "state.bin", "results.csv", "references.csv"})
+        assert(readFile(one.file(f)) == readFile(three.file(f)));
+}
+
+// --init-from with a checkpoint whose head does not match the config says how
+// to fix it; resume refuses to switch the head on or off.
+static void test_ownership_mismatches_are_refused() {
+    TempDir plain("own_plain"), owner("own_owner"), target("own_target");
+    startQuiet(tinyConfig(), plain);
+    startQuiet(ownershipConfig(), owner);
+
+    Trainer::RunInit init;
+    init.initFrom = checkpointPath(plain.str(), 0);
+    std::string msg;
+    try {
+        Trainer::startNew(ownershipConfig(), target.str(), init);
+    } catch (const ConfigError& e) {
+        msg = e.what();
+    }
+    assert(msg.find("has no ownership head") != std::string::npos);
+    assert(msg.find("grow --from " + init.initFrom + " --ownership") != std::string::npos);
+    assert(!fs::exists(statePath(target.str())));
+
+    init.initFrom = checkpointPath(owner.str(), 0);
+    msg.clear();
+    try {
+        Trainer::startNew(tinyConfig(), target.str(), init);
+    } catch (const ConfigError& e) {
+        msg = e.what();
+    }
+    assert(msg.find("has an ownership head") != std::string::npos);
+    assert(msg.find("--set ownership=true") != std::string::npos);
+    assert(!fs::exists(statePath(target.str())));
+
+    // Another shape difference as well: the shape message, naming the head.
+    Config wider = ownershipConfig();
+    wider.filters = 16;
+    msg.clear();
+    try {
+        Trainer::startNew(wider, target.str(), init);
+    } catch (const ConfigError& e) {
+        msg = e.what();
+    }
+    assert(msg.find("8 filters, value_hidden 8, ownership head but the config asks for") !=
+           std::string::npos);
+
+    // A matching head is accepted: generation 0 is that checkpoint.
+    {
+        std::unique_ptr<Trainer> t = Trainer::startNew(ownershipConfig(), target.str(), init);
+        t->setLog(nullptr);
+    }
+    assert(readFile(checkpointPath(target.str(), 0)) == readFile(init.initFrom));
+
+    for (const char* change : {"ownership=true", "ownership=false"}) {
+        const TempDir& dir = std::string(change) == "ownership=true" ? plain : owner;
+        msg.clear();
+        try {
+            Trainer::resume(dir.str(), {change});
+        } catch (const ConfigError& e) {
+            msg = e.what();
+        }
+        assert(msg == "cannot change architecture keys on resume: ownership");
+    }
+    // ownership_weight is tunable.
+    assert(resumeQuiet(owner, {"ownership_weight=0.5"})->config().ownershipWeight == 0.5f);
+}
+
+// A run made before this change: state.bin version 2 (no ownership in the
+// buffer), a config.cfg without the ownership keys and a log.csv without the
+// ownership_loss column. Resuming it recomputes the buffer's ownership, adds
+// the column to every old row, and continues as a run without the head.
+static void test_resume_run_from_before_ownership() {
+    TempDir dir("pre_ownership");
+    startQuiet(tinyConfig(), dir)->runUntil(1);
+
+    // state.bin version 2: the buffer without ownership.
+    const std::string bytes = readFile(statePath(dir.str()));
+    const TrainingState current = loadTrainingState(statePath(dir.str()));
+    std::ostringstream with, without;
+    BinaryWriter ww(with), wo(without);
+    current.buffer.save(ww, true);
+    current.buffer.save(wo, false);
+    const size_t header = 24;
+    std::string v2 = bytes.substr(0, header) + without.str() + bytes.substr(header + with.str().size());
+    v2[4] = 2;
+    writeFile(statePath(dir.str()), v2);
+    // config.cfg and log.csv as the old code wrote them.
+    std::string oldConfig;
+    for (const std::string& line : splitLines(readFile(configPath(dir.str()))))
+        if (line.rfind("ownership", 0) != 0) oldConfig += line + "\n";
+    writeFile(configPath(dir.str()), oldConfig);
+    std::vector<std::string> rows = splitLines(readFile(dir.file("log.csv")));
+    assert(rows.size() == 2 && rows[1].back() == ',');
+    std::string oldLog = rows[0].substr(0, rows[0].size() - std::string(",ownership_loss").size()) +
+                         "\n" + rows[1].substr(0, rows[1].size() - 1) + "\n";
+    writeFile(dir.file("log.csv"), oldLog);
+
+    std::unique_ptr<Trainer> t = resumeQuiet(dir, {});
+    assert(!t->config().ownership);
+    const TrainingState resumed = loadTrainingState(statePath(dir.str()));
+    for (size_t i = 0; i < current.buffer.games(); ++i)
+        assert(resumed.buffer.game(i).finalOwnership == current.buffer.game(i).finalOwnership);
+    t->runUntil(2);
+    rows = splitLines(readFile(dir.file("log.csv")));
+    assert(rows.size() == 3 && rows[0].find(",distinct_vs_prev,ownership_loss") != std::string::npos);
+    for (const std::string& row : rows) assert(std::count(row.begin(), row.end(), ',') == 15);
+    assert(readFile(statePath(dir.str()))[4] == 3);
+}
+
 int main() {
     test_start_new_writes_run_files();
     test_two_generations();
@@ -709,6 +875,10 @@ int main() {
     test_rerate_refusals_and_gaps();
     test_start_from_network_and_buffer();
     test_start_from_refusals();
+    test_ownership_run_trains_the_head();
+    test_ownership_determinism();
+    test_ownership_mismatches_are_refused();
+    test_resume_run_from_before_ownership();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }

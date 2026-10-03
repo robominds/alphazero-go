@@ -198,4 +198,17 @@ out="$("$BUILD/train" --run "$RUN" --resume --set filters=16 --generations 4 2>&
 echo "$out" | grep -q "architecture" || fail "resume refusal does not mention architecture: $out"
 test ! -e "$CK/gen_0004.azn" || fail "a refused resume still trained"
 
+echo "== train: a run with the ownership head =="
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/own_run" "${TINY[@]}" --set ownership=true \
+    --generations 1
+head -1 "$W/own_run/log.csv" | grep -q ',distinct_vs_prev,ownership_loss$' || fail "log.csv has no ownership_loss column"
+tail -1 "$W/own_run/log.csv" | grep -Eq ',[0-9]+\.[0-9]{5}$' || fail "log.csv row has no ownership loss"
+tail -1 "$RUN/log.csv" | grep -q ',$' || fail "a run without the head should leave ownership_loss empty"
+status=0
+out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/own_bad" "${TINY[@]}" --set ownership=true \
+    --init-from "$CK/gen_0003.azn" --generations 1 2>&1)" || status=$?
+[ "$status" -eq 1 ] || fail "--init-from a checkpoint without the head exited $status, expected 1"
+echo "$out" | grep -q -- "--ownership --out" || fail "the refusal does not suggest grow --ownership: $out"
+test ! -e "$W/own_bad/state.bin" || fail "a refused start left a run behind"
+
 echo "integration_smoke: all checks passed"
