@@ -30,10 +30,10 @@ struct Seat {
         if (player.net) {
             backend = makeBackend(backendName, 1);
             evaluator.reset(new LocalEvaluator(*player.net, *backend, cfg.mctsBatch));
-            mcts.simulations = cfg.simulations;
+            mcts.simulations = player.simulations > 0 ? player.simulations : cfg.simulations;
         } else {
             evaluator.reset(new UniformEvaluator(shape.boardSize, shape.history, 0.0f, cfg.mctsBatch));
-            mcts.simulations = player.botSimulations;
+            mcts.simulations = player.simulations;
         }
     }
 };
@@ -81,6 +81,8 @@ double expectedScore(double rating, double opponent) {
     return 1.0 / (1.0 + std::pow(10.0, (opponent - rating) / 400.0));
 }
 
+constexpr int kMaxSimulations = 100000;   // the same bound as the arena app's --b-bot
+
 } // namespace
 
 MatchResult playMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& cfg,
@@ -88,10 +90,18 @@ MatchResult playMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaCon
     if (!a.net && !b.net) throw std::invalid_argument("playMatch: two bots (one player must be a network)");
     if (a.net && b.net && a.net->config() != b.net->config())
         throw std::invalid_argument("playMatch: networks have different architectures");
-    for (const ArenaPlayer* p : {&a, &b})
-        if (!p->net && p->botSimulations < 1)
-            throw std::invalid_argument("playMatch: a bot needs at least 1 simulation, got " +
-                                        std::to_string(p->botSimulations));
+    const char* const names[] = {"A", "B"};
+    int which = 0;
+    for (const ArenaPlayer* p : {&a, &b}) {
+        const std::string who = std::string("playMatch: player ") + names[which++];
+        if (!p->net && p->simulations < 1)
+            throw std::invalid_argument(who + " is a bot and needs at least 1 simulation, got " +
+                                        std::to_string(p->simulations));
+        if (p->simulations < 0 || p->simulations > kMaxSimulations)
+            throw std::invalid_argument(who + " simulations must be in [0, " +
+                                        std::to_string(kMaxSimulations) + "], got " +
+                                        std::to_string(p->simulations));
+    }
     if (cfg.games < 2 || cfg.games % 2 != 0)
         throw std::invalid_argument("playMatch: games must be even and >= 2, got " +
                                     std::to_string(cfg.games));

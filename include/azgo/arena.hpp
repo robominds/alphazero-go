@@ -33,22 +33,24 @@ struct MatchResult {
     int distinctGames = 0;       // distinct move sequences
 };
 
-// One side of a match. With net, the player searches with the network at
-// ArenaConfig::simulations. With net == nullptr it is a uniform bot: MCTS
-// whose priors are all equal and whose value is always 0, searching with
-// botSimulations. A bot's strength depends only on its simulation count.
+// One side of a match. With net, the player searches with the network, at
+// `simulations` if that is positive and otherwise at ArenaConfig::simulations,
+// so a frozen network can serve as a stronger fixed reference by searching
+// more. With net == nullptr it is a uniform bot: MCTS whose priors are all
+// equal and whose value is always 0, searching with `simulations`, which a bot
+// must set (>= 1). A bot's strength depends only on its simulation count.
 struct ArenaPlayer {
     const Network* net = nullptr;
-    int botSimulations = 0;
-    static ArenaPlayer network(const Network& n) { return {&n, 0}; }
+    int simulations = 0;   // network: 0 = ArenaConfig::simulations; bot: required, >= 1
+    static ArenaPlayer network(const Network& n, int simulations = 0) { return {&n, simulations}; }
     static ArenaPlayer bot(int simulations) { return {nullptr, simulations}; }
 };
 
 // Plays cfg.games games between a and b on `workers` threads, no root noise,
 // tree reuse on. Board size and history come from whichever player has a
 // network. Throws std::invalid_argument for two bots, two networks with
-// different NetConfigs, a bot with botSimulations < 1, or an odd or < 2 game
-// count. Game i uses Rng(deriveSeed(seed, i)). Deterministic for a seed.
+// different NetConfigs, a bot with simulations < 1, a simulations override
+// outside 0..100000 (bots: 1..100000), or an odd or < 2 game count. Game i uses Rng(deriveSeed(seed, i)). Deterministic for a seed.
 MatchResult playMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& cfg,
                       uint64_t seed, int workers, const std::string& backendName);
 

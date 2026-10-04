@@ -58,6 +58,11 @@ out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --games 4 --simulations 4
 echo "$out"
 echo "$out" | grep -q 'vs B bot(8 simulations): A scored' || fail "arena --b-bot printed no score line"
 
+echo "== arena: per-player simulations =="
+out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --a-simulations 2 --b-simulations 16 --games 4 --simulations 4 --workers 2)"
+echo "$out"
+echo "$out" | grep -q '(2 simulations) vs B .*(16 simulations): A scored' || fail "arena --a/--b-simulations did not name both counts"
+
 # B is exactly one of a checkpoint and a bot, and a bot must search.
 expect_arena_error() {
     local want="$1"; shift
@@ -70,6 +75,8 @@ expect_arena_error() {
 expect_arena_error "give exactly one of --b CKPT and --b-bot SIMS" --b "$CK/gen_0000.azn" --b-bot 8
 expect_arena_error "give exactly one of --b CKPT and --b-bot SIMS"
 expect_arena_error "--b-bot must be in [1, 100000]" --b-bot 0
+expect_arena_error "--b-simulations applies to a checkpoint B" --b-bot 8 --b-simulations 16
+expect_arena_error "--b-simulations must be in [1, 100000]" --b "$CK/gen_0000.azn" --b-simulations 0
 
 echo "== analyze: a legal position =="
 out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --simulations 16)"

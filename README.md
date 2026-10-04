@@ -110,7 +110,10 @@ $ ./build-blas/train --run runs/9x9-main --rerate --set arena_opponents=2
 `--b-bot SIMS` instead of `--b`, a checkpoint against a uniform bot
 searching SIMS simulations per move), colors alternating, and prints the
 score with a 95% Wilson interval
-(`docs/results/9x9/final-arena.txt`):
+(`docs/results/9x9/final-arena.txt`). `--a-simulations N` and
+`--b-simulations N` give one side its own search budget instead of
+`--simulations`, so a frozen checkpoint can be a stronger reference by
+searching more (`--b ckpt --b-simulations 3200`):
 
 ```
 $ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0150.azn --b runs/9x9-main/checkpoints/gen_0000.azn --games 100 --simulations 200 --komi 7.5 --backend blas

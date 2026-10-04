@@ -131,6 +131,38 @@ static void test_network_wrapper() {
                       playMatch(ArenaPlayer::network(a), ArenaPlayer::network(b), cfg, 9, 2, "naive")));
 }
 
+// A network player's simulations override. 0 means ArenaConfig::simulations,
+// so an explicit override equal to it must reproduce the default match
+// exactly; that also proves the plumbing is byte-neutral for existing callers.
+static void test_simulations_override() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22);
+    ArenaConfig cfg = tinyArena();   // 8 simulations per move
+    const MatchResult base = playMatch(a, b, cfg, 42, 1, "naive");
+    assert(sameResult(base, playMatch(ArenaPlayer::network(a, 0), ArenaPlayer::network(b, 0),
+                                      cfg, 42, 1, "naive")));
+    assert(sameResult(base, playMatch(ArenaPlayer::network(a, 8), ArenaPlayer::network(b),
+                                      cfg, 42, 1, "naive")));
+
+    // The override reaches the search: the same network at 1 simulation
+    // against itself at 64 cannot repeat the 8-versus-8 games. The match is
+    // deterministic for the seed, so this is a fixed comparison, not a
+    // statistical one; an ignored override would give the symmetric result.
+    const MatchResult sym = playMatch(a, a, cfg, 42, 1, "naive");
+    const ArenaPlayer weak = ArenaPlayer::network(a, 1), strong = ArenaPlayer::network(a, 64);
+    const MatchResult asym = playMatch(weak, strong, cfg, 42, 1, "naive");
+    checkBookkeeping(asym, 8);
+    assert(!sameResult(asym, sym));
+    // Either side's override counts, and it is deterministic across workers.
+    assert(sameResult(asym, playMatch(weak, strong, cfg, 42, 3, "naive")));
+    assert(sameResult(asym, playMatch(weak, strong, cfg, 42, 1, "naive")));
+    const MatchResult flipped = playMatch(strong, weak, cfg, 42, 1, "naive");
+    checkBookkeeping(flipped, 8);
+    assert(!sameResult(flipped, sym));
+    // A bot keeps its own count whatever ArenaConfig says.
+    assert(sameResult(playMatch(ArenaPlayer::network(a, 64), ArenaPlayer::bot(16), cfg, 5, 2, "naive"),
+                      playMatch(ArenaPlayer::network(a, 64), ArenaPlayer::bot(16), cfg, 5, 1, "naive")));
+}
+
 static bool playersThrow(const ArenaPlayer& a, const ArenaPlayer& b) {
     try {
         playMatch(a, b, tinyArena(), 1, 1, "naive");
@@ -145,6 +177,9 @@ static void test_rejects_bad_players() {
     assert(playersThrow(ArenaPlayer::bot(8), ArenaPlayer::bot(8)));            // nobody has a network
     assert(playersThrow(ArenaPlayer::network(a), ArenaPlayer::bot(0)));        // a bot must search
     assert(playersThrow(ArenaPlayer::bot(-3), ArenaPlayer::network(a)));
+    assert(playersThrow(ArenaPlayer::network(a, -1), ArenaPlayer::network(a)));   // override < 0
+    assert(playersThrow(ArenaPlayer::network(a), ArenaPlayer::network(a, 100001)));
+    assert(playersThrow(ArenaPlayer::network(a), ArenaPlayer::bot(100001)));
 }
 
 static void test_strongest_reference() {
@@ -240,6 +275,7 @@ int main() {
     test_rejects_bad_setup();
     test_bot_matches();
     test_network_wrapper();
+    test_simulations_override();
     test_rejects_bad_players();
     test_strongest_reference();
     test_select_opponents();

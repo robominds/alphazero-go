@@ -1920,7 +1920,7 @@ std::vector<int> selectOpponents(int generation, const std::map<int, double>& ra
     return out;
 }
 ```
-*src/arena.cpp:152 — `selectOpponents` (abridged)*
+*src/arena.cpp:162 — `selectOpponents` (abridged)*
 
 The candidates are the **references**: a frozen set of players that
 starts as generation 0 plus the bots, and only grows.

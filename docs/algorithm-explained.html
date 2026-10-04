@@ -1681,7 +1681,7 @@ Ownership, Black + / White - (9 = certain, "." below 0.1):
     if (bestNetwork &amp;&amp; !chosen(*bestNetwork)) out.push_back(*bestNetwork);   // gating
     return out;
 }</code></pre>
-<span class="src">src/arena.cpp:152 — <code>selectOpponents</code> (abridged)</span>
+<span class="src">src/arena.cpp:162 — <code>selectOpponents</code> (abridged)</span>
 <p>The candidates are the <strong>references</strong>: a frozen set of players that starts as generation 0 plus the bots, and only grows.</p>
 <ul>
 <li><strong>g − 1</strong> is always played. It is the progress signal, and its match is the one <code>log.csv</code> reports.</li>
@@ -2113,9 +2113,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Learning-rate schedule</dt>
   <dd><code>LrSchedule::at</code> <span class="loc">— src/optimizer.cpp:100</span></dd>
   <dt>Arena and opening diversity</dt>
-  <dd><code>playArenaGame</code>, <code>playMatch</code> <span class="loc">— src/arena.cpp:50, 86</span></dd>
+  <dd><code>playArenaGame</code>, <code>playMatch</code> <span class="loc">— src/arena.cpp:50, 88</span></dd>
   <dt>Choosing opponents, gating</dt>
-  <dd><code>selectOpponents</code>, <code>passesGate</code> <span class="loc">— src/arena.cpp:152, 180</span></dd>
+  <dd><code>selectOpponents</code>, <code>passesGate</code> <span class="loc">— src/arena.cpp:162, 190</span></dd>
   <dt>Arena rounds: calibration, promotion</dt>
   <dd><code>calibrateBots</code>, <code>runArenaRound</code> <span class="loc">— src/arena_round.cpp:22, 39</span></dd>
   <dt>Bradley-Terry Elo with a virtual draw</dt>
