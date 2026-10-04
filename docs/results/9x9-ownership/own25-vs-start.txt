@@ -1,0 +1,2 @@
+A runs/9x9-ownership/checkpoints/gen_0025.azn vs B runs/9x9-ownership/checkpoints/gen_0000.azn: A scored 53/100 = 0.530 (95% CI 0.433-0.625), distinct games 99
+A wins 53, B wins 47, draws 0

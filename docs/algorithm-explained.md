@@ -1094,7 +1094,9 @@ never looks at, though: in the eye test position
 (`docs/results/9x9/analyze-eye.txt`) the one move that gives a Black group
 two eyes has a prior below 1% and is not among the ten most visited
 moves, and the network's values show it does not know the group dies
-without it (`docs/results/README.md`).
+without it (`docs/results/README.md`). Chapter 06's ownership experiment
+later qualified that last point: a network with an ownership head reads
+the group correctly and plays elsewhere because it judges that move bigger.
 
 ---
 
@@ -1765,8 +1767,60 @@ Two tools make it usable on existing runs. `grow --ownership` adds a
 fresh head to a trained checkpoint without changing what it plays, and a
 replay buffer saved before ownership existed gets its targets by
 replaying each game's moves (`replayFinalOwnership`), so an old run can
-still donate its games. Whether the extra signal fixes the eye check is
-an experiment; `docs/results/README.md` reports it.
+still donate its games.
+
+**The experiment.** A run of 50 generations with the head
+(`ownership = true`, weight 1.5), started from the same 6×96 network and
+replay buffer as the 200-simulation run of the simulations experiment
+and otherwise identical to it, scored 55/100 against that run's generation 50: 95%
+interval 0.452–0.644, no measurable difference
+(`docs/results/9x9-ownership/own50-vs-s200g50.txt`). The eye check still
+fails: B1 is not among the ten most visited moves at 200 or 800
+simulations (`docs/results/9x9-ownership/eye-own50-s200.txt`,
+`eye-own50-s800.txt`). But the head reads the group. Here is the eye
+position after Black plays elsewhere (C6) and White kills with B1, with
+generation 50's ownership map
+(`docs/results/9x9-ownership/eye-own50-killed.txt`):
+
+```
+   A B C D E F G H J
+ 9 . . . . . . . . .  9
+ 8 . . . . . . . . .  8
+ 7 . . . . . X . . .  7
+ 6 . . X . . . . . .  6
+ 5 . . . . . . X . .  5
+ 4 . . . . . . . . .  4
+ 3 O O O O O . . . .  3
+ 2 X X X X O . . . .  2
+ 1 . O . X O . . . .  1
+   A B C D E F G H J
+
+Ownership, Black + / White - (9 = certain, "." below 0.1):
+     A  B  C  D  E  F  G  H  J
+ 9  +2 +3 +2 +3 +3 +4 +3 +4 +3
+ 8  +3 +3 +3 +4 +4 +5 +4 +4 +3
+ 7  +3 +4 +5 +6 +7 +8 +6 +4 +4
+ 6  +3 +5 +8 +4 +4 +5 +6 +5 +4
+ 5   . +2  . +2 +2 +3 +8 +4 +3
+ 4  -6 -6 -3 -4 -3  . +3 +3 +2
+ 3  -9 -8 -9 -9 -8 -3 +1 +1  .
+ 2  -2 -5 -6 -4 -8 -6 -2 -1  .
+ 1  -6 -8 -8 -6 -9 -7 -5 -2 -2
+```
+
+Every point of the group and of its eye space, A1–D1 and A2–D2, is
+White's (−2 to −8): the head knows the group is dead. After Black's
+saving B1 instead, the same eight points are Black's, +2 to +4
+(`docs/results/9x9-ownership/eye-own50-saved.txt`). The comparison at
+the start of this section was uneven: in the killing line Black had
+an extra move. Given one move each, with Black to move in both,
+generation 50 values Black's C6 and White's B1 at +0.04 for Black, and
+Black's B1 and White's C6 at −0.87, after 800 simulations
+(`docs/results/9x9-ownership/fair-own50-tenuki.txt`,
+`fair-own50-save.txt`). So it gives up the group because it judges C6
+the bigger move, not because it misreads the shape. Whether that
+judgment is right would take a strong independent engine to settle;
+`docs/results/README.md` has the details.
 
 ---
 

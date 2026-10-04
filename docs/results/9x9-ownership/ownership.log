@@ -1,0 +1,12 @@
+start Sat Oct  3 14:48:30 PDT 2026
+old: 9x9, history 8, 6 blocks, 96 filters, value_hidden 64, 1032349 parameters
+new: 9x9, history 8, 6 blocks, 96 filters, value_hidden 64, ownership head, 1032447 parameters
+verified on 8 random positions (max difference 0); wrote runs/grown/wide96-g50-own.azn
+train exit 0 Sat Oct  3 20:06:12 PDT 2026
+verified on 8 random positions (max difference 0); wrote runs/grown/sims200-g25-own.azn
+verified on 8 random positions (max difference 0); wrote runs/grown/sims200-g50-own.azn
+own25-vs-start: A runs/9x9-ownership/checkpoints/gen_0025.azn vs B runs/9x9-ownership/checkpoints/gen_0000.azn: A scored 53/100 = 0.530 (95% CI 0.433-0.625), distinct games 99 A wins 53, B wins 47, draws 0 
+own50-vs-start: A runs/9x9-ownership/checkpoints/gen_0050.azn vs B runs/9x9-ownership/checkpoints/gen_0000.azn: A scored 59/100 = 0.590 (95% CI 0.492-0.681), distinct games 99 A wins 59, B wins 41, draws 0 
+own25-vs-s200g25: A runs/9x9-ownership/checkpoints/gen_0025.azn vs B runs/grown/sims200-g25-own.azn: A scored 48/100 = 0.480 (95% CI 0.385-0.577), distinct games 98 A wins 48, B wins 52, draws 0 
+own50-vs-s200g50: A runs/9x9-ownership/checkpoints/gen_0050.azn vs B runs/grown/sims200-g50-own.azn: A scored 55/100 = 0.550 (95% CI 0.452-0.644), distinct games 99 A wins 55, B wins 45, draws 0 
+all done Sat Oct  3 20:20:34 PDT 2026

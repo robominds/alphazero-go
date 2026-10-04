@@ -1,0 +1,54 @@
+runs/9x9-sims200/checkpoints/gen_0050.azn: 16 moves played, Black to move, komi 7.5
+
+   A B C D E F G H J
+ 9 . . . . . . . . .  9
+ 8 . . . . . . . . .  8
+ 7 . . . . . X . . .  7
+ 6 . . X . . . . . .  6
+ 5 . . . . . . X . .  5
+ 4 . . . . . . . . .  4
+ 3 O O O O O . . . .  3
+ 2 X X X X O . . . .  2
+ 1 . O . X O . . . .  1
+   A B C D E F G H J
+Black to move
+
+Value (side to move): -0.21
+
+Policy prior, % of legal moves ("." below 1%):
+     A  B  C  D  E  F  G  H  J
+ 9   .  .  .  .  .  .  .  .  .
+ 8   .  .  1  .  .  .  .  .  .
+ 7   .  3  1  3  .  X  .  .  .
+ 6   .  1  X  2  4  .  .  .  .
+ 5   .  8  1  7 10  .  X  .  .
+ 4   1  .  .  .  1  3  .  2  .
+ 3   O  O  O  O  O  1 23  3  .
+ 2   X  X  X  X  O  .  2  1  .
+ 1   .  O  .  X  O  .  .  .  .
+Pass prior: 0.4%
+
+Top 10 moves by prior:
+  G3     23.1%
+  E5      9.9%
+  B5      7.7%
+  D5      6.6%
+  E6      3.6%
+  H3      3.5%
+  F4      3.4%
+  D7      3.3%
+  B7      2.8%
+  H4      2.2%
+
+MCTS value (side to move): +0.04 after 800 simulations
+Top 10 moves by visits:
+  G3       647 visits ( 80.9%)  Q +0.10
+  D5        24 visits (  3.0%)  Q -0.02
+  B5        21 visits (  2.6%)  Q -0.06
+  E5        20 visits (  2.5%)  Q -0.10
+  F4         7 visits (  0.9%)  Q -0.10
+  D7         6 visits (  0.8%)  Q -0.09
+  B7         5 visits (  0.6%)  Q -0.11
+  E6         5 visits (  0.6%)  Q -0.16
+  H3         5 visits (  0.6%)  Q -0.15
+  C8         2 visits (  0.2%)  Q -0.24

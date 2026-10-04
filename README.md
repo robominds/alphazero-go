@@ -305,6 +305,12 @@ From `docs/results/README.md`, which has the details and the sources.
   gave no measurable gain at generation 50 (52/100) for 1.66× the time, and
   the eye check still fails (see
   [the section](docs/results/README.md#more-simulations-in-self-play-400-vs-200)).
+- **9×9, ownership head.** Training an ownership head alongside the 200-simulation
+  run made no measurable difference against the same run without it (48/100 at
+  generation 25, 55/100 at 50, interval 0.452–0.644) and the eye check still fails,
+  but the head's maps show the network reads the group's life and death correctly,
+  and a fair comparison suggests it skips B1 because it judges another move bigger
+  (see [the section](docs/results/README.md#an-ownership-head-auxiliary-target)).
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is

@@ -1,0 +1,64 @@
+runs/9x9-ownership/checkpoints/gen_0050.azn: 15 moves played, White to move, komi 7.5
+
+   A B C D E F G H J
+ 9 . . . . . . . . .  9
+ 8 . . . . . . . . .  8
+ 7 . . . . . X . . .  7
+ 6 . . . . . . . . .  6
+ 5 . . . . . . X . .  5
+ 4 . . . . . . . . .  4
+ 3 O O O O O . . . .  3
+ 2 X X X X O . . . .  2
+ 1 . X . X O . . . .  1
+   A B C D E F G H J
+White to move
+
+Value (side to move): +0.77
+
+Ownership, Black + / White - (9 = certain, "." below 0.1):
+     A  B  C  D  E  F  G  H  J
+ 9  +2  .  .  . +1 +4 +5 +5 +5
+ 8  +1  . +1  . +1 +4 +5 +6 +5
+ 7   . +2  .  .  . +7 +4 +4 +5
+ 6   .  .  .  .  . +3 +5 +5 +4
+ 5  -3 -1  . -2  . +3 +6 +2 +4
+ 4  -6 -6 -6 -5 -3 +2  . +2 +2
+ 3  -9 -9 -9 -9 -9 -2  .  . +2
+ 2  +3 +4 +4 +4 -9 -6 -1 +1 +1
+ 1  +4 +2 +4 +4 -9 -4 -3  .  .
+
+Policy prior, % of legal moves ("." below 1%):
+     A  B  C  D  E  F  G  H  J
+ 9   .  .  .  .  .  .  .  .  .
+ 8   .  .  .  .  .  .  .  .  .
+ 7   .  .  1 13  2  X  .  .  .
+ 6   .  .  4  6 20  .  .  .  .
+ 5   .  .  .  2  9  6  X  .  .
+ 4   .  .  .  .  .  1 16  .  .
+ 3   O  O  O  O  O  .  5  .  .
+ 2   X  X  X  X  O  .  .  .  .
+ 1   .  X  .  X  O  .  .  .  .
+Pass prior: 1.1%
+
+Top 10 moves by prior:
+  E6     19.6%
+  G4     16.2%
+  D7     12.8%
+  E5      8.6%
+  F5      6.4%
+  D6      5.8%
+  G3      4.5%
+  C6      4.2%
+  D5      2.2%
+  E7      2.1%
+
+MCTS value (side to move): +0.83 after 200 simulations
+Top 10 moves by visits:
+  E6        50 visits ( 25.0%)  Q +0.87
+  D7        35 visits ( 17.5%)  Q +0.85
+  D6        25 visits ( 12.5%)  Q +0.85
+  E5        25 visits ( 12.5%)  Q +0.80
+  G4        25 visits ( 12.5%)  Q +0.80
+  C6        20 visits ( 10.0%)  Q +0.82
+  F5        15 visits (  7.5%)  Q +0.78
+  G3         5 visits (  2.5%)  Q +0.70

@@ -1,0 +1,2 @@
+A runs/9x9-ownership/checkpoints/gen_0025.azn vs B runs/grown/sims200-g25-own.azn: A scored 48/100 = 0.480 (95% CI 0.385-0.577), distinct games 98
+A wins 48, B wins 52, draws 0

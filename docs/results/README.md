@@ -228,6 +228,15 @@ instead, the group is dead.
   knowledge, not a search artifact. At 200 simulations, search never
   looks at B1 long enough to find out.
 
+*Later note.* These probes do not compare like with like: after Black's
+B1 White has the next move, and in the C6 B1 line Black has played an
+extra move. A later comparison that gives each side one move found four
+9×9 networks all preferring C6 to saving the group, and the ownership
+maps of one of them show that it reads the group's fate correctly. The
+"misjudgment" may be a whole-board choice rather than a misread shape;
+see [An ownership head](#an-ownership-head-auxiliary-target). The
+paragraph above is kept as it was written.
+
 `9x9/sample.sgf` is a generation-150 self-play game, won W+6.5.
 
 ### 9×9 re-rated with rating-aware opponents
@@ -551,12 +560,203 @@ is untouched: B1 never appears among the top visits, and the value stays
 near −0.6 at every search budget tried (200 and 800 simulations). This
 is consistent with a value-head blind spot about life and death that
 deeper search at analysis time does not fix, though these runs do not
-test that explanation directly.
+test that explanation directly. (The ownership experiment below points
+another way: a fair comparison suggests the networks choose C6 over B1
+as the bigger move, not that they misread the group.)
 
 Not tested here, and no result is claimed for any of them: playout cap
 randomization (full search on only some moves), larger simulation gaps
 than 2×, runs longer than 50 generations, changes to the value targets,
 and more than one seed per arm (each number above is one run).
+
+### An ownership head (auxiliary target)
+
+Hypothesis, from the design
+(`docs/superpowers/specs/2026-10-03-ownership-head-design.md`): every
+9×9 network has failed the eye check, and the weakness looked like the
+value head's life-and-death judgment. That head learns from one ±1 game
+result per position, a signal that is noisy (it also depends on every
+later move of both sides) and slow (under Tromp-Taylor scoring a dead
+group costs points only once it has been captured). An ownership head
+trained on the final board gets n² = 81 labels per position, each
+saying directly whose a point ended up, so the shared trunk should learn
+life and death faster. The result: no measurable change in strength
+against the identical run without the head, and the eye check still
+fails by its original criterion. But the ownership maps show that the
+network reads the bottom group's life and death correctly, and a fairer
+version of the eye comparison suggests that the check does not test
+what it was meant to (see "A fairer eye comparison" below).
+
+- *Setup.* `grow --ownership` gave a fresh ownership head (98
+  parameters, 1,032,349 → 1,032,447) to the 6×96 generation 50 of
+  `9x9-wide96`, the start of both arms of the simulations experiment;
+  on 8 random positions the maximum output difference was 0
+  (`9x9-ownership/ownership.log`). Training started from it with
+  `9x9-wide96`'s replay buffer, 199,972 positions from 2,272 games
+  (`init.txt`). That buffer was saved as `state.bin` version 2, before
+  ownership existed, so each game's final ownership was recomputed by
+  replaying its moves. The settings are those of `9x9-sims/sims200/`
+  (100 games of 200 simulations per generation, learning rate 0.002,
+  seed 1, `arena_opponents = 2`, gating off) plus `ownership = true`
+  and `ownership_weight = 1.5`; the two runs' `config.cfg` files differ
+  in those two lines only. Because the head changes neither policy nor
+  value, generation 1 had to replay the 200 arm's self-play game for
+  game, and it did: the same bot calibration (`results.csv` starts with
+  `-1,0,80,0` in both runs), the same self-play columns in `log.csv`
+  (100 games, 89.24 plies, pass rate 0.1075, Black win rate 0.2400), and
+  byte-identical copies of the two game records each run saves per
+  generation (in `runs/`, not in the repository).
+  The commands are in `9x9-ownership/ownership.sh`. The files are the
+  run's own, with absolute paths in `init.txt` made repo-relative and
+  `progress.txt` the `gen` and `done` lines of the console output. This
+  is one run with one seed.
+- *Cost.* Mean seconds per generation (self-play + training + arena,
+  `log.csv`): 380.2 (206.5 + 95.3 + 78.4), against the 200 arm's 351.3
+  (201.4 + 94.4 + 55.4); 5.28 h of generation time against 4.88 h.
+  Self-play and training took 2.5% and 1.0% longer. Most of the
+  difference is arena time, and it is not a cost of the head:
+  generation 6 scored 0.85 against generation 0 and was promoted to a
+  reference (`references.csv`, `progress.txt`), which cost calibration
+  games in that generation (140.9 s of arena) and added an opponent to
+  every later generation's arena (80.4 s per generation over generations
+  7–50, against the 200 arm's 56.3; the 200 arm promoted none).
+- *Training curves.* The ownership loss is 0.590 at generation 1, 0.401
+  at 25 and 0.408 at 50 (`log.csv`). It falls fastest at the start
+  (0.471 at generation 2, 0.423 at 5) and stays between 0.401 and 0.409
+  from generation 10 on. Mean policy loss 2.398 and value loss 0.363,
+  against the 200 arm's 2.390 and 0.362; average game length 87.6
+  plies against 88.3. These are on different data and are not a
+  strength measure.
+
+**Matches** (100 games, 200 simulations for both sides, komi 7.5, colors
+alternating; 95% Wilson intervals as `arena` prints them; Elo is
+400·log10(p/(1−p)), approximate; files in `9x9-ownership/`; "start" is
+this run's generation 0, the 6×96 generation 50 of `9x9-wide96` with the
+untrained head). The 200 arm's checkpoints were given a head with
+`grow --ownership` so that `arena` accepts the pair; it changes no move
+(maximum difference 0 for both, `ownership.log`).
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| ownership vs 200 arm, gen 25 (`own25-vs-s200g25.txt`) | 48/100 | 0.385-0.577 | −14 (−81 to +54) |
+| ownership vs 200 arm, gen 50 (`own50-vs-s200g50.txt`) | 55/100 | 0.452-0.644 | +35 (−33 to +103) |
+| ownership gen 25 vs start (`own25-vs-start.txt`) | 53/100 | 0.433-0.625 | +21 (−47 to +89) |
+| ownership gen 50 vs start (`own50-vs-start.txt`) | 59/100 | 0.492-0.681 | +63 (−6 to +132) |
+
+For comparison, the 200 arm's generation 50 scored 64/100 (0.542-0.727)
+against the same start (`9x9-sims/s200g50-vs-start.txt`).
+
+**Eye check** (the 14-move position of the earlier eye checks, Black to
+move, generation 50 of this run, `eye-own50-s{200,800}.txt`). The value
+for Black before search is −0.61, and B1's prior is below 1%:
+
+| simulations | MCTS value | top visits | B1's rank by visits |
+|---|---|---|---|
+| 200 | −0.66 | D7 40 (20.0%), C7 22 (11.0%), C6 22 (11.0%) | not in the top 10 |
+| 800 | −0.67 | D7 258 (32.2%), C6 95 (11.9%), C7 76 (9.5%) | not in the top 10 |
+
+By the original criterion (B1 in the top 3 by visits at 200
+simulations) the check fails, as for every earlier 9×9 network. The 200
+arm's generation 50 put C6 42 and D6 40 on top at 200 simulations, with
+B1 absent too (`9x9-sims/eye-sims200-s200.txt`).
+
+**Ownership maps.** `analyze` prints the head's prediction in Black's
+terms, +9 surely Black's to −9 surely White's, `.` below 0.1 in absolute
+value. The eye position (`eye-own50-s200.txt`):
+
+```
+     A  B  C  D  E  F  G  H  J
+ 9  +2 +3 +3 +3 +3 +4 +3 +4 +4
+ 8  +2 +2 +2 +2 +4 +4 +4 +3 +3
+ 7  +2 +2 +3 +3 +5 +8 +5 +4 +4
+ 6   . +2 +2 +1 +3 +5 +5 +4 +3
+ 5  -4 -2  .  . +2 +2 +7 +4 +3
+ 4  -7 -7 -7 -5 -3  . +2 +2 +2
+ 3  -9 -9 -9 -9 -9 -4  . +1  .
+ 2   . -2  . +1 -8 -6 -3  .  .
+ 1  -2 -3 -4 -5 -9 -7 -4 -2  .
+```
+
+The White wall is −9 (A3–E3, E1) and −8 (E2). The group is the Black
+stones A2, B2, C2, D2 and D1 and the points it encloses, A1, B1 and C1:
+
+| position | A2 | B2 | C2 | D2 | D1 | A1 | B1 | C1 |
+|---|---|---|---|---|---|---|---|---|
+| eye position, Black to move (`eye-own50-s200.txt`) | . | −2 | . | +1 | −5 | −2 | −3 | −4 |
+| Black C6, White kills with B1 (`eye-own50-killed.txt`) | −2 | −5 | −6 | −4 | −6 | −6 | −8 | −8 |
+| Black saves with B1 (`eye-own50-saved.txt`) | +3 | +4 | +4 | +4 | +4 | +4 | +2 | +4 |
+| Black B1, then White C6 (`fair-own50-save.txt`) | +4 | +5 | +5 | +6 | −2 | +2 | +2 | −1 |
+
+After White's B1 every point of the group is White's (−2 to −8): the
+head knows the group is dead. After Black's B1 every point is Black's
+(+2 to +4): it knows the group lives. In the eye position itself the
+group leans White (D1 and A1–C1 at −2 to −5), which fits the network's
+own preference for playing elsewhere (below). After Black's B1 and
+White's C6 the head is less sure of the corner (D1 −2, C1 −1) although
+the group has two eyes; its other six points are +2 to +6.
+
+**A fairer eye comparison.** The earlier probes
+(`9x9/analyze-eye-probe.txt`) and the `killed` and `saved` positions
+above do not compare like with like. In `killed` Black has also played
+C6 and has the next move, while in `saved` White has it: the killing
+line gives Black two moves to White's one. A fair
+comparison gives each side one move and leaves Black to move in both:
+`$EYE C6 B1` (Black plays elsewhere, White kills) against `$EYE B1 C6`
+(Black saves, White takes C6), where `$EYE` is the 14-move position.
+MCTS value for Black after 800 simulations, komi 7.5, with the value
+before search in brackets (files `fair-*-tenuki.txt` and
+`fair-*-save.txt`, commands in `fair-comparison.sh`):
+
+| network | Black C6, White B1 | Black B1, White C6 | difference |
+|---|---|---|---|
+| this run, gen 50 (`fair-own50-*`) | +0.04 (−0.26) | −0.87 (−0.78) | 0.91 |
+| this run's start, gen 0 (`fair-own0-*`) | −0.33 (−0.48) | −0.85 (−0.85) | 0.52 |
+| 200 arm, gen 50 (`fair-sims200g50-*`) | +0.04 (−0.21) | −0.84 (−0.80) | 0.88 |
+| 6×64 main run, gen 250 (`fair-main250-*`) | −0.18 (−0.36) | −0.84 (−0.87) | 0.66 |
+
+The main run's generation 250 (`runs/9x9-main`) and the 200 arm have no
+ownership head, so for them there are values only, no map. Every
+network tested values giving up the group for C6 well above saving it.
+The map after Black's B1 and White's C6 (`fair-own50-save.txt`) shows
+why, in this network's terms: White's C6 claims the left side, −4 to
+−8 on A4–C6 and −2 to −3 on A7–C7. After Black's C6 instead, A6–C7 is
+Black's (+3 to +8) and A5–C5 undecided (`fair-own50-tenuki.txt`).
+
+What this shows, and what it does not:
+
+- *Evidence.* For this run's generation 50, the refusal to play B1 is a
+  whole-board judgment that C6 is the bigger move, not a failure to
+  read the group: its maps get the group's fate right in both lines.
+  The other three networks make the same choice by value; without a map
+  it is consistent with, not shown, that they read the group too.
+- *Not settled.* Whether the judgment is correct cannot be decided
+  here. That needs an independent strong engine (for example KataGo)
+  to evaluate both lines, and none was run.
+- *Recommendation, not a result.* The eye check of the original plan is
+  not a clean life-and-death test, because the rest of the board is
+  unsettled and the vital point may not be the largest move. It should
+  be replaced by a position in which the vital point is unambiguously
+  the largest move, or its intended answer should first be confirmed
+  with a strong engine.
+
+**Verdict.** Against the 200 arm, the ownership run is **not measurably
+different** at generation 25 (48/100, 0.385-0.577, −14 Elo) or at
+generation 50 (55/100, 0.452-0.644, +35 Elo, interval −33 to +103):
+ownership training gave no measurable strength change over 50
+generations. Against the start it is not measurably different either
+(53/100 at 25; 59/100 at 50, lower bound 0.492), where the 200 arm alone
+reached 64/100; the intervals overlap, and the direct match is the
+cleaner comparison. The eye check **fails** by its original criterion at
+200 and 800 simulations. The maps **do** show that the head knows the
+group dies after White's B1 and lives after Black's B1. The head trains
+(loss 0.590 → 0.408) and is a useful diagnostic: it is what showed that
+the eye-check failure is a choice of move rather than a misread group.
+
+Not tested here, and no result is claimed for any of them: more than one
+seed, other values of `ownership_weight` than 1.5, runs longer than 50
+generations, using the head in search (score estimation or
+ownership-weighted values) and KataGo's other auxiliary targets (score,
+opponent policy), which the design lists as non-goals.
 
 ### 19×19: criterion met (it runs)
 
@@ -580,7 +780,10 @@ Two generations say nothing about strength, and none is claimed.
 
 1. **The 9×9 eye check failed.** The data is above. The final 9×9
    network misjudges a basic two-eye shape, so the 9×9 criterion as a
-   whole is not met.
+   whole is not met. (Later evidence suggests the network reads the
+   shape but judges another move bigger, and that the check is not a
+   clean life-and-death test; see
+   [An ownership head](#an-ownership-head-auxiliary-target).)
 2. **The 9×9 Elo curve does not show the progress that happened.** The
    slope criterion is met on its sign only (+0.41 Elo per generation).
    - The refit is flat from about generation 50 on.
@@ -645,6 +848,25 @@ Two generations say nothing about strength, and none is claimed.
   `references.csv`, `init.txt` (paths made repo-relative), `progress.txt`, and
   the evaluations `g50-vs-old250.txt`, `g25-vs-old250.txt`,
   `g50-vs-old228.txt`, `analyze-eye.txt`.
+- `9x9-wide96/`: the 6×96 widening run: `log.csv`, `elo.csv`,
+  `results.csv`, `references.csv`, `init.txt`, `progress.txt`, the
+  matches `w25-vs-old250.txt`, `w50-vs-old250.txt`,
+  `wide50-vs-deep50.txt`, and `analyze-eye.txt`.
+- `9x9-sims/`: the simulations experiment: `sims400/` and `sims200/`
+  (each with `log.csv`, `elo.csv`, `results.csv`, `references.csv`,
+  `init.txt`, `progress.txt`), the four matches `s*-vs-*.txt`, the eye
+  analyses `eye-sims{200,400}-s{200,800}.txt`, and the commands
+  `sims-experiment.sh` and `sims-experiment-resume.sh`.
+- `9x9-ownership/`: the ownership-head run: `log.csv` (with the
+  `ownership_loss` column), `elo.csv`, `results.csv`, `references.csv`,
+  `init.txt` (paths made repo-relative), `progress.txt`; the commands
+  `ownership.sh` and their output `ownership.log` (with the `grow`
+  checks and the match lines); the matches `own25-vs-start.txt`,
+  `own50-vs-start.txt`, `own25-vs-s200g25.txt`, `own50-vs-s200g50.txt`;
+  the eye analyses `eye-own50-s200.txt`, `eye-own50-s800.txt`,
+  `eye-own50-killed.txt`, `eye-own50-saved.txt`; and the fair eye
+  comparison, `fair-{own50,own0,sims200g50,main250}-{tenuki,save}.txt`
+  with its commands `fair-comparison.sh`.
 - `5x5/rerate-opp4/`: `elo.csv`, `references.csv` and `log.csv` of a
   re-rate of 5×5 seed 1 with `--set arena_opponents=4`, made on a copy of
   the run, for the scale caveat above.
