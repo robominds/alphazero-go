@@ -49,6 +49,7 @@ static void test_defaults() {
     assert(c.lrSchedule == "0:0.02" && c.momentum == 0.9f && c.weightDecay == 1e-4f);
     assert(c.arenaEvery == 1 && c.arenaGames == 20 && c.arenaOpponents == 2);
     assert((c.botSimulations == std::vector<int>{100}));
+    assert(c.referenceNetworks.empty());
     assert(c.calibrationGames == 80 && c.promoteThreshold == 0.85f);
     assert(c.arenaSimulations == 100 && c.arenaTemperatureMoves == 4);
     assert(!c.gating && c.gatingThreshold == 0.55f && c.sgfPerGeneration == 2);
@@ -204,6 +205,45 @@ static void test_arena_keys() {
     assert(contains(errorOf("arena_opponents = -1"), "t.cfg:1: arena_opponents: "));
 }
 
+// Frozen checkpoints as fixed references: a comma-separated list of paths,
+// printed without spaces, empty by default; it sits right after bot_simulations.
+static void test_reference_networks_key() {
+    Config c = parseConfigText("reference_networks = runs/a/gen_0200.azn , /abs/b.azn\n", "t.cfg");
+    assert((c.referenceNetworks == std::vector<std::string>{"runs/a/gen_0200.azn", "/abs/b.azn"}));
+    const std::string text = configToString(c);
+    assert(contains(text, "bot_simulations = 100\nreference_networks = runs/a/gen_0200.azn,/abs/b.azn\n"));
+    assert(configToString(parseConfigText(text, "rt")) == text);
+    assert(parseConfigText(text, "rt").referenceNetworks == c.referenceNetworks);
+
+    // Empty means none, in a file and as an override, and round-trips.
+    assert(contains(configToString(Config{}), "reference_networks = \n"));
+    Config none = parseConfigText("reference_networks =\n", "t.cfg");
+    assert(none.referenceNetworks.empty());
+    assert(configToString(parseConfigText(configToString(none), "rt")) == configToString(none));
+    Config o;
+    applyOverride(o, "reference_networks=x.azn");
+    assert((o.referenceNetworks == std::vector<std::string>{"x.azn"}));
+    applyOverride(o, "reference_networks=");
+    assert(o.referenceNetworks.empty());
+
+    // An empty item (a stray comma) and a repeated path are rejected, naming the entry.
+    for (const char* bad : {"a.azn,", ",a.azn", "a.azn,,b.azn", "a.azn, a.azn"})
+        assert(contains(errorOf(std::string("reference_networks = ") + bad), "t.cfg:1: reference_networks: "));
+    assert(contains(errorOf("reference_networks = a.azn,"), "reference network 2"));
+    assert(contains(errorOf("reference_networks = a.azn, a.azn"), "duplicate"));
+
+    // Reference network j is player -(bots + j), so the list is locked on
+    // resume like bot_simulations, and listed after it.
+    Config a, b;
+    b.referenceNetworks = {"x.azn"};
+    assert((resumeLockedDiff(a, b) == std::vector<std::string>{"reference_networks"}));
+    assert(architectureDiff(a, b).empty());
+    b.botSimulations = {};
+    b.blocks = 2;
+    assert((resumeLockedDiff(a, b) ==
+            std::vector<std::string>{"blocks", "bot_simulations", "reference_networks"}));
+}
+
 // Review Focus 2: hand-edited bot lists.
 static void test_bot_simulations_rejects_bad_lists() {
     for (const char* bad : {"0", "-5", "100001", "1e3", "abc", "100,", ",100", "100,,200",
@@ -342,6 +382,7 @@ int main() {
     test_arena_keys();
     test_bot_simulations_rejects_bad_lists();
     test_resume_locked_diff();
+    test_reference_networks_key();
     test_ownership_keys();
     test_errors_name_key_and_line();
     test_hand_edited_files();

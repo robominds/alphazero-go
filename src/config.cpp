@@ -111,6 +111,33 @@ std::string parseBotList(const std::string& v, std::vector<int>& out) {
     return "";
 }
 
+// "runs/a/gen_0200.azn, /b.azn": checkpoint paths, each non-empty and all
+// different (two copies of one network would be two names for one player).
+// Paths are kept as written; '#' starts a comment and ',' separates, so
+// neither can appear in one. An empty value means none.
+std::string parsePathList(const std::string& v, std::vector<std::string>& out) {
+    std::vector<std::string> list;
+    for (size_t start = 0; !v.empty();) {
+        size_t comma = v.find(',', start);
+        const std::string item =
+            trim(v.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+        if (item.empty()) return "reference network " + std::to_string(list.size() + 1) + ": empty path";
+        if (std::find(list.begin(), list.end(), item) != list.end())
+            return "duplicate entry " + quoted(item);
+        list.push_back(item);
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    out = list;
+    return "";
+}
+
+std::string printPathList(const std::vector<std::string>& list) {
+    std::string out;
+    for (size_t i = 0; i < list.size(); ++i) out += (i ? "," : "") + list[i];
+    return out;
+}
+
 std::string printBotList(const std::vector<int>& list) {
     std::string out;
     for (size_t i = 0; i < list.size(); ++i) out += (i ? "," : "") + std::to_string(list[i]);
@@ -217,6 +244,9 @@ const KeyEntry kKeys[] = {
     {"bot_simulations", false,
      [](Config& c, const std::string& v) { return parseBotList(v, c.botSimulations); },
      [](const Config& c) { return printBotList(c.botSimulations); }},
+    {"reference_networks", false,
+     [](Config& c, const std::string& v) { return parsePathList(v, c.referenceNetworks); },
+     [](const Config& c) { return printPathList(c.referenceNetworks); }},
     {"calibration_games", false,
      [](Config& c, const std::string& v) { return parseEvenGames(v, c.calibrationGames); },
      printInt<&Config::calibrationGames>},
@@ -335,6 +365,7 @@ std::vector<std::string> architectureDiff(const Config& a, const Config& b) {
 std::vector<std::string> resumeLockedDiff(const Config& a, const Config& b) {
     std::vector<std::string> keys = architectureDiff(a, b);
     if (a.botSimulations != b.botSimulations) keys.push_back("bot_simulations");
+    if (a.referenceNetworks != b.referenceNetworks) keys.push_back("reference_networks");
     return keys;
 }
 

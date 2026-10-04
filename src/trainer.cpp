@@ -307,10 +307,11 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     if (!diff.empty()) {
         std::string keys;
         for (const std::string& k : diff) keys += (keys.empty() ? "" : ", ") + k;
-        // resumeLockedDiff lists bot_simulations last, after any architecture keys.
-        if (diff.back() == "bot_simulations")
+        // resumeLockedDiff lists the fixed players' keys last, after any architecture keys.
+        if (diff.back() == "bot_simulations" || diff.back() == "reference_networks")
             throw ConfigError("cannot change keys on resume: " + keys +
-                              " (bot k is arena player -k, so the bot list is fixed for a run)");
+                              " (bot k is arena player -k and the reference networks come after "
+                              "the bots, so both lists are fixed for a run)");
         throw ConfigError("cannot change architecture keys on resume: " + keys);
     }
 

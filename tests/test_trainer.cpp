@@ -300,6 +300,16 @@ static void test_resume_overrides() {
     assert(threw);
     assert(readFile(configPath(dir.str())) == before);
 
+    // And reference_networks: reference networks are numbered after the bots.
+    std::string msg;
+    try {
+        Trainer::resume(dir.str(), {"reference_networks=" + checkpointPath(dir.str(), 0)});
+    } catch (const ConfigError& e) {
+        msg = e.what();
+    }
+    assert(msg.rfind("cannot change keys on resume: reference_networks (", 0) == 0);
+    assert(readFile(configPath(dir.str())) == before);
+
     // Tunable keys are accepted and persisted.
     std::unique_ptr<Trainer> t = resumeQuiet(dir, {"simulations=12"});
     assert(t->config().simulations == 12);
