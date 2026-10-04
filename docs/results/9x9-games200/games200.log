@@ -1,0 +1,7 @@
+start Sun Oct  4 07:33:36 PDT 2026
+train exit 0 Sun Oct  4 15:21:02 PDT 2026
+g25-vs-s200g25: A runs/9x9-games200/checkpoints/gen_0025.azn vs B runs/9x9-sims200/checkpoints/gen_0025.azn: A scored 61/100 = 0.610 (95% CI 0.512-0.700), distinct games 100 A wins 61, B wins 39, draws 0 
+g50-vs-s200g50: A runs/9x9-games200/checkpoints/gen_0050.azn vs B runs/9x9-sims200/checkpoints/gen_0050.azn: A scored 56/100 = 0.560 (95% CI 0.462-0.653), distinct games 90 A wins 56, B wins 44, draws 0 
+g50-vs-start: A runs/9x9-games200/checkpoints/gen_0050.azn vs B runs/9x9-wide96/checkpoints/gen_0050.azn: A scored 54/100 = 0.540 (95% CI 0.443-0.634), distinct games 91 A wins 54, B wins 46, draws 0 
+rerate exit 0 Sun Oct  4 16:32:20 PDT 2026
+all done Sun Oct  4 16:32:20 PDT 2026

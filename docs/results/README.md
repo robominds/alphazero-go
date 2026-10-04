@@ -408,8 +408,10 @@ capacity alone is not the bottleneck at this compute budget.
   generation and worse per unit of compute; see
   [the section](#more-simulations-in-self-play-400-vs-200).
 - Learning-rate changes (the grown run held 0.002 constant).
-- More self-play games per generation (100 now, with a replay ratio of
-  about 5.8).
+- More self-play games per generation (100 at the time, with a replay
+  ratio of about 5.8). Tested (200 vs 100, 50 generations): at best a small
+  edge, not clearly real, at 1.6× the time; see
+  [the section](#more-self-play-games-per-generation-200-vs-100).
 - A targeted analysis of why the eye shape is rare in self-play: if the
   network never reaches such positions, no amount of capacity adds the
   training signal.
@@ -795,6 +797,7 @@ log. Paths in the copied script, log and CSVs were made repo-relative.
 | sims200 | +104 | +152 | +132 | 0.26 of 80 games |
 | sims400 | +105 | +147 | +91 | 0.26 of 80 games |
 | ownership | +85 | +105 | +140 | 0.26 of 80 games |
+| games200 (200 games per generation; added later) | +101 | +49 | +88 | 0.26 of 80 games |
 
 (`ref1` scored 29/80 against gen 0 of wide96 and grow10 and 21/80 against
 the other three, which share a start; the table is `elo.csv`
@@ -816,6 +819,63 @@ Reading it, honestly:
 - **Conclusion.** Every post-250 experiment gained a similar, modest
   amount in 50 generations, and none stands clear of the noise. That
   agrees with the direct 100-game matches reported in the sections above.
+
+### More self-play games per generation (200 vs 100)
+
+Hypothesis: every post-250 lever (depth, width, simulations, an ownership
+head) gained about the same, which would fit a run limited by the amount
+of data rather than by the model or the search. If so, doubling the games
+per generation should help where those did not. The result: a small edge
+at best, not clearly real, for 1.6 times the time.
+
+- *Setup.* The control is `9x9-sims/sims200/` (generation 50 of
+  `9x9-wide96` as the start, its buffer, same seed, `simulations = 200`,
+  100 games per generation, 50 generations). The new run,
+  `9x9-games200/`, has the same start, buffer, seed and settings, and
+  the configurations were checked identical except
+  `games_per_generation = 200`. Sources: `docs/results/9x9-games200/`
+  (`log.csv`, `elo.csv`, `results.csv`, `references.csv`, `init.txt`,
+  `progress.txt`, the three eval files, `games200.sh`, `games200.log`,
+  and `rerate/` with the re-rate CSVs and progress lines). Absolute paths
+  in `init.txt` and the script are made repo-relative. The matches below
+  were run after training, in the script.
+- *Cost.* Mean seconds per generation (self-play + training + arena,
+  `log.csv`): 559.9 (401.3 + 95.4 + 63.2) against 351.3 for the control,
+  a factor of 1.59. Self-play time is 1.99 times the control's (401.3 against
+  201.4); training time is about the same (95.4 against 94.4) and arena
+  time rose from 55.4 to 63.2 s. The 50 generations
+  took 7.78 h of generation time.
+- *Training curves.* Mean policy loss 2.388, value loss 0.361, average
+  game length 88.3 plies (control 2.390, 0.362, 88.3). These are on
+  different data and are not a strength measure.
+
+**Matches** (100 games, 200 simulations for both sides, komi 7.5, colors
+alternating; 95% Wilson intervals as `arena` prints them; Elo is
+400·log10(p/(1−p)), approximate; "start" is `9x9-wide96` generation 50;
+files in `9x9-games200/`):
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| 200 games vs 100, gen 25 (`g25-vs-s200g25.txt`) | 61/100 | 0.512-0.700 | +78 (+8 to +147) |
+| 200 games vs 100, gen 50 (`g50-vs-s200g50.txt`) | 56/100 | 0.462-0.653 | +42 (−26 to +110) |
+| 200 games gen 50 vs start (`g50-vs-start.txt`) | 54/100 | 0.443-0.634 | +28 (−40 to +95) |
+
+**Against gen 200.** Re-rated like the other runs (`rerate/`), Elo minus
+`ref1`'s Elo (−100.8 in `rerate/references.csv`) is +101 at the start,
++49 at generation 25 and +88 at generation 50, on the scale of the
+all-runs table below (the sims200 control: +104, +152, +132). The
+same-scale noise there is about ±40 Elo, and this run's generation 25 and
+50 sit below the control's.
+
+**Verdict.** At equal generations the run shows at best a small edge over
+the control: +78 at generation 25 (lower bound 0.512, one match) and +42
+at generation 50 (interval includes 0.5). Against its own start it is
++28 at generation 50, with an interval that includes 0.5. The re-rate
+does not show an edge either. Together that is not clearly a real
+difference, and it cost about 1.6 times as much time per generation. This
+does not support data quantity as the main bottleneck at this budget.
+One seed per arm; no claim beyond that. The next test is the learning
+rate (a learning-rate restart run is in progress; no result yet).
 
 ### 19×19: criterion met (it runs)
 

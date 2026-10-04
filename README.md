@@ -483,6 +483,10 @@ From `docs/results/README.md`, which has the details and the sources.
   same frozen gen-200 network, wide96, grow10, sims200, sims400 and ownership
   all gained a similar, modest amount in 50 generations, within about ±40 Elo
   noise (see [the section](docs/results/README.md#all-post-250-runs-against-one-reference-gen-200)).
+- **9×9, more self-play games.** Doubling games per generation (200 vs 100)
+  gave at best a small edge at equal generations (61/100 at generation 25,
+  56/100 at 50, interval 0.462–0.653), not clearly real, for 1.59× the time
+  (see [the section](docs/results/README.md#more-self-play-games-per-generation-200-vs-100)).
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is
