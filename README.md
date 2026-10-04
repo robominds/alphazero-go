@@ -62,9 +62,10 @@ done: generation 60 in runs/5x5-seed1
 These lines are from the reference runs, made before the arena chose its
 opponents by rating. The arena part of the line now lists every opponent
 with the new network's score, in the form `vs 149:0.55 120:0.70
-bot100:1.00`, and adds `promoted` when the generation is promoted into the
-reference set. `references.csv` in the run directory lists the reference
-set with ratings, bots included.
+ref1:0.40` (fixed players by name: `bot100` for a bot, `ref1` for a
+reference network, see below), and adds `promoted` when the generation is
+promoted into the reference set. `references.csv` in the run directory
+lists the reference set with ratings, fixed players included.
 
 `--set key=value` overrides any config key and `--generations N` trains
 until generation N; the reference runs used, for example,
@@ -91,8 +92,11 @@ $ ./build-blas/train --run runs/5x5-seed1 --resume --set blocks=4
 error: cannot change architecture keys on resume: blocks
 ```
 
-`bot_simulations` cannot change on resume either: bot k is arena player
-−k, so the list is fixed for the life of a run.
+`bot_simulations` and `reference_networks` cannot change on resume
+either: bot k is arena player −k and the reference networks come after
+the bots, so both lists are fixed for the life of a run. `state.bin`
+records them, so a hand-edited `config.cfg` is refused too, as is a
+reference network file whose bytes changed.
 
 `--rerate` trains nothing. It replays only the arena over a run's
 existing checkpoints with the current opponent selection, and writes
@@ -104,6 +108,14 @@ new value:
 
 ```
 $ ./build-blas/train --run runs/9x9-main --rerate --set arena_opponents=2
+```
+
+`--set` may also change the fixed players for the replay, for example
+measuring a run against a strong frozen network instead of its bot:
+
+```
+$ ./build-blas/train --run runs/9x9-sims200 --rerate --set bot_simulations= \
+      --set reference_networks=runs/9x9-main/checkpoints/gen_0200.azn
 ```
 
 **`arena`** plays two checkpoints against each other (or, with
@@ -245,6 +257,46 @@ $ ./build-blas/train --config configs/9x9.cfg --run runs/9x9-ownership --set fil
 `--init-from` refuses a checkpoint whose head does not match the config,
 and says how to fix it (`grow --ownership`, or `--set ownership=true`).
 
+### Reference networks
+
+The arena's fixed players are the ones a run never promotes or drops:
+uniform bots (`bot_simulations`) and **reference networks**
+(`reference_networks`), frozen checkpoints such as the best network of an
+earlier run. A bot stops measuring anything early: in the 9×9 re-rate the
+100-simulation bot scored at most 1 of 20 against every generation from 30
+on and was never chosen after 43 (`docs/results/9x9/rerate/results.csv`),
+so the presets set `bot_simulations =` (none) and carry a commented-out
+`reference_networks` line instead. Leaving the key out of a config keeps
+one 100-simulation bot, so a `config.cfg` written before the key existed
+resumes as it did. For a 9×9 run with 96 filters, for example:
+
+```
+reference_networks = runs/9x9-main/checkpoints/gen_0200.azn, runs/9x9-sims400/checkpoints/gen_0050.azn
+```
+
+The first is a 6×64 network, widened to 96 filters to play in this run;
+the second already has the run's shape.
+
+- Paths are comma-separated and resolved from the directory `train` runs
+  in (absolute paths are safest). Each file is read once per run.
+- A reference network smaller than the run's shape is fitted to it with
+  `grow`'s operations: widened, deepened, and given an ownership head (or
+  its head dropped), so its policy and value are unchanged (widening up to
+  float rounding, about 1e-5). Board size, history and `value_hidden` must
+  match, and a network with more blocks or filters than the run is
+  refused; so is a missing or corrupt file. Each error names the file.
+- Fixed players come bots first: with B bots, reference network j is
+  player −(B + j), named `ref1`, `ref2`, … in the progress lines. Like a
+  bot it plays `calibration_games` against generation 0 when the run
+  starts, and is then chosen by the same expected-score rule. It searches
+  with `arena_simulations`.
+- `references.csv` lists it with kind `network` (no simulation count), and
+  `reference-networks.csv` maps each player ID to its file
+  (`player,name,path`).
+- `state.bin` (version 4) records each path with a 64-bit hash of the
+  file's bytes. `--resume` refuses a changed list or a changed file, and
+  `--rerate` refuses a changed file when it keeps the run's list.
+
 ## Presets
 
 `configs/5x5.cfg`, `configs/9x9.cfg` and `configs/19x19.cfg`; the comments
@@ -257,6 +309,10 @@ is self-play + training + arena from the runs' `log.csv`
 | 5×5 | 24.5 | 3 × 32 | 200 | 200 | 11.3 s on average; 60 generations in 11.4 min wall time |
 | 9×9 | 7.5 | 6 × 64 | 200 | 100 | 4.1 min on average (2.7 to 4.8); 150 generations in 10 h 10 min |
 | 19×19 | 7.5 | 10 × 128 | 400 | 20 | 58.2 min for generation 1, 129.7 min for generation 2 |
+
+No preset has a bot or a reference network (see Reference networks
+above); the reference runs in `docs/results/` were made with one
+100-simulation bot or none.
 
 5×5 uses komi 24.5 because 5×5 Go is solved as a Black win by the whole
 board; at komi 7.5 Black wins almost every game and the arena stops

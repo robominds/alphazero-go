@@ -47,7 +47,9 @@ The reference runs used the ladder (`arena_opponents = 4` plus generation
 0; 2 plus generation 0 on 19×19). The presets now choose opponents by
 rating (`arena_opponents = 2`, `bot_simulations = 100`,
 `calibration_games = 80`, `promote_threshold = 0.85`); the re-rated
-results below use those values.
+results below use those values. (The presets have since dropped the bot,
+`bot_simulations =`, in favour of optional reference networks; see the
+main README. The results here were measured with it.)
 
 ## Results by board size
 

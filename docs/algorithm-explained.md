@@ -1839,8 +1839,8 @@ This chapter is about how much that can and cannot tell you.
 
 **The arena.** Every generation (`arena_every = 1`), the new network
 plays `arena_games` games (20 in the 5×5 and 9×9 presets, colors
-alternating) against a few earlier generations and the bots, with search but
-without Dirichlet noise:
+alternating) against a few earlier generations and the fixed players (bots
+and reference networks, below), with search but without Dirichlet noise:
 
 ```cpp
 GameOutcome playArenaGame(WorkerContext& ctx, const ArenaConfig& cfg, int n, uint64_t seed,
@@ -1923,7 +1923,7 @@ std::vector<int> selectOpponents(int generation, const std::map<int, double>& ra
 *src/arena.cpp:162 — `selectOpponents` (abridged)*
 
 The candidates are the **references**: a frozen set of players that
-starts as generation 0 plus the bots, and only grows.
+starts as generation 0 plus the fixed players, and only grows.
 
 - **g − 1** is always played. It is the progress signal, and its match
   is the one `log.csv` reports.
@@ -1945,13 +1945,27 @@ references at 100 (a bot), 0 (generation 0), 450 (generation 4) and 700
 and the bot (E = 0.98). Generation 0, at E = 0.99, is left out
 (`test_select_opponents` in `tests/test_arena.cpp`).
 
-**A yardstick from outside the lineage.** The references include
-**uniform bots** (`bot_simulations = 100` in the presets): MCTS players
-whose priors are all equal and whose value is always 0. A bot knows the
-rules and nothing else, so its strength depends only on its simulation
-count, and it is the same in every run. Each bot plays generation 0
+**A yardstick from outside the lineage.** The references can include
+**uniform bots** (`bot_simulations`, e.g. `100`): MCTS players whose
+priors are all equal and whose value is always 0. A bot knows the rules
+and nothing else, so its strength depends only on its simulation count,
+and it is the same in every run. Each fixed player plays generation 0
 `calibration_games` games when a run starts, so it is rated before it
 can be chosen. `references.csv` lists every reference with its rating.
+
+A bot is a weak yardstick, though: in the 9×9 re-rate the 100-simulation
+bot scored at most 1 of 20 against every generation from 30 on and was
+never chosen after 43 (`docs/results/9x9/rerate/results.csv`), so the
+presets no longer include one. **Reference networks**
+(`reference_networks`) are frozen checkpoints, typically the best of an
+earlier run, played as fixed references after the bots: reference network
+j is player −(bots + j), `ref1`, `ref2`, … in the progress line. Each is
+read once and fitted to the run's shape with the growth operations of
+chapter 01 (wider, deeper, an ownership head added or dropped), which leave
+its policy and value unchanged (widening up to float rounding); a network
+bigger than the run's is refused.
+`state.bin` records a hash of each file, so a resumed run cannot swap one
+under an old ID.
 Selection, matches, refit and promotion are one function,
 `runArenaRound` (`src/arena_round.cpp`). Training uses it, and so does
 `train --run DIR --rerate`, which replays the arena over a finished
@@ -2078,10 +2092,11 @@ generation 30 beat 29 11–9, 31 beat 30 14–6, and 29 beat 31 12–8
 those could be noise — which is precisely the point of the next
 section. A deeper caveat applies to all self-play Elo: a network can
 improve against its own ancestors in ways that do not transfer to other
-opponents. The uniform bot is the only outside yardstick here, and a
-weak one; the reference runs were made before it existed, so their Elo
-claims are claims about their own lineage only. External engines stay
-out of scope.
+opponents. A uniform bot or a reference network from another run is the
+only outside yardstick here: the bot a weak one, the network one trained
+the same way; the reference runs were made before either existed, so
+their Elo claims are claims about their own lineage only. External
+engines stay out of scope.
 
 **How noisy are 20 games? Wilson intervals.** The log reports each
 match against g − 1 with a 95% **Wilson score interval**, which behaves
@@ -2397,7 +2412,8 @@ done: generation 60 in runs/5x5-seed1
 ```
 
 These lines come from the reference run, made with the old ladder. A run
-today prints the `vs 0:… bot100:…` form instead, with different arena Elo
+today prints the `vs 0:… ref1:…` form instead (each opponent with its
+score, fixed players by name), with different arena Elo
 and arena times; the self-play and training numbers are unchanged, because
 gating is off.
 
@@ -2494,7 +2510,7 @@ see again in place.
 | The compute backend seam | `Backend` — `include/azgo/backend.hpp:16`; `NaiveBackend::gemm` — `src/backend.cpp:138` |
 | Batch norm, training vs. inference | `BatchNorm2d::forwardTrain`, `BatchNorm2d::forwardInfer`, `BatchNorm2d::backward` — `src/layers.cpp:85, 74, 119` |
 | Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:200, 326` |
-| Growing a network (deeper or wider) without changing its function | `growBlocks`, `widenFilters` — `src/grow.cpp:16, 158` |
+| Growing a network (deeper or wider) without changing its function | `growBlocks`, `widenFilters` — `src/grow.cpp:17, 159` |
 | The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:276, 183` |
 | Gradient checking | `checkGradient` — `tests/test_layers.cpp:36` |
 | PUCT selection | `Mcts::selectEdge` — `src/mcts.cpp:54` |
@@ -2510,7 +2526,7 @@ see again in place.
 | The value target z | `GameRecord::zAt` — `src/selfplay.cpp:12` |
 | Replay buffer of whole games | `ReplayBuffer::encodeSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:54, 85` |
 | Symmetry augmentation | `transformPoint`, `transformAction` — `src/symmetry.cpp:6, 21` |
-| Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:61`; `addOwnershipHead` — `src/grow.cpp:218`; `printOwnershipMap` — `apps/analyze.cpp:96` |
+| Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:61`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:96` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:19` |
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:100` |
 | Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:50, 88` |
@@ -2518,12 +2534,12 @@ see again in place.
 | Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:23, 40` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:99, 72` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:350` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:104, 77` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:435` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:12` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:28`; `Trainer::resume` — `src/trainer.cpp:297` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:29`; `Trainer::resume` — `src/trainer.cpp:371` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:73, 113` |
 
 ---
