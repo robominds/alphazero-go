@@ -1097,8 +1097,9 @@ never looks at, though: in the eye test position
 two eyes has a prior below 1% and is not among the ten most visited
 moves, and the network's values show it does not know the group dies
 without it (`docs/results/README.md`). Chapter 06's ownership experiment
-later qualified that last point: a network with an ownership head reads
-the group correctly and plays elsewhere because it judges that move bigger.
+later qualified that last point: a network with an ownership head marks
+the group dead or alive correctly in the killed and saved lines, and its
+values are consistent with judging another move bigger (see chapter 06).
 
 ---
 
