@@ -724,11 +724,15 @@ Black's (+3 to +8) and A5–C5 undecided (`fair-own50-tenuki.txt`).
 
 What this shows, and what it does not:
 
-- *Evidence.* For this run's generation 50, the refusal to play B1 is a
-  whole-board judgment that C6 is the bigger move, not a failure to
-  read the group: its maps get the group's fate right in both lines.
-  The other three networks make the same choice by value; without a map
-  it is consistent with, not shown, that they read the group too.
+- *Evidence.* For this run's generation 50, the values and maps are
+  consistent with a whole-board judgment that another move is bigger
+  than B1, rather than a failure to read the group: its maps get the
+  group's fate right in the `killed` and `saved` lines. Two limits: in
+  each fair line White's reply (B1 or C6) was fixed by hand, not chosen
+  by search, and the network's own top move in the eye position is D7,
+  not C6 (`eye-own50-s200.txt`, `eye-own50-s800.txt`). The other three
+  networks prefer the C6 line by value too; without a map it is
+  consistent with, not shown, that they read the group.
 - *Not settled.* Whether the judgment is correct cannot be decided
   here. That needs an independent strong engine (for example KataGo)
   to evaluate both lines, and none was run.
@@ -749,8 +753,9 @@ reached 64/100; the intervals overlap, and the direct match is the
 cleaner comparison. The eye check **fails** by its original criterion at
 200 and 800 simulations. The maps **do** show that the head knows the
 group dies after White's B1 and lives after Black's B1. The head trains
-(loss 0.590 → 0.408) and is a useful diagnostic: it is what showed that
-the eye-check failure is a choice of move rather than a misread group.
+(loss 0.590 → 0.408) and is a useful diagnostic: it is what suggests
+that the eye-check failure is a choice of move rather than a misread
+group.
 
 Not tested here, and no result is claimed for any of them: more than one
 seed, other values of `ownership_weight` than 1.5, runs longer than 50

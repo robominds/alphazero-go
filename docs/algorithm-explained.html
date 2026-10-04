@@ -392,7 +392,7 @@
     <div class="meta-row">
       <span><b>Language</b> C++17, no dependencies (BLAS optional)</span>
       <span><b>Network</b> a ResNet, 3 blocks × 32 filters on 5×5 up to 10 × 128 on 19×19</span>
-      <span><b>Result</b> on 5×5, in both of two runs, the final network wins 100 of 100 games against the untrained one and puts 97% of its prior on the center point, the first move of 5×5's known perfect play; on 9×9, after one night, generation 150 beats generation 50 in 98 of 100 games, though it still misreads a basic two-eye shape</span>
+      <span><b>Result</b> on 5×5, in both of two runs, the final network wins 100 of 100 games against the untrained one and puts 97% of its prior on the center point, the first move of 5×5's known perfect play; on 9×9, after one night, generation 150 beats generation 50 in 98 of 100 games, though it still misreads a basic two-eye shape (chapter 06's ownership experiment later suggests it reads the shape and judges another move bigger)</span>
     </div>
   </div>
 
@@ -1628,7 +1628,7 @@ Ownership, Black + / White - (9 = certain, "." below 0.1):
  3  -9 -8 -9 -9 -8 -3 +1 +1  .
  2  -2 -5 -6 -4 -8 -6 -2 -1  .
  1  -6 -8 -8 -6 -9 -7 -5 -2 -2</code></pre>
-<p>Every point of the group and of its eye space, A1–D1 and A2–D2, is White's (−2 to −8): the head knows the group is dead. After Black's saving B1 instead, the same eight points are Black's, +2 to +4 (<code>docs/results/9x9-ownership/eye-own50-saved.txt</code>). The comparison at the start of this section was uneven: in the killing line Black had an extra move. Given one move each, with Black to move in both, generation 50 values Black's C6 and White's B1 at +0.04 for Black, and Black's B1 and White's C6 at −0.87, after 800 simulations (<code>docs/results/9x9-ownership/fair-own50-tenuki.txt</code>, <code>fair-own50-save.txt</code>). So it gives up the group because it judges C6 the bigger move, not because it misreads the shape. Whether that judgment is right would take a strong independent engine to settle; <code>docs/results/README.md</code> has the details.</p>
+<p>Every point of the group and of its eye space, A1–D1 and A2–D2, is White's (−2 to −8): the head knows the group is dead. After Black's saving B1 instead, the same eight points are Black's, +2 to +4 (<code>docs/results/9x9-ownership/eye-own50-saved.txt</code>). The comparison at the start of this section was uneven: in the killing line Black had an extra move. Given one move each, with Black to move in both, generation 50 values Black's C6 and White's B1 at +0.04 for Black, and Black's B1 and White's C6 at −0.87, after 800 simulations (<code>docs/results/9x9-ownership/fair-own50-tenuki.txt</code>, <code>fair-own50-save.txt</code>). Its values and maps are consistent with judging C6 the bigger move rather than misreading the shape. Whether that judgment is right would take a strong independent engine to settle; <code>docs/results/README.md</code> has the details.</p>
 </section>
 
 <section id="measuring">

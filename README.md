@@ -277,7 +277,8 @@ From `docs/results/README.md`, which has the details and the sources.
   (the capture is the top-visited move, 63 of 200 visits). But in the eye
   check the one move that gives a Black group two eyes has a prior below
   1% and is not among the ten most visited moves, and the network rates
-  the group's death as no worse than its life. The `elo.csv` curve rises
+  the group's death as no worse than its life (later evidence from a fair
+  comparison qualifies this; see the ownership-head bullet below). The `elo.csv` curve rises
   to 784.8 at generation 54 and then goes flat (674.5 at generation 150; a
   slope of only +0.41 Elo per generation over the last third), but that
   is an artifact of anchoring on generation 0: 100-game head-to-heads show

@@ -18,6 +18,8 @@ ResNet, 3 blocks × 32 filters on 5×5 up to 10 × 128 on 19×19 ·
 center point, the first move of 5×5's known perfect play; on 9×9, after
 one night, generation 150 beats generation 50 in 98 of 100 games, though
 it still misreads a basic two-eye shape
+(chapter 06's ownership experiment later suggests it reads the shape and
+judges another move bigger)
 
 **About the numbers.** Everything measured was measured on one Apple M4
 with 10 cores (`docs/results/bench.txt`), and every number names the file
@@ -1817,8 +1819,8 @@ an extra move. Given one move each, with Black to move in both,
 generation 50 values Black's C6 and White's B1 at +0.04 for Black, and
 Black's B1 and White's C6 at −0.87, after 800 simulations
 (`docs/results/9x9-ownership/fair-own50-tenuki.txt`,
-`fair-own50-save.txt`). So it gives up the group because it judges C6
-the bigger move, not because it misreads the shape. Whether that
+`fair-own50-save.txt`). Its values and maps are consistent with judging
+C6 the bigger move rather than misreading the shape. Whether that
 judgment is right would take a strong independent engine to settle;
 `docs/results/README.md` has the details.
 
