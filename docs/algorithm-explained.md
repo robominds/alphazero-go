@@ -2094,8 +2094,10 @@ section. A deeper caveat applies to all self-play Elo: a network can
 improve against its own ancestors in ways that do not transfer to other
 opponents. A uniform bot or a reference network from another run is the
 only outside yardstick here: the bot a weak one, the network one trained
-the same way; the reference runs were made before either existed, so
-their Elo claims are claims about their own lineage only. External
+the same way. The published reference runs were measured with the
+100-simulation bot as their only outside yardstick, before reference
+networks existed, so their Elo claims are essentially claims about their
+own lineage. External
 engines stay out of scope.
 
 **How noisy are 20 games? Wilson intervals.** The log reports each
@@ -2298,7 +2300,7 @@ GenerationStats Trainer::runGeneration() {
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:435 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:440 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not. The
@@ -2535,11 +2537,11 @@ see again in place.
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
 | `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:104, 77` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:435` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:440` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:12` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:29`; `Trainer::resume` — `src/trainer.cpp:371` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:29`; `Trainer::resume` — `src/trainer.cpp:376` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:73, 113` |
 
 ---

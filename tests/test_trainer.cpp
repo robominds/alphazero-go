@@ -971,6 +971,15 @@ static void test_reference_network_shapes_and_refusals() {
     assert(msg.find(refs.file("missing.azn")) != std::string::npos);
     assert(!fs::exists(statePath(target.str())));
 
+    // The same network twice (identical bytes under two names) would be two
+    // players with one strength: refused, naming both files.
+    fs::copy_file(refs.file("ref.azn"), refs.file("copy.azn"));
+    small.referenceNetworks = {refs.file("ref.azn"), refs.file("copy.azn")};
+    msg = configErrorOf([&] { Trainer::startNew(small, target.str()); });
+    assert(msg.find(refs.file("ref.azn")) != std::string::npos &&
+           msg.find(refs.file("copy.azn")) != std::string::npos && msg.find("identical") != std::string::npos);
+    assert(!fs::exists(statePath(target.str())));
+
     writeFile(refs.file("corrupt.azn"), "AZGO not really a checkpoint");
     small.referenceNetworks = {refs.file("corrupt.azn")};
     msg = configErrorOf([&] { Trainer::startNew(small, target.str()); });
@@ -1057,8 +1066,10 @@ static void test_rerate_with_reference_networks() {
     assert(out.str().rfind("rerate calibration | ref1 vs 0: ", 0) == 0);
 
     // A run with the bot and no reference network, re-rated with the live
-    // run's fixed players.
+    // run's fixed players. Its list differs from the replay's, so state.bin
+    // is not needed, and a damaged one does not block the replay.
     startQuiet(tinyConfig(), plain)->runUntil(3);
+    writeFile(statePath(plain.str()), "not a training state");
     assert(rerateRun(plain.str(), {"bot_simulations=", "reference_networks=" + c.referenceNetworks[0]},
                      nullptr) == 3);
     for (const char* f : {"results.csv", "elo.csv", "references.csv", "reference-networks.csv"})

@@ -91,8 +91,9 @@ private:
 // ignored. `overrides` change tunable keys for the replay only, including
 // bot_simulations and reference_networks (so a finished run can be measured
 // against other fixed players); architecture keys are refused (ConfigError).
-// When the replay keeps the run's reference_networks, a file that no longer
-// matches the hash in state.bin is refused too. Writes
+// When the replay keeps the run's reference_networks (config.cfg's list),
+// a file that no longer matches the hash in state.bin is refused too; only
+// then is state.bin read. Writes
 // runDir/rerate/{results.csv, elo.csv, references.csv, log.csv} (and
 // reference-networks.csv with reference networks), rewritten after each
 // generation; never touches state.bin or config.cfg. With gating off, a run's

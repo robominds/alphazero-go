@@ -110,8 +110,11 @@ new value:
 $ ./build-blas/train --run runs/9x9-main --rerate --set arena_opponents=2
 ```
 
-`--set` may also change the fixed players for the replay, for example
-measuring a run against a strong frozen network instead of its bot:
+Before the first generation it prints one `rerate calibration` line per
+fixed player (its score against generation 0 and its rating), for example
+`rerate calibration | ref1 vs 0: 0.26 of 80 games, elo -176.8`. `--set`
+may also change the fixed players for the replay, for example measuring a
+run against a strong frozen network instead of its bot:
 
 ```
 $ ./build-blas/train --run runs/9x9-sims200 --rerate --set bot_simulations= \
@@ -284,7 +287,8 @@ the second already has the run's shape.
   its head dropped), so its policy and value are unchanged (widening up to
   float rounding, about 1e-5). Board size, history and `value_hidden` must
   match, and a network with more blocks or filters than the run is
-  refused; so is a missing or corrupt file. Each error names the file.
+  refused; so is a missing or corrupt file, and a file with the same bytes
+  as an earlier entry. Each error names the file.
 - Fixed players come bots first: with B bots, reference network j is
   player −(B + j), named `ref1`, `ref2`, … in the progress lines. Like a
   bot it plays `calibration_games` against generation 0 when the run

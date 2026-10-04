@@ -235,9 +235,9 @@ std::string joinStrings(const std::vector<std::string>& v) {
 // The run's reference networks, each read once: `networks` fitted to the
 // run's shape (fitToShape, seeded by deriveSeed(seed, 0, kPhaseReference, j)
 // for reference network j, 0-based), `recorded` the path and fileHash that
-// state.bin keeps. Fitting is exact, so a reference plays as it did in its
-// own run. A missing or unreadable file, or one that cannot be fitted, is a
-// ConfigError naming it.
+// state.bin keeps. Fitting keeps its policy and value (widening up to float
+// rounding), so a reference plays as it did in its own run. A missing or unreadable file, one that cannot be fitted, or a
+// file with the same bytes as an earlier one is a ConfigError naming it.
 struct ReferenceNetworks {
     std::vector<Network> networks;
     std::vector<ReferenceNetwork> recorded;
@@ -255,6 +255,11 @@ ReferenceNetworks loadReferenceNetworks(const Config& cfg) {
         } catch (const std::runtime_error& e) {
             throw ConfigError(std::string("reference_networks: ") + e.what());
         }
+        // Two names for one network would be two players with one strength.
+        for (const ReferenceNetwork& earlier : out.recorded)
+            if (earlier.hash == hash)
+                throw ConfigError("reference_networks: " + earlier.path + " and " + path +
+                                  " are the same network (identical bytes)");
         try {
             out.networks.push_back(fitToShape(*net, cfg.netConfig(),
                                               deriveSeed(cfg.seed, 0, kPhaseReference, j)));
@@ -673,10 +678,12 @@ int rerateRun(const std::string& runDir, const std::vector<std::string>& overrid
     // Fail on an unavailable backend before anything is written.
     makeBackend(cfg.backend, 1);
 
-    // Each reference network is read once. When the replay uses the live
-    // run's list, its files must still be the ones the live run rated.
+    // Each reference network is read once. When the replay uses the run's
+    // own list (config.cfg's), its files must still be the ones the live run
+    // rated, which state.bin records; any other replay does not read state.bin.
     const ReferenceNetworks referenceNets = loadReferenceNetworks(cfg);
-    if (!cfg.referenceNetworks.empty() && fs::exists(statePath(runDir))) {
+    if (!cfg.referenceNetworks.empty() && cfg.referenceNetworks == saved.referenceNetworks &&
+        fs::exists(statePath(runDir))) {
         const TrainingState live = loadTrainingState(statePath(runDir), saved.botSimulations);
         std::vector<std::string> livePaths;
         for (const ReferenceNetwork& n : live.referenceNetworks) livePaths.push_back(n.path);
