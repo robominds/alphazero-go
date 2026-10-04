@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -64,7 +65,7 @@ static void test_calibration() {
     arena.truth = {{-2, -200.0}, {-1, 50.0}, {0, 0.0}};
     ResultsTable results;
     const std::vector<int> refs{-2, -1, 0};
-    assert(calibrateBots(results, refs, settings(), arena.fn()) == 2);
+    assert(calibrateFixedPlayers(results, refs, settings(), arena.fn()) == 2);
     assert(gamesBetween(results, -2, 0) == 80 && gamesBetween(results, -1, 0) == 80);
     // Generation 0 is player a, ascending bot order, the calibration seed.
     assert(arena.calls.size() == 2);
@@ -72,11 +73,11 @@ static void test_calibration() {
                                                                    static_cast<uint64_t>(-2))));
     assert(std::get<1>(arena.calls[1]) == -1);
     // Already calibrated: nothing more to play.
-    assert(calibrateBots(results, refs, settings(), arena.fn()) == 0);
+    assert(calibrateFixedPlayers(results, refs, settings(), arena.fn()) == 0);
     assert(arena.calls.size() == 2);
     // No bots, nothing to do.
     ResultsTable empty;
-    assert(calibrateBots(empty, {0}, settings(), arena.fn()) == 0 && empty.empty());
+    assert(calibrateFixedPlayers(empty, {0}, settings(), arena.fn()) == 0 && empty.empty());
 }
 
 static void test_round_uses_selection_and_live_seeds() {
@@ -139,7 +140,7 @@ static void test_saturated_anchor_is_dropped() {
     for (int g = 0; g <= 16; ++g) arena.truth[g] = 100.0 * g;
     ResultsTable results;
     std::vector<int> refs{-1, 0};
-    calibrateBots(results, refs, settings(), arena.fn());
+    calibrateFixedPlayers(results, refs, settings(), arena.fn());
     std::vector<int> promoted;
     for (int g = 1; g <= 16; ++g) {
         ArenaRoundResult round = runArenaRound(g, results, refs, settings(), arena.fn());
@@ -190,6 +191,69 @@ static void test_summary_and_references_csv() {
                   "5,checkpoint,,5,\n");   // 5 has no results yet: unrated
 }
 
+// The fixed players are the bots, then the reference networks: with one bot
+// and two reference networks, -1 is the bot, -2 is ref1 and -3 is ref2.
+static void test_fixed_player_names() {
+    assert(fixedPlayerName(-1, {100}, 2) == "bot100");
+    assert(fixedPlayerName(-2, {100}, 2) == "ref1");
+    assert(fixedPlayerName(-3, {100}, 2) == "ref2");
+    assert(fixedPlayerName(-1, {}, 1) == "ref1");   // no bots: reference networks start at -1
+    assert(fixedPlayerName(-2, {50, 200}, 0) == "bot200");
+    for (int bad : {-4, 0, 3}) {
+        bool threw = false;
+        try {
+            fixedPlayerName(bad, {100}, 2);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        assert(threw);
+    }
+}
+
+// A reference network is calibrated against generation 0 like a bot, with
+// the same seed rule, and is then chosen by the same expected-score rule:
+// ref1 (-2) sits where generation 1 is expected to score 0.70.
+static void test_reference_networks_are_calibrated_and_chosen() {
+    FakeArena arena;
+    const double nearTarget = 400.0 * std::log10(1.0 / 0.7 - 1.0);   // -147: E(0 vs it) = 0.7
+    arena.truth = {{-3, 900.0}, {-2, nearTarget}, {-1, -300.0}, {0, 0.0}, {1, 100.0}};
+    ResultsTable results;
+    std::vector<int> refs = initialReferences(3);   // bot -1, ref1 -2, ref2 -3, generation 0
+    assert(calibrateFixedPlayers(results, refs, settings(), arena.fn()) == 3);
+    for (int p : {-3, -2, -1}) assert(gamesBetween(results, p, 0) == 80);
+    assert(arena.calls[0] == std::make_tuple(0, -3, 80, deriveSeed(7, 0, kPhaseCalibration,
+                                                                   static_cast<uint64_t>(-3))));
+    ArenaRoundResult round = runArenaRound(1, results, refs, settings(), arena.fn());
+    // g-1, then the strongest reference (ref2), then the one extra: ref1,
+    // whose expected score 0.70 beats the bot's 0.85.
+    assert(round.strongest == -3);
+    assert(round.matches.size() == 3 && round.matches[0].opponent == 0 &&
+           round.matches[1].opponent == -3 && round.matches[2].opponent == -2);
+    const std::string summary = opponentSummary(round, {100}, 2);
+    assert(summary.rfind("vs 0:", 0) == 0 && summary.find(" ref2:") != std::string::npos &&
+           summary.find(" ref1:") != std::string::npos);
+    // Fixed players are never promoted or dropped.
+    assert((refs == std::vector<int>{-3, -2, -1, 0}));
+}
+
+// references.csv names a reference network's kind "network", with no
+// simulation count; reference-networks.csv maps its player ID to its file.
+static void test_reference_network_csvs() {
+    ResultsTable t;
+    t.addMatch(-2, 0, 10, 5.0);
+    t.addMatch(-1, 0, 10, 5.0);
+    assert(referencesCsv(t, {-2, -1, 0}, {100}, 1) ==
+           "player,kind,simulations,promoted_at,elo\n"
+           "-2,network,,0,0.0\n"
+           "-1,bot,100,0,0.0\n"
+           "0,checkpoint,,0,0.0\n");
+    assert(referenceNetworksCsv({"runs/a/gen_0200.azn", "/b.azn"}, 1) ==
+           "player,name,path\n"
+           "-2,ref1,runs/a/gen_0200.azn\n"
+           "-3,ref2,/b.azn\n");
+    assert(referenceNetworksCsv({"x.azn"}, 0) == "player,name,path\n-1,ref1,x.azn\n");
+}
+
 int main() {
     test_calibration();
     test_round_uses_selection_and_live_seeds();
@@ -197,6 +261,9 @@ int main() {
     test_saturated_anchor_is_dropped();
     test_gating_appends_best();
     test_summary_and_references_csv();
+    test_fixed_player_names();
+    test_reference_networks_are_calibrated_and_chosen();
+    test_reference_network_csvs();
     std::printf("test_arena_round: all tests passed\n");
     return 0;
 }

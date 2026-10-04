@@ -9,28 +9,29 @@
 
 namespace azgo {
 
-namespace {
-
-std::string botName(int player, const std::vector<int>& botSimulations) {
-    if (player >= 0 || static_cast<size_t>(-player) > botSimulations.size())
-        throw std::invalid_argument("no bot " + std::to_string(player) + " in bot_simulations");
-    return "bot" + std::to_string(botSimulations[static_cast<size_t>(-player - 1)]);
+std::string fixedPlayerName(int player, const std::vector<int>& botSimulations, int referenceNetworks) {
+    const long long k = -static_cast<long long>(player);   // fixed player k, 1-based
+    const long long bots = static_cast<long long>(botSimulations.size());
+    if (k < 1 || k > bots + referenceNetworks)
+        throw std::invalid_argument("no fixed player " + std::to_string(player) + " among " +
+                                    std::to_string(bots) + " bots and " +
+                                    std::to_string(referenceNetworks) + " reference networks");
+    if (k <= bots) return "bot" + std::to_string(botSimulations[static_cast<size_t>(k - 1)]);
+    return "ref" + std::to_string(k - bots);
 }
 
-} // namespace
-
-int calibrateBots(ResultsTable& results, const std::vector<int>& references,
-                  const ArenaRoundSettings& settings, const MatchFn& play) {
-    std::set<int> calibrated;   // bots that already have results against generation 0
+int calibrateFixedPlayers(ResultsTable& results, const std::vector<int>& references,
+                          const ArenaRoundSettings& settings, const MatchFn& play) {
+    std::set<int> calibrated;   // fixed players that already have results against generation 0
     for (const ResultsTable::Pair& p : results.pairs())
         if (p.a < 0 && p.b == 0) calibrated.insert(p.a);
     int count = 0;
-    for (int bot : references) {
-        if (bot >= 0 || calibrated.count(bot)) continue;
-        const MatchResult r = play(0, bot, settings.calibrationGames,
+    for (int fixed : references) {
+        if (fixed >= 0 || calibrated.count(fixed)) continue;
+        const MatchResult r = play(0, fixed, settings.calibrationGames,
                                    deriveSeed(settings.seed, 0, kPhaseCalibration,
-                                              static_cast<uint64_t>(bot)));
-        results.addMatch(0, bot, r.games, r.scoreA);
+                                              static_cast<uint64_t>(fixed)));
+        results.addMatch(0, fixed, r.games, r.scoreA);
         ++count;
     }
     return count;
@@ -38,9 +39,9 @@ int calibrateBots(ResultsTable& results, const std::vector<int>& references,
 
 ArenaRoundResult runArenaRound(int generation, ResultsTable& results, std::vector<int>& references,
                                const ArenaRoundSettings& settings, const MatchFn& play) {
-    // Normally a no-op: bots are calibrated when a run starts. A run resumed
-    // from a state.bin written before bots existed calibrates here, once.
-    calibrateBots(results, references, settings, play);
+    // Normally a no-op: fixed players are calibrated when a run starts. A run
+    // resumed from a state.bin written before bots existed calibrates here, once.
+    calibrateFixedPlayers(results, references, settings, play);
 
     // The refit of every result so far: identical on resume and on re-rating.
     const std::map<int, double> ratings = fitBradleyTerry(results, 0);
@@ -77,11 +78,13 @@ ArenaRoundResult runArenaRound(int generation, ResultsTable& results, std::vecto
     return round;
 }
 
-std::string opponentSummary(const ArenaRoundResult& round, const std::vector<int>& botSimulations) {
+std::string opponentSummary(const ArenaRoundResult& round, const std::vector<int>& botSimulations,
+                            int referenceNetworks) {
     std::string out = "vs";
     for (const ArenaMatch& m : round.matches) {
-        const std::string name =
-            m.opponent < 0 ? botName(m.opponent, botSimulations) : std::to_string(m.opponent);
+        const std::string name = m.opponent < 0
+                                     ? fixedPlayerName(m.opponent, botSimulations, referenceNetworks)
+                                     : std::to_string(m.opponent);
         char score[32];
         std::snprintf(score, sizeof score, ":%.2f", m.result.scoreA / m.result.games);
         out += " " + name + score;
@@ -90,19 +93,32 @@ std::string opponentSummary(const ArenaRoundResult& round, const std::vector<int
 }
 
 std::string referencesCsv(const ResultsTable& results, const std::vector<int>& references,
-                          const std::vector<int>& botSimulations) {
+                          const std::vector<int>& botSimulations, int referenceNetworks) {
     const std::map<int, double> ratings = fitBradleyTerry(results, 0);
     std::string out = "player,kind,simulations,promoted_at,elo\n";
     for (int r : references) {
-        std::string simulations;
-        if (r < 0) simulations = botName(r, botSimulations).substr(3);   // "bot100" -> "100"
+        std::string kind = "checkpoint", simulations;
+        if (r < 0) {
+            const std::string name = fixedPlayerName(r, botSimulations, referenceNetworks);
+            const bool bot = name.compare(0, 3, "bot") == 0;
+            kind = bot ? "bot" : "network";
+            if (bot) simulations = name.substr(3);   // "bot100" -> "100"
+        }
         char elo[32] = "";
         auto it = ratings.find(r);
         if (it != ratings.end()) std::snprintf(elo, sizeof elo, "%.1f", it->second + 0.0);   // -0.0 -> 0.0
         // A generation joins right after its own arena round; the initial set at 0.
-        out += std::to_string(r) + (r < 0 ? ",bot," : ",checkpoint,") + simulations + "," +
+        out += std::to_string(r) + "," + kind + "," + simulations + "," +
                std::to_string(r > 0 ? r : 0) + "," + elo + "\n";
     }
+    return out;
+}
+
+std::string referenceNetworksCsv(const std::vector<std::string>& paths, int numBots) {
+    std::string out = "player,name,path\n";
+    for (size_t j = 0; j < paths.size(); ++j)
+        out += std::to_string(-numBots - static_cast<int>(j) - 1) + ",ref" + std::to_string(j + 1) +
+               "," + paths[j] + "\n";
     return out;
 }
 

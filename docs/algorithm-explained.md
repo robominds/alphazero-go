@@ -2515,7 +2515,7 @@ see again in place.
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:100` |
 | Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:50, 88` |
 | Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:162, 190` |
-| Arena rounds: calibration, promotion | `calibrateBots`, `runArenaRound` — `src/arena_round.cpp:22, 39` |
+| Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:23, 40` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
 | `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:99, 72` |

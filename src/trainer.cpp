@@ -274,8 +274,8 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     state.botSimulations = cfg.botSimulations;
     state.references = initialReferences(static_cast<int>(cfg.botSimulations.size()));
     // Each bot plays generation 0 now, so it has a rating before it can be chosen.
-    calibrateBots(state.results, state.references, roundSettings(cfg, std::nullopt),
-                  runMatches(cfg, runDir, 0, &net));
+    calibrateFixedPlayers(state.results, state.references, roundSettings(cfg, std::nullopt),
+                          runMatches(cfg, runDir, 0, &net));
 
     if (given || donorBuffer)
         writeFileAtomically(
@@ -592,7 +592,7 @@ int rerateRun(const std::string& runDir, const std::vector<std::string>& overrid
     std::vector<int> references = initialReferences(static_cast<int>(cfg.botSimulations.size()));
     const ArenaRoundSettings settings = roundSettings(cfg, std::nullopt);   // gating ignored
     const MatchFn play = runMatches(cfg, runDir, -1, nullptr);   // every network from disk
-    calibrateBots(results, references, settings, play);
+    calibrateFixedPlayers(results, references, settings, play);
     writeRatingFiles(outDir, results, references, cfg.botSimulations);
     std::string logCsv = kRerateLogHeader;
     writeFileAtomically(logPath(outDir), logCsv);
