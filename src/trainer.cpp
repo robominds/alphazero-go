@@ -22,6 +22,7 @@
 #include "azgo/elo.hpp"
 #include "azgo/evaluator.hpp"
 #include "azgo/game.hpp"
+#include "azgo/grow.hpp"
 #include "azgo/optimizer.hpp"
 #include "azgo/parallel.hpp"
 #include "azgo/selfplay.hpp"
@@ -58,6 +59,9 @@ std::string resultsPath(const std::string& runDir) { return (fs::path(runDir) / 
 std::string referencesPath(const std::string& runDir) {
     return (fs::path(runDir) / "references.csv").string();
 }
+std::string referenceNetworksPath(const std::string& runDir) {
+    return (fs::path(runDir) / "reference-networks.csv").string();
+}
 
 std::string sgfPath(const std::string& runDir, int generation, int game) {
     char name[64];
@@ -65,10 +69,11 @@ std::string sgfPath(const std::string& runDir, int generation, int game) {
     return (fs::path(runDir) / "sgf" / name).string();
 }
 
-// elo.csv: one row per rated generation, ascending; bots (negative IDs) are
-// listed in references.csv instead. The win rate columns come
-// from the (g-1, g) pair of the results table: how often g beat its
-// predecessor, with a 95% Wilson interval. Empty when the pair was never played.
+// elo.csv: one row per rated generation, ascending; fixed players (negative
+// IDs: bots and reference networks) are listed in references.csv instead.
+// The win rate columns come from the (g-1, g) pair of the results table: how
+// often g beat its predecessor, with a 95% Wilson interval. Empty when the
+// pair was never played.
 std::string eloCsv(const ResultsTable& results) {
     std::map<std::pair<int, int>, ResultsTable::Pair> byPair;
     for (const ResultsTable::Pair& p : results.pairs()) byPair[{p.a, p.b}] = p;
@@ -105,12 +110,19 @@ double ratingAtOrBefore(const ResultsTable& results, int generation) {
 }
 
 // The rating files, rewritten after every refit: results.csv, elo.csv and
-// references.csv in `dir`.
+// references.csv in `dir`, and reference-networks.csv when the run has
+// reference networks.
 void writeRatingFiles(const std::string& dir, const ResultsTable& results,
-                      const std::vector<int>& references, const std::vector<int>& botSimulations) {
+                      const std::vector<int>& references, const Config& cfg) {
+    const int networks = static_cast<int>(cfg.referenceNetworks.size());
     writeFileAtomically(resultsPath(dir), results.toCsv());
     writeFileAtomically(eloPath(dir), eloCsv(results));
-    writeFileAtomically(referencesPath(dir), referencesCsv(results, references, botSimulations));
+    writeFileAtomically(referencesPath(dir),
+                        referencesCsv(results, references, cfg.botSimulations, networks));
+    if (networks > 0)
+        writeFileAtomically(referenceNetworksPath(dir),
+                            referenceNetworksCsv(cfg.referenceNetworks,
+                                                 static_cast<int>(cfg.botSimulations.size())));
 }
 
 ArenaConfig arenaConfig(const Config& cfg) {
@@ -136,20 +148,25 @@ ArenaRoundSettings roundSettings(const Config& cfg, std::optional<int> bestNetwo
     return s;
 }
 
-// Real arena matches between the players of the run in runDir: bots come from
-// bot_simulations, generations from their checkpoints, except `liveNet`
+// Real arena matches between the players of the run in runDir: fixed player
+// k (player -k) is bot k from bot_simulations, or past the bots one of
+// `referenceNets` (the run's reference networks, loaded once and fitted to
+// its shape); generations come from their checkpoints, except `liveNet`
 // (generation `liveGeneration`), which is already in memory.
 MatchFn runMatches(const Config& cfg, const std::string& runDir, int liveGeneration,
-                   const Network* liveNet) {
-    return [cfg, runDir, liveGeneration, liveNet](int a, int b, int games, uint64_t seed) {
+                   const Network* liveNet, const std::vector<Network>* referenceNets) {
+    return [cfg, runDir, liveGeneration, liveNet, referenceNets](int a, int b, int games, uint64_t seed) {
         ArenaConfig ac = arenaConfig(cfg);
         ac.games = games;
         std::unique_ptr<Network> loaded[2];
         ArenaPlayer players[2];
         const int ids[2] = {a, b};
+        const size_t bots = cfg.botSimulations.size();
         for (int i = 0; i < 2; ++i) {
             if (ids[i] < 0) {
-                players[i] = ArenaPlayer::bot(cfg.botSimulations.at(static_cast<size_t>(-ids[i] - 1)));
+                const size_t k = static_cast<size_t>(-ids[i]);
+                players[i] = k <= bots ? ArenaPlayer::bot(cfg.botSimulations[k - 1])
+                                       : ArenaPlayer::network(referenceNets->at(k - bots - 1));
             } else if (liveNet && ids[i] == liveGeneration) {
                 players[i] = ArenaPlayer::network(*liveNet);
             } else {
@@ -209,6 +226,58 @@ std::string joinInts(const std::vector<int>& v) {
     return out.empty() ? "(none)" : out;
 }
 
+std::string joinStrings(const std::vector<std::string>& v) {
+    std::string out;
+    for (const std::string& x : v) out += (out.empty() ? "" : ",") + x;
+    return out.empty() ? "(none)" : out;
+}
+
+// The run's reference networks, each read once: `networks` fitted to the
+// run's shape (fitToShape, seeded by deriveSeed(seed, 0, kPhaseReference, j)
+// for reference network j, 0-based), `recorded` the path and fileHash that
+// state.bin keeps. Fitting is exact, so a reference plays as it did in its
+// own run. A missing or unreadable file, or one that cannot be fitted, is a
+// ConfigError naming it.
+struct ReferenceNetworks {
+    std::vector<Network> networks;
+    std::vector<ReferenceNetwork> recorded;
+};
+
+ReferenceNetworks loadReferenceNetworks(const Config& cfg) {
+    ReferenceNetworks out;
+    for (size_t j = 0; j < cfg.referenceNetworks.size(); ++j) {
+        const std::string& path = cfg.referenceNetworks[j];
+        std::optional<Network> net;
+        uint64_t hash = 0;
+        try {
+            hash = fileHash(path);
+            net.emplace(loadNetwork(path));   // its messages name the file
+        } catch (const std::runtime_error& e) {
+            throw ConfigError(std::string("reference_networks: ") + e.what());
+        }
+        try {
+            out.networks.push_back(fitToShape(*net, cfg.netConfig(),
+                                              deriveSeed(cfg.seed, 0, kPhaseReference, j)));
+        } catch (const std::invalid_argument& e) {
+            throw ConfigError("reference_networks: " + path + " has shape " + shapeString(net->config()) +
+                              ", which cannot play in a run of " + shapeString(cfg.netConfig()) +
+                              ": " + e.what());
+        }
+        out.recorded.push_back({path, hash});
+    }
+    return out;
+}
+
+// state.bin records each reference network's hash; a file that no longer
+// matches would put another player under an old ID.
+void checkReferenceHashes(const ReferenceNetworks& loaded, const std::vector<ReferenceNetwork>& recorded) {
+    for (size_t j = 0; j < recorded.size(); ++j)
+        if (loaded.recorded[j].hash != recorded[j].hash)
+            throw ConfigError("reference_networks: " + recorded[j].path +
+                              " has changed since the run started (its bytes no longer match the "
+                              "hash in state.bin); restore the original file");
+}
+
 } // namespace
 
 Trainer::Trainer(const Config& cfg, const std::string& runDir, Network net, TrainingState state)
@@ -244,6 +313,7 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
                               " but the config asks for " + shapeString(cfg.netConfig()));
         }
     }
+    ReferenceNetworks referenceNets = loadReferenceNetworks(cfg);
     std::optional<ReplayBuffer> donorBuffer;
     if (!init.bufferFrom.empty()) {
         if (!fs::exists(statePath(init.bufferFrom)))
@@ -272,10 +342,12 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
                                : ReplayBuffer(static_cast<size_t>(cfg.bufferPositions));
     state.velocity = SgdMomentum(net, cfg.momentum, cfg.weightDecay).velocity();   // all zeros
     state.botSimulations = cfg.botSimulations;
-    state.references = initialReferences(static_cast<int>(cfg.botSimulations.size()));
-    // Each bot plays generation 0 now, so it has a rating before it can be chosen.
+    state.referenceNetworks = referenceNets.recorded;
+    state.references = initialReferences(
+        static_cast<int>(cfg.botSimulations.size() + cfg.referenceNetworks.size()));
+    // Each fixed player plays generation 0 now, so it has a rating before it can be chosen.
     calibrateFixedPlayers(state.results, state.references, roundSettings(cfg, std::nullopt),
-                          runMatches(cfg, runDir, 0, &net));
+                          runMatches(cfg, runDir, 0, &net, &referenceNets.networks));
 
     if (given || donorBuffer)
         writeFileAtomically(
@@ -286,12 +358,14 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
                 "buffer_games = " + std::to_string(state.buffer.games()) + "\n");
 
     writeFileAtomically(logPath(runDir), kLogHeader);
-    writeRatingFiles(runDir, state.results, state.references, cfg.botSimulations);
+    writeRatingFiles(runDir, state.results, state.references, cfg);
     // state.bin last: until it exists the directory is not a run, so a crash
     // anywhere above leaves something startNew can simply redo.
     saveTrainingState(statePath(runDir), state);
 
-    return std::unique_ptr<Trainer>(new Trainer(cfg, runDir, std::move(net), std::move(state)));
+    std::unique_ptr<Trainer> trainer(new Trainer(cfg, runDir, std::move(net), std::move(state)));
+    trainer->referenceNets_ = std::move(referenceNets.networks);
+    return trainer;
 }
 
 std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
@@ -324,6 +398,14 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
         throw ConfigError("cannot change bot_simulations on resume: run has " +
                           joinInts(state.botSimulations) + " but config has " +
                           joinInts(cfg.botSimulations));
+    std::vector<std::string> recordedPaths;
+    for (const ReferenceNetwork& n : state.referenceNetworks) recordedPaths.push_back(n.path);
+    if (recordedPaths != cfg.referenceNetworks)
+        throw ConfigError("cannot change reference_networks on resume: run has " +
+                          joinStrings(recordedPaths) + " but config has " +
+                          joinStrings(cfg.referenceNetworks));
+    ReferenceNetworks referenceNets = loadReferenceNetworks(cfg);
+    checkReferenceHashes(referenceNets, state.referenceNetworks);
     const std::string ckpt = checkpointPath(runDir, state.generation);
     Network net = loadNetwork(ckpt);
     if (net.config() != cfg.netConfig())
@@ -345,7 +427,9 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     writeFileAtomically(configPath(runDir), configToString(cfg));
     addOwnershipColumn(runDir);
 
-    return std::unique_ptr<Trainer>(new Trainer(cfg, runDir, std::move(net), std::move(state)));
+    std::unique_ptr<Trainer> trainer(new Trainer(cfg, runDir, std::move(net), std::move(state)));
+    trainer->referenceNets_ = std::move(referenceNets.networks);
+    return trainer;
 }
 
 GenerationStats Trainer::runGeneration() {
@@ -501,7 +585,7 @@ GenerationStats Trainer::runGeneration() {
         const std::optional<int> best =
             cfg_.gating ? std::optional<int>(state_.bestGeneration) : std::nullopt;
         round = runArenaRound(g, state_.results, state_.references, roundSettings(cfg_, best),
-                              runMatches(cfg_, runDir_, g, &net_));
+                              runMatches(cfg_, runDir_, g, &net_, &referenceNets_));
         for (const ArenaMatch& m : round.matches) {
             if (m.opponent == g - 1) {
                 stats.winRateVsPrev = m.result.scoreA / m.result.games;
@@ -513,7 +597,7 @@ GenerationStats Trainer::runGeneration() {
         }
         // Refit every rating from all results so far: Bradley-Terry does not
         // depend on the order results arrived in, so a resumed run agrees.
-        writeRatingFiles(runDir_, state_.results, state_.references, cfg_.botSimulations);
+        writeRatingFiles(runDir_, state_.results, state_.references, cfg_);
     }
     stats.elo = ratingAtOrBefore(state_.results, g);
     stats.arenaSeconds = secondsSince(arenaStart);
@@ -541,12 +625,15 @@ GenerationStats Trainer::runGeneration() {
                       stats.valueLoss, ownership, stats.lr, stats.trainSeconds);
         *log_ << line;
         if (arenaThisGeneration) {
-            // e.g. "arena elo 512.3 vs 149:0.55 120:0.70 bot100:1.00 (distinct 19/20) promoted 3.2s"
+            // e.g. "arena elo 512.3 vs 149:0.55 120:0.70 ref1:0.40 (distinct 19/20) promoted 3.2s"
             char elo[48], tail[64];
             std::snprintf(elo, sizeof elo, "arena elo %.1f ", stats.elo);
             std::snprintf(tail, sizeof tail, " (distinct %d/%d)%s %.1fs", stats.distinctVsPrev,
                           cfg_.arenaGames, round.promoted ? " promoted" : "", stats.arenaSeconds);
-            *log_ << elo << opponentSummary(round, cfg_.botSimulations) << tail;
+            *log_ << elo
+                  << opponentSummary(round, cfg_.botSimulations,
+                                     static_cast<int>(cfg_.referenceNetworks.size()))
+                  << tail;
         } else {
             char noArena[48];
             std::snprintf(noArena, sizeof noArena, "no arena, elo %.1f", stats.elo);
@@ -586,14 +673,39 @@ int rerateRun(const std::string& runDir, const std::vector<std::string>& overrid
     // Fail on an unavailable backend before anything is written.
     makeBackend(cfg.backend, 1);
 
+    // Each reference network is read once. When the replay uses the live
+    // run's list, its files must still be the ones the live run rated.
+    const ReferenceNetworks referenceNets = loadReferenceNetworks(cfg);
+    if (!cfg.referenceNetworks.empty() && fs::exists(statePath(runDir))) {
+        const TrainingState live = loadTrainingState(statePath(runDir), saved.botSimulations);
+        std::vector<std::string> livePaths;
+        for (const ReferenceNetwork& n : live.referenceNetworks) livePaths.push_back(n.path);
+        if (livePaths == cfg.referenceNetworks) checkReferenceHashes(referenceNets, live.referenceNetworks);
+    }
+
     const std::string outDir = (fs::path(runDir) / "rerate").string();
     fs::create_directories(outDir);
     ResultsTable results;
-    std::vector<int> references = initialReferences(static_cast<int>(cfg.botSimulations.size()));
+    const int numBots = static_cast<int>(cfg.botSimulations.size());
+    const int numNetworks = static_cast<int>(cfg.referenceNetworks.size());
+    std::vector<int> references = initialReferences(numBots + numNetworks);
     const ArenaRoundSettings settings = roundSettings(cfg, std::nullopt);   // gating ignored
-    const MatchFn play = runMatches(cfg, runDir, -1, nullptr);   // every network from disk
+    // Every generation from disk.
+    const MatchFn play = runMatches(cfg, runDir, -1, nullptr, &referenceNets.networks);
     calibrateFixedPlayers(results, references, settings, play);
-    writeRatingFiles(outDir, results, references, cfg.botSimulations);
+    writeRatingFiles(outDir, results, references, cfg);
+    if (log) {
+        // e.g. "rerate calibration | ref1 vs 0: 0.91 of 80 games, elo 402.1"
+        const std::map<int, double> ratings = fitBradleyTerry(results, 0);
+        for (const ResultsTable::Pair& p : results.pairs()) {
+            if (p.a >= 0 || p.b != 0) continue;
+            char line[128];
+            std::snprintf(line, sizeof line, " vs 0: %.2f of %d games, elo %.1f", p.scoreA / p.games,
+                          p.games, ratings.at(p.a) + 0.0);
+            *log << "rerate calibration | " << fixedPlayerName(p.a, cfg.botSimulations, numNetworks)
+                 << line << std::endl;
+        }
+    }
     std::string logCsv = kRerateLogHeader;
     writeFileAtomically(logPath(outDir), logCsv);
 
@@ -601,7 +713,7 @@ int rerateRun(const std::string& runDir, const std::vector<std::string>& overrid
         if (cfg.arenaEvery == 0 || g % cfg.arenaEvery != 0) continue;
         const auto start = Clock::now();
         const ArenaRoundResult round = runArenaRound(g, results, references, settings, play);
-        writeRatingFiles(outDir, results, references, cfg.botSimulations);
+        writeRatingFiles(outDir, results, references, cfg);
 
         // generation,opponents,score_vs_prev,score_vs_strongest,promoted,elo
         // opponents are player IDs separated by spaces; matches[0] is g-1.
@@ -624,7 +736,7 @@ int rerateRun(const std::string& runDir, const std::vector<std::string>& overrid
             std::snprintf(head, sizeof head, "rerate gen %d | elo %.1f ", g, elo);
             std::snprintf(tail, sizeof tail, "%s %.1fs", round.promoted ? " promoted" : "",
                           secondsSince(start));
-            *log << head << opponentSummary(round, cfg.botSimulations) << tail << std::endl;
+            *log << head << opponentSummary(round, cfg.botSimulations, numNetworks) << tail << std::endl;
         }
     }
     return last;

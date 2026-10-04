@@ -47,14 +47,19 @@ public:
         std::string bufferFrom;
     };
     // New run. Creates runDir (and checkpoints/, sgf/); throws ConfigError if
-    // runDir already contains state.bin or `init` does not fit cfg. Writes
-    // config.cfg, gen_0000.azn and an initial state.bin (generation 0); with
-    // `init` also init.txt recording where the start came from. Optimizer
-    // momentum starts at zero either way.
+    // runDir already contains state.bin, `init` does not fit cfg, or a
+    // reference network is missing, unreadable or bigger than cfg's shape.
+    // Writes config.cfg, gen_0000.azn and an initial state.bin (generation 0,
+    // with each reference network's path and hash); with `init` also init.txt
+    // recording where the start came from. Every fixed player (bot or
+    // reference network) plays calibration_games against generation 0.
+    // Optimizer momentum starts at zero either way.
     static std::unique_ptr<Trainer> startNew(const Config& cfg, const std::string& runDir,
                                              const RunInit& init = {});
     // Loads config.cfg, applies overrides, refuses (ConfigError listing keys)
-    // if an architecture key changed, loads state.bin and the latest checkpoint.
+    // if an architecture key, bot_simulations or reference_networks changed,
+    // or if a reference network's file no longer matches the hash in
+    // state.bin; loads state.bin and the latest checkpoint.
     // Rewrites config.cfg with the overridden values, and gives a log.csv
     // written before the ownership_loss column existed that column (empty).
     static std::unique_ptr<Trainer> resume(const std::string& runDir,
@@ -73,20 +78,27 @@ private:
     Network net_;
     TrainingState state_;
     std::ostream* log_;
-    // Further members: implementation-defined (Task 21).
+    // The run's reference networks, read once and fitted to its shape: fixed
+    // player -(bots + j + 1) is referenceNets_[j].
+    std::vector<Network> referenceNets_;
 };
 
 // Re-rates the run in runDir without training it: replays the arena phase of
 // generations 1, 2, ... for as long as their checkpoints exist, with today's
 // opponent selection, starting from an empty results table, the initial
-// reference set and bot calibration, and with the seeds of live training
-// (every arena_every-th generation, as live). Gating is ignored. `overrides`
-// change tunable keys for the replay only; architecture keys are refused
-// (ConfigError). Writes runDir/rerate/{results.csv, elo.csv, references.csv,
-// log.csv}, rewritten after each generation; never touches state.bin or
-// config.cfg. With gating off, a run's checkpoints do not depend on its
-// arena, so this is exactly what a live run would have measured. Progress
-// lines go to `log` (nullptr = silent). Returns the last generation replayed.
+// reference set and the fixed players' calibration, and with the seeds of
+// live training (every arena_every-th generation, as live). Gating is
+// ignored. `overrides` change tunable keys for the replay only, including
+// bot_simulations and reference_networks (so a finished run can be measured
+// against other fixed players); architecture keys are refused (ConfigError).
+// When the replay keeps the run's reference_networks, a file that no longer
+// matches the hash in state.bin is refused too. Writes
+// runDir/rerate/{results.csv, elo.csv, references.csv, log.csv} (and
+// reference-networks.csv with reference networks), rewritten after each
+// generation; never touches state.bin or config.cfg. With gating off, a run's
+// checkpoints do not depend on its arena, so this is exactly what a live run
+// would have measured. Progress lines go to `log` (nullptr = silent), the
+// fixed players' calibration first. Returns the last generation replayed.
 int rerateRun(const std::string& runDir, const std::vector<std::string>& overrides,
               std::ostream* log);
 

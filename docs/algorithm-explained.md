@@ -2283,7 +2283,7 @@ GenerationStats Trainer::runGeneration() {
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:351 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:435 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not. The

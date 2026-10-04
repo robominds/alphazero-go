@@ -1958,7 +1958,7 @@ A wins 4, B wins 0, draws 0</code></pre>
         });
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }</code></pre>
-<span class="src">src/trainer.cpp:351 — <code>Trainer::runGeneration</code> (abridged)</span>
+<span class="src">src/trainer.cpp:435 — <code>Trainer::runGeneration</code> (abridged)</span>
 <p><code>parallelFor</code> hands out indices from an atomic counter; which worker plays game 17 varies from run to run, but game 17 itself does not. The row split in the naive gemm keeps the arithmetic identical too:</p>
 <pre><code>void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alpha,
                         const float* A, const float* B, float beta, float* C) const {
@@ -2123,9 +2123,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Wilson intervals</dt>
   <dd><code>wilsonInterval</code> <span class="loc">— src/elo.cpp:184</span></dd>
   <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
-  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:99, 72</span></dd>
+  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:104, 77</span></dd>
   <dt>One generation</dt>
-  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:351</span></dd>
+  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:435</span></dd>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
@@ -2133,7 +2133,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
-  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:29</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:297</span></dd>
+  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:29</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:371</span></dd>
   <dt>Inspecting a position</dt>
   <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:73, 113</span></dd>
 </dl>

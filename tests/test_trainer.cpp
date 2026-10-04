@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <sstream>
@@ -871,6 +872,205 @@ static void test_resume_run_from_before_ownership() {
     assert(readFile(statePath(dir.str()))[4] == 4);
 }
 
+// ---- reference networks ------------------------------------------------------
+
+// tinyConfig's generation 1, copied out of a donor run into `dir` as ref.azn.
+// The arena never feeds back into training (no gating), so it is also
+// generation 1 of any run with tinyConfig's seed and shape: a run's own
+// early checkpoint, frozen as its reference.
+static std::string frozenGeneration1(const TempDir& dir, const Config& c = tinyConfig()) {
+    TempDir donor(dir.path.filename().string() + "_donor");
+    startQuiet(c, donor)->runUntil(1);
+    fs::create_directories(dir.path);
+    const std::string ref = dir.file("ref.azn");
+    fs::copy_file(checkpointPath(donor.str(), 1), ref);
+    return ref;
+}
+
+static std::string configErrorOf(const std::function<void()>& f) {
+    try {
+        f();
+    } catch (const ConfigError& e) {
+        return e.what();
+    }
+    return "";
+}
+
+// Reference networks come after the bots: with one bot the reference network
+// is player -2 (ref1); without bots it is -1. Each is calibrated against
+// generation 0 at the start, then chosen like any reference.
+static void test_reference_network_ids_and_files() {
+    TempDir refs("refnet_files"), dir("refnet_run"), nobots("refnet_nobots");
+    Config c = tinyConfig();
+    c.referenceNetworks = {frozenGeneration1(refs)};
+    {
+        std::unique_ptr<Trainer> t = startQuiet(c, dir);
+        std::ostringstream out;
+        t->setLog(&out);
+        t->runGeneration();
+        // arena_opponents = 2 leaves room for every reference.
+        assert(out.str().find(" ref1:") != std::string::npos && out.str().find(" bot8:") != std::string::npos);
+    }
+    TrainingState s = loadTrainingState(statePath(dir.str()));
+    assert(s.referenceNetworks.size() == 1);
+    assert(s.referenceNetworks[0].path == c.referenceNetworks[0]);
+    assert(s.referenceNetworks[0].hash == fileHash(c.referenceNetworks[0]));
+    std::map<std::pair<int, int>, ResultsTable::Pair> pairs = readResults(dir);
+    assert(pairs.at({-2, 0}).games == 2 && pairs.at({-1, 0}).games == 2);   // calibration
+    assert(pairs.count({-2, 1}));                                              // and chosen
+    const std::vector<std::string> refRows = splitLines(readFile(dir.file("references.csv")));
+    assert(refRows[0] == "player,kind,simulations,promoted_at,elo");
+    assert(refRows[1].rfind("-2,network,,0,", 0) == 0 && refRows[1].size() > 14);   // rated
+    assert(refRows[2].rfind("-1,bot,8,0,", 0) == 0);
+    assert(readFile(dir.file("reference-networks.csv")) ==
+           "player,name,path\n-2,ref1," + c.referenceNetworks[0] + "\n");
+
+    // Without bots the reference network is player -1.
+    c.botSimulations = {};
+    startQuiet(c, nobots)->runUntil(1);
+    assert((loadTrainingState(statePath(nobots.str())).references.front() == -1));
+    assert(readFile(nobots.file("reference-networks.csv")) ==
+           "player,name,path\n-1,ref1," + c.referenceNetworks[0] + "\n");
+    assert(readResults(nobots).at({-1, 0}).games == 2);
+    assert(readFile(nobots.file("references.csv")).find("\n-1,network,,0,") != std::string::npos);
+    // A run without reference networks writes no reference-networks.csv.
+    TempDir plain("refnet_plain");
+    startQuiet(tinyConfig(), plain);
+    assert(!fs::exists(plain.file("reference-networks.csv")));
+}
+
+// A smaller network is fitted to the run's shape (wider, deeper, with the
+// head) and plays; a bigger one, a missing file or a corrupt one is refused
+// naming the file, before anything is written.
+static void test_reference_network_shapes_and_refusals() {
+    TempDir refs("refnet_shapes"), big("refnet_big"), target("refnet_target");
+    Config c = ownershipConfig();
+    c.blocks = 2;
+    c.filters = 12;
+    c.referenceNetworks = {frozenGeneration1(refs)};   // 1 block, 8 filters, no head
+    {
+        std::unique_ptr<Trainer> t = Trainer::startNew(c, target.str());
+        t->setLog(nullptr);
+        t->runUntil(1);
+    }
+    assert(readResults(target).at({-2, 0}).games == 2);
+    fs::remove_all(target.path);
+
+    Config wide = tinyConfig();
+    wide.filters = 16;
+    startQuiet(wide, big)->runUntil(1);
+    Config small = tinyConfig();
+    small.referenceNetworks = {checkpointPath(big.str(), 1)};
+    std::string msg = configErrorOf([&] { Trainer::startNew(small, target.str()); });
+    assert(msg.find("reference_networks: " + small.referenceNetworks[0]) != std::string::npos);
+    assert(msg.find("16 filters is more than 8") != std::string::npos);
+    assert(!fs::exists(target.path / "config.cfg") && !fs::exists(statePath(target.str())));
+
+    small.referenceNetworks = {refs.file("missing.azn")};
+    msg = configErrorOf([&] { Trainer::startNew(small, target.str()); });
+    assert(msg.find(refs.file("missing.azn")) != std::string::npos);
+    assert(!fs::exists(statePath(target.str())));
+
+    writeFile(refs.file("corrupt.azn"), "AZGO not really a checkpoint");
+    small.referenceNetworks = {refs.file("corrupt.azn")};
+    msg = configErrorOf([&] { Trainer::startNew(small, target.str()); });
+    assert(msg.find(refs.file("corrupt.azn")) != std::string::npos);
+    assert(!fs::exists(statePath(target.str())));
+}
+
+// The list is fixed for a run (state.bin records it, so a hand edit of
+// config.cfg is caught too), and so is each file's content.
+static void test_resume_refuses_changed_reference_networks() {
+    TempDir refs("refnet_resume_files"), dir("refnet_resume");
+    Config c = tinyConfig();
+    c.referenceNetworks = {frozenGeneration1(refs)};
+    startQuiet(c, dir)->runUntil(1);
+    const std::string state = readFile(statePath(dir.str()));
+
+    std::string cfgText = readFile(configPath(dir.str()));
+    const std::string line = "reference_networks = " + c.referenceNetworks[0];
+    const size_t at = cfgText.find(line);
+    assert(at != std::string::npos);
+    std::string edited = cfgText;
+    edited.replace(at, line.size(), "reference_networks =");
+    writeFile(configPath(dir.str()), edited);
+    std::string msg = configErrorOf([&] { Trainer::resume(dir.str(), {}); });
+    assert(msg.find("cannot change reference_networks on resume: run has " + c.referenceNetworks[0] +
+                    " but config has (none)") != std::string::npos);
+    assert(readFile(configPath(dir.str())) == edited);
+    writeFile(configPath(dir.str()), cfgText);
+
+    // Another network under the same name: refused, naming the file.
+    const std::string original = readFile(c.referenceNetworks[0]);
+    fs::copy_file(checkpointPath(dir.str(), 0), c.referenceNetworks[0], fs::copy_options::overwrite_existing);
+    msg = configErrorOf([&] { Trainer::resume(dir.str(), {}); });
+    assert(msg.find(c.referenceNetworks[0]) != std::string::npos && msg.find("changed") != std::string::npos);
+    assert(readFile(statePath(dir.str())) == state);
+    // A missing file is refused too.
+    fs::remove(c.referenceNetworks[0]);
+    msg = configErrorOf([&] { Trainer::resume(dir.str(), {}); });
+    assert(msg.find(c.referenceNetworks[0]) != std::string::npos);
+    // The original file resumes.
+    writeFile(c.referenceNetworks[0], original);
+    resumeQuiet(dir, {})->runUntil(2);
+}
+
+// Determinism holds with a reference network: the worker count changes
+// nothing, and resume continues byte-identically. The reference is the run's
+// own generation 1.
+static void test_reference_network_determinism() {
+    TempDir refs("refnet_det_files"), a("refnet_det_a"), b("refnet_det_b");
+    Config c = tinyConfig();
+    c.referenceNetworks = {frozenGeneration1(refs)};
+    startQuiet(c, a)->runUntil(3);
+    assert(readFile(checkpointPath(a.str(), 1)) == readFile(c.referenceNetworks[0]));
+    startQuiet(c, b)->runUntil(1);
+    resumeQuiet(b, {})->runUntil(3);
+    for (const char* f : {"checkpoints/gen_0003.azn", "state.bin", "elo.csv", "results.csv",
+                          "references.csv", "reference-networks.csv", "sgf/gen_0003_game_00.sgf"})
+        assert(readFile(a.file(f)) == readFile(b.file(f)));
+
+    TempDir one("refnet_workers1"), three("refnet_workers3");
+    Config w = c;
+    w.workers = 1;
+    startQuiet(w, one)->runUntil(2);
+    w.workers = 3;
+    startQuiet(w, three)->runUntil(2);
+    for (const char* f : {"checkpoints/gen_0002.azn", "state.bin", "results.csv", "references.csv"})
+        assert(readFile(one.file(f)) == readFile(three.file(f)));
+}
+
+// --rerate honours reference_networks: a re-rate of a run with a reference
+// network plays exactly the live games, and a re-rate that adds one (and
+// drops the bot) plays exactly what a live run with those settings played.
+static void test_rerate_with_reference_networks() {
+    TempDir refs("refnet_rerate_files"), live("refnet_rerate_live"), plain("refnet_rerate_plain");
+    Config c = tinyConfig();
+    c.botSimulations = {};
+    c.referenceNetworks = {frozenGeneration1(refs)};
+    startQuiet(c, live)->runUntil(3);
+    std::ostringstream out;
+    assert(rerateRun(live.str(), {}, &out) == 3);
+    for (const char* f : {"results.csv", "elo.csv", "references.csv", "reference-networks.csv"})
+        assert(readFile(live.file(std::string("rerate/") + f)) == readFile(live.file(f)));
+    // The calibration is reported, then each generation names ref1 when it plays it.
+    assert(out.str().rfind("rerate calibration | ref1 vs 0: ", 0) == 0);
+
+    // A run with the bot and no reference network, re-rated with the live
+    // run's fixed players.
+    startQuiet(tinyConfig(), plain)->runUntil(3);
+    assert(rerateRun(plain.str(), {"bot_simulations=", "reference_networks=" + c.referenceNetworks[0]},
+                     nullptr) == 3);
+    for (const char* f : {"results.csv", "elo.csv", "references.csv", "reference-networks.csv"})
+        assert(readFile(plain.file(std::string("rerate/") + f)) == readFile(live.file(f)));
+    assert(loadConfigFile(configPath(plain.str())).referenceNetworks.empty());   // config.cfg untouched
+
+    // A replaced reference file would not reproduce the live run: refused.
+    fs::copy_file(checkpointPath(live.str(), 0), c.referenceNetworks[0], fs::copy_options::overwrite_existing);
+    const std::string msg = configErrorOf([&] { rerateRun(live.str(), {}, nullptr); });
+    assert(msg.find(c.referenceNetworks[0]) != std::string::npos && msg.find("changed") != std::string::npos);
+}
+
 int main() {
     test_start_new_writes_run_files();
     test_two_generations();
@@ -892,6 +1092,11 @@ int main() {
     test_ownership_determinism();
     test_ownership_mismatches_are_refused();
     test_resume_run_from_before_ownership();
+    test_reference_network_ids_and_files();
+    test_reference_network_shapes_and_refusals();
+    test_resume_refuses_changed_reference_networks();
+    test_reference_network_determinism();
+    test_rerate_with_reference_networks();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }

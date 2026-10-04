@@ -35,7 +35,9 @@ const char* const kUsage =
     "--rerate trains nothing: it replays the arena over DIR's checkpoints with the\n"
     "current opponent selection and writes DIR/rerate/ (results.csv, elo.csv,\n"
     "references.csv, log.csv). state.bin and config.cfg are left as they are;\n"
-    "--set applies to the replay only.\n";
+    "--set applies to the replay only and may change any key but the architecture\n"
+    "keys, e.g. --set bot_simulations= --set reference_networks=CKPT to measure the\n"
+    "run against other fixed players.\n";
 
 int usageError(const std::string& message) {
     std::fprintf(stderr, "error: %s\n\n%s", message.c_str(), kUsage);
