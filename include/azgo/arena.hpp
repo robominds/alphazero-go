@@ -50,7 +50,9 @@ struct ArenaPlayer {
 // tree reuse on. Board size and history come from whichever player has a
 // network. Throws std::invalid_argument for two bots, two networks with
 // different NetConfigs, a bot with simulations < 1, a simulations override
-// outside 0..100000 (bots: 1..100000), or an odd or < 2 game count. Game i uses Rng(deriveSeed(seed, i)). Deterministic for a seed.
+// outside 0..100000 (bots: 1..100000), or an odd or < 2 game count. Bots are capped at 100000
+// simulations here too. Game i uses Rng(deriveSeed(seed, i)). Deterministic
+// for a seed.
 MatchResult playMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& cfg,
                       uint64_t seed, int workers, const std::string& backendName);
 

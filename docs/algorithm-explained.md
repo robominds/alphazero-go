@@ -2513,8 +2513,8 @@ see again in place.
 | Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:61`; `addOwnershipHead` — `src/grow.cpp:218`; `printOwnershipMap` — `apps/analyze.cpp:96` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:19` |
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:100` |
-| Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:50, 86` |
-| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:152, 180` |
+| Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:50, 88` |
+| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:162, 190` |
 | Arena rounds: calibration, promotion | `calibrateBots`, `runArenaRound` — `src/arena_round.cpp:22, 39` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |

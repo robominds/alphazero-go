@@ -143,6 +143,15 @@ static void test_simulations_override() {
     assert(sameResult(base, playMatch(ArenaPlayer::network(a, 8), ArenaPlayer::network(b),
                                       cfg, 42, 1, "naive")));
 
+    // The override replaces ArenaConfig::simulations for exactly its own side.
+    ArenaConfig cfg64 = cfg;
+    cfg64.simulations = 64;
+    assert(sameResult(playMatch(ArenaPlayer::network(a, 64), ArenaPlayer::network(b, 64), cfg, 42, 1, "naive"),
+                      playMatch(a, b, cfg64, 42, 1, "naive")));
+    // A at 64, B at the config's 8, equals the config at 64 with B overridden to 8.
+    assert(sameResult(playMatch(ArenaPlayer::network(a, 64), ArenaPlayer::network(b), cfg, 42, 1, "naive"),
+                      playMatch(ArenaPlayer::network(a), ArenaPlayer::network(b, 8), cfg64, 42, 1, "naive")));
+
     // The override reaches the search: the same network at 1 simulation
     // against itself at 64 cannot repeat the 8-versus-8 games. The match is
     // deterministic for the seed, so this is a fixed comparison, not a
