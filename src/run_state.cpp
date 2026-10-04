@@ -13,14 +13,15 @@ namespace azgo {
 
 namespace {
 constexpr uint32_t kStateMagic = 0x54535A41;   // "AZST" read as little-endian bytes
-// 2 added the reference set and bot list, 3 the buffer's ownership targets.
-constexpr uint32_t kStateVersion = 3;
+// 2 added the reference set and bot list, 3 the buffer's ownership targets,
+// 4 the reference networks.
+constexpr uint32_t kStateVersion = 4;
 } // namespace
 
-std::vector<int> initialReferences(int numBots) {
-    if (numBots < 0) throw std::invalid_argument("initialReferences: numBots must be >= 0");
+std::vector<int> initialReferences(int numFixed) {
+    if (numFixed < 0) throw std::invalid_argument("initialReferences: numFixed must be >= 0");
     std::vector<int> refs;
-    for (int k = numBots; k >= 1; --k) refs.push_back(-k);   // ascending: -numBots first
+    for (int k = numFixed; k >= 1; --k) refs.push_back(-k);   // ascending: -numFixed first
     refs.push_back(0);
     return refs;
 }
@@ -46,6 +47,11 @@ void saveTrainingState(const std::string& path, const TrainingState& state) {
     for (int r : state.references) w.i32(r);
     w.u32(static_cast<uint32_t>(state.botSimulations.size()));
     for (int b : state.botSimulations) w.i32(b);
+    w.u32(static_cast<uint32_t>(state.referenceNetworks.size()));
+    for (const ReferenceNetwork& n : state.referenceNetworks) {
+        w.str(n.path);
+        w.u64(n.hash);
+    }
     writeFileAtomically(path, os.str());
 }
 
@@ -97,9 +103,22 @@ TrainingState loadTrainingState(const std::string& path, const std::vector<int>&
             if (numBots > bytes.size() / sizeof(int32_t)) throw std::runtime_error("truncated bot list");
             state.botSimulations.resize(numBots);
             for (int& b : state.botSimulations) b = r.i32();
-            // Bot k is player -k, so no reference may name a bot that is not stored.
-            if (state.references.front() < -static_cast<long long>(numBots))
-                throw std::runtime_error("invalid reference set (names a bot missing from the bot list)");
+            if (version >= 4) {
+                uint32_t numNetworks = r.u32();
+                // Each entry is at least a u32 length and a u64 hash.
+                if (numNetworks > bytes.size() / 12) throw std::runtime_error("truncated reference network list");
+                state.referenceNetworks.resize(numNetworks);
+                for (ReferenceNetwork& n : state.referenceNetworks) {
+                    n.path = r.str();
+                    n.hash = r.u64();
+                }
+            }
+            // The fixed players are -1 ... -(bots + reference networks), so
+            // no reference may name one that is not stored.
+            if (state.references.front() <
+                -static_cast<long long>(numBots + state.referenceNetworks.size()))
+                throw std::runtime_error("invalid reference set (names a fixed player missing from "
+                                         "the bot and reference network lists)");
         }
         if (is.peek() != std::char_traits<char>::eof())
             throw std::runtime_error("unexpected trailing bytes");
@@ -107,6 +126,21 @@ TrainingState loadTrainingState(const std::string& path, const std::vector<int>&
     } catch (const std::exception& e) {
         throw std::runtime_error(path + ": " + e.what());
     }
+}
+
+uint64_t fileHash(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error(path + ": cannot open");
+    uint64_t hash = 0xcbf29ce484222325ull;   // FNV-1a: offset basis, then xor and multiply per byte
+    char buf[1 << 16];
+    while (in.read(buf, sizeof buf) || in.gcount() > 0) {
+        for (std::streamsize i = 0; i < in.gcount(); ++i) {
+            hash ^= static_cast<unsigned char>(buf[i]);
+            hash *= 0x100000001b3ull;
+        }
+    }
+    if (in.bad()) throw std::runtime_error(path + ": read error");
+    return hash;
 }
 
 std::string checkpointPath(const std::string& runDir, int generation) {

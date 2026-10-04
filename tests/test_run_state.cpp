@@ -33,20 +33,24 @@ static void writeBytes(const fs::path& p, const std::string& bytes) {
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
-// The bytes an older version wrote for `state`, given the current (version 3)
-// bytes: the replay buffer without ownership (version 2), and for version 1
-// also without the reference set and the bot list at the end.
-static std::string olderStateBytes(const std::string& v3, const TrainingState& state, int version) {
+// The bytes an older version wrote for `state`, which has no reference
+// networks, given the current (version 4) bytes: without the reference
+// network list at the end (version 3, an empty list is one u32), also the
+// replay buffer without ownership (version 2), and for version 1 also
+// without the reference set and the bot list.
+static std::string olderStateBytes(const std::string& v4, const TrainingState& state, int version) {
+    assert(state.referenceNetworks.empty());
     std::ostringstream with, without;
     BinaryWriter ww(with), wo(without);
     state.buffer.save(ww, true);
-    state.buffer.save(wo, false);
+    state.buffer.save(wo, version >= 3);
     const size_t header = 4 + 4 + 4 + 4 + 8;   // magic, version, generation, best, samples
-    assert(v3.compare(header, with.str().size(), with.str()) == 0);
-    std::string tail = v3.substr(header + with.str().size());
+    assert(v4.compare(header, with.str().size(), with.str()) == 0);
+    std::string tail = v4.substr(header + with.str().size());
+    tail.resize(tail.size() - 4);
     if (version == 1)
         tail.resize(tail.size() - 8 - 4 * (state.references.size() + state.botSimulations.size()));
-    std::string out = v3.substr(0, header) + without.str() + tail;
+    std::string out = v4.substr(0, header) + without.str() + tail;
     out[4] = static_cast<char>(version);
     return out;
 }
@@ -98,6 +102,10 @@ static void assertSameState(const TrainingState& x, const TrainingState& y) {
     assert(x.results.pairs().size() == y.results.pairs().size());
     assert(x.references == y.references);
     assert(x.botSimulations == y.botSimulations);
+    assert(x.referenceNetworks.size() == y.referenceNetworks.size());
+    for (size_t i = 0; i < x.referenceNetworks.size(); ++i)
+        assert(x.referenceNetworks[i].path == y.referenceNetworks[i].path &&
+               x.referenceNetworks[i].hash == y.referenceNetworks[i].hash);
 }
 
 static void test_round_trip() {
@@ -177,7 +185,7 @@ static void test_crash_leftovers() {
 
     // A newer format version.
     std::string newer = bytes;
-    newer[4] = 4;   // version is the u32 after the magic, little-endian
+    newer[4] = 5;   // version is the u32 after the magic, little-endian
     writeBytes(wrong, newer);
     msg = loadError(wrong.string());
     assert(msg.find("version") != std::string::npos);
@@ -200,8 +208,8 @@ static void test_initial_references() {
 static void test_version1_gets_default_references() {
     fs::path dir = freshDir("version1");
     TrainingState original = makeState();
-    saveTrainingState((dir / "v3.bin").string(), original);
-    std::string v1 = olderStateBytes(readBytes(dir / "v3.bin"), original, 1);
+    saveTrainingState((dir / "v4.bin").string(), original);
+    std::string v1 = olderStateBytes(readBytes(dir / "v4.bin"), original, 1);
     fs::path path = dir / "v1.bin";
     writeBytes(path, v1);
 
@@ -214,29 +222,29 @@ static void test_version1_gets_default_references() {
     assert((loadTrainingState(path.string()).references == std::vector<int>{0}));   // no bots
     assert(loadTrainingState(path.string()).botSimulations.empty());
 
-    // Saving it again writes version 3.
+    // Saving it again writes version 4.
     saveTrainingState(path.string(), loaded);
-    assert(readBytes(path)[4] == 3);
+    assert(readBytes(path)[4] == 4);
     assert((loadTrainingState(path.string()).references == std::vector<int>{-2, -1, 0}));
     fs::remove_all(dir);
 }
 
 // A version-2 file has everything but the buffer's ownership, which loading
 // recomputes by replaying each game: the result equals what self-play
-// recorded, and saving writes version 3 again, byte for byte.
+// recorded, and saving writes version 4 again, byte for byte.
 static void test_version2_recomputes_ownership() {
     fs::path dir = freshDir("version2");
     TrainingState original = makeState();
-    saveTrainingState((dir / "v3.bin").string(), original);
-    const std::string v3 = readBytes(dir / "v3.bin");
+    saveTrainingState((dir / "v4.bin").string(), original);
+    const std::string v4 = readBytes(dir / "v4.bin");
     fs::path path = dir / "v2.bin";
-    writeBytes(path, olderStateBytes(v3, original, 2));
+    writeBytes(path, olderStateBytes(v4, original, 2));
     TrainingState loaded = loadTrainingState(path.string());
     assertSameState(original, loaded);   // finalOwnership included
     for (size_t i = 0; i < loaded.buffer.games(); ++i)
         assert(loaded.buffer.game(i).finalOwnership.size() == 25);
     saveTrainingState(path.string(), loaded);
-    assert(readBytes(path) == v3);
+    assert(readBytes(path) == v4);
 
     // A game that does not replay makes the file unreadable, naming it.
     TrainingState broken = original;
@@ -249,6 +257,69 @@ static void test_version2_recomputes_ownership() {
     const std::string msg = loadError(path.string());
     assert(msg.find(path.string()) != std::string::npos);
     assert(msg.find("game 0 does not replay: position 1 differs") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+// Version 4 records the run's reference networks after the bot list: each
+// path and the hash of its bytes. Their players come after the bots, so
+// with two bots and two reference networks the set may reach down to -4.
+static void test_reference_networks_round_trip() {
+    fs::path dir = freshDir("refnets");
+    std::string path = (dir / "state.bin").string();
+    TrainingState original = makeState();
+    original.referenceNetworks = {{"runs/a/checkpoints/gen_0200.azn", 0x0123456789abcdefull},
+                                  {"/abs/b.azn", ~0ull}};
+    original.references = {-4, -3, -2, -1, 0, 5};
+    saveTrainingState(path, original);
+    assert(readBytes(path)[4] == 4);
+    TrainingState loaded = loadTrainingState(path);
+    assertSameState(original, loaded);
+    saveTrainingState((dir / "again.bin").string(), loaded);
+    assert(readBytes(path) == readBytes(dir / "again.bin"));
+
+    // A version-3 file (no list) loads with no reference networks, and
+    // saving it writes version 4.
+    TrainingState plain = makeState();
+    saveTrainingState(path, plain);
+    const std::string v4 = readBytes(path);
+    writeBytes(path, olderStateBytes(v4, plain, 3));
+    TrainingState v3 = loadTrainingState(path, {7});   // the bot list is stored, so {7} is unused
+    assertSameState(plain, v3);
+    assert(v3.referenceNetworks.empty());
+    saveTrainingState(path, v3);
+    assert(readBytes(path) == v4);
+
+    // Player -5 is neither a bot nor a reference network.
+    original.references = {-5, -4, -3, -2, -1, 0, 5};
+    saveTrainingState(path, original);
+    const std::string msg = loadError(path);
+    assert(msg.find(path) != std::string::npos && msg.find("reference") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+// FNV-1a over a file's bytes: equal bytes hash equally, one changed byte
+// changes the hash, and a missing file is an error naming it.
+static void test_file_hash() {
+    fs::path dir = freshDir("hash");
+    writeBytes(dir / "empty", "");
+    assert(fileHash((dir / "empty").string()) == 0xcbf29ce484222325ull);   // FNV-1a offset basis
+    writeBytes(dir / "a", "a");
+    assert(fileHash((dir / "a").string()) == 0xaf63dc4c8601ec8cull);       // FNV-1a("a")
+    std::string bytes(4096, '\0');
+    for (size_t i = 0; i < bytes.size(); ++i) bytes[i] = static_cast<char>(i * 7);
+    writeBytes(dir / "x", bytes);
+    writeBytes(dir / "y", bytes);
+    assert(fileHash((dir / "x").string()) == fileHash((dir / "y").string()));
+    bytes[2000] ^= 1;
+    writeBytes(dir / "y", bytes);
+    assert(fileHash((dir / "x").string()) != fileHash((dir / "y").string()));
+    bool threw = false;
+    try {
+        fileHash((dir / "missing").string());
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find((dir / "missing").string()) != std::string::npos;
+    }
+    assert(threw);
     fs::remove_all(dir);
 }
 
@@ -284,6 +355,8 @@ int main() {
     test_initial_references();
     test_version1_gets_default_references();
     test_version2_recomputes_ownership();
+    test_reference_networks_round_trip();
+    test_file_hash();
     test_rejects_bad_references();
     test_paths();
     std::printf("test_run_state: all tests passed\n");

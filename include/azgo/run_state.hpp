@@ -12,6 +12,14 @@
 
 namespace azgo {
 
+// A frozen checkpoint the run plays as a fixed reference, as the run found
+// it: the path from reference_networks and fileHash of its bytes, so a
+// file replaced under the run is noticed instead of silently re-rated.
+struct ReferenceNetwork {
+    std::string path;
+    uint64_t hash = 0;
+};
+
 // Everything needed to continue a run exactly, besides the checkpoints and
 // config.cfg. The network for `generation` is checkpoints/gen_NNNN.azn.
 struct TrainingState {
@@ -21,22 +29,28 @@ struct TrainingState {
     ReplayBuffer buffer{1};
     std::vector<std::vector<float>> velocity;  // optimizer momentum, params() order
     ResultsTable results;
-    // The frozen players new networks are measured against: bots, generation
-    // 0 and every promoted generation. Sorted ascending, always contains 0.
+    // The frozen players new networks are measured against: the fixed
+    // players (bots, then reference networks), generation 0 and every
+    // promoted generation. Sorted ascending, always contains 0.
     std::vector<int> references{0};
     // The run's bot_simulations, in order (bot k is player -k). Recorded here
     // because config.cfg can be edited by hand, and resume must notice.
     std::vector<int> botSimulations;
+    // The run's reference_networks, in order: reference network j (1-based)
+    // is player -(botSimulations.size() + j). Recorded for the same reason.
+    std::vector<ReferenceNetwork> referenceNetworks;
 };
 
-// The reference set of a new run: every bot (-numBots, ..., -1) and generation 0.
-std::vector<int> initialReferences(int numBots);
+// The reference set of a new run: every fixed player (-numFixed, ..., -1:
+// the bots, then the reference networks) and generation 0.
+std::vector<int> initialReferences(int numFixed);
 
-// Binary, magic "AZST" (u32 0x54535A41), version u32 = 3 (the replay buffer
-// stores each game's final ownership; references, then the bot list, come
-// last). Atomic replace.
+// Binary, magic "AZST" (u32 0x54535A41), version u32 = 4 (the replay buffer
+// stores each game's final ownership; references, the bot list, then the
+// reference networks come last). Atomic replace.
 void saveTrainingState(const std::string& path, const TrainingState& state);
-// Reads versions 3, 2 and 1. Versions 1 and 2 predate stored ownership: each
+// Reads versions 4, 3, 2 and 1. Versions 1 to 3 predate reference networks
+// and load with none. Versions 1 and 2 predate stored ownership: each
 // game's is recomputed by replaying its moves (a game that does not replay is
 // an error). Version 1 also predates the reference set and the bot list: it
 // gets botSimulations = `bots` and references = initialReferences(bots.size()),
@@ -44,11 +58,18 @@ void saveTrainingState(const std::string& path, const TrainingState& state);
 // naming the path.
 TrainingState loadTrainingState(const std::string& path, const std::vector<int>& bots = {});
 
+// 64-bit FNV-1a hash of the file's bytes: what state.bin records for each
+// reference network. Throws std::runtime_error naming the path if it cannot
+// be read.
+uint64_t fileHash(const std::string& path);
+
 // Seed phases for deriveSeed(cfg.seed, generation, phase, index). Part of a
 // run's reproducibility contract: changing one changes every later game.
-// kPhaseCalibration seeds bot calibration (generation 0) and promotion games.
+// kPhaseCalibration seeds fixed-player calibration (generation 0) and
+// promotion games; kPhaseReference seeds fitting reference network j to the
+// run's shape (generation 0, index j).
 constexpr uint64_t kPhaseInit = 0, kPhaseSelfPlay = 1, kPhaseTrain = 2, kPhaseArena = 3,
-                   kPhaseCalibration = 4;
+                   kPhaseCalibration = 4, kPhaseReference = 5;
 
 // Run-directory paths.
 std::string checkpointPath(const std::string& runDir, int generation);  // runDir/checkpoints/gen_0007.azn

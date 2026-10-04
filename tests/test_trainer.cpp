@@ -422,7 +422,8 @@ static void test_resume_from_version1_state() {
     startQuiet(c, dir)->runUntil(1);
 
     // state.bin as version 1: the buffer without ownership, and without the
-    // reference set {0} (u32 count + one i32) and the empty bot list (u32 count).
+    // reference set {0} (u32 count + one i32), the empty bot list (u32 count)
+    // and the empty reference network list (u32 count).
     const std::string bytes = readFile(statePath(dir.str()));
     const TrainingState current = loadTrainingState(statePath(dir.str()));
     std::ostringstream with, without;
@@ -432,7 +433,7 @@ static void test_resume_from_version1_state() {
     const size_t header = 24;   // magic, version, generation, best generation, samples trained
     assert(bytes.compare(header, with.str().size(), with.str()) == 0);
     std::string v1 = bytes.substr(0, header) + without.str() +
-                     bytes.substr(header + with.str().size(), bytes.size() - header - with.str().size() - 12);
+                     bytes.substr(header + with.str().size(), bytes.size() - header - with.str().size() - 16);
     v1[4] = 1;
     writeFile(statePath(dir.str()), v1);
     // config.cfg without the keys the old code did not know.
@@ -452,7 +453,7 @@ static void test_resume_from_version1_state() {
     assert(!pairs.count({-1, 1}));           // generation 1 ran before the bot existed
     TrainingState s = loadTrainingState(statePath(dir.str()));
     assert(s.references.front() == -1);
-    assert(readFile(statePath(dir.str()))[4] == 3);   // saved as version 3
+    assert(readFile(statePath(dir.str()))[4] == 4);   // saved as version 4
     assert(readFile(dir.file("references.csv")).find("\n-1,bot,100,0,") != std::string::npos);
 }
 
@@ -834,7 +835,8 @@ static void test_resume_run_from_before_ownership() {
     TempDir dir("pre_ownership");
     startQuiet(tinyConfig(), dir)->runUntil(1);
 
-    // state.bin version 2: the buffer without ownership.
+    // state.bin version 2: the buffer without ownership and no reference
+    // network list (an empty one is a u32 count at the end).
     const std::string bytes = readFile(statePath(dir.str()));
     const TrainingState current = loadTrainingState(statePath(dir.str()));
     std::ostringstream with, without;
@@ -842,7 +844,8 @@ static void test_resume_run_from_before_ownership() {
     current.buffer.save(ww, true);
     current.buffer.save(wo, false);
     const size_t header = 24;
-    std::string v2 = bytes.substr(0, header) + without.str() + bytes.substr(header + with.str().size());
+    std::string v2 = bytes.substr(0, header) + without.str() +
+                     bytes.substr(header + with.str().size(), bytes.size() - header - with.str().size() - 4);
     v2[4] = 2;
     writeFile(statePath(dir.str()), v2);
     // config.cfg and log.csv as the old code wrote them.
@@ -865,7 +868,7 @@ static void test_resume_run_from_before_ownership() {
     rows = splitLines(readFile(dir.file("log.csv")));
     assert(rows.size() == 3 && rows[0].find(",distinct_vs_prev,ownership_loss") != std::string::npos);
     for (const std::string& row : rows) assert(std::count(row.begin(), row.end(), ',') == 15);
-    assert(readFile(statePath(dir.str()))[4] == 3);
+    assert(readFile(statePath(dir.str()))[4] == 4);
 }
 
 int main() {
