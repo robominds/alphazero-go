@@ -438,6 +438,76 @@ void test_widening_carries_the_ownership_head() {
         assert(pp[i].name == po[i].name && std::memcmp(pp[i].value, po[i].value, pp[i].size * sizeof(float)) == 0);
 }
 
+// A reference network from a smaller run plays in a bigger one: fitToShape
+// widens, deepens and adds the head, and the result computes what the
+// original did (widening within float rounding, the rest bit for bit).
+void test_fit_to_shape_grows_a_smaller_network() {
+    Rng rng(19);
+    Network small(makeConfig(5, 1), 7);
+    trainABit(small, rng);
+    NetConfig target = withOwnership(makeConfig(5, 3));
+    target.filters = 12;
+    Network fitted = fitToShape(small, target, 41);
+    assert(fitted.config() == target);
+    Batch batch = randomBatch(small.config(), 8, rng);
+    const Outputs a = outputsOf(small, batch, 8), b = outputsOf(fitted, batch, 8);
+    assert(maxDifference(a.logits, b.logits) <= 1e-5 && maxDifference(a.values, b.values) <= 1e-5);
+
+    // Without widening it is exact: deepening and a new head change nothing.
+    NetConfig deeper = withOwnership(makeConfig(5, 3));
+    Network deep = fitToShape(small, deeper, 41);
+    const Outputs c = outputsOf(deep, batch, 8);
+    assert(c.logits == a.logits && c.values == a.values);
+
+    // The same seed gives the same network; the same shape gives a copy.
+    Network again = fitToShape(small, target, 41);
+    std::vector<ParamView> p1 = fitted.params(), p2 = again.params();
+    for (size_t i = 0; i < p1.size(); ++i)
+        assert(std::memcmp(p1[i].value, p2[i].value, p1[i].size * sizeof(float)) == 0);
+    const Outputs d = outputsOf(fitToShape(small, small.config(), 41), batch, 8);
+    assert(d.logits == a.logits && d.values == a.values);
+}
+
+// A head the target lacks is dropped: nothing reads it, so policy and value
+// are unchanged bit for bit.
+void test_fit_to_shape_drops_an_extra_ownership_head() {
+    Rng rng(20);
+    Network owner(withOwnership(makeConfig(5, 2)), 7);
+    trainABit(owner, rng);
+    Network plain = fitToShape(owner, makeConfig(5, 2), 3);
+    assert(plain.config() == makeConfig(5, 2));
+    Batch batch = randomBatch(owner.config(), 8, rng);
+    const Outputs a = outputsOf(owner, batch, 8), b = outputsOf(plain, batch, 8);
+    assert(a.logits == b.logits && a.values == b.values);
+}
+
+// Growing only adds: a bigger network, or another board, history or value
+// head width, is refused with the reason.
+void test_fit_to_shape_refusals() {
+    Network net(makeConfig(5, 2), 7);
+    auto reason = [&](NetConfig target) -> std::string {
+        try {
+            fitToShape(net, target, 1);
+        } catch (const std::invalid_argument& e) {
+            return e.what();
+        }
+        return "";
+    };
+    NetConfig t = makeConfig(5, 1);
+    assert(reason(t).find("2 blocks") != std::string::npos);
+    t = makeConfig(5, 2);
+    t.filters = 4;
+    assert(reason(t).find("8 filters") != std::string::npos);
+    t = makeConfig(9, 2);
+    assert(reason(t).find("board size") != std::string::npos);
+    t = makeConfig(5, 2);
+    t.history = 3;
+    assert(reason(t).find("history") != std::string::npos);
+    t = makeConfig(5, 2);
+    t.valueHidden = 16;
+    assert(reason(t).find("value_hidden") != std::string::npos);
+}
+
 } // namespace
 
 int main() {
@@ -457,6 +527,9 @@ int main() {
     test_add_ownership_head_keeps_policy_and_value();
     test_deepening_carries_the_ownership_head();
     test_widening_carries_the_ownership_head();
+    test_fit_to_shape_grows_a_smaller_network();
+    test_fit_to_shape_drops_an_extra_ownership_head();
+    test_fit_to_shape_refusals();
     std::printf("test_grow: all tests passed\n");
     return 0;
 }

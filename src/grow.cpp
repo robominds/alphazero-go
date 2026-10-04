@@ -6,6 +6,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "azgo/config.hpp"
@@ -226,6 +227,40 @@ Network addOwnershipHead(const Network& net, uint64_t seed) {
     for (const auto& entry : from.params) copyTensor(from, to, entry.first, true);
     for (const auto& entry : from.buffers) copyTensor(from, to, entry.first, false);
     return withHead;
+}
+
+Network fitToShape(const Network& net, const NetConfig& target, uint64_t seed) {
+    const NetConfig& old = net.config();
+    auto refuse = [&](const std::string& what) {
+        throw std::invalid_argument(what + "; growing only adds blocks, filters or the ownership head");
+    };
+    if (old.boardSize != target.boardSize)
+        refuse("board size " + std::to_string(old.boardSize) + " differs from " +
+               std::to_string(target.boardSize));
+    if (old.history != target.history)
+        refuse("history " + std::to_string(old.history) + " differs from " + std::to_string(target.history));
+    if (old.valueHidden != target.valueHidden)
+        refuse("value_hidden " + std::to_string(old.valueHidden) + " differs from " +
+               std::to_string(target.valueHidden));
+    if (old.blocks > target.blocks)
+        refuse(std::to_string(old.blocks) + " blocks is more than " + std::to_string(target.blocks));
+    if (old.filters > target.filters)
+        refuse(std::to_string(old.filters) + " filters is more than " + std::to_string(target.filters));
+
+    // The grow tool's order: widen, then deepen at the new width, then the head.
+    Network fitted = growBlocks(widenFilters(net, target.filters, seed), target.blocks, seed);
+    if (target.ownership && !old.ownership) fitted = addOwnershipHead(fitted, seed);
+    if (!target.ownership && old.ownership) {
+        // Nothing reads the head, so a network without it, holding every
+        // other tensor, computes the same policy and value.
+        Network plain(target, seed);
+        const Tensors from(fitted);
+        Tensors to(plain);
+        for (const auto& entry : to.params) copyTensor(from, to, entry.first, true);
+        for (const auto& entry : to.buffers) copyTensor(from, to, entry.first, false);
+        fitted = std::move(plain);
+    }
+    return fitted;
 }
 
 } // namespace azgo

@@ -605,7 +605,7 @@ Network growBlocks(const Network& net, int newBlocks, uint64_t seed) {
     /* ... copy the BN running statistics the same way ... */
 }
 ```
-*src/grow.cpp:16 — `growBlocks` (abridged)*
+*src/grow.cpp:17 — `growBlocks` (abridged)*
 
 **Widening it.** Width grows the same way, by copying instead of zeroing
 (Net2WiderNet). A new channel starts as a copy of an old one: the layer
@@ -637,7 +637,7 @@ Network widenFilters(const Network& net, int newFilters, uint64_t seed) {
     policy and value 1x1 convs: inputs split over g;   the rest copied as is
 }
 ```
-*src/grow.cpp:158 — `widenFilters` (abridged)*
+*src/grow.cpp:159 — `widenFilters` (abridged)*
 
 **The heads.** The policy head squeezes the trunk to 2 channels with a
 1×1 convolution and then a fully connected layer maps those 2n² numbers

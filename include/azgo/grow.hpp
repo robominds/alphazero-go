@@ -89,4 +89,14 @@ Network widenFilters(const Network& net, int newFilters, uint64_t seed);
 // std::invalid_argument if net already has an ownership head.
 Network addOwnershipHead(const Network& net, uint64_t seed);
 
+// `net` at the shape `target`, computing the same policy and value: widened
+// to target's filters, then deepened to its blocks, then given an ownership
+// head if target has one (all from `seed`, as the grow tool does); a head
+// target lacks is dropped, since nothing reads it. Deepening and the head
+// are exact bit for bit, widening within float rounding. This is how a
+// frozen checkpoint from a smaller run plays in a bigger one's arena.
+// Throws std::invalid_argument naming the difference if board size,
+// history or value_hidden differ, or if net has more blocks or filters.
+Network fitToShape(const Network& net, const NetConfig& target, uint64_t seed);
+
 } // namespace azgo
