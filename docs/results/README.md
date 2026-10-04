@@ -765,6 +765,58 @@ generations, using the head in search (score estimation or
 ownership-weighted values) and KataGo's other auxiliary targets (score,
 opponent policy), which the design lists as non-goals.
 
+### All post-250 runs against one reference (gen 200)
+
+Why: each post-250 run's `elo.csv` is anchored at its own generation 0, and
+those starting points are different networks, so the runs' Elo values
+could not be compared with each other. The 100-simulation bot
+that earlier re-rates used as a common yardstick saturates (the networks
+beat it nearly every game), so it could not serve as one either. The
+presets no longer include it (`bot_simulations =` is empty by default),
+and a run can name frozen networks as reference opponents instead
+(`reference_networks`).
+
+Method: each of the five runs was re-rated with
+`train --rerate --set bot_simulations= --set reference_networks=runs/9x9-main/checkpoints/gen_0200.azn --set arena_opponents=2`,
+that is, one shared frozen reference (6-block gen 200 of `9x9-main`,
+converted exactly to each run's network shape, called `ref1`) and no bot.
+Every checkpoint is rated against its two neighbours in rating plus
+`ref1`, in 20-game, 100-simulation matches. Below, Elo is the run's Elo
+minus `ref1`'s Elo from that run's `references.csv`, so all rows sit on
+the same scale (0 = gen 200). Sources: `docs/results/9x9-ref200/<run>/`
+(`elo.csv`, `references.csv`, `results.csv`, `log.csv`,
+`reference-networks.csv`, `progress.txt`), `rerate-ref200.sh` and its
+log. Paths in the copied script, log and CSVs were made repo-relative.
+
+| run | start (gen 0) | gen 25 | gen 50 | calibration: `ref1` vs gen 0 |
+|---|---|---|---|---|
+| wide96 (6×96, from gen 250) | +61 | +128 | +131 | 0.36 of 80 games |
+| grow10 (10 blocks, from gen 250) | +49 | +73 | +85 | 0.36 of 80 games |
+| sims200 | +104 | +152 | +132 | 0.26 of 80 games |
+| sims400 | +105 | +147 | +91 | 0.26 of 80 games |
+| ownership | +85 | +105 | +140 | 0.26 of 80 games |
+
+(`ref1` scored 29/80 against gen 0 of wide96 and grow10 and 21/80 against
+the other three, which share a start; the table is `elo.csv`
+minus `references.csv` in each run's folder.)
+
+Reading it, honestly:
+
+- **The noise is about ±40 Elo.** The same network (wide96 gen 50) is
+  +131 as the last generation of the wide96 run but +85 to +105 as the
+  start of the sims200, sims400 and ownership runs. Differences between
+  runs under about 50 Elo are not meaningful.
+- **The scale is compressed.** Gen 250, the start of wide96 and grow10,
+  shows only about +50 to +60 over gen 200 here, but it beat gen 200
+  69/100 head to head (95% interval 0.594-0.772, about +139 Elo;
+  `docs/results/9x9-ref200/g250-vs-g200.txt`, 200 simulations, komi 7.5,
+  96 distinct games). These re-rates use 100-simulation, 20-game matches
+  and the fit squeezes the gaps, so read the table for ranking, not for
+  exact gaps.
+- **Conclusion.** Every post-250 experiment gained a similar, modest
+  amount in 50 generations, and none stands clear of the noise. That
+  agrees with the direct 100-game matches reported in the sections above.
+
 ### 19×19: criterion met (it runs)
 
 The criterion is that both generations complete, the losses are finite

@@ -375,6 +375,10 @@ From `docs/results/README.md`, which has the details and the sources.
   but the head's maps show the network reads the group's life and death correctly,
   and a fair comparison suggests it skips B1 because it judges another move bigger
   (see [the section](docs/results/README.md#an-ownership-head-auxiliary-target)).
+- **All post-250 runs against one reference (gen 200).** Re-rated against the
+  same frozen gen-200 network, wide96, grow10, sims200, sims400 and ownership
+  all gained a similar, modest amount in 50 generations, within about ±40 Elo
+  noise (see [the section](docs/results/README.md#all-post-250-runs-against-one-reference-gen-200)).
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is
