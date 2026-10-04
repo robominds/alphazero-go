@@ -1,6 +1,8 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 #include "azgo/config.hpp"
@@ -81,11 +83,19 @@ static void test_presets_load() {
     assert(c19.boardSize == 19 && c19.blocks == 10 && c19.filters == 128);
     assert(c19.valueHidden == 256 && c19.simulations == 400 && c19.arenaGames == 10);
 
-    // Every preset uses the same rating-aware arena settings.
+    // Every preset uses the same rating-aware arena settings: no bots (a
+    // 100-simulation bot saturates early) and no reference networks, which
+    // name files of a particular machine's runs.
     for (const Config& c : {c5, c9, c19}) {
         assert(c.arenaOpponents == 2);
-        assert((c.botSimulations == std::vector<int>{100}));
+        assert(c.botSimulations.empty() && c.referenceNetworks.empty());
         assert(c.calibrationGames == 80 && c.promoteThreshold == 0.85f);
+    }
+    // The commented-out reference_networks line is there to be filled in.
+    for (const char* name : {"5x5.cfg", "9x9.cfg", "19x19.cfg"}) {
+        std::ifstream in(preset(name));
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        assert(contains(text, "\nbot_simulations =\n") && contains(text, "\n# reference_networks =\n"));
     }
 }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test of the executables on a tiny 5x5 run:
-# train -> resume -> re-rate -> arena (checkpoint and bot) -> analyze (good and
+# train -> resume -> re-rate (as live, then against a reference network) ->
+# arena (checkpoint and bot) -> analyze (good and
 # bad input) -> bench -> grow (deeper, wider, and a run started from the grown network), plus the refusal to change the architecture on resume,
 # then the ownership head: a run with it, grow --ownership, and analyze's ownership map.
 #
@@ -24,7 +25,8 @@ RUN="$W/run"
 CK="$RUN/checkpoints"
 
 echo "== train: new run, 2 generations =="
-"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$RUN" "${TINY[@]}" --generations 2
+# The presets have no bot; this run adds one so bots stay covered end to end.
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$RUN" "${TINY[@]}" --set bot_simulations=100 --generations 2
 test -s "$CK/gen_0002.azn" || fail "gen_0002.azn missing"
 test -s "$RUN/sgf/gen_0001_game_00.sgf" || fail "no SGF written for generation 1"
 grep -q '^-1,bot,100,0,' "$RUN/references.csv" || fail "references.csv does not list the calibrated bot"
@@ -47,6 +49,14 @@ status=0
 out="$("$BUILD/train" --run "$RUN" --rerate --resume 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "--rerate --resume exited $status, expected 1"
 echo "$out" | grep -q -- "--rerate cannot be combined" || fail "unexpected refusal message: $out"
+
+echo "== train: re-rate against a reference network instead of the bot =="
+out="$("$BUILD/train" --run "$RUN" --rerate --set bot_simulations= --set "reference_networks=$CK/gen_0001.azn")"
+echo "$out"
+echo "$out" | grep -q '^rerate calibration | ref1 vs 0: ' || fail "no calibration line for ref1"
+grep -q '^-1,network,,0,' "$RUN/rerate/references.csv" || fail "rerate/references.csv does not list ref1"
+grep -qx -- "-1,ref1,$CK/gen_0001.azn" "$RUN/rerate/reference-networks.csv" || fail "reference-networks.csv does not map -1 to its file"
+[ "$(cksum < "$RUN/state.bin")" = "$state_before" ] || fail "--rerate changed state.bin"
 
 echo "== arena =="
 out="$("$BUILD/arena" --a "$CK/gen_0000.azn" --b "$CK/gen_0003.azn" --games 4 --simulations 4 --workers 2)"
