@@ -847,6 +847,42 @@ static void test_random_symmetry_search_is_deterministic() {
     assert(ev1.seen != ev3.seen);   // another seed, other transforms
 }
 
+// What resignation reads besides the root value: the Q of the most visited
+// root child (among equally visited ones, the best Q), root side to move's view.
+static void test_best_child_value_is_the_most_visited_q() {
+    UniformEvaluator none(5, 2);
+    Mcts empty(serialConfig(8), none);
+    assert(empty.bestChildValue() == 0.0f);   // no tree yet, like rootValue()
+
+    Game capture = winningCaptureGame(1);
+    UniformEvaluator ev(5, 2);
+    Mcts mcts(serialConfig(50), ev);
+    Rng rng(4);
+    mcts.search(capture, rng);
+    assert(mcts.bestChildValue() == 1.0f);   // the capture: every visit a +1 for Black
+
+    // A middle-game search: recompute the definition from the edges.
+    Game game(5, 7.5f, defaultMaxMoves(5));
+    for (int a : {12, 7, 13, 8}) game.play(a);
+    UniformEvaluator ev2(5, 2, 0.3f);
+    Mcts m2(serialConfig(60), ev2);
+    Rng rng2(9);
+    m2.search(game, rng2);
+    const MctsNode& root = m2.node(0);
+    int most = 0;
+    for (int i = 0; i < root.numEdges; ++i) most = std::max(most, m2.edge(root.firstEdge + i).visits);
+    float best = -2.0f;
+    int tied = 0;
+    for (int i = 0; i < root.numEdges; ++i) {
+        const MctsEdge& e = m2.edge(root.firstEdge + i);
+        if (e.visits != most) continue;
+        ++tied;
+        best = std::max(best, e.valueSum / e.visits);
+    }
+    assert(most > 1 && tied >= 1);
+    assert(m2.bestChildValue() == best);
+}
+
 int main() {
     test_root_visits_sum_to_simulations_and_tree_is_kept();
     test_only_legal_actions_get_edges();
@@ -875,6 +911,7 @@ int main() {
     test_random_symmetry_with_a_symmetric_evaluator_only_draws();
     test_random_symmetry_maps_the_policy_back();
     test_random_symmetry_search_is_deterministic();
+    test_best_child_value_is_the_most_visited_q();
     std::printf("test_mcts: all tests passed\n");
     return 0;
 }

@@ -296,6 +296,21 @@ float Mcts::rootValue() const {
     return visits > 0 ? static_cast<float>(sum / visits) : root.netValue;
 }
 
+float Mcts::bestChildValue() const {
+    if (nodes_.empty()) return 0.0f;
+    const MctsNode& root = nodes_[0];
+    int bestVisits = 0;
+    float bestQ = 0.0f;
+    for (int i = 0; i < root.numEdges; ++i) {
+        const MctsEdge& e = edges_[root.firstEdge + i];
+        if (e.visits == 0 || e.visits < bestVisits) continue;
+        const float q = e.valueSum / e.visits;
+        if (e.visits > bestVisits || q > bestQ) bestQ = q;
+        bestVisits = e.visits;
+    }
+    return bestVisits > 0 ? bestQ : rootValue();
+}
+
 int Mcts::selectAction(float temperature, Rng& rng) const {
     const std::vector<int> visits = rootVisits();
     assert(rootTotalVisits() > 0);

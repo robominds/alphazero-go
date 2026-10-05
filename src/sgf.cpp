@@ -153,7 +153,11 @@ std::string gameToSgf(int n, float komi, const std::vector<int>& moves, float sc
     if (scoreForBlack > 0) result = "B+" + formatG(scoreForBlack);
     else if (scoreForBlack < 0) result = "W+" + formatG(-scoreForBlack);
     else result = "0";   // exact tie, possible with integer komi
+    return gameToSgf(n, komi, moves, result, comment);
+}
 
+std::string gameToSgf(int n, float komi, const std::vector<int>& moves, const std::string& result,
+                      const std::string& comment) {
     std::string out = "(;GM[1]FF[4]SZ[" + std::to_string(n) + "]KM[" + formatG(komi) + "]RE[" +
                       result + "]";
     if (!comment.empty()) out += "C[" + escapeValue(comment) + "]";

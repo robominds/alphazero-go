@@ -107,9 +107,19 @@ static void test_malformed_inputs_throw() {
     assert(rejects("(;SZ[5];B[aa];B[bb])"));   // colors must alternate
 }
 
+// A resigned game has no final score: RE is given as written, "B+R" when
+// White resigned, "W+R" when Black did.
+static void test_resignation_result() {
+    assert(gameToSgf(5, 7.5f, {12}, "B+R") == "(;GM[1]FF[4]SZ[5]KM[7.5]RE[B+R];B[cc])");
+    std::string sgf = gameToSgf(5, 7.5f, {12, 25}, "W+R", "gen 2");
+    assert(sgf == "(;GM[1]FF[4]SZ[5]KM[7.5]RE[W+R]C[gen 2];B[cc];W[])");
+    assert((parseSgf(sgf).moves == std::vector<int>{12, 25}));
+}
+
 int main() {
     test_write_exact();
     test_tie_result();
+    test_resignation_result();
     test_comment_escaping();
     test_round_trip_random_game();
     test_parse_variants();

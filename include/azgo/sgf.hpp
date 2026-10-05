@@ -15,6 +15,9 @@ namespace azgo {
 // with the Tromp-Taylor margin, e.g. "B+3.5", "W+7.5", "0".
 std::string gameToSgf(int n, float komi, const std::vector<int>& moves,
                       float scoreForBlack, const std::string& comment = "");
+// The same with RE given as written, e.g. "B+R" for a game White resigned.
+std::string gameToSgf(int n, float komi, const std::vector<int>& moves,
+                      const std::string& result, const std::string& comment = "");
 
 struct SgfGame { int boardSize = 19; float komi = 0; std::vector<int> moves; };
 // Reads SZ, KM and the main line of B[]/W[] moves (pass: "" or "tt" when n <= 19).

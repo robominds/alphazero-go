@@ -83,6 +83,10 @@ public:
     std::vector<int> rootVisits() const;      // [numActions], 0 for unexpanded/illegal
     std::vector<float> rootPriors() const;    // [numActions], priors used (after noise)
     float rootValue() const;                  // mean backed-up value, root side-to-move view
+    // Q of the most visited root edge (the best Q among equally visited
+    // ones), root side-to-move view; rootValue() while no edge has visits.
+    // Self-play's resignation test reads this and rootValue().
+    float bestChildValue() const;
     int rootTotalVisits() const;
 
     // temperature > 0: sample with probability ∝ visits^(1/temperature).
