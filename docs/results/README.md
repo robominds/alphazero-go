@@ -1093,8 +1093,8 @@ matches (`runs/agz-experiment.sh`, not in the repository).
 
 | # | experiment (AlphaGo Zero) | why | status |
 |---|---|---|---|
-| 1 | Resignation: `v_resign` set so that wrong resignations stay under 5%, with 10% of games played out with resignation off | finding 2; the review estimates it saves about 30% of self-play time | implemented on the `resignation` branch, under review; not run |
-| 2 | A random symmetry for each network evaluation in search | AGZ's search; screen with arena games only | merged (`mcts_random_symmetry`, `arena_random_symmetry`; see "Random symmetry in search" in the main README); not run |
+| 1 | Resignation: `v_resign` set so that wrong resignations stay under 5%, with 10% of games played out with resignation off | finding 2; the review estimates it saves about 30% of self-play time | merged (`resignation`; state.bin version 5); running as `runs/9x9-resign`: the `sims200` control's start and settings plus `resignation = true`, 400-game evaluations |
+| 2 | A random symmetry for each network evaluation in search | AGZ's search; screen with arena games only | merged (`mcts_random_symmetry`, `arena_random_symmetry`, and arena's one-sided `--a-random-symmetry` / `--b-random-symmetry`; see "Random symmetry in search" in the main README); screening: generation 250 against itself with symmetry on side A only, 400 games at 200 and at 800 simulations (`runs/sym-screen.sh`) |
 | 3 | `temperature_moves = 7`: AGZ's 30 moves of 361 points is about 8%, about 7 moves on 9×9 (the preset uses 20) | config only | running (`runs/9x9-temp7`) |
 | 4 | Learning budget: more `train_steps`, or steps scaled with games so the replay ratio stays constant | finding 3 | 200 games and 400 steps per generation (`runs/9x9-budget-g200-s400`) queued after `temp7` |
 | 5 | More simulations (AGZ used 1,600) | only after the evaluation additions below, since the gain will be small for its cost | not started |
