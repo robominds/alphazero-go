@@ -855,7 +855,7 @@ more data with more learning, so it does **not** show that data quantity
 is not the bottleneck; an earlier version of this section said it did.
 The test that keeps the replay ratio constant, 200 games and 400
 training steps per generation (`runs/9x9-budget-g200-s400`), is queued
-and has no result yet.
+and has no result yet (item 4 in [Next experiments](#next-experiments)).
 
 - *Setup.* The control is `9x9-sims/sims200/` (generation 50 of
   `9x9-wide96` as the start, its buffer, same seed, `simulations = 200`,
@@ -956,7 +956,8 @@ measurable gain.
   to 0.345 at generation 50 (control 0.359). The batches are drawn from a
   buffer in which each position is sampled about 5.8 times, so a lower
   value loss there may mean a closer fit to the buffer rather than better
-  judgment; without a loss on held-out games this cannot be told apart.
+  judgment; without a loss on held-out games (see
+  [Next experiments](#next-experiments)) this cannot be told apart.
 
 **Matches** (100 games, 200 simulations for both sides, komi 7.5, colors
 alternating; 95% Wilson intervals as `arena` prints them; Elo is
@@ -1027,6 +1028,84 @@ status 0); generation 1 was loaded the same way.
 Generation 2 took more than twice as long as generation 1. Its self-play
 games were 2.5 times longer (364.5 plies on average; the cap is 722).
 Two generations say nothing about strength, and none is claimed.
+
+## Next experiments
+
+A living to-do list. A review of the 9×9 runs (Claude, at Mark's
+request) found no correctness bugs in the core (gradients, batch norm,
+the symmetries of the policy and ownership targets, input encoding,
+superko in the tree, terminal pass scoring, backup signs) and made four
+findings. Findings 1 and 2 are from the replay buffer of `9x9-main` at
+generation 250 (`runs/9x9-main/state.bin`, 199,966 positions from 2,262
+games; not in the repository) and can be reproduced with the read-only
+scripts `tools/side.py`, `tools/pass.py` and `tools/buf.py`, for example
+`python3 tools/side.py runs/9x9-main/state.bin`.
+
+1. **The losing side's search spreads over almost every legal move.**
+   An unvisited move has Q = 0, so when the side to move is behind,
+   every untried move looks better than every tried one. Middle-game
+   positions (ply 20 up to the first pass), by the side to move
+   (`tools/side.py`):
+
+   | side to move | positions | moves visited | target entropy (nats) | top move's share |
+   |---|---|---|---|---|
+   | eventual loser, Black | 30,583 | 41.9 | 2.68 | 0.30 |
+   | eventual loser, White | 12,747 | 26.3 | 1.99 | 0.42 |
+   | eventual winner, Black | 12,886 | 25.9 | 1.66 | 0.52 |
+   | eventual winner, White | 29,081 | 10.4 | 1.30 | 0.54 |
+
+   Black loses 77% of these games (`tools/pass.py`), so most of Black's
+   policy targets are close to uniform. This is how AlphaGo Zero's
+   search works (unvisited moves at Q = 0), so it is a known cost to
+   track in new runs, not a bug.
+2. **35% of buffer positions come at or after the first pass**
+   (`tools/buf.py`). The eventual winner passes first in 84% of games;
+   of the passes made before the final two moves, the winner made 16,861
+   and the loser 570 (`tools/pass.py`). The loser plays on for a mean
+   31.3 plies rather than pass into a counted loss, and those positions'
+   targets still have 1.97 nats of entropy. `sims200`, `games200` and
+   `lr-restart` show the same pattern (36% after the first pass).
+3. **The games200 experiment is confounded.** It halved the replay ratio
+   (5.8 to 2.9), so it tested fresher data, not more learning; see the
+   correction in
+   [More self-play games per generation](#more-self-play-games-per-generation-200-vs-100).
+   All post-250 runs had the same learning budget (10,000 SGD steps,
+   at 0.002 except in the lr-restart run), which fits "every lever gained
+   about the same".
+4. **The measurements are coarse for the effects tested.** A 100-game
+   match resolves about ±70 Elo and the re-rate's noise is about ±40,
+   while the effects tested so far are 30–80 Elo. And the policy loss
+   is about 2.40 (2.403 at generation 250 of `9x9-main`) against a mean
+   target entropy of 1.99 nats (`tools/buf.py`), the floor for that
+   cross-entropy, so only about 0.4 nats can still be learned.
+
+**Principle.** The project stays faithful to the original AlphaGo Zero
+(Silver et al., Nature 2017): only its methods are on the list. KataGo
+and Leela Zero refinements are out of scope: first-play-urgency tuning,
+Gumbel search, playout-cap randomization, policy-target pruning, score
+and ownership heads, and Q-blended value targets. (The ownership head
+above was an earlier experiment; it is off in every preset.)
+
+The experiments, in priority order. Training arms use the same start,
+seed and control as the other post-250 runs (generation 50 of
+`9x9-wide96`, against `9x9-sims200`) and are evaluated with 400-game
+matches (`runs/agz-experiment.sh`, not in the repository).
+
+| # | experiment (AlphaGo Zero) | why | status |
+|---|---|---|---|
+| 1 | Resignation: `v_resign` set so that wrong resignations stay under 5%, with 10% of games played out with resignation off | finding 2; the review estimates it saves about 30% of self-play time | implemented on the `resignation` branch, under review; not run |
+| 2 | A random symmetry for each network evaluation in search | AGZ's search; screen with arena games only | merged (`mcts_random_symmetry`, `arena_random_symmetry`; see "Random symmetry in search" in the main README); not run |
+| 3 | `temperature_moves = 7`: AGZ's 30 moves of 361 points is about 8%, about 7 moves on 9×9 (the preset uses 20) | config only | running (`runs/9x9-temp7`) |
+| 4 | Learning budget: more `train_steps`, or steps scaled with games so the replay ratio stays constant | finding 3 | 200 games and 400 steps per generation (`runs/9x9-budget-g200-s400`) queued after `temp7` |
+| 5 | More simulations (AGZ used 1,600) | only after the evaluation additions below, since the gain will be small for its cost | not started |
+| 6 | Arena-only tuning of `c_puct`, and `mcts_batch` 1 against 8 (AGZ evaluated leaves in batches of 8): generation 250 against itself, 400 games per setting | cheap: arena games only, no training | not started |
+| 7 | AGZ gating (`gating = true`, 55% over 400 games) | expensive; only if regressions appear | not started |
+| 8 | `value_hidden = 256`, as in AGZ | architecture change, low priority | not started |
+
+Evaluation only (the algorithm unchanged), all not started: 400-game
+matches at temperature 0 (AGZ's evaluation size); a validation loss on
+held-out fresh games each generation; and an outside reference opponent
+over GTP, for example GNU Go.
 
 ## What did not work
 
