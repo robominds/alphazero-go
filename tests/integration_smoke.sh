@@ -5,7 +5,7 @@
 # bad input) -> bench -> grow (deeper, wider, and a run started from the grown network), plus the refusal to change the architecture on resume,
 # then the ownership head: a run with it, grow --ownership, and analyze's ownership map,
 # and resignation: a run with it, and its refusal alongside the ownership head,
-# and the GTP engine: a scripted session.
+# and the GTP engine: a scripted session and a two-game match through tools/gtp_match.py.
 #
 # usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR
 set -euo pipefail
@@ -372,5 +372,25 @@ status=0
 out="$("$BUILD/gtp" --checkpoint "$W/missing.azn" < /dev/null 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "gtp with a missing checkpoint exited $status, expected 1"
 echo "$out" | grep -q '^error: ' || fail "gtp did not report the missing checkpoint: $out"
+
+echo "== gtp: a two-game match between two instances, with tools/gtp_match.py =="
+ENGINE="$BUILD/gtp --checkpoint $CK/gen_0003.azn --simulations 4"
+out="$(python3 "$SRC/tools/gtp_match.py" --a "$ENGINE" --b "$ENGINE --random-symmetry --seed 2" \
+    --games 2 --size 5 --komi 7.5 --out "$W/match")"
+echo "$out"
+echo "$out" | grep -Eq '^A alphazero-go gen_0003\.azn, 4 simulations vs B .*: A scored [0-9.]+/2 = ' \
+    || fail "gtp_match printed no score line"
+echo "$out" | grep -q '^Elo A - B: ' || fail "gtp_match printed no Elo line"
+[ "$(wc -l < "$W/match/results.csv" | tr -d ' ')" = "3" ] || fail "results.csv should have a header and 2 rows"
+for g in 1 2; do
+    grep -Eq 'RE\[([BW]\+[0-9.]+|0)\]' "$W/match/game_000$g.sgf" || fail "game_000$g.sgf has no scored result"
+done
+# The SGF is readable by the project's own parser, and ends where the match did.
+out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --sgf "$W/match/game_0001.sgf" --simulations 4 2>&1)" || true
+echo "$out" | grep -q 'nothing to analyze' || fail "analyze did not read the match SGF as a finished game: $out"
+status=0
+out="$(python3 "$SRC/tools/gtp_match.py" --a "$ENGINE" --b "$ENGINE" --size 9 --out "$W/match9" 2>&1)" || status=$?
+[ "$status" -eq 1 ] || fail "gtp_match on a size the engine refuses exited $status, expected 1"
+echo "$out" | grep -q "refused 'boardsize 9': unacceptable size" || fail "unexpected gtp_match error: $out"
 
 echo "integration_smoke: all checks passed"
