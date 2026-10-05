@@ -883,6 +883,52 @@ static void test_best_child_value_is_the_most_visited_q() {
     assert(m2.bestChildValue() == best);
 }
 
+// A value that depends on where the stones are: 0.3 plus 0.01 per point
+// index of every stone in the stone planes. On the empty 5x5 board each
+// child of the root holds one Black stone, so every child has its own value.
+class StoneIndexEvaluator : public Evaluator {
+public:
+    int boardSize() const override { return 5; }
+    int history() const override { return 2; }
+    int maxBatch() const override { return 8; }
+    void evaluate(const float* input, int B, float* logits, float* values) override {
+        const int area = 25;
+        const size_t stride = static_cast<size_t>(numPlanes(2)) * area;
+        for (int b = 0; b < B; ++b) {
+            float s = 0;
+            for (int plane = 0; plane < 4; ++plane)   // the 2H stone planes
+                for (int p = 0; p < area; ++p) s += input[b * stride + plane * area + p] * p;
+            for (int a = 0; a <= area; ++a) logits[b * 26 + a] = 0.0f;
+            values[b] = 0.3f + 0.01f * s;
+        }
+    }
+};
+
+// Equally visited children: bestChildValue takes the best Q among them. Every
+// child is worth 0.3 or more to White, so Black's Q is negative everywhere,
+// an unvisited edge (Q = 0) always beats a visited one, and 20 simulations
+// over 26 root edges visit 20 edges once each.
+static void test_best_child_value_breaks_visit_ties_by_q() {
+    Game game(5, 7.5f, defaultMaxMoves(5));
+    StoneIndexEvaluator ev;
+    Mcts mcts(serialConfig(20), ev);
+    Rng rng(1);
+    mcts.search(game, rng);
+    const MctsNode& root = mcts.node(0);
+    float best = -2.0f, worst = 2.0f;
+    int visited = 0;
+    for (int i = 0; i < root.numEdges; ++i) {
+        const MctsEdge& e = mcts.edge(root.firstEdge + i);
+        if (e.visits == 0) continue;
+        assert(e.visits == 1);
+        ++visited;
+        best = std::max(best, e.valueSum);
+        worst = std::min(worst, e.valueSum);
+    }
+    assert(visited == 20 && best > worst);
+    assert(mcts.bestChildValue() == best);
+}
+
 int main() {
     test_root_visits_sum_to_simulations_and_tree_is_kept();
     test_only_legal_actions_get_edges();
@@ -912,6 +958,7 @@ int main() {
     test_random_symmetry_maps_the_policy_back();
     test_random_symmetry_search_is_deterministic();
     test_best_child_value_is_the_most_visited_q();
+    test_best_child_value_breaks_visit_ties_by_q();
     std::printf("test_mcts: all tests passed\n");
     return 0;
 }
