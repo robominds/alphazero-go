@@ -1640,8 +1640,17 @@ itself), so input and target stay consistent. AlphaGo Zero used this,
 and also evaluated a random symmetry of each leaf during search;
 AlphaZero dropped both, because chess and shogi are not symmetric (pawns
 move one way, castling is one-sided) and it wanted one algorithm for all
-three games. This project augments in training only; search always
-evaluates the untransformed board.
+three games. This project always augments in training, and by default
+its search does what AlphaZero's did: it evaluates the untransformed
+board. `mcts_random_symmetry` (self-play) and `arena_random_symmetry`
+(arena rounds and `--rerate`; the `arena` and `analyze` tools take
+`--random-symmetry`) switch on AlphaGo Zero's version: each position the
+search sends to the network gets one of the 8 symmetries, drawn from the
+game's own `Rng`, is encoded with it, and the logit of action `a` is read
+back at `transformAction(sym, a)`; the value needs no mapping. A network
+trained on all 8 transforms is nearly, but not exactly, indifferent to
+them, so the draws average out what is left of its bias over the tree.
+Both keys are off in every preset.
 
 **Replay ratio.** Each generation takes `train_steps` SGD steps of
 `batch_size` samples. The *replay ratio* — samples drawn per new

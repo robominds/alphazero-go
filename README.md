@@ -128,7 +128,9 @@ score with a 95% Wilson interval
 (`docs/results/9x9/final-arena.txt`). `--a-simulations N` and
 `--b-simulations N` give one side its own search budget instead of
 `--simulations`, so a frozen checkpoint can be a stronger reference by
-searching more (`--b ckpt --b-simulations 3200`):
+searching more (`--b ckpt --b-simulations 3200`). `--random-symmetry`
+searches with AlphaGo Zero's random symmetries (see Random symmetry in
+search below):
 
 ```
 $ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0150.azn --b runs/9x9-main/checkpoints/gen_0000.azn --games 100 --simulations 200 --komi 7.5 --backend blas
@@ -142,7 +144,8 @@ prints the board, the network's value and policy, and an MCTS search
 ownership head (below) it also prints, after the value line, an
 ownership map: who the network expects to own each point at the end, in
 Black's terms, from +9 (surely Black's) to −9 (surely White's), with `.`
-where it is unsure (|ownership| < 0.1):
+where it is unsure (|ownership| < 0.1). `--random-symmetry` does the same
+for its search (the raw network lines always see the board as it is):
 
 ```
 $ ./build-blas/analyze --checkpoint runs/9x9-main/checkpoints/gen_0150.azn --moves "D5 E5 F5 C3 E6 G3" --simulations 200 --komi 7.5 --backend blas
@@ -300,6 +303,30 @@ the second already has the run's shape.
 - `state.bin` (version 4) records each path with a 64-bit hash of the
   file's bytes. `--resume` refuses a changed list or a changed file, and
   `--rerate` refuses a changed file when it keeps the run's list.
+
+### Random symmetry in search
+
+AlphaGo Zero evaluated each position in its search under a dihedral
+transform chosen uniformly at random from the board's 8 rotations and
+reflections, and mapped the policy back (Silver et al., "Mastering the
+game of Go without human knowledge", Nature 2017, Methods, "Expand and
+evaluate"). AlphaZero dropped this, since chess and shogi are not
+symmetric. By default this project searches like AlphaZero, always on the
+untransformed board; two config keys switch on AlphaGo Zero's version:
+
+- `mcts_random_symmetry` (default `false`): self-play's search.
+- `arena_random_symmetry` (default `false`): the arena's search, in the
+  trainer's arena rounds and in `--rerate`, for network players only (a
+  bot's equal priors are the same under every transform). The `arena`
+  and `analyze` tools take `--random-symmetry` instead.
+
+Each evaluated position draws one symmetry from the game's own `Rng`
+(the root included), so a run stays reproducible from its seed and
+independent of the worker count. Both keys are tunable: `--resume` and
+`--rerate` may change them, but a re-rate with a different
+`arena_random_symmetry` from the live run plays other games and no longer
+reproduces its `results.csv`. Every preset leaves both off; `configs/9x9.cfg`
+lists them commented out.
 
 ## Presets
 

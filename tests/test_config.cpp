@@ -353,6 +353,11 @@ static void test_random_symmetry_keys() {
         const Config p = loadConfigFile(preset(name));
         assert(!p.mctsRandomSymmetry && !p.arenaRandomSymmetry);
     }
+    // The 9x9 preset, the main target, names both keys in comments.
+    std::ifstream in(preset("9x9.cfg"));
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    assert(contains(text, "\n# mcts_random_symmetry = false\n"));
+    assert(contains(text, "\n# arena_random_symmetry = false\n"));
 }
 
 static void test_errors_name_key_and_line() {
