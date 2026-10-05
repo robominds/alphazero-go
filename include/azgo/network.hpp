@@ -114,6 +114,14 @@ public:
     LossStats computeLoss(Workspace& ws, const float* input, const float* pi, const float* z, int B,
                           const float* ownership = nullptr, float ownershipWeight = 0.0f);
 
+    // The same loss terms with inference-mode batch norm (running
+    // statistics, as infer and search use), without backward: how the
+    // network does on data it is not training on. Writes only to ws; the
+    // network is shared read-only like for infer. ownershipLoss is 0 without
+    // a target (which needs the head, asserted).
+    LossStats inferLoss(Workspace& ws, const float* input, const float* pi, const float* z, int B,
+                        const float* ownership = nullptr) const;
+
 private:
     NetConfig cfg_;
     // Layers (Task 7).

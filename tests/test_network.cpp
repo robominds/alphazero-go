@@ -461,6 +461,67 @@ static void test_sgd_reduces_ownership_loss() {
     assert(last <= 0.5 * first);
 }
 
+// inferLoss is the training loss terms with inference-mode batch norm:
+// computed by hand from infer()'s outputs, it agrees, and it writes
+// nothing to the network (parameters, gradients, running statistics).
+static void test_infer_loss_matches_infer_outputs() {
+    NetConfig cfg = makeConfig(5, 2, 1, 4, 8);
+    cfg.ownership = true;
+    const int B = 5, A = cfg.area(), actions = cfg.actions();
+    NaiveBackend be;
+    Network net(cfg, 21);
+    Workspace ws(cfg, B, be);
+    Rng rng(22);
+    // A few training steps, so the running statistics are not their initial values.
+    for (int step = 0; step < 3; ++step) {
+        Batch warm = randomBatch(cfg, B, rng);
+        const std::vector<float> own = randomOwnership(cfg, B, rng);
+        net.trainStep(ws, warm.input.data(), warm.pi.data(), warm.z.data(), B, own.data(), 1.5f);
+        for (ParamView& p : net.params())
+            for (size_t i = 0; i < p.size; ++i) p.value[i] -= 0.05f * p.grad[i];
+    }
+    Batch batch = randomBatch(cfg, B, rng);
+    const std::vector<float> own = randomOwnership(cfg, B, rng);
+
+    auto snapshot = [&net] {
+        std::vector<float> all;
+        for (const ParamView& p : net.params()) {
+            all.insert(all.end(), p.value, p.value + p.size);
+            all.insert(all.end(), p.grad, p.grad + p.size);
+        }
+        for (const BufferView& b : net.buffers()) all.insert(all.end(), b.value, b.value + b.size);
+        return all;
+    };
+    const std::vector<float> before = snapshot();
+    const LossStats s = net.inferLoss(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B, own.data());
+    const LossStats noOwnership = net.inferLoss(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B);
+    assert(snapshot() == before);
+
+    std::vector<float> logits(static_cast<size_t>(B) * actions), values(B), ownership(static_cast<size_t>(B) * A);
+    net.infer(ws, batch.input.data(), B, logits.data(), values.data(), ownership.data());
+    double policy = 0, value = 0, owner = 0;
+    for (int b = 0; b < B; ++b) {
+        const float* l = logits.data() + static_cast<size_t>(b) * actions;
+        double sumExp = 0;
+        for (int a = 0; a < actions; ++a) sumExp += std::exp(static_cast<double>(l[a]));
+        for (int a = 0; a < actions; ++a)
+            policy -= batch.pi[static_cast<size_t>(b) * actions + a] * (l[a] - std::log(sumExp));
+        value += (batch.z[b] - values[b]) * (batch.z[b] - values[b]);
+        for (int p = 0; p < A; ++p) {
+            const double d = ownership[static_cast<size_t>(b) * A + p] - own[static_cast<size_t>(b) * A + p];
+            owner += d * d;
+        }
+    }
+    assert(near(s.policyLoss, policy / B, 1e-4));
+    assert(near(s.valueLoss, value / B, 1e-5));
+    assert(near(s.ownershipLoss, owner / (B * A), 1e-5));
+    assert(s.policyLoss == noOwnership.policyLoss && s.valueLoss == noOwnership.valueLoss);
+    assert(noOwnership.ownershipLoss == 0.0f);
+    // Batch statistics (computeLoss) give a different number: the modes differ.
+    const LossStats probe = net.computeLoss(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B);
+    assert(probe.valueLoss != s.valueLoss);
+}
+
 int main() {
     test_whole_network_gradient_check();
     test_param_names_order_and_decay();
@@ -474,6 +535,7 @@ int main() {
     test_ownership_head_params_and_outputs();
     test_ownership_weight_zero_trains_nothing();
     test_sgd_reduces_ownership_loss();
+    test_infer_loss_matches_infer_outputs();
     std::printf("test_network: all tests passed\n");
     return 0;
 }

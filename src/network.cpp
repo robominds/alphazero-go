@@ -197,6 +197,14 @@ LossStats Network::computeLoss(Workspace& ws, const float* input, const float* p
     return loss(ws, pi, z, ownership, ownershipWeight, B, false);
 }
 
+LossStats Network::inferLoss(Workspace& ws, const float* input, const float* pi, const float* z,
+                             int B, const float* ownership) const {
+    assert(ownership == nullptr || cfg_.ownership);
+    // As in infer: Mode::Infer only reads the parameters.
+    const_cast<Network*>(this)->forward(ws, input, B, Mode::Infer);
+    return loss(ws, pi, z, ownership, 0.0f, B, false);
+}
+
 void Network::forward(Workspace& ws, const float* input, int B, Mode mode) {
     assert(B >= 1 && B <= ws.maxBatch_);
     assert(ws.cfg_ == cfg_);
