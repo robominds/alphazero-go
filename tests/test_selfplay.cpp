@@ -185,8 +185,10 @@ static bool sameRecord(const GameRecord& a, const GameRecord& b) {
            a.finalOwnership == b.finalOwnership;
 }
 
-static std::vector<GameRecord> playGames(const Network& net, const Backend& be, int workers) {
+static std::vector<GameRecord> playGames(const Network& net, const Backend& be, int workers,
+                                         bool randomSymmetry = false) {
     SelfPlayConfig cfg;
+    cfg.mcts.randomSymmetry = randomSymmetry;
     cfg.mcts.simulations = 8;
     cfg.mcts.batchSize = 4;
     cfg.temperatureMoves = 4;
@@ -201,14 +203,18 @@ static std::vector<GameRecord> playGames(const Network& net, const Backend& be, 
     return records;
 }
 
-static void test_self_play_is_independent_of_worker_count() {
+static NetConfig tinyNet() {
     NetConfig c;
     c.boardSize = 5;
     c.history = 2;
     c.blocks = 1;
     c.filters = 4;
     c.valueHidden = 8;
-    Network net(c, 7);
+    return c;
+}
+
+static void test_self_play_is_independent_of_worker_count() {
+    Network net(tinyNet(), 7);
     NaiveBackend be;
     std::vector<GameRecord> one = playGames(net, be, 1);
     std::vector<GameRecord> three = playGames(net, be, 3);
@@ -221,11 +227,30 @@ static void test_self_play_is_independent_of_worker_count() {
     assert(anyDifferent);   // different seeds give different games
 }
 
+// Random symmetry draws from each game's own Rng, so it keeps the games
+// reproducible and independent of the worker count. An untrained network is
+// not equivariant, so the draws change what it says and the games change.
+static void test_random_symmetry_self_play_is_independent_of_worker_count() {
+    Network net(tinyNet(), 7);
+    NaiveBackend be;
+    std::vector<GameRecord> one = playGames(net, be, 1, true);
+    std::vector<GameRecord> three = playGames(net, be, 3, true);
+    std::vector<GameRecord> plain = playGames(net, be, 1, false);
+    bool anyChanged = false;
+    for (int i = 0; i < 6; ++i) {
+        assert(sameRecord(one[i], three[i]));
+        assert(one[i].positions() >= 2);
+        if (!sameRecord(one[i], plain[i])) anyChanged = true;
+    }
+    assert(anyChanged);
+}
+
 int main() {
     test_immediate_pass_pass_game();
     test_z_for_a_black_win_and_a_tie();
     test_record_is_consistent_with_a_replay();
     test_self_play_is_independent_of_worker_count();
+    test_random_symmetry_self_play_is_independent_of_worker_count();
     test_replay_rejects_a_bad_record();
     std::printf("test_selfplay: all tests passed\n");
     return 0;

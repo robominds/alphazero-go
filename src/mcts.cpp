@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include "azgo/encode.hpp"
+#include "azgo/symmetry.hpp"
 
 namespace azgo {
 
@@ -15,6 +16,8 @@ Mcts::Mcts(const MctsConfig& cfg, Evaluator& evaluator) : cfg_(cfg), eval_(evalu
     input_.resize(static_cast<size_t>(cfg_.batchSize) * numPlanes(eval_.history()) * area);
     logits_.resize(static_cast<size_t>(cfg_.batchSize) * (area + 1));
     values_.resize(cfg_.batchSize);
+    syms_.resize(cfg_.batchSize);
+    mapped_.resize(area + 1);
 }
 
 void Mcts::reset() {
@@ -107,11 +110,12 @@ void Mcts::addVirtualLoss(int leaf, const std::vector<int>& pathEdges, int delta
     for (int x = leaf; x != -1; x = nodes_[x].parent) nodes_[x].virtualLoss += delta;
 }
 
-void Mcts::evaluateLeaves(const std::vector<int>& leaves) {
+void Mcts::evaluateLeaves(const std::vector<int>& leaves, Rng& rng) {
     const int B = static_cast<int>(leaves.size());
     assert(B >= 1 && B <= cfg_.batchSize);
     const int H = eval_.history();
-    const int area = eval_.boardSize() * eval_.boardSize();
+    const int n = eval_.boardSize();
+    const int area = n * n;
     const size_t inputStride = static_cast<size_t>(numPlanes(H)) * area;
     std::vector<const Board*> history;
     for (int i = 0; i < B; ++i) {
@@ -122,12 +126,25 @@ void Mcts::evaluateLeaves(const std::vector<int>& leaves) {
             history.push_back(&nodes_[x].board);
         for (int ply = game_->moveCount() - 1; ply >= 0 && static_cast<int>(history.size()) < H; --ply)
             history.push_back(&game_->boardAt(ply));
-        encodeBoards(history, H, 0, input_.data() + i * inputStride);
+        // AlphaGo Zero shows the network a random transform of the position,
+        // so the search averages out the net's small asymmetries instead of
+        // inheriting one fixed orientation's bias.
+        syms_[i] = cfg_.randomSymmetry ? rng.below(kNumSymmetries) : 0;
+        encodeBoards(history, H, syms_[i], input_.data() + i * inputStride);
     }
     eval_.evaluate(input_.data(), B, logits_.data(), values_.data());
     ++evaluatorBatches_;
-    for (int i = 0; i < B; ++i)
-        expand(leaves[i], logits_.data() + static_cast<size_t>(i) * (area + 1), values_[i]);
+    for (int i = 0; i < B; ++i) {
+        const float* row = logits_.data() + static_cast<size_t>(i) * (area + 1);
+        if (syms_[i] != 0) {
+            // The network answered for the transformed board: the logit of
+            // action a is where the transform sent it. Pass stays pass, and
+            // the value needs no mapping (a transform changes no result).
+            for (int a = 0; a <= area; ++a) mapped_[a] = row[transformAction(syms_[i], a, n)];
+            row = mapped_.data();
+        }
+        expand(leaves[i], row, values_[i]);
+    }
 }
 
 void Mcts::expand(int nodeIndex, const float* logits, float value) {
@@ -197,7 +214,7 @@ void Mcts::search(const Game& game, Rng& rng) {
     assert(!game.isTerminal());
     prepareRoot(game);
     // The root needs priors before the first descent; evaluating it is not a simulation.
-    if (!nodes_[0].expanded) evaluateLeaves({0});
+    if (!nodes_[0].expanded) evaluateLeaves({0}, rng);
     setRootPriors(rng);   // fresh noise (or none) for this search
 
     std::vector<int> leaves;                  // pending leaves of this round
@@ -231,7 +248,7 @@ void Mcts::search(const Game& game, Rng& rng) {
             }
         }
         if (leaves.empty()) continue;
-        evaluateLeaves(leaves);   // one evaluator call for the whole round
+        evaluateLeaves(leaves, rng);   // one evaluator call for the whole round
         for (size_t i = 0; i < leaves.size(); ++i) {
             nodes_[leaves[i]].pending = false;
             addVirtualLoss(leaves[i], paths[i], -1);

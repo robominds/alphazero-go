@@ -903,7 +903,7 @@ int Mcts::selectEdge(int nodeIndex) const {
     return best;
 }
 ```
-*src/mcts.cpp:54 — `Mcts::selectEdge`*
+*src/mcts.cpp:57 — `Mcts::selectEdge`*
 
 Ignore `virtualLoss` for now (it is 0 when batching is off; chapter 03
 explains it). An unvisited edge gets Q = 0, a neutral guess; KataGo-era
@@ -954,7 +954,7 @@ void Mcts::expand(int nodeIndex, const float* logits, float value) {
     nd.netValue = value;
 }
 ```
-*src/mcts.cpp:133 — `Mcts::expand` (abridged)*
+*src/mcts.cpp:150 — `Mcts::expand` (abridged)*
 
 **Superko inside the tree.** A node deep in the tree is a position that
 has not happened yet. Whether a move from it would repeat a position
@@ -986,7 +986,7 @@ void Mcts::backup(int leaf, const std::vector<int>& pathEdges, float value) {
     for (int x = leaf; x != -1; x = nodes_[x].parent) nodes_[x].visits += 1;
 }
 ```
-*src/mcts.cpp:184 — `Mcts::backup`*
+*src/mcts.cpp:201 — `Mcts::backup`*
 
 This includes **pass**. A pass changes no stones but does hand the move
 to the opponent (`Board::play` flips `toMove_` for a pass too), so a
@@ -1019,7 +1019,7 @@ float Mcts::terminalValue(const MctsNode& node) const {
     return scoreValue(node.board);
 }
 ```
-*src/mcts.cpp:49 — `Mcts::terminalValue`*
+*src/mcts.cpp:52 — `Mcts::terminalValue`*
 
 `tests/test_mcts.cpp` pins the pass case down: after Black passes on an
 empty board, White's pass edge ends the game with White winning by komi,
@@ -1131,7 +1131,7 @@ void Mcts::search(const Game& game, Rng& rng) {
     assert(!game.isTerminal());
     prepareRoot(game);
     // The root needs priors before the first descent; evaluating it is not a simulation.
-    if (!nodes_[0].expanded) evaluateLeaves({0});
+    if (!nodes_[0].expanded) evaluateLeaves({0}, rng);
     setRootPriors(rng);   // fresh noise (or none) for this search
     /* ... leaves, paths, path; done = 0 ... */
     while (done < cfg_.simulations) {
@@ -1160,14 +1160,14 @@ void Mcts::search(const Game& game, Rng& rng) {
             }
         }
         if (leaves.empty()) continue;
-        evaluateLeaves(leaves);   // one evaluator call for the whole round
+        evaluateLeaves(leaves, rng);   // one evaluator call for the whole round
         /* ... for each leaf: pending = false, remove its virtual loss,
                back up its network value, ++done ... */
     }
     game_ = nullptr;
 }
 ```
-*src/mcts.cpp:196 — `Mcts::search` (abridged)*
+*src/mcts.cpp:213 — `Mcts::search` (abridged)*
 
 **Collisions end the round.** Virtual loss discourages repeats but does
 not forbid them: when one move is much better than the rest, a second
@@ -1268,7 +1268,7 @@ void Mcts::setRootPriors(Rng& rng) {
         e[i].prior = (1.0f - eps) * e[i].rawPrior + eps * static_cast<float>(eta[i]);
 }
 ```
-*src/mcts.cpp:319 — `Mcts::setRootPriors`*
+*src/mcts.cpp:336 — `Mcts::setRootPriors`*
 
 **Why α scales as 10/n².** A symmetric Dirichlet sample over L moves with
 concentration α is a random probability vector; the smaller α, the more
@@ -1361,7 +1361,7 @@ void Mcts::advance(int action) {
     edges_.swap(edges);
 }
 ```
-*src/mcts.cpp:336 — `Mcts::advance` (abridged)*
+*src/mcts.cpp:353 — `Mcts::advance` (abridged)*
 
 Without compaction the node vector would only ever grow: a 19×19
 self-play game at 400 simulations per move and several hundred moves
@@ -2515,15 +2515,15 @@ see again in place.
 | Growing a network (deeper or wider) without changing its function | `growBlocks`, `widenFilters` — `src/grow.cpp:17, 159` |
 | The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:276, 183` |
 | Gradient checking | `checkGradient` — `tests/test_layers.cpp:36` |
-| PUCT selection | `Mcts::selectEdge` — `src/mcts.cpp:54` |
-| Legal masking, superko in the tree | `Mcts::expand` — `src/mcts.cpp:133` |
-| Backup and the sign flip | `Mcts::backup` — `src/mcts.cpp:184` |
-| Terminal positions scored by the rules | `Mcts::isTerminal`, `Mcts::terminalValue` — `src/mcts.cpp:38, 49` |
-| Virtual loss and batched search | `Mcts::search`, `Mcts::addVirtualLoss` — `src/mcts.cpp:196, 105` |
+| PUCT selection | `Mcts::selectEdge` — `src/mcts.cpp:57` |
+| Legal masking, superko in the tree | `Mcts::expand` — `src/mcts.cpp:150` |
+| Backup and the sign flip | `Mcts::backup` — `src/mcts.cpp:201` |
+| Terminal positions scored by the rules | `Mcts::isTerminal`, `Mcts::terminalValue` — `src/mcts.cpp:41, 52` |
+| Virtual loss and batched search | `Mcts::search`, `Mcts::addVirtualLoss` — `src/mcts.cpp:213, 108` |
 | The evaluator seam | `Evaluator` — `include/azgo/evaluator.hpp:17`; `LocalEvaluator::evaluate` — `src/evaluator.cpp:19` |
-| Dirichlet root noise | `Mcts::setRootPriors` — `src/mcts.cpp:319`; `dirichlet` — `src/rng.cpp:122` |
-| Temperature | `Mcts::selectAction` — `src/mcts.cpp:282`; `playSelfPlayGame` — `src/selfplay.cpp:17` |
-| Tree reuse and compaction | `Mcts::advance` — `src/mcts.cpp:336` |
+| Dirichlet root noise | `Mcts::setRootPriors` — `src/mcts.cpp:336`; `dirichlet` — `src/rng.cpp:122` |
+| Temperature | `Mcts::selectAction` — `src/mcts.cpp:299`; `playSelfPlayGame` — `src/selfplay.cpp:17` |
+| Tree reuse and compaction | `Mcts::advance` — `src/mcts.cpp:353` |
 | Passes and the end of the game | `Game::play`, `Game::isTerminal` — `src/game.cpp:39, 53` |
 | The value target z | `GameRecord::zAt` — `src/selfplay.cpp:12` |
 | Replay buffer of whole games | `ReplayBuffer::encodeSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:54, 85` |

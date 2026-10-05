@@ -22,6 +22,11 @@ struct MctsConfig {
     bool addNoise = false;       // root Dirichlet noise (self-play only)
     float dirichletScale = 10.0f;// alpha = dirichletScale / (n * n)
     float noiseFraction = 0.25f; // epsilon
+    // Each network evaluation sees a uniformly random one of the 8 board
+    // symmetries (one rng.below(8) per evaluated position, in batch order)
+    // and its policy is mapped back, as in AlphaGo Zero. Off: always the
+    // identity, and the search draws nothing for it.
+    bool randomSymmetry = false;
 };
 
 // Why unvisitedQ exists (and why it is not first-play-urgency tuning): with
@@ -107,6 +112,8 @@ private:
     std::vector<float> input_;            // one evaluator batch: [batchSize][planes][area]
     std::vector<float> logits_;           // [batchSize][actions]
     std::vector<float> values_;           // [batchSize]
+    std::vector<int> syms_;               // [batchSize] symmetry each position was encoded with
+    std::vector<float> mapped_;           // [actions] one row of logits mapped back to the board
 
     void prepareRoot(const Game& game);   // keep the tree if it matches, else reset + new root
     bool isTerminal(const MctsNode& node) const;
@@ -115,7 +122,7 @@ private:
     int selectEdge(int node) const;       // PUCT argmax over the node's edges
     int descend(std::vector<int>& pathEdges);          // root -> first unexpanded or terminal node
     void addVirtualLoss(int leaf, const std::vector<int>& pathEdges, int delta);
-    void evaluateLeaves(const std::vector<int>& leaves);   // one evaluator call, then expand each
+    void evaluateLeaves(const std::vector<int>& leaves, Rng& rng);   // one evaluator call, then expand each
     void expand(int node, const float* logits, float value);
     void backup(int leaf, const std::vector<int>& pathEdges, float value);
     void setRootPriors(Rng& rng);         // Dirichlet noise at the root (Task 13)

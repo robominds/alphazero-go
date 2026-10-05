@@ -6,6 +6,7 @@
 #include <vector>
 #include "azgo/encode.hpp"
 #include "azgo/mcts.hpp"
+#include "azgo/symmetry.hpp"
 
 using namespace azgo;
 
@@ -693,6 +694,156 @@ static void test_search_on_a_different_position_resets() {
     assert(rootEdge(mcts, 12) == -1);   // C3 is occupied now
 }
 
+// Random symmetry, as in AlphaGo Zero: each evaluation sees one of the 8
+// transforms of its position and the policy is mapped back. A uniform
+// evaluator cannot tell the transforms apart, so the search is unchanged and
+// the only trace is one rng.below(8) per evaluated position.
+static void test_random_symmetry_with_a_symmetric_evaluator_only_draws() {
+    Game game = earlyNineByNine();
+    MctsConfig cfg;
+    cfg.simulations = 30;
+    cfg.batchSize = 1;   // 30 simulations, one leaf each, none terminal (as above)
+    UniformEvaluator evOff(9, 2), evOn(9, 2);
+    Mcts off(cfg, evOff);
+    cfg.randomSymmetry = true;
+    Mcts on(cfg, evOn);
+    Rng rOff(12), rOn(12);
+    off.search(game, rOff);
+    on.search(game, rOn);
+    assert(on.rootVisits() == off.rootVisits());
+    assert(on.rootPriors() == off.rootPriors());
+    assert(on.nodeCount() == off.nodeCount());
+    assert(on.evaluatorBatches() == 31);
+    // Without noise the plain search draws nothing; with random symmetry it
+    // draws once per evaluated position (the root and 30 leaves), in order.
+    Rng expected(12);
+    assert(rOff.state() == expected.state());
+    for (int i = 0; i < 31; ++i) expected.below(kNumSymmetries);
+    assert(rOn.state() == expected.state());
+}
+
+// The stones of symmetryTestGame(): no transform but the identity maps them
+// onto themselves, and every other transform moves at least 3 of them
+// somewhere else, so two or three stones more cannot fake a match.
+static const int kMarkerStones[] = {1, 8, 15, 24};
+
+static Game symmetryTestGame() {
+    Board start = boardFromRows({".X...",
+                                 "...O.",
+                                 ".....",
+                                 "X....",
+                                 "....O"}, Color::Black);
+    return Game(start, 7.5f, 50);
+}
+
+// The "true" policy of symmetryTestGame() and everything after it: a logit
+// that depends on where the point is, so a prior that went through a
+// transform without being mapped back lands on the wrong point.
+static float trueLogit(int action) { return action == 25 ? 0.3f : 0.1f * static_cast<float>(action); }
+
+// A network that knows the true policy and is equivariant: it reads which
+// transform it was shown from where the marker stones are in the input
+// (current position, own + opponent planes), and answers in the transformed
+// frame, i.e. the true logit of action a at transformAction(sym, a). It
+// records each symmetry it saw.
+class SymmetryReadingEvaluator : public Evaluator {
+public:
+    int boardSize() const override { return 5; }
+    int history() const override { return 2; }
+    int maxBatch() const override { return 8; }
+    void evaluate(const float* input, int B, float* logits, float* values) override {
+        const int area = 25, stride = numPlanes(2) * area;
+        for (int b = 0; b < B; ++b) {
+            const float* own = input + b * stride;
+            const float* opp = own + area;
+            int sym = -1;
+            for (int s = 0; s < kNumSymmetries; ++s) {
+                bool all = true;
+                for (int p : kMarkerStones) {
+                    const int q = transformPoint(s, p, 5);
+                    all = all && (own[q] == 1.0f || opp[q] == 1.0f);
+                }
+                if (!all) continue;
+                assert(sym == -1);   // exactly one transform fits
+                sym = s;
+            }
+            assert(sym >= 0);
+            seen.push_back(sym);
+            for (int a = 0; a <= area; ++a) logits[b * (area + 1) + transformAction(sym, a, 5)] = trueLogit(a);
+            values[b] = 0.0f;
+        }
+    }
+    std::vector<int> seen;
+};
+
+// Every expanded node's priors must be the softmax of the true logits over
+// its legal actions, whichever transform its evaluation used.
+static void checkPriorsAreTrue(const Mcts& m) {
+    int expanded = 0;
+    for (size_t k = 0; k < m.nodeCount(); ++k) {
+        const MctsNode& nd = m.node(static_cast<int>(k));
+        if (!nd.expanded) continue;
+        ++expanded;
+        double sum = 0.0;
+        for (int i = 0; i < nd.numEdges; ++i) sum += std::exp(trueLogit(m.edge(nd.firstEdge + i).action));
+        for (int i = 0; i < nd.numEdges; ++i) {
+            const MctsEdge& e = m.edge(nd.firstEdge + i);
+            assert(near(e.rawPrior, std::exp(trueLogit(e.action)) / sum));
+        }
+    }
+    assert(expanded > 1);
+}
+
+static void test_random_symmetry_maps_the_policy_back() {
+    Game game = symmetryTestGame();
+    MctsConfig cfg;
+    cfg.simulations = 40;
+    cfg.batchSize = 4;
+
+    // Off: every evaluation sees the position as it is.
+    SymmetryReadingEvaluator plain;
+    Mcts off(cfg, plain);
+    Rng r1(31);
+    off.search(game, r1);
+    assert(!plain.seen.empty());
+    for (int s : plain.seen) assert(s == 0);
+    checkPriorsAreTrue(off);
+
+    // On: the transforms vary from evaluation to evaluation (a fixed
+    // comparison: the draws are fixed by the seed), yet the priors are the
+    // true ones, so each policy was mapped back to the original board.
+    cfg.randomSymmetry = true;
+    SymmetryReadingEvaluator ev;
+    Mcts on(cfg, ev);
+    Rng r2(31);
+    on.search(game, r2);
+    std::vector<int> distinct = ev.seen;
+    std::sort(distinct.begin(), distinct.end());
+    distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
+    assert(distinct.size() >= 4);
+    checkPriorsAreTrue(on);
+    const std::vector<float> pOn = on.rootPriors(), pOff = off.rootPriors();
+    for (size_t a = 0; a < pOn.size(); ++a) assert(near(pOn[a], pOff[a]));
+}
+
+static void test_random_symmetry_search_is_deterministic() {
+    Game game = symmetryTestGame();
+    MctsConfig cfg;
+    cfg.simulations = 60;
+    cfg.batchSize = 4;
+    cfg.randomSymmetry = true;
+    cfg.addNoise = true;
+    SymmetryReadingEvaluator ev1, ev2, ev3;
+    Mcts a(cfg, ev1), b(cfg, ev2), c(cfg, ev3);
+    Rng ra(77), rb(77), rc(78);
+    a.search(game, ra);
+    b.search(game, rb);
+    c.search(game, rc);
+    assert(ev1.seen == ev2.seen && a.rootVisits() == b.rootVisits() && a.rootPriors() == b.rootPriors());
+    assert(ra.state() == rb.state());
+    assert(ev1.seen != ev3.seen);   // another seed, other transforms
+}
+
 int main() {
     test_root_visits_sum_to_simulations_and_tree_is_kept();
     test_only_legal_actions_get_edges();
@@ -718,6 +869,9 @@ int main() {
     test_advance_keeps_the_chosen_subtree();
     test_advance_to_unexplored_child_resets();
     test_search_on_a_different_position_resets();
+    test_random_symmetry_with_a_symmetric_evaluator_only_draws();
+    test_random_symmetry_maps_the_policy_back();
+    test_random_symmetry_search_is_deterministic();
     std::printf("test_mcts: all tests passed\n");
     return 0;
 }

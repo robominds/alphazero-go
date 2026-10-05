@@ -1151,7 +1151,7 @@ void checkGradient(const char* what, float* value, const float* analytic, size_t
     }
     return best;
 }</code></pre>
-<span class="src">src/mcts.cpp:54 — <code>Mcts::selectEdge</code></span>
+<span class="src">src/mcts.cpp:57 — <code>Mcts::selectEdge</code></span>
 <p>Ignore <code>virtualLoss</code> for now (it is 0 when batching is off; chapter 03 explains it). An unvisited edge gets Q = 0, a neutral guess; KataGo-era engines tune this "first-play urgency", which this project deliberately leaves out.</p>
 <p>There is exactly one exception, and it is not first-play-urgency tuning. When the previous move was a pass, this node's own pass edge ends the game, so its value is known exactly: the game result, +1, −1 or 0 from the chooser's side, given by the sign of the Tromp-Taylor score minus komi. <code>expand()</code> stores that value in <code>unvisitedQ</code>, and it is used while the edge is unvisited. Without it, a game-ending pass with a tiny prior is never examined at low simulation counts, and a net that likes passing can walk into a lost game. Chapters 07 and 08 tell how the arena exposed this.</p>
 <p><strong>Legal masking and a softmax over legal moves only.</strong> The policy head produces a logit for every point, including occupied ones and points where a stone would be suicide or break superko. When a leaf is <em>expanded</em>, it gets edges for legal actions only, and the priors are a softmax over just those logits, so the illegal moves' probability mass is not wasted and the remaining priors still sum to 1:</p>
@@ -1181,7 +1181,7 @@ void checkGradient(const char* what, float* value, const float* analytic, size_t
     nd.expanded = true;
     nd.netValue = value;
 }</code></pre>
-<span class="src">src/mcts.cpp:133 — <code>Mcts::expand</code> (abridged)</span>
+<span class="src">src/mcts.cpp:150 — <code>Mcts::expand</code> (abridged)</span>
 <p><strong>Superko inside the tree.</strong> A node deep in the tree is a position that has not happened yet. Whether a move from it would repeat a position depends on two histories: the real game's (<code>game_-&gt;seen</code>, the hash set from chapter 00) and the hypothetical moves on the path from the root down to this node (<code>pathHashes</code>). Both are checked. Because each node has exactly one parent, the path — and so the set of forbidden moves — is well defined for every node. The analyze output in the "Try it" block at the end of this chapter shows the result on the ko position from chapter 00: B3, White's forbidden retake, gets no edge, so no prior and no visits.</p>
 <p><strong>Backup and the sign flip.</strong> The value the network returns is from the point of view of the player to move <em>at the leaf</em>. Each edge on the path belongs to the player who chose it, who is the opponent of the player to move at the node it leads to. So the value is negated once before it is added to the last edge, and once more at every edge above:</p>
 <pre><code>void Mcts::backup(int leaf, const std::vector&lt;int&gt;&amp; pathEdges, float value) {
@@ -1195,7 +1195,7 @@ void checkGradient(const char* what, float* value, const float* analytic, size_t
     }
     for (int x = leaf; x != -1; x = nodes_[x].parent) nodes_[x].visits += 1;
 }</code></pre>
-<span class="src">src/mcts.cpp:184 — <code>Mcts::backup</code></span>
+<span class="src">src/mcts.cpp:201 — <code>Mcts::backup</code></span>
 <p>This includes <strong>pass</strong>. A pass changes no stones but does hand the move to the opponent (<code>Board::play</code> flips <code>toMove_</code> for a pass too), so a pass edge flips the sign exactly like any other move. What a pass <em>does</em> change is the pass count, and that decides whether the next node is the end of the game. <code>Mcts::descend</code> creates children lazily, the first time a descent takes an edge, and a child made by a pass inherits the parent's count plus one (any other move resets it to 0). The root's count comes from the real game, and a kept tree is thrown away if its root's count no longer matches the game's.</p>
 <p><strong>Terminal nodes are scored by the rules.</strong> When a descent reaches a node after two consecutive passes, or at the move cap, there is nothing to guess: the game is over and Tromp-Taylor says who won.</p>
 <pre><code>bool Mcts::isTerminal(const MctsNode&amp; node) const {
@@ -1213,7 +1213,7 @@ float Mcts::terminalValue(const MctsNode&amp; node) const {
     // The game is over, so no guess is needed: score it with the rules.
     return scoreValue(node.board);
 }</code></pre>
-<span class="src">src/mcts.cpp:49 — <code>Mcts::terminalValue</code></span>
+<span class="src">src/mcts.cpp:52 — <code>Mcts::terminalValue</code></span>
 <p><code>tests/test_mcts.cpp</code> pins the pass case down: after Black passes on an empty board, White's pass edge ends the game with White winning by komi, so every visit to that edge must add exactly +1 for White — <code>valueSum == visits</code>. Exact terminal values matter more in Go than in tic-tac-toe: every game ends with passes, and the search must know that passing while behind loses.</p>
 <p><strong>Try it</strong> — search correcting the prior. The ko position from chapter 00 after Black's capture, White to move, analyzed with the final 5×5 network of seed 1:</p>
 <pre><code>$ ./build-blas/analyze --checkpoint runs/5x5-seed1/checkpoints/gen_0060.azn \
@@ -1310,7 +1310,7 @@ Top 10 moves by visits:
     assert(!game.isTerminal());
     prepareRoot(game);
     // The root needs priors before the first descent; evaluating it is not a simulation.
-    if (!nodes_[0].expanded) evaluateLeaves({0});
+    if (!nodes_[0].expanded) evaluateLeaves({0}, rng);
     setRootPriors(rng);   // fresh noise (or none) for this search
     /* ... leaves, paths, path; done = 0 ... */
     while (done &lt; cfg_.simulations) {
@@ -1339,13 +1339,13 @@ Top 10 moves by visits:
             }
         }
         if (leaves.empty()) continue;
-        evaluateLeaves(leaves);   // one evaluator call for the whole round
+        evaluateLeaves(leaves, rng);   // one evaluator call for the whole round
         /* ... for each leaf: pending = false, remove its virtual loss,
                back up its network value, ++done ... */
     }
     game_ = nullptr;
 }</code></pre>
-<span class="src">src/mcts.cpp:196 — <code>Mcts::search</code> (abridged)</span>
+<span class="src">src/mcts.cpp:213 — <code>Mcts::search</code> (abridged)</span>
 <p><strong>Collisions end the round.</strong> Virtual loss discourages repeats but does not forbid them: when one move is much better than the rest, a second descent can still land on a leaf that is already waiting. Evaluating it twice would waste a slot and double-count it, so the round stops early and evaluates the leaves it has. A terminal leaf never waits at all; its exact value is backed up on the spot. The cost of batching is a slightly different search: descents in a round cannot see each other's results. A batch size of 8 (<code>mcts_batch</code> in every preset) is a common compromise — small enough that the tree does not "go wide" much, large enough to fill the matrix unit better.</p>
 <p><strong>Why batch size matters to gemm.</strong> Take the 5×5 preset's residual convolution: its weight matrix is 32 × 288 (32 filters, 32 channels × 9 offsets). At batch 1 it multiplies a column matrix 25 wide; at batch 8, 200 wide. Both products cost the same per column, but the batch-8 call pays the fixed costs — the call itself, packing the operands, starting the matrix unit, and all the per-layer bookkeeping around it — once for eight positions instead of once for each. Measured on the M4, one thread, BLAS backend (<code>docs/results/bench.txt</code>, last table): the 5×5 network evaluates about 23,000 positions per second at batch 1 and 30,400 at batch 8; the 9×9 network about 2,750 and 3,700. Batching buys about 1.3× on this CPU — worth having, but modest: on one CPU thread the fixed costs are a small part of each call. Hardware with much higher fixed costs per call, such as a GPU, gains more from the same batching; this project measured only the CPU. <code>bench</code> measures inference at the MCTS batch of 8 (<code>docs/results/bench.txt</code>): 30,488 positions per second on 5×5 is 3,811 network calls per second, each covering a whole batch.</p>
 <p><strong>The <code>Evaluator</code> seam.</strong> MCTS never touches <code>Network</code>. It encodes its leaves into input planes (chapter 00) and hands them to an <code>Evaluator</code>:</p>
@@ -1384,7 +1384,7 @@ public:
     for (int i = 0; i &lt; root.numEdges; ++i)
         e[i].prior = (1.0f - eps) * e[i].rawPrior + eps * static_cast&lt;float&gt;(eta[i]);
 }</code></pre>
-<span class="src">src/mcts.cpp:319 — <code>Mcts::setRootPriors</code></span>
+<span class="src">src/mcts.cpp:336 — <code>Mcts::setRootPriors</code></span>
 <p><strong>Why α scales as 10/n².</strong> A symmetric Dirichlet sample over L moves with concentration α is a random probability vector; the smaller α, the more of its mass lands on a few moves. What matters for exploration is roughly α·L, the total concentration: a sample with α·L ≈ 10 looks like "a handful of moves get a real boost". The number of legal moves grows with the board, about n² early in a game, so keeping α·L constant means α = 10/n²: <strong>0.4 on 5×5, 0.12 on 9×9, 0.028 on 19×19</strong>. AlphaZero reported the same rule of thumb — α in inverse proportion to the typical number of legal moves, 0.3 for chess, 0.15 for shogi and 0.03 for Go. Using 19×19's 0.03 on 5×5 would put nearly all of each sample on one random move; using 5×5's 0.4 on 19×19 would spread it almost evenly over 362 moves, adding the same sliver to every prior instead of singling out a few moves to explore. Tic-tac-toe used a fixed 0.3 over at most 9 moves.</p>
 <p>Noise is added only at the root and only in self-play. The arena and <code>analyze</code> switch it off (<code>addNoise = false</code>): measuring strength and inspecting a position want the network's honest judgment. With tree reuse (below) the root was an interior node of the previous search, so it starts with its raw priors, and <code>setRootPriors</code> mixes fresh noise into them on every search.</p>
 <p><strong>Temperature.</strong> The second mechanism acts on which move is <em>played</em>, not which moves are searched. For the first <code>temperature_moves</code> plies of a self-play game the move is sampled in proportion to its visit count (temperature 1); after that, the most visited move is played (temperature 0, ties broken at random):</p>
@@ -1428,7 +1428,7 @@ public:
     nodes_.swap(nodes);
     edges_.swap(edges);
 }</code></pre>
-<span class="src">src/mcts.cpp:336 — <code>Mcts::advance</code> (abridged)</span>
+<span class="src">src/mcts.cpp:353 — <code>Mcts::advance</code> (abridged)</span>
 <p>Without compaction the node vector would only ever grow: a 19×19 self-play game at 400 simulations per move and several hundred moves would keep every node of every search in memory. With it, the arena holds only positions still reachable from the current one, and everything built for moves that were not played is released at once. Each node holds a whole <code>Board</code> (the 441-byte padded array), so this is the difference between megabytes per game and a growing pile per worker. A reused root already has visits, and <code>search</code> adds <code>simulations</code> <em>new</em> ones on top, so reuse also buys a slightly deeper search for free. <code>tests/test_mcts.cpp</code> checks that <code>advance</code> keeps the chosen subtree's statistics intact.</p>
 </section>
 
@@ -2082,23 +2082,23 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Gradient checking</dt>
   <dd><code>checkGradient</code> <span class="loc">— tests/test_layers.cpp:36</span></dd>
   <dt>PUCT selection</dt>
-  <dd><code>Mcts::selectEdge</code> <span class="loc">— src/mcts.cpp:54</span></dd>
+  <dd><code>Mcts::selectEdge</code> <span class="loc">— src/mcts.cpp:57</span></dd>
   <dt>Legal masking, superko in the tree</dt>
-  <dd><code>Mcts::expand</code> <span class="loc">— src/mcts.cpp:133</span></dd>
+  <dd><code>Mcts::expand</code> <span class="loc">— src/mcts.cpp:150</span></dd>
   <dt>Backup and the sign flip</dt>
-  <dd><code>Mcts::backup</code> <span class="loc">— src/mcts.cpp:184</span></dd>
+  <dd><code>Mcts::backup</code> <span class="loc">— src/mcts.cpp:201</span></dd>
   <dt>Terminal positions scored by the rules</dt>
-  <dd><code>Mcts::isTerminal</code>, <code>Mcts::terminalValue</code> <span class="loc">— src/mcts.cpp:38, 49</span></dd>
+  <dd><code>Mcts::isTerminal</code>, <code>Mcts::terminalValue</code> <span class="loc">— src/mcts.cpp:41, 52</span></dd>
   <dt>Virtual loss and batched search</dt>
-  <dd><code>Mcts::search</code>, <code>Mcts::addVirtualLoss</code> <span class="loc">— src/mcts.cpp:196, 105</span></dd>
+  <dd><code>Mcts::search</code>, <code>Mcts::addVirtualLoss</code> <span class="loc">— src/mcts.cpp:213, 108</span></dd>
   <dt>The evaluator seam</dt>
   <dd><code>Evaluator</code> <span class="loc">— include/azgo/evaluator.hpp:17</span>; <code>LocalEvaluator::evaluate</code> <span class="loc">— src/evaluator.cpp:19</span></dd>
   <dt>Dirichlet root noise</dt>
-  <dd><code>Mcts::setRootPriors</code> <span class="loc">— src/mcts.cpp:319</span>; <code>dirichlet</code> <span class="loc">— src/rng.cpp:122</span></dd>
+  <dd><code>Mcts::setRootPriors</code> <span class="loc">— src/mcts.cpp:336</span>; <code>dirichlet</code> <span class="loc">— src/rng.cpp:122</span></dd>
   <dt>Temperature</dt>
-  <dd><code>Mcts::selectAction</code> <span class="loc">— src/mcts.cpp:282</span>; <code>playSelfPlayGame</code> <span class="loc">— src/selfplay.cpp:17</span></dd>
+  <dd><code>Mcts::selectAction</code> <span class="loc">— src/mcts.cpp:299</span>; <code>playSelfPlayGame</code> <span class="loc">— src/selfplay.cpp:17</span></dd>
   <dt>Tree reuse and compaction</dt>
-  <dd><code>Mcts::advance</code> <span class="loc">— src/mcts.cpp:336</span></dd>
+  <dd><code>Mcts::advance</code> <span class="loc">— src/mcts.cpp:353</span></dd>
   <dt>Passes and the end of the game</dt>
   <dd><code>Game::play</code>, <code>Game::isTerminal</code> <span class="loc">— src/game.cpp:39, 53</span></dd>
   <dt>The value target z</dt>
