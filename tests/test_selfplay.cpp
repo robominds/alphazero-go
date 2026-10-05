@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "azgo/encode.hpp"
 #include "azgo/game.hpp"
 #include "azgo/parallel.hpp"
 #include "azgo/selfplay.hpp"
@@ -245,6 +246,178 @@ static void test_random_symmetry_self_play_is_independent_of_worker_count() {
     assert(anyChanged);
 }
 
+// ---- resignation -------------------------------------------------------------
+
+// A network sure that `hopeless` loses wherever it is to move (value -0.95
+// for that side, +0.95 for the other), with equal priors on every point and
+// none on pass, so no game ends early by passing.
+class HopelessSideEvaluator : public Evaluator {
+public:
+    explicit HopelessSideEvaluator(Color hopeless) : hopeless_(hopeless) {}
+    int boardSize() const override { return 5; }
+    int history() const override { return 2; }
+    int maxBatch() const override { return 8; }
+    void evaluate(const float* input, int B, float* logits, float* values) override {
+        const int area = 25;
+        const size_t stride = static_cast<size_t>(numPlanes(2)) * area;
+        for (int b = 0; b < B; ++b) {
+            // Plane 2H is all ones when Black is to move (any symmetry keeps it so).
+            const bool blackToMove = input[b * stride + 4 * area] == 1.0f;
+            const Color toMove = blackToMove ? Color::Black : Color::White;
+            for (int a = 0; a < area; ++a) logits[b * 26 + a] = 0.0f;
+            logits[b * 26 + 25] = -20.0f;
+            values[b] = toMove == hopeless_ ? -0.95f : 0.95f;
+        }
+    }
+private:
+    Color hopeless_;
+};
+
+static SelfPlayConfig resignConfig(float threshold, float disabledFraction) {
+    SelfPlayConfig cfg;
+    cfg.mcts.simulations = 8;
+    cfg.mcts.batchSize = 4;
+    cfg.temperatureMoves = 4;
+    cfg.komi = 7.5f;
+    cfg.maxMoves = 12;
+    cfg.resignation = true;
+    cfg.resignThreshold = threshold;
+    cfg.resignDisabledFraction = disabledFraction;
+    return cfg;
+}
+
+// White's every search says -0.95, below v_resign = -0.9: White resigns at
+// its first move, Black wins, and z is +1 for Black's one position. The
+// position White resigned in is not recorded (no move was played from it).
+static void test_hopeless_side_resigns() {
+    HopelessSideEvaluator ev(Color::White);
+    Rng rng(3);
+    const GameRecord rec = playSelfPlayGame(ev, resignConfig(-0.9f, 0.0f), rng);
+    assert(rec.resigned && !rec.resignDisabled);
+    assert(rec.positions() == 1 && rec.moves.size() == 1 && rec.visits.size() == 1);
+    assert(rec.stones.size() == 25u && rec.finalOwnership.size() == 25u);
+    assert(rec.resultForBlack == 1.0f);
+    assert(rec.zAt(0) == 1.0f);
+    assert(rec.minResignValue[1] < -0.9f);
+    assert(rec.minResignValue[0] == 1.0f);   // Black's ply 0 is never considered
+    assert(rec.winnerMinResignValue() == 1.0f);
+}
+
+// Black is never offered resignation at the empty board (every record keeps
+// at least one position), so a hopeless Black resigns at ply 2: White wins.
+static void test_black_resigns_after_the_first_move() {
+    HopelessSideEvaluator ev(Color::Black);
+    Rng rng(5);
+    const GameRecord rec = playSelfPlayGame(ev, resignConfig(-0.9f, 0.0f), rng);
+    assert(rec.resigned);
+    assert(rec.positions() == 2);
+    assert(rec.resultForBlack == -1.0f);
+    assert(rec.zAt(0) == -1.0f && rec.zAt(1) == 1.0f);
+    assert(rec.minResignValue[0] < -0.9f);
+    assert(rec.minResignValue[1] > 0.9f && rec.minResignValue[1] < 1.0f);
+    assert(rec.winnerMinResignValue() == rec.minResignValue[1]);
+}
+
+// A resignation-disabled game is played to the end, recording what each
+// side's minimum was, so calibration can ask "would the winner have resigned?".
+static void test_disabled_game_plays_on_and_records_minimums() {
+    HopelessSideEvaluator ev(Color::White);
+    Rng rng(3);
+    const GameRecord rec = playSelfPlayGame(ev, resignConfig(-0.9f, 1.0f), rng);
+    assert(!rec.resigned && rec.resignDisabled);
+    assert(rec.positions() == 12);   // the move cap: nobody passes
+    // White saw -0.95 at every search (Black's minimum can be lower: near the
+    // move cap the search reaches terminal positions scored by the rules).
+    assert(rec.minResignValue[1] < -0.9f && rec.minResignValue[0] < 1.0f);
+    Game replay(5, 7.5f, 12);
+    for (int a : rec.moves) replay.play(a);
+    assert(rec.resultForBlack == replay.resultForBlack());
+    assert(rec.winnerMinResignValue() ==
+           (rec.resultForBlack > 0 ? rec.minResignValue[0] : rec.minResignValue[1]));
+}
+
+// With resignation on, a game draws exactly once more from its Rng (whether
+// resignation is disabled for it), first; with it off, nothing extra. A
+// game that never resigns is otherwise the game resignation-off plays.
+static void test_resignation_draws_once_per_game() {
+    SelfPlayConfig off;
+    off.mcts.simulations = 16;
+    off.mcts.batchSize = 4;
+    off.temperatureMoves = 6;
+    for (float fraction : {0.0f, 1.0f}) {
+        // v < -1 never holds: fraction 0 never resigns either.
+        SelfPlayConfig on = off;
+        on.resignation = true;
+        on.resignThreshold = -1.0f;
+        on.resignDisabledFraction = fraction;
+        UniformEvaluator ev(5, 2);
+        Rng a(77), b(77);
+        b.uniform();
+        const GameRecord withResign = playSelfPlayGame(ev, on, a);
+        const GameRecord shifted = playSelfPlayGame(ev, off, b);
+        assert(sameRecord(withResign, shifted));
+        assert(withResign.resignDisabled == (fraction == 1.0f) && !withResign.resigned);
+        assert(!shifted.resignDisabled && !shifted.resigned);
+        assert(a.uniform() == b.uniform());   // the streams end in step
+    }
+}
+
+static void test_winner_minimum() {
+    GameRecord r;
+    r.minResignValue[0] = -0.4f;
+    r.minResignValue[1] = -0.7f;
+    r.resultForBlack = 1.0f;
+    assert(r.winnerMinResignValue() == -0.4f);
+    r.resultForBlack = -1.0f;
+    assert(r.winnerMinResignValue() == -0.7f);
+    r.resultForBlack = 0.0f;   // a draw has no winner who could have resigned wrongly
+    assert(r.winnerMinResignValue() == 1.0f);
+}
+
+// v_resign is the largest threshold on the 0.01 grid from -1 to 0 whose
+// false-positive rate over the window (winners whose minimum lies below it)
+// stays within the limit; with fewer games than minGames, the initial one.
+static void test_calibrate_resign_threshold() {
+    ResignCalibration c;
+    c.window = 100;
+    c.minGames = 20;
+    c.maxFalsePositive = 0.05f;
+    c.initialThreshold = -0.9f;
+    // 20 games: three winners dipped to -0.9, -0.7 and -0.3 (the oldest
+    // three); the rest never did.
+    std::vector<float> mins = {-0.9f, -0.7f, -0.3f};
+    mins.insert(mins.end(), 17, 1.0f);
+    assert(mins.size() == 20);
+    // At -0.70 only the -0.9 game counts (1/20 = 5%); at -0.69 the -0.7 game joins (10%).
+    assert(calibrateResignThreshold(mins, c) == -0.7f);
+    assert(resignFalsePositiveRate(mins, c.window, -0.7f) == 0.05);
+    assert(resignFalsePositiveRate(mins, c.window, -0.69f) == 0.10);
+    c.maxFalsePositive = 0.10f;
+    assert(calibrateResignThreshold(mins, c) == -0.3f);
+    c.maxFalsePositive = 0.0f;
+    assert(calibrateResignThreshold(mins, c) == -0.9f);
+    c.maxFalsePositive = 0.5f;
+    assert(calibrateResignThreshold(mins, c) == 0.0f);   // the top of the grid
+
+    // Fewer than minGames: the initial threshold, whatever the data says.
+    c.maxFalsePositive = 0.05f;
+    const std::vector<float> few(mins.begin(), mins.begin() + 19);
+    assert(calibrateResignThreshold(few, c) == -0.9f);
+    assert(calibrateResignThreshold({}, c) == -0.9f);
+    assert(resignFalsePositiveRate({}, c.window, -0.5f) == 0.0);
+
+    // Only the last `window` games count: the three low ones fall out.
+    c.window = 17;
+    c.minGames = 17;
+    assert(calibrateResignThreshold(mins, c) == 0.0f);
+    assert(resignFalsePositiveRate(mins, 17, 0.0f) == 0.0);
+    // Every winner sank to -1: only the bottom of the grid, -1, counts none
+    // of them (a value is counted when it lies strictly below the threshold).
+    c.window = 20;
+    c.minGames = 1;
+    assert(calibrateResignThreshold(std::vector<float>(5, -1.0f), c) == -1.0f);
+}
+
 int main() {
     test_immediate_pass_pass_game();
     test_z_for_a_black_win_and_a_tie();
@@ -252,6 +425,12 @@ int main() {
     test_self_play_is_independent_of_worker_count();
     test_random_symmetry_self_play_is_independent_of_worker_count();
     test_replay_rejects_a_bad_record();
+    test_hopeless_side_resigns();
+    test_black_resigns_after_the_first_move();
+    test_disabled_game_plays_on_and_records_minimums();
+    test_resignation_draws_once_per_game();
+    test_winner_minimum();
+    test_calibrate_resign_threshold();
     std::printf("test_selfplay: all tests passed\n");
     return 0;
 }
