@@ -9,6 +9,10 @@
 
 namespace azgo {
 
+// A Black-view score as SGF's RE and GTP's final_score write it: "B+3.5",
+// "W+7.5", or "0" for an exact tie (possible with an integer komi).
+std::string scoreToResult(float scoreForBlack);
+
 // "(;GM[1]FF[4]SZ[n]KM[komi]RE[B+R|W+R|0]C[comment];B[dd];W[tt]...)".
 // Point coordinates: column letter then row letter, 'a' = left/top.
 // Pass is written as an empty value "B[]". RE uses the sign of resultForBlack

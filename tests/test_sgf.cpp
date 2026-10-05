@@ -27,6 +27,14 @@ static void test_tie_result() {
     assert(sgf == "(;GM[1]FF[4]SZ[5]KM[7]RE[0];B[];W[])");
 }
 
+// The same text is GTP's final_score answer.
+static void test_score_to_result() {
+    assert(scoreToResult(3.5f) == "B+3.5");
+    assert(scoreToResult(-7.5f) == "W+7.5");
+    assert(scoreToResult(17.0f) == "B+17");
+    assert(scoreToResult(0.0f) == "0");
+}
+
 static void test_comment_escaping() {
     std::string sgf = gameToSgf(5, 7.5f, {0}, -7.5f, "gen 3] \\ note");
     assert(sgf == "(;GM[1]FF[4]SZ[5]KM[7.5]RE[W+7.5]C[gen 3\\] \\\\ note];B[aa])");
@@ -119,6 +127,7 @@ static void test_resignation_result() {
 int main() {
     test_write_exact();
     test_tie_result();
+    test_score_to_result();
     test_resignation_result();
     test_comment_escaping();
     test_round_trip_random_game();

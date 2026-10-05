@@ -147,13 +147,15 @@ int sgfToAction(const std::string& v, int n) {
 
 } // namespace
 
+std::string scoreToResult(float scoreForBlack) {
+    if (scoreForBlack > 0) return "B+" + formatG(scoreForBlack);
+    if (scoreForBlack < 0) return "W+" + formatG(-scoreForBlack);
+    return "0";   // exact tie, possible with integer komi
+}
+
 std::string gameToSgf(int n, float komi, const std::vector<int>& moves, float scoreForBlack,
                       const std::string& comment) {
-    std::string result;
-    if (scoreForBlack > 0) result = "B+" + formatG(scoreForBlack);
-    else if (scoreForBlack < 0) result = "W+" + formatG(-scoreForBlack);
-    else result = "0";   // exact tie, possible with integer komi
-    return gameToSgf(n, komi, moves, result, comment);
+    return gameToSgf(n, komi, moves, scoreToResult(scoreForBlack), comment);
 }
 
 std::string gameToSgf(int n, float komi, const std::vector<int>& moves, const std::string& result,
