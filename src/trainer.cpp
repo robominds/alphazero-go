@@ -191,6 +191,17 @@ MatchFn runMatches(const Config& cfg, const std::string& runDir, int liveGenerat
     };
 }
 
+// A validation loss as log.csv or the progress line prints it: "" when not
+// measured (the -1 of GenerationStats), "nan" when the measurement is not a
+// number, so a broken network shows up instead of looking unmeasured.
+std::string formatLoss(float v, int decimals) {
+    if (v == -1.0f) return "";
+    if (std::isnan(v)) return "nan";
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.*f", decimals, static_cast<double>(v));
+    return buf;
+}
+
 void appendLogRow(const std::string& runDir, const GenerationStats& s) {
     char winRate[32] = "";
     if (s.winRateVsPrev >= 0) std::snprintf(winRate, sizeof winRate, "%.4f", s.winRateVsPrev);
@@ -212,11 +223,7 @@ void appendLogRow(const std::string& runDir, const GenerationStats& s) {
     const float validation[6] = {s.valPolicyLoss,  s.valValueLoss,  s.valOwnershipLoss,
                                  s.seenPolicyLoss, s.seenValueLoss, s.seenOwnershipLoss};
     std::string validationFields;
-    for (float v : validation) {
-        char field[32] = "";
-        if (v >= 0) std::snprintf(field, sizeof field, "%.5f", v);
-        validationFields += std::string(",") + field;
-    }
+    for (float v : validation) validationFields += "," + formatLoss(v, 5);
     char line[512];
     std::snprintf(line, sizeof line,
                   "%d,%d,%.2f,%.4f,%.4f,%.5f,%.5f,%g,%.3f,%.3f,%.3f,%.3f,%.1f,%s,%s,%s,%s,%s,%s%s\n",
@@ -627,9 +634,12 @@ GenerationStats Trainer::runGeneration() {
     // ---- Validation loss (a measurement; changes nothing) -------------------
     // net_ is generation g-1's network, about to train on these games, and
     // (without gating) the one that played them. Measured before they join
-    // the buffer, they are data it has never been fitted to; the buffer, not
-    // yet changed, is exactly the data it was fitted to at generation g-1.
-    // Inference mode and the identity symmetry, so nothing is drawn from any
+    // the buffer, they are data it has never trained on. The buffer, not yet
+    // changed, is its training distribution: the window it trained on at
+    // generation g-1 (a sample of it, at random symmetries, so some of
+    // these positions it drew rarely or never). At generation 1 the buffer
+    // is empty, or with --buffer-from a donor's games that generation 0 (a
+    // fresh network, or --init-from's) never trained on. Inference mode and the identity symmetry, so nothing is drawn from any
     // generator of the run and nothing is written to the network; the
     // buffer sample has its own generator (kPhaseValidation). Its time counts
     // as training time.
@@ -780,20 +790,19 @@ GenerationStats Trainer::runGeneration() {
         }
         // With the validation loss, e.g. " val p 1.80 v 0.12 seen p 1.75 v 0.10":
         // on the fresh games, then on the buffer sample (once there is one).
-        char validation[96] = "";
-        if (stats.valPolicyLoss >= 0) {
-            int len = std::snprintf(validation, sizeof validation, " val p %.2f v %.2f", stats.valPolicyLoss,
-                                    stats.valValueLoss);
-            if (stats.seenPolicyLoss >= 0)
-                std::snprintf(validation + len, sizeof validation - static_cast<size_t>(len), " seen p %.2f v %.2f",
-                              stats.seenPolicyLoss, stats.seenValueLoss);
+        std::string validation;
+        if (stats.valPolicyLoss != -1.0f) {
+            validation = " val p " + formatLoss(stats.valPolicyLoss, 2) + " v " + formatLoss(stats.valValueLoss, 2);
+            if (stats.seenPolicyLoss != -1.0f)
+                validation += " seen p " + formatLoss(stats.seenPolicyLoss, 2) + " v " +
+                              formatLoss(stats.seenValueLoss, 2);
         }
         char line[512];
         std::snprintf(line, sizeof line,
                       "gen %d | selfplay %d games avg %.1f plies%s %.1fs | "
                       "train loss p %.2f v %.2f%s lr %g%s %.1fs | ",
                       g, stats.games, stats.avgLength, resign, stats.selfPlaySeconds, stats.policyLoss,
-                      stats.valueLoss, ownership, stats.lr, validation, stats.trainSeconds);
+                      stats.valueLoss, ownership, stats.lr, validation.c_str(), stats.trainSeconds);
         *log_ << line;
         if (arenaThisGeneration) {
             // e.g. "arena elo 512.3 vs 149:0.55 120:0.70 ref1:0.40 (distinct 19/20) promoted 3.2s"

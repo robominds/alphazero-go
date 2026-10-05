@@ -42,9 +42,10 @@ struct GenerationStats {
     // val*: the network this generation trains (generation g-1's), in
     // inference mode, on every position of this generation's self-play
     // games, before they join the replay buffer: data it has never trained
-    // on. seen*: the same on as many positions drawn from the buffer it was
-    // trained on; -1 while the buffer is empty. The ownership terms only
-    // with the head.
+    // on. seen*: the same on as many positions drawn from its training
+    // distribution, the buffer as generation g-1 left it (with --buffer-from,
+    // at generation 1, a donor's games generation 0 never trained on); -1
+    // while the buffer is empty. The ownership terms only with the head.
     float valPolicyLoss = -1, valValueLoss = -1, valOwnershipLoss = -1;
     float seenPolicyLoss = -1, seenValueLoss = -1, seenOwnershipLoss = -1;
 };

@@ -4,9 +4,10 @@
 // tell learning (judging new positions better) from memorizing the buffer.
 // Each generation's self-play games are positions the network has never
 // trained on; scoring the network on them, before they join the buffer,
-// answers that. The same measurement on a sample of the buffer gives the
-// fitted side of the comparison with everything else equal: the same
-// network, inference-mode batch norm, no symmetry augmentation.
+// answers that. The same measurement on a sample of the buffer, the
+// network's training distribution, gives the other side of the comparison
+// with everything else equal: the same network, inference-mode batch norm,
+// no symmetry augmentation.
 //
 // A measurement only: it reads the network and the games, draws from no
 // generator the run uses, and changes nothing the run produces.

@@ -310,6 +310,12 @@ static void test_resume_is_byte_identical() {
     for (const char* f : {"checkpoints/gen_0004.azn", "state.bin", "elo.csv", "results.csv",
                           "references.csv", "sgf/gen_0004_game_00.sgf"})
         assert(readFile(a.file(f)) == readFile(b.file(f)));
+    // The validation loss resumes exactly too, buffer sample included.
+    for (int i = 0; i < 4; ++i)
+        for (const char* column : {"val_policy_loss", "val_value_loss", "val_ownership_loss",
+                                   "seen_policy_loss", "seen_value_loss", "seen_ownership_loss"})
+            assert(logRow(a.str(), i).at(column) == logRow(b.str(), i).at(column));
+    assert(!logRow(b.str(), 3).at("seen_value_loss").empty());
 }
 
 // Workers change who plays which game and how gemm rows are split, never the result.
@@ -1542,6 +1548,31 @@ static void test_resume_adds_validation_columns() {
     assert(!logRow(dir.str()).at("val_policy_loss").empty());
 }
 
+// A measurement that is not a number is printed "nan", not hidden as an
+// empty (unmeasured) field. Here generation 0's ownership head has NaN
+// running means: search and training never read them (training uses batch
+// statistics), so the run goes on, but the inference-mode ownership loss
+// is NaN at every generation.
+static void test_validation_loss_prints_nan() {
+    TempDir dir("val_nan");
+    fs::create_directories(dir.path);
+    Network net(ownershipConfig().netConfig(), 5);
+    for (const BufferView& b : net.buffers())
+        if (b.name == "ownership.bn.runMean") std::fill(b.value, b.value + b.size, std::nanf(""));
+    Trainer::RunInit init;
+    init.initFrom = dir.file("nan.azn");
+    saveNetwork(net, init.initFrom);
+    TempDir run("val_nan_run");
+    std::unique_ptr<Trainer> t = Trainer::startNew(ownershipConfig(), run.str(), init);
+    std::ostringstream out;
+    t->setLog(&out);
+    t->runUntil(2);
+    const std::map<std::string, std::string> row = logRow(run.str());
+    assert(row.at("val_ownership_loss") == "nan" && row.at("seen_ownership_loss") == "nan");
+    assert(!row.at("val_value_loss").empty() && row.at("val_value_loss") != "nan");
+    assert(out.str().find(" val p ") != std::string::npos);
+}
+
 int main() {
     test_start_new_writes_run_files();
     test_two_generations();
@@ -1579,6 +1610,7 @@ int main() {
     test_validation_loss_changes_nothing();
     test_validation_loss_worker_independence();
     test_resume_adds_validation_columns();
+    test_validation_loss_prints_nan();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }
