@@ -509,6 +509,28 @@ static void test_hand_edited_files() {
     assert(parseConfigText("arena_games = 8", "t.cfg").arenaGames == 8);
 }
 
+// validation_loss: a measurement, on unless turned off, tunable on resume.
+static void test_validation_loss_key() {
+    Config c;
+    assert(c.validationLoss);
+    // With the training settings, after ownership_weight.
+    assert(contains(configToString(c), "ownership_weight = 1.5\nvalidation_loss = true\n"));
+    c = parseConfigText("validation_loss = off\n", "t.cfg");
+    assert(!c.validationLoss);
+    assert(contains(configToString(c), "validation_loss = false\n"));
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    Config o;
+    applyOverride(o, "validation_loss=false");
+    assert(!o.validationLoss);
+    assert(contains(errorOf("validation_loss = sometimes"), "t.cfg:1: validation_loss: "));
+    // It reads the network and changes nothing: tunable.
+    Config a;
+    assert(architectureDiff(a, c).empty() && resumeLockedDiff(a, c).empty());
+    // A config.cfg written before the key existed, and every preset, measure it.
+    assert(parseConfigText("filters = 96\n", "old.cfg").validationLoss);
+    for (const char* name : {"5x5.cfg", "9x9.cfg", "19x19.cfg"}) assert(loadConfigFile(preset(name)).validationLoss);
+}
+
 int main() {
     test_defaults();
     test_presets_load();
@@ -523,6 +545,7 @@ int main() {
     test_ownership_keys();
     test_random_symmetry_keys();
     test_resignation_keys();
+    test_validation_loss_key();
     test_errors_name_key_and_line();
     test_hand_edited_files();
     std::printf("test_config: all tests passed\n");

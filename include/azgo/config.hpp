@@ -62,6 +62,10 @@ struct Config {
     float momentum = 0.9f;
     float weightDecay = 1e-4f;
     float ownershipWeight = 1.5f;      // weight w of the ownership loss; 0 = the head does not train
+    // Measure, each generation, the loss of the network on its fresh
+    // self-play games before it trains on them (and on a sample of the
+    // buffer it did train on). Measurement only: changes no result.
+    bool validationLoss = true;
     // arena
     int arenaEvery = 1;                // 0 = never
     int arenaGames = 20;               // per opponent, even

@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <utility>
 #include <vector>
+#include "azgo/backend.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/config.hpp"
 #include "azgo/elo.hpp"
@@ -23,6 +24,7 @@
 #include "azgo/selfplay.hpp"
 #include "azgo/serialize.hpp"
 #include "azgo/trainer.hpp"
+#include "azgo/validation.hpp"
 
 using namespace azgo;
 namespace fs = std::filesystem;
@@ -95,6 +97,52 @@ static std::vector<std::string> splitLines(const std::string& s) {
     return lines;
 }
 
+// One CSV row's fields; a trailing comma gives a trailing empty field.
+static std::vector<std::string> splitFields(const std::string& row) {
+    std::vector<std::string> fields(1);
+    for (char ch : row) {
+        if (ch == ',') fields.emplace_back();
+        else fields.back() += ch;
+    }
+    return fields;
+}
+
+// log.csv's data row `index` (0 = generation 1's; -1 = the last), as
+// column name -> field. Asserts the row has as many fields as the header.
+static std::map<std::string, std::string> logRow(const std::string& runDir, int index = -1) {
+    const std::vector<std::string> rows = splitLines(readFile((fs::path(runDir) / "log.csv").string()));
+    assert(rows.size() >= 2);
+    const std::vector<std::string> header = splitFields(rows[0]);
+    const std::vector<std::string> fields =
+        splitFields(rows[index < 0 ? rows.size() - 1 : static_cast<size_t>(index) + 1]);
+    assert(fields.size() == header.size());
+    std::map<std::string, std::string> out;
+    for (size_t i = 0; i < header.size(); ++i) out[header[i]] = fields[i];
+    return out;
+}
+
+// The first `count` fields of every line of log.csv: the file as code that
+// had only those columns wrote it.
+static std::string firstLogColumns(const std::string& runDir, size_t count) {
+    std::string out;
+    for (const std::string& row : splitLines(readFile((fs::path(runDir) / "log.csv").string()))) {
+        const std::vector<std::string> fields = splitFields(row);
+        assert(fields.size() > count);
+        for (size_t i = 0; i < count; ++i) out += (i ? "," : "") + fields[i];
+        out += "\n";
+    }
+    return out;
+}
+
+constexpr int kLogCommas = 24;   // 25 columns
+
+// "%.5f" of x: how log.csv prints a loss.
+static std::string loss5(float x) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.5f", x);
+    return buf;
+}
+
 static std::unique_ptr<Trainer> startQuiet(const Config& c, const TempDir& dir) {
     std::unique_ptr<Trainer> t = Trainer::startNew(c, dir.str());
     t->setLog(nullptr);
@@ -150,7 +198,9 @@ static void test_start_new_writes_run_files() {
     assert(readFile(dir.file("log.csv")) ==
            "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
            "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev,"
-           "ownership_loss,resign_threshold,resign_rate,resign_false_positive\n");
+           "ownership_loss,resign_threshold,resign_rate,resign_false_positive,"
+           "val_policy_loss,val_value_loss,val_ownership_loss,"
+           "seen_policy_loss,seen_value_loss,seen_ownership_loss\n");
     assert(readFile(dir.file("elo.csv")) ==
            "generation,elo,winrate_vs_prev,wr_low,wr_high\n0,0.0,,,\n");
 }
@@ -177,15 +227,12 @@ static void test_two_generations() {
     assert(st.ownershipLoss == -1.0f);   // no ownership head
     assert(!st.resignation);
     {
-        // The log row ends with the same diversity count, then empty
-        // ownership_loss and resignation fields (no head, no resignation).
-        const std::vector<std::string> rows = splitLines(readFile(dir.file("log.csv")));
-        const std::string& row = rows.back();
-        assert(std::count(row.begin(), row.end(), ',') == 18);
-        assert(row.size() > 4 && row.compare(row.size() - 4, 4, ",,,,") == 0);
-        const std::string fields = row.substr(0, row.size() - 4);
-        const std::string distinct = fields.substr(fields.find_last_of(',') + 1);
-        assert(!distinct.empty() && std::stoi(distinct) == st.distinctVsPrev);
+        // The log row has the same diversity count, and empty ownership_loss
+        // and resignation fields (no head, no resignation).
+        const std::map<std::string, std::string> row = logRow(dir.str());
+        assert(!row.at("distinct_vs_prev").empty() && std::stoi(row.at("distinct_vs_prev")) == st.distinctVsPrev);
+        for (const char* empty : {"ownership_loss", "resign_threshold", "resign_rate", "resign_false_positive"})
+            assert(row.at(empty).empty());
     }
 
     t->runUntil(2);
@@ -731,14 +778,11 @@ static void test_ownership_run_trains_the_head() {
     const GenerationStats st = t->runGeneration();
     // A mean squared error of values in [-1, 1].
     assert(std::isfinite(st.ownershipLoss) && st.ownershipLoss > 0 && st.ownershipLoss < 4);
-    // ownership_loss, then the three resignation columns, empty.
-    const std::string row = splitLines(readFile(dir.file("log.csv"))).back();
-    assert(row.size() > 3 && row.compare(row.size() - 3, 3, ",,,") == 0);
-    const std::string fields = row.substr(0, row.size() - 3);
-    const std::string last = fields.substr(fields.find_last_of(',') + 1);
-    char expected[32];
-    std::snprintf(expected, sizeof expected, "%.5f", st.ownershipLoss);
-    assert(last == expected);
+    // ownership_loss, and the three resignation columns empty.
+    const std::map<std::string, std::string> row = logRow(dir.str());
+    assert(row.at("ownership_loss") == loss5(st.ownershipLoss));
+    for (const char* empty : {"resign_threshold", "resign_rate", "resign_false_positive"})
+        assert(row.at(empty).empty());
     assert(out.str().find(" v ") != std::string::npos && out.str().find(" o ") != std::string::npos);
 
     Network gen0 = loadNetwork(checkpointPath(dir.str(), 0));
@@ -860,14 +904,12 @@ static void test_resume_run_from_before_ownership() {
     // config.cfg and log.csv as the old code wrote them.
     std::string oldConfig;
     for (const std::string& line : splitLines(readFile(configPath(dir.str()))))
-        if (line.rfind("ownership", 0) != 0) oldConfig += line + "\n";
+        if (line.rfind("ownership", 0) != 0 && line.rfind("validation_loss", 0) != 0)
+            oldConfig += line + "\n";
     writeFile(configPath(dir.str()), oldConfig);
-    std::vector<std::string> rows = splitLines(readFile(dir.file("log.csv")));
-    assert(rows.size() == 2 && rows[1].back() == ',');
-    // Without the ownership_loss and resignation columns (four empty fields).
-    const std::string newColumns = ",ownership_loss,resign_threshold,resign_rate,resign_false_positive";
-    std::string oldLog = rows[0].substr(0, rows[0].size() - newColumns.size()) + "\n" +
-                         rows[1].substr(0, rows[1].size() - 4) + "\n";
+    // Without the ownership_loss column and every later one.
+    const std::string oldLog = firstLogColumns(dir.str(), 15);
+    assert(oldLog.rfind("generation,", 0) == 0 && oldLog.find(",distinct_vs_prev\n") != std::string::npos);
     assert(std::count(oldLog.begin(), oldLog.end(), ',') == 2 * 14);
     writeFile(dir.file("log.csv"), oldLog);
 
@@ -877,9 +919,15 @@ static void test_resume_run_from_before_ownership() {
     for (size_t i = 0; i < current.buffer.games(); ++i)
         assert(resumed.buffer.game(i).finalOwnership == current.buffer.game(i).finalOwnership);
     t->runUntil(2);
-    rows = splitLines(readFile(dir.file("log.csv")));
+    const std::vector<std::string> rows = splitLines(readFile(dir.file("log.csv")));
     assert(rows.size() == 3 && rows[0].find(",distinct_vs_prev,ownership_loss,") != std::string::npos);
-    for (const std::string& row : rows) assert(std::count(row.begin(), row.end(), ',') == 18);
+    for (const std::string& row : rows) assert(std::count(row.begin(), row.end(), ',') == kLogCommas);
+    // The old row's later columns are empty; the new row measures the
+    // validation loss (validation_loss defaults to on).
+    const std::map<std::string, std::string> old = logRow(dir.str(), 0), fresh = logRow(dir.str(), 1);
+    for (const char* column : {"ownership_loss", "resign_threshold", "val_policy_loss", "seen_value_loss"})
+        assert(old.at(column).empty());
+    assert(!fresh.at("val_policy_loss").empty() && !fresh.at("seen_value_loss").empty());
     assert(readFile(statePath(dir.str()))[4] == 5);
 }
 
@@ -1188,15 +1236,14 @@ static void test_resignation_run() {
         expectedThreshold = calibrateResignThreshold(window, calibrationOf(c));
         assert(s.resignThreshold == expectedThreshold);
 
-        const std::string row = splitLines(readFile(dir.file("log.csv"))).back();
-        assert(std::count(row.begin(), row.end(), ',') == 18);
-        char tail[96];
-        std::snprintf(tail, sizeof tail, ",%.2f,%.4f,", st.resignThreshold, st.resignRate);
+        const std::map<std::string, std::string> row = logRow(dir.str());
+        char threshold[16], rate[16], falsePositive[16] = "";
+        std::snprintf(threshold, sizeof threshold, "%.2f", st.resignThreshold);
+        std::snprintf(rate, sizeof rate, "%.4f", st.resignRate);
         if (st.resignFalsePositive >= 0)
-            std::snprintf(tail + std::strlen(tail), sizeof tail - std::strlen(tail), "%.4f",
-                          st.resignFalsePositive);
-        assert(row.size() > std::strlen(tail) &&
-               row.compare(row.size() - std::strlen(tail), std::string::npos, tail) == 0);
+            std::snprintf(falsePositive, sizeof falsePositive, "%.4f", st.resignFalsePositive);
+        assert(row.at("resign_threshold") == threshold && row.at("resign_rate") == rate &&
+               row.at("resign_false_positive") == falsePositive);
 
         int resigned = 0;
         for (int i = 0; i < 8; ++i) {
@@ -1221,7 +1268,9 @@ static void test_resignation_run() {
     assert(splitLines(readFile(dir.file("log.csv")))[0] ==
            "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
            "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev,"
-           "ownership_loss,resign_threshold,resign_rate,resign_false_positive");
+           "ownership_loss,resign_threshold,resign_rate,resign_false_positive,"
+           "val_policy_loss,val_value_loss,val_ownership_loss,"
+           "seen_policy_loss,seen_value_loss,seen_ownership_loss");
     assert(out.str().find("gen 1 | selfplay 8 games avg ") != std::string::npos);
     assert(out.str().find(" resign 0.00 rate ") != std::string::npos);
 }
@@ -1299,17 +1348,17 @@ static void test_resignation_refusals_and_resume() {
 static void test_resume_adds_resignation_columns() {
     TempDir dir("pre_resign_log");
     startQuiet(tinyConfig(), dir)->runUntil(1);
-    std::vector<std::string> rows = splitLines(readFile(dir.file("log.csv")));
-    const std::string suffix = ",resign_threshold,resign_rate,resign_false_positive";
-    assert(rows.size() == 2 && rows[0].size() > suffix.size());
-    std::string oldLog = rows[0].substr(0, rows[0].size() - suffix.size()) + "\n" +
-                         rows[1].substr(0, rows[1].size() - 3) + "\n";
+    // Without the resignation columns and every later one.
+    const std::string oldLog = firstLogColumns(dir.str(), 16);
+    assert(oldLog.find(",ownership_loss\n") != std::string::npos);
     assert(std::count(oldLog.begin(), oldLog.end(), ',') == 2 * 15);
     writeFile(dir.file("log.csv"), oldLog);
     resumeQuiet(dir, {})->runUntil(2);
-    rows = splitLines(readFile(dir.file("log.csv")));
-    assert(rows.size() == 3 && rows[0].compare(rows[0].size() - suffix.size(), suffix.size(), suffix) == 0);
-    for (const std::string& row : rows) assert(std::count(row.begin(), row.end(), ',') == 18);
+    const std::vector<std::string> rows = splitLines(readFile(dir.file("log.csv")));
+    assert(rows.size() == 3 && rows[0].find(",resign_threshold,resign_rate,resign_false_positive,") != std::string::npos);
+    for (const std::string& row : rows) assert(std::count(row.begin(), row.end(), ',') == kLogCommas);
+    for (const char* column : {"resign_threshold", "resign_false_positive", "val_value_loss", "seen_ownership_loss"})
+        assert(logRow(dir.str(), 0).at(column).empty());
 }
 
 // A resigned game's last board is no final position, so a run with the
@@ -1333,6 +1382,164 @@ static void test_buffer_from_refuses_resigned_games_for_ownership() {
     std::unique_ptr<Trainer> t = Trainer::startNew(tinyConfig(), plain.str(), init);
     t->setLog(nullptr);
     assert(loadTrainingState(statePath(plain.str())).buffer.games() == s.buffer.games());
+}
+
+// ---- the validation loss -------------------------------------------------------
+
+// Generation g measures generation g-1's network, in inference mode at the
+// identity symmetry, on every position of its own self-play games before
+// they join the buffer (val_*), and on as many positions drawn from the
+// buffer that network was trained on (seen_*), with the generator
+// deriveSeed(seed, g, kPhaseValidation). Recomputed here from the run's
+// files, the numbers agree exactly. Generation 1 has an empty buffer, so no
+// seen_* loss; without the ownership head, no ownership columns.
+static void test_validation_loss_columns() {
+    TempDir dir("validation");
+    const Config c = tinyConfig();
+    assert(c.validationLoss);   // on by default
+    std::unique_ptr<Trainer> t = startQuiet(c, dir);
+    std::ostringstream out;
+    t->setLog(&out);
+    const GenerationStats st1 = t->runGeneration();
+    const TrainingState after1 = loadTrainingState(statePath(dir.str()));
+    const GenerationStats st2 = t->runGeneration();
+    const TrainingState after2 = loadTrainingState(statePath(dir.str()));
+
+    std::unique_ptr<Backend> backend = makeBackend(c.backend, 1);
+    Workspace ws(c.netConfig(), c.batchSize, *backend);
+    // Generation g's games are the buffer's last games_per_generation (nothing is evicted).
+    auto gamesOf = [&c](const TrainingState& s) {
+        std::vector<GameRecord> games;
+        for (size_t i = s.buffer.games() - c.gamesPerGeneration; i < s.buffer.games(); ++i)
+            games.push_back(s.buffer.game(i));
+        return games;
+    };
+    const Network gen0 = loadNetwork(checkpointPath(dir.str(), 0));
+    const Network gen1 = loadNetwork(checkpointPath(dir.str(), 1));
+    const std::vector<GameRecord> games1 = gamesOf(after1), games2 = gamesOf(after2);
+    const HeldOutLoss val1 = heldOutLoss(gen0, ws, allPositions(games1), c.history);
+    const HeldOutLoss val2 = heldOutLoss(gen1, ws, allPositions(games2), c.history);
+    Rng rng(deriveSeed(c.seed, 2, kPhaseValidation));
+    const HeldOutLoss seen2 =
+        heldOutLoss(gen1, ws, samplePositions(after1.buffer, static_cast<int>(val2.positions), rng), c.history);
+
+    assert(st1.valPolicyLoss == val1.policyLoss && st1.valValueLoss == val1.valueLoss);
+    assert(st2.valPolicyLoss == val2.policyLoss && st2.valValueLoss == val2.valueLoss);
+    assert(st2.seenPolicyLoss == seen2.policyLoss && st2.seenValueLoss == seen2.valueLoss);
+    assert(st1.seenPolicyLoss == -1 && st1.seenValueLoss == -1);
+    assert(st1.valOwnershipLoss == -1 && st2.valOwnershipLoss == -1 && st2.seenOwnershipLoss == -1);
+    assert(st2.valPolicyLoss > 0 && st2.valValueLoss >= 0 && st2.seenPolicyLoss > 0);
+
+    const std::map<std::string, std::string> row1 = logRow(dir.str(), 0), row2 = logRow(dir.str(), 1);
+    assert(row1.at("val_policy_loss") == loss5(val1.policyLoss) && row1.at("val_value_loss") == loss5(val1.valueLoss));
+    assert(row2.at("val_policy_loss") == loss5(val2.policyLoss) && row2.at("val_value_loss") == loss5(val2.valueLoss));
+    assert(row2.at("seen_policy_loss") == loss5(seen2.policyLoss) &&
+           row2.at("seen_value_loss") == loss5(seen2.valueLoss));
+    for (const char* empty : {"seen_policy_loss", "seen_value_loss", "seen_ownership_loss", "val_ownership_loss"})
+        assert(row1.at(empty).empty());
+    assert(row2.at("val_ownership_loss").empty() && row2.at("seen_ownership_loss").empty());
+
+    // The progress line: "val p X v Y" after the training loss, and "seen p X v Y" once the buffer has games.
+    const std::vector<std::string> lines = splitLines(out.str());
+    assert(lines.size() == 2);
+    char val[64], seen[64];
+    std::snprintf(val, sizeof val, " lr 0.02 val p %.2f v %.2f ", st1.valPolicyLoss, st1.valValueLoss);
+    assert(lines[0].find(val) != std::string::npos && lines[0].find(" seen ") == std::string::npos);
+    std::snprintf(val, sizeof val, " val p %.2f v %.2f seen p ", st2.valPolicyLoss, st2.valValueLoss);
+    std::snprintf(seen, sizeof seen, " seen p %.2f v %.2f ", st2.seenPolicyLoss, st2.seenValueLoss);
+    assert(lines[1].find(val) != std::string::npos && lines[1].find(seen) != std::string::npos);
+}
+
+// With the ownership head, the head's loss is measured too: the unweighted
+// per-point squared error, like ownership_loss.
+static void test_validation_loss_with_ownership_head() {
+    TempDir dir("validation_own");
+    std::unique_ptr<Trainer> t = startQuiet(ownershipConfig(), dir);
+    t->runGeneration();
+    const GenerationStats st = t->runGeneration();
+    assert(st.valOwnershipLoss > 0 && st.valOwnershipLoss < 4);
+    assert(st.seenOwnershipLoss > 0 && st.seenOwnershipLoss < 4);
+    const std::map<std::string, std::string> row = logRow(dir.str());
+    assert(row.at("val_ownership_loss") == loss5(st.valOwnershipLoss));
+    assert(row.at("seen_ownership_loss") == loss5(st.seenOwnershipLoss));
+}
+
+// The measurement changes nothing a run produces: with validation_loss off,
+// every checkpoint, state.bin, the ratings and the games are byte-identical,
+// with and without the ownership head, and so are log.csv's other columns
+// except the timings. Off, the six columns are empty and the progress line
+// does not mention them.
+static void test_validation_loss_changes_nothing() {
+    for (bool ownership : {false, true}) {
+        TempDir on(ownership ? "val_own_on" : "val_on"), off(ownership ? "val_own_off" : "val_off");
+        Config c = ownership ? ownershipConfig() : tinyConfig();
+        startQuiet(c, on)->runUntil(3);
+        c.validationLoss = false;
+        std::unique_ptr<Trainer> t = startQuiet(c, off);
+        std::ostringstream out;
+        t->setLog(&out);
+        t->runUntil(3);
+        for (const char* f : {"checkpoints/gen_0001.azn", "checkpoints/gen_0002.azn", "checkpoints/gen_0003.azn",
+                              "state.bin", "elo.csv", "results.csv", "references.csv",
+                              "sgf/gen_0001_game_00.sgf", "sgf/gen_0003_game_00.sgf"})
+            assert(readFile(on.file(f)) == readFile(off.file(f)));
+        for (int i = 0; i < 3; ++i) {
+            std::map<std::string, std::string> a = logRow(on.str(), i), b = logRow(off.str(), i);
+            assert(!a.at("val_policy_loss").empty());
+            for (const char* column : {"val_policy_loss", "val_value_loss", "val_ownership_loss",
+                                       "seen_policy_loss", "seen_value_loss", "seen_ownership_loss"}) {
+                assert(b.at(column).empty());
+                a.erase(column);
+                b.erase(column);
+            }
+            for (const char* timing : {"selfplay_s", "train_s", "arena_s"}) {
+                a.erase(timing);
+                b.erase(timing);
+            }
+            assert(a == b);
+        }
+        assert(out.str().find(" val ") == std::string::npos && out.str().find(" seen ") == std::string::npos);
+    }
+}
+
+// Like everything else in a run, the measurement does not depend on the worker count.
+static void test_validation_loss_worker_independence() {
+    TempDir one("val_workers1"), three("val_workers3");
+    Config c = tinyConfig();
+    c.workers = 1;
+    startQuiet(c, one)->runUntil(2);
+    c.workers = 3;
+    startQuiet(c, three)->runUntil(2);
+    for (int i = 0; i < 2; ++i) {
+        const std::map<std::string, std::string> a = logRow(one.str(), i), b = logRow(three.str(), i);
+        for (const char* column : {"val_policy_loss", "val_value_loss", "seen_policy_loss", "seen_value_loss"})
+            assert(a.at(column) == b.at(column));
+    }
+    assert(!logRow(one.str(), 1).at("seen_value_loss").empty());
+}
+
+// A log.csv written before the validation columns gets them, empty in every
+// old row, on resume; validation_loss is tunable, so a resume can turn it
+// off (or on) and the next row follows.
+static void test_resume_adds_validation_columns() {
+    TempDir dir("pre_validation_log");
+    startQuiet(tinyConfig(), dir)->runUntil(1);
+    const std::string oldLog = firstLogColumns(dir.str(), 19);
+    assert(oldLog.find(",resign_false_positive\n") != std::string::npos);
+    writeFile(dir.file("log.csv"), oldLog);
+    resumeQuiet(dir, {})->runUntil(2);
+    std::vector<std::string> rows = splitLines(readFile(dir.file("log.csv")));
+    assert(rows.size() == 3 && rows[0].find(",resign_false_positive,val_policy_loss,") != std::string::npos);
+    for (const std::string& row : rows) assert(std::count(row.begin(), row.end(), ',') == kLogCommas);
+    assert(rows[1].size() > 6 && rows[1].compare(rows[1].size() - 6, 6, ",,,,,,") == 0);
+    assert(!logRow(dir.str(), 1).at("val_policy_loss").empty());
+
+    std::unique_ptr<Trainer> t = resumeQuiet(dir, {"validation_loss=false"});
+    assert(!t->config().validationLoss && !loadConfigFile(configPath(dir.str())).validationLoss);
+    t->runUntil(3);
+    assert(logRow(dir.str()).at("val_policy_loss").empty());
+    resumeQuiet(dir, {"validation_loss=true"})->runUntil(4);
+    assert(!logRow(dir.str()).at("val_policy_loss").empty());
 }
 
 int main() {
@@ -1367,6 +1574,11 @@ int main() {
     test_resignation_refusals_and_resume();
     test_resume_adds_resignation_columns();
     test_buffer_from_refuses_resigned_games_for_ownership();
+    test_validation_loss_columns();
+    test_validation_loss_with_ownership_head();
+    test_validation_loss_changes_nothing();
+    test_validation_loss_worker_independence();
+    test_resume_adds_validation_columns();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }

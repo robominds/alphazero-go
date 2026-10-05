@@ -253,6 +253,8 @@ const KeyEntry kKeys[] = {
     {"ownership_weight", false,
      [](Config& c, const std::string& v) { return parseFloat(v, 0, 10, c.ownershipWeight); },
      printFloat<&Config::ownershipWeight>},
+    {"validation_loss", false, [](Config& c, const std::string& v) { return parseBool(v, c.validationLoss); },
+     [](const Config& c) { return std::string(c.validationLoss ? "true" : "false"); }},
     // arena
     {"arena_every", false, intKey<&Config::arenaEvery, 0, 1000000>, printInt<&Config::arenaEvery>},
     {"arena_games", false, [](Config& c, const std::string& v) { return parseEvenGames(v, c.arenaGames); },

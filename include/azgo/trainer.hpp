@@ -38,9 +38,19 @@ struct GenerationStats {
     // False positives at resignThreshold over the window, this generation's
     // disabled games included; -1 while the window is empty.
     double resignFalsePositive = -1;
+    // The validation loss, when validation_loss is on (-1 when not measured).
+    // val*: the network this generation trains (generation g-1's), in
+    // inference mode, on every position of this generation's self-play
+    // games, before they join the replay buffer: data it has never trained
+    // on. seen*: the same on as many positions drawn from the buffer it was
+    // trained on; -1 while the buffer is empty. The ownership terms only
+    // with the head.
+    float valPolicyLoss = -1, valValueLoss = -1, valOwnershipLoss = -1;
+    float seenPolicyLoss = -1, seenValueLoss = -1, seenOwnershipLoss = -1;
 };
 
-// The generation loop: self-play -> train -> arena/Elo -> checkpoint + state.
+// The generation loop: self-play -> (validation loss) -> train -> arena/Elo
+// -> checkpoint + state.
 class Trainer {
 public:
     // Optional starting material for a new run. initFrom: a checkpoint that
@@ -71,7 +81,8 @@ public:
     // startNew. Recalibrates v_resign from state.bin's window and the
     // (possibly overridden) resignation keys. Rewrites config.cfg with the
     // overridden values, and gives a log.csv written before the
-    // ownership_loss or resignation columns existed those columns (empty).
+    // ownership_loss, resignation or validation columns existed those
+    // columns (empty).
     static std::unique_ptr<Trainer> resume(const std::string& runDir,
                                            const std::vector<std::string>& overrides);
 

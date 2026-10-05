@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end smoke test of the executables on a tiny 5x5 run:
-# train -> resume -> re-rate (as live, then against a reference network) ->
+# train -> resume (with the validation loss) -> re-rate (as live, then against a reference network) ->
 # arena (checkpoint, bot, random symmetry, c_puct and MCTS batch, on both sides or one) -> analyze (good, random symmetry and
 # bad input) -> bench -> grow (deeper, wider, and a run started from the grown network), plus the refusal to change the architecture on resume,
 # then the ownership head: a run with it, grow --ownership, and analyze's ownership map,
@@ -15,6 +15,8 @@ W="$(mktemp -d "${TMPDIR:-/tmp}/azgo_smoke.XXXXXX")"
 trap 'rm -rf "$W"' EXIT
 
 fail() { echo "integration_smoke: FAILED: $*" >&2; exit 1; }
+# col FILE NAME: the field under column NAME in the last row of CSV FILE.
+col() { awk -F, -v name="$2" 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == name) c = i } END { print $c }' "$1"; }
 
 # The 5x5 preset shrunk to a network and budget that train in seconds, on the
 # naive backend so the test also runs in builds without BLAS.
@@ -34,9 +36,15 @@ grep -q '^-1,bot,100,0,' "$RUN/references.csv" || fail "references.csv does not 
 grep -q '^-1,0,80,' "$RUN/results.csv" || fail "results.csv has no bot calibration games"
 
 echo "== train: resume to generation 3 =="
-"$BUILD/train" --run "$RUN" --resume --generations 3
+"$BUILD/train" --run "$RUN" --resume --generations 3 | tee "$W/resume.out"
 test -s "$CK/gen_0003.azn" || fail "gen_0003.azn missing after resume"
 [ "$(wc -l < "$RUN/log.csv" | tr -d ' ')" = "4" ] || fail "log.csv should have a header and 3 rows"
+# The validation loss is on by default: on the fresh games and on a buffer sample.
+grep -Eq '^gen 3 \|.* val p [0-9.]+ v [0-9.]+ seen p [0-9.]+ v [0-9.]+ ' "$W/resume.out" \
+    || fail "the progress line does not report the validation loss"
+for c in val_policy_loss val_value_loss seen_policy_loss seen_value_loss; do
+    col "$RUN/log.csv" $c | grep -Eq '^[0-9]+\.[0-9]{5}$' || fail "log.csv has no $c"
+done
 
 echo "== train: re-rate the finished run =="
 state_before="$(cksum < "$RUN/state.bin")"
@@ -283,8 +291,10 @@ echo "== train: a run with the ownership head =="
 "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/own_run" "${TINY[@]}" --set ownership=true \
     --generations 1
 head -1 "$W/own_run/log.csv" | grep -q ',distinct_vs_prev,ownership_loss,' || fail "log.csv has no ownership_loss column"
-tail -1 "$W/own_run/log.csv" | grep -Eq ',[0-9]+\.[0-9]{5},,,$' || fail "log.csv row has no ownership loss"
-tail -1 "$RUN/log.csv" | grep -q ',,,,$' || fail "a run without the head or resignation should leave those columns empty"
+col "$W/own_run/log.csv" ownership_loss | grep -Eq '^[0-9]+\.[0-9]{5}$' || fail "log.csv row has no ownership loss"
+col "$W/own_run/log.csv" val_ownership_loss | grep -Eq '^[0-9]+\.[0-9]{5}$' || fail "log.csv row has no validation ownership loss"
+[ -z "$(col "$RUN/log.csv" ownership_loss)$(col "$RUN/log.csv" resign_threshold)$(col "$RUN/log.csv" val_ownership_loss)" ] \
+    || fail "a run without the head or resignation should leave those columns empty"
 status=0
 out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/own_bad" "${TINY[@]}" --set ownership=true \
     --init-from "$CK/gen_0003.azn" --generations 1 2>&1)" || status=$?
@@ -329,9 +339,9 @@ echo "== train: a run with resignation =="
     --set sgf_per_generation=8 --generations 2 | tee "$W/resign.out"
 grep -Eq '^gen 1 \| selfplay 8 games avg [0-9.]+ plies resign 0\.00 rate ' "$W/resign.out" \
     || fail "the progress line does not report resignation"
-head -1 "$W/resign_run/log.csv" | grep -q ',ownership_loss,resign_threshold,resign_rate,resign_false_positive$' \
+head -1 "$W/resign_run/log.csv" | grep -q ',ownership_loss,resign_threshold,resign_rate,resign_false_positive,' \
     || fail "log.csv has no resignation columns"
-tail -1 "$W/resign_run/log.csv" | grep -Eq ',,-?[01]\.[0-9]{2},[0-9.]*,[0-9.]*$' || fail "log.csv row has no resign_threshold"
+col "$W/resign_run/log.csv" resign_threshold | grep -Eq '^-?[01]\.[0-9]{2}$' || fail "log.csv row has no resign_threshold"
 grep -lq 'RE\[[BW]+R\]' "$W"/resign_run/sgf/*.sgf || fail "no self-play SGF records a resignation"
 status=0
 out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/resign_own" "${TINY[@]}" --set ownership=true \

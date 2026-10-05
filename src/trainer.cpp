@@ -28,6 +28,7 @@
 #include "azgo/selfplay.hpp"
 #include "azgo/serialize.hpp"
 #include "azgo/sgf.hpp"
+#include "azgo/validation.hpp"
 
 namespace azgo {
 
@@ -38,9 +39,11 @@ namespace {
 const char* const kLogHeader =
     "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
     "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev,"
-    "ownership_loss,resign_threshold,resign_rate,resign_false_positive\n";
+    "ownership_loss,resign_threshold,resign_rate,resign_false_positive,"
+    "val_policy_loss,val_value_loss,val_ownership_loss,"
+    "seen_policy_loss,seen_value_loss,seen_ownership_loss\n";
 // Earlier headers, which Trainer::resume upgrades: before ownership_loss,
-// and before the resignation columns.
+// before the resignation columns, and before the validation columns.
 const char* const kLogHeaderBeforeOwnership =
     "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
     "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev\n";
@@ -48,6 +51,10 @@ const char* const kLogHeaderBeforeResignation =
     "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
     "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev,"
     "ownership_loss\n";
+const char* const kLogHeaderBeforeValidation =
+    "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
+    "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev,"
+    "ownership_loss,resign_threshold,resign_rate,resign_false_positive\n";
 const char* const kEloHeader = "generation,elo,winrate_vs_prev,wr_low,wr_high\n";
 const char* const kRerateLogHeader =
     "generation,opponents,score_vs_prev,score_vs_strongest,promoted,elo\n";
@@ -201,13 +208,22 @@ void appendLogRow(const std::string& runDir, const GenerationStats& s) {
         if (s.resignFalsePositive >= 0)
             std::snprintf(falsePositive, sizeof falsePositive, "%.4f", s.resignFalsePositive);
     }
+    // The validation columns: empty where not measured.
+    const float validation[6] = {s.valPolicyLoss,  s.valValueLoss,  s.valOwnershipLoss,
+                                 s.seenPolicyLoss, s.seenValueLoss, s.seenOwnershipLoss};
+    std::string validationFields;
+    for (float v : validation) {
+        char field[32] = "";
+        if (v >= 0) std::snprintf(field, sizeof field, "%.5f", v);
+        validationFields += std::string(",") + field;
+    }
     char line[512];
     std::snprintf(line, sizeof line,
-                  "%d,%d,%.2f,%.4f,%.4f,%.5f,%.5f,%g,%.3f,%.3f,%.3f,%.3f,%.1f,%s,%s,%s,%s,%s,%s\n",
+                  "%d,%d,%.2f,%.4f,%.4f,%.5f,%.5f,%g,%.3f,%.3f,%.3f,%.3f,%.1f,%s,%s,%s,%s,%s,%s%s\n",
                   s.generation, s.games, s.avgLength, s.passRate, s.blackWinRate,
                   s.policyLoss, s.valueLoss, s.lr, s.replayRatio, s.selfPlaySeconds,
                   s.trainSeconds, s.arenaSeconds, s.elo, winRate, distinct, ownership,
-                  threshold, rate, falsePositive);
+                  threshold, rate, falsePositive, validationFields.c_str());
     std::ofstream out(logPath(runDir), std::ios::app | std::ios::binary);
     out << line;
     if (!out) throw std::runtime_error("cannot append to " + logPath(runDir));
@@ -222,16 +238,18 @@ std::string shapeString(const NetConfig& c) {
            (c.ownership ? ", ownership head" : "");
 }
 
-// A run started before log.csv had the ownership_loss or the resignation
-// columns gets them, empty in every old row (those generations had neither
-// an ownership head nor resignation), so every row has as many fields as
-// the header. Anything else is left alone.
+// A run started before log.csv had the ownership_loss, the resignation or
+// the validation columns gets them, empty in every old row (those
+// generations had no ownership head, no resignation and no validation
+// loss), so every row has as many fields as the header. Anything else is
+// left alone.
 void addMissingLogColumns(const std::string& runDir) {
     std::ifstream in(logPath(runDir), std::ios::binary);
     if (!in) return;
     const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    const std::pair<const char*, const char*> upgrades[] = {{kLogHeaderBeforeOwnership, ",,,,"},
-                                                            {kLogHeaderBeforeResignation, ",,,"}};
+    const std::pair<const char*, const char*> upgrades[] = {{kLogHeaderBeforeOwnership, ",,,,,,,,,,"},
+                                                            {kLogHeaderBeforeResignation, ",,,,,,,,,"},
+                                                            {kLogHeaderBeforeValidation, ",,,,,,"}};
     for (const auto& [header, emptyFields] : upgrades) {
         if (text.compare(0, std::strlen(header), header) != 0) continue;
         std::string out = kLogHeader;
@@ -606,8 +624,39 @@ GenerationStats Trainer::runGeneration() {
         writeFileAtomically(sgfPath(runDir_, g, i), sgf);
     }
 
+    // ---- Validation loss (a measurement; changes nothing) -------------------
+    // net_ is generation g-1's network, about to train on these games, and
+    // (without gating) the one that played them. Measured before they join
+    // the buffer, they are data it has never been fitted to; the buffer, not
+    // yet changed, is exactly the data it was fitted to at generation g-1.
+    // Inference mode and the identity symmetry, so nothing is drawn from any
+    // generator of the run and nothing is written to the network; the
+    // buffer sample has its own generator (kPhaseValidation). Its time counts
+    // as training time.
+    double validationSeconds = 0;
+    if (cfg_.validationLoss) {
+        const auto validationStart = Clock::now();
+        std::unique_ptr<Backend> backend = makeBackend(cfg_.backend, workers);
+        Workspace ws(net_.config(), cfg_.batchSize, *backend);
+        const HeldOutLoss fresh = heldOutLoss(net_, ws, allPositions(records), cfg_.history);
+        stats.valPolicyLoss = fresh.policyLoss;
+        stats.valValueLoss = fresh.valueLoss;
+        stats.valOwnershipLoss = fresh.ownershipLoss;
+        if (state_.buffer.positions() > 0) {
+            // As many positions as the fresh games have, so both means are
+            // equally noisy.
+            Rng rng(deriveSeed(cfg_.seed, static_cast<uint64_t>(g), kPhaseValidation));
+            const HeldOutLoss seen = heldOutLoss(
+                net_, ws, samplePositions(state_.buffer, static_cast<int>(fresh.positions), rng), cfg_.history);
+            stats.seenPolicyLoss = seen.policyLoss;
+            stats.seenValueLoss = seen.valueLoss;
+            stats.seenOwnershipLoss = seen.ownershipLoss;
+        }
+        validationSeconds = secondsSince(validationStart);
+    }
+
     for (GameRecord& r : records) state_.buffer.add(std::move(r));   // index order
-    stats.selfPlaySeconds = secondsSince(selfPlayStart);
+    stats.selfPlaySeconds = secondsSince(selfPlayStart) - validationSeconds;
 
     // ---- 2. Train -----------------------------------------------------------
     const auto trainStart = Clock::now();
@@ -667,7 +716,7 @@ GenerationStats Trainer::runGeneration() {
     state_.samplesTrained += drawn;
     stats.lr = lr;
     stats.replayRatio = plies > 0 ? static_cast<double>(drawn) / plies : 0.0;
-    stats.trainSeconds = secondsSince(trainStart);
+    stats.trainSeconds = secondsSince(trainStart) + validationSeconds;
 
     // ---- 3. Checkpoint ----------------------------------------------------
     // Written before state.bin (step 5). A crash in between leaves state.bin at
@@ -729,12 +778,22 @@ GenerationStats Trainer::runGeneration() {
             std::snprintf(resign, sizeof resign, " resign %.2f rate %s fp %s", stats.resignThreshold, rate,
                           falsePositive);
         }
+        // With the validation loss, e.g. " val p 1.80 v 0.12 seen p 1.75 v 0.10":
+        // on the fresh games, then on the buffer sample (once there is one).
+        char validation[96] = "";
+        if (stats.valPolicyLoss >= 0) {
+            int len = std::snprintf(validation, sizeof validation, " val p %.2f v %.2f", stats.valPolicyLoss,
+                                    stats.valValueLoss);
+            if (stats.seenPolicyLoss >= 0)
+                std::snprintf(validation + len, sizeof validation - static_cast<size_t>(len), " seen p %.2f v %.2f",
+                              stats.seenPolicyLoss, stats.seenValueLoss);
+        }
         char line[512];
         std::snprintf(line, sizeof line,
                       "gen %d | selfplay %d games avg %.1f plies%s %.1fs | "
-                      "train loss p %.2f v %.2f%s lr %g %.1fs | ",
+                      "train loss p %.2f v %.2f%s lr %g%s %.1fs | ",
                       g, stats.games, stats.avgLength, resign, stats.selfPlaySeconds, stats.policyLoss,
-                      stats.valueLoss, ownership, stats.lr, stats.trainSeconds);
+                      stats.valueLoss, ownership, stats.lr, validation, stats.trainSeconds);
         *log_ << line;
         if (arenaThisGeneration) {
             // e.g. "arena elo 512.3 vs 149:0.55 120:0.70 ref1:0.40 (distinct 19/20) promoted 3.2s"
