@@ -12,7 +12,9 @@
 // exactly like the arena after its opening moves, and nothing is trained.
 //
 // Rules are the project's own (Game): positional superko, suicide illegal,
-// Tromp-Taylor area scoring for final_score. The engine never resigns.
+// Tromp-Taylor area scoring for final_score. The engine never resigns, and
+// it plays no further once both sides have passed in a row: genmove then
+// answers "? game is over" and play "? illegal move" until clear_board.
 #pragma once
 #include <cstdint>
 #include <ostream>

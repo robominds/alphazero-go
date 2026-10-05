@@ -17,6 +17,16 @@ static GtpOptions fastOptions(int simulations = 16) {
     return o;
 }
 
+static NetConfig tinyNet() {
+    NetConfig c;
+    c.boardSize = 5;
+    c.history = 2;
+    c.blocks = 1;
+    c.filters = 4;
+    c.valueHidden = 8;
+    return c;
+}
+
 // The result text of a successful response, after "=[id] ", without the
 // closing blank line. Asserts the response succeeded.
 static std::string ok(GtpEngine& e, const std::string& line) {
@@ -94,9 +104,14 @@ static void test_coordinates() {
     assert(e.handle("play BLACK h1") == "=\n\n");
     assert(e.game().board().at(79) == Color::Black);
     assert(e.handle("play w I5") == "? syntax error\n\n");   // no I column
-    assert(e.handle("play w K5") == "? syntax error\n\n");   // beyond J on 9x9
-    assert(e.handle("play w A10") == "? syntax error\n\n");
+    // A well-formed vertex off the board is an illegal move; text that is
+    // no vertex at all is a syntax error.
+    assert(e.handle("play w K5") == "? illegal move\n\n");   // beyond J on 9x9
+    assert(e.handle("play w A10") == "? illegal move\n\n");
+    assert(e.handle("play w z25") == "? illegal move\n\n");
+    assert(e.handle("play w A26") == "? syntax error\n\n");  // no board has 26 rows
     assert(e.handle("play w A0") == "? syntax error\n\n");
+    assert(e.handle("play w 5A") == "? syntax error\n\n");
     assert(e.handle("play x A2") == "? syntax error\n\n");   // not a color
     assert(e.handle("play w") == "? syntax error\n\n");
     assert(e.game().moveCount() == 3);
@@ -135,15 +150,31 @@ static void test_play_illegal_and_pass() {
     for (const char* m : {"play b A8", "play w J1", "play b B9"}) ok(e, m);
     assert(e.handle("play w A9") == "? illegal move\n\n");
 
-    // Two passes end the game; after that no move is legal and genmove
-    // answers pass without playing.
+    // Two passes end the game; after that no move is legal, genmove is an
+    // error, and nothing is recorded, so undo still takes back the last pass.
     ok(e, "clear_board");
-    ok(e, "play b pass");
-    ok(e, "play w PASS");
+    ok(e, "play b C3");
+    ok(e, "play b pass");                                    // White's pass, then Black's
+    assert(e.game().moveCount() == 3 && e.game().consecutivePasses() == 2);
     assert(e.game().isTerminal());
     assert(e.handle("play b E5") == "? illegal move\n\n");
-    assert(ok(e, "genmove b") == "pass");
-    assert(e.game().moveCount() == 2);
+    assert(e.handle("play w pass") == "? illegal move\n\n");
+    assert(e.handle("genmove b") == "? game is over\n\n");
+    assert(e.handle("3 genmove w") == "?3 game is over\n\n");
+    assert(e.game().moveCount() == 3);
+    ok(e, "undo");                                           // both passes of the out-of-turn play
+    assert(e.game().moveCount() == 1 && !e.game().isTerminal());
+
+    // Out of turn right after a pass: the side to move would have to pass
+    // too, which ends the game, so neither play nor genmove records anything.
+    ok(e, "play w pass");
+    assert(e.game().moveCount() == 2 && e.game().board().toMove() == Color::Black);
+    assert(e.handle("play w D4") == "? illegal move\n\n");
+    assert(e.handle("genmove w") == "? game is over\n\n");
+    assert(e.game().moveCount() == 2 && !e.game().isTerminal());
+    ok(e, "undo");
+    ok(e, "undo");
+    assert(e.game().moveCount() == 0);
 }
 
 // GTP allows two moves of one color in a row: the side to move is recorded
@@ -193,13 +224,7 @@ static void test_genmove() {
 // The same seed and commands give the same moves, with random symmetry
 // too, so a match against a deterministic opponent can be replayed.
 static void test_genmove_deterministic() {
-    NetConfig c;
-    c.boardSize = 5;
-    c.history = 2;
-    c.blocks = 1;
-    c.filters = 4;
-    c.valueHidden = 8;
-    Network net(c, 7);
+    Network net(tinyNet(), 7);
     NaiveBackend backend;
     for (bool symmetry : {false, true}) {
         auto play = [&](uint64_t seed) {

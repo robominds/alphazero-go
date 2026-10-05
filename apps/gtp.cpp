@@ -36,10 +36,12 @@ const char* const kUsage =
     "genmove searches --simulations (1-100000) simulations at temperature 0 with no\n"
     "root noise and never resigns; final_score is the Tromp-Taylor area score\n"
     "minus komi, every stone on the board counting. Rules are the project's:\n"
-    "positional superko, no suicide. --komi applies until the controller sends\n"
-    "komi. --random-symmetry evaluates each position under a random one of the 8\n"
-    "board symmetries, as AlphaGo Zero did; --seed (>= 0) seeds it and the\n"
-    "tie-breaks. --c-puct is in (0, 100], --mcts-batch in [1, 256].\n";
+    "positional superko, no suicide. After two passes in a row the game is over:\n"
+    "play answers \"? illegal move\" and genmove \"? game is over\" until clear_board.\n"
+    "--komi applies until the controller sends komi. --random-symmetry evaluates\n"
+    "each position under a random one of the 8 board symmetries, as AlphaGo Zero\n"
+    "did; --seed (>= 0) seeds it and the tie-breaks. --c-puct is in (0, 100],\n"
+    "--mcts-batch in [1, 256].\n";
 
 int usageError(const std::string& message) {
     std::fprintf(stderr, "error: %s\n\n%s", message.c_str(), kUsage);

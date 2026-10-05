@@ -552,10 +552,18 @@ network plays only the board size it was trained for (`boardsize 19` to
 a 9×9 checkpoint answers `? unacceptable size`), suicide is illegal,
 positional superko is enforced (`? illegal move`), and `final_score` is
 the Tromp-Taylor area score minus komi, every stone on the board
-counting, in the form `B+3.5`. The engine sets no move cap of its own:
-the controller decides when a game ends. GTP allows two moves of one
-color in a row; the engine records the side to move as passing in
-between.
+counting, in the form `B+3.5`. A well-formed vertex off the board
+(`K5` on 9×9) is `? illegal move`; text that is no vertex (`I5`, `A0`) is
+`? syntax error`. The engine sets no move cap of its own: the controller
+decides when a game ends. It does not continue play after two passes in
+a row: the game is over, `play` answers `? illegal move` and `genmove`
+`? game is over`, and nothing is recorded, so a controller should stop
+there (and ask for `final_score`) or send `clear_board`. In Sabaki this
+means a game cannot be played on after both sides pass. GTP allows two
+moves of one color in a row; the engine records the side to move as
+passing in between. Right after a pass that inserted pass would be the
+second one and end the game, so such a move is refused the same way
+(`? illegal move` for `play`, `? game is over` for `genmove`).
 
 `tools/gtp_match.py` (standard-library Python) plays a match between any
 two GTP engine command lines, `--a` and `--b`, colors alternating (A is

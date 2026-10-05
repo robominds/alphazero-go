@@ -77,6 +77,17 @@ bool parseFloat(const std::string& s, float& out) {
     return true;
 }
 
+// A vertex in GTP's syntax on some board up to 25x25: a column letter
+// other than I, then a row number from 1 to 25.
+bool isVertex(const std::string& text) {
+    if (text.size() < 2 || text.size() > 3) return false;
+    const char col = static_cast<char>(std::toupper(static_cast<unsigned char>(text[0])));
+    if (col < 'A' || col > 'Z' || col == 'I') return false;
+    const std::string row = text.substr(1);
+    if (!allDigits(row) || row[0] == '0') return false;
+    return std::atoi(row.c_str()) <= 25;
+}
+
 GtpOptions evaluationOnly(GtpOptions o) {
     o.search.addNoise = false;
     return o;
@@ -169,7 +180,9 @@ std::string GtpEngine::dispatch(const std::string& command, const std::vector<st
         Color color;
         if (args.size() != 2 || !parseColor(args[0], color)) return fail("syntax error");
         const int action = parseAction(args[1], n);   // case-insensitive; no 'I' column
-        if (action < 0) return fail("syntax error");
+        // A well-formed vertex off this board ("K5" on 9x9) is a move that
+        // cannot be played; text that is no vertex at all ("I5", "A0") is not.
+        if (action < 0) return fail(isVertex(args[1]) ? "illegal move" : "syntax error");
         if (!playAs(color, action)) return fail("illegal move");
         return "";
     }
@@ -177,20 +190,21 @@ std::string GtpEngine::dispatch(const std::string& command, const std::vector<st
         Color color;
         if (args.size() != 1 || !parseColor(args[0], color)) return fail("syntax error");
         const int pass = n * n;
+        // After two passes the game is over and the engine plays no more
+        // (clear_board starts the next one). The same holds for a move out
+        // of turn right after a pass: it needs a pass recorded for the side
+        // to move, and that second pass would end the game. Nothing is
+        // recorded either way, so undo stays in step with the controller.
+        const bool outOfTurn = color != game_.board().toMove();
+        if (game_.isTerminal() || (outOfTurn && game_.consecutivePasses() == 1))
+            return fail("game is over");
         // The other side's turn: GTP allows two moves of one color in a
         // row, which here means the side to move passed.
         int added = 0;
-        if (color != game_.board().toMove() && !game_.isTerminal()) {
+        if (outOfTurn) {
             game_.play(pass);
             mcts_.advance(pass);
             added = 1;
-        }
-        if (game_.isTerminal()) {
-            // The game is over (both passed), so there is nothing to search;
-            // genmove cannot fail, and passing changes nothing.
-            if (added > 0) added_.push_back(added);
-            if (opts_.log) *opts_.log << "genmove: the game is over, answering pass\n";
-            return "pass";
         }
         mcts_.search(game_, rng_);
         const int action = mcts_.selectAction(0.0f, rng_);   // temperature 0: most visited
