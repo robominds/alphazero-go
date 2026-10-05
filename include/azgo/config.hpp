@@ -46,6 +46,7 @@ struct Config {
     float dirichletScale = 10.0f;
     float noiseFraction = 0.25f;
     int temperatureMoves = 20;
+    bool mctsRandomSymmetry = false;   // self-play search: random symmetry per evaluation (AlphaGo Zero)
     // training
     int bufferPositions = 200000;
     int trainSteps = 200;
@@ -66,6 +67,7 @@ struct Config {
     float promoteThreshold = 0.85f;    // score vs the strongest reference that adds g to the references
     int arenaSimulations = 100;
     int arenaTemperatureMoves = 4;
+    bool arenaRandomSymmetry = false;  // arena search (networks): random symmetry per evaluation
     bool gating = false;
     float gatingThreshold = 0.55f;
     // output

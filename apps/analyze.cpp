@@ -7,6 +7,7 @@
 //
 //   analyze --checkpoint runs/nine/checkpoints/gen_0040.azn --moves "E5 C3 pass"
 //   analyze --checkpoint gen_0040.azn --sgf game.sgf --simulations 800
+//   analyze --checkpoint gen_0040.azn --moves "E5 C3" --random-symmetry
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -36,13 +37,15 @@ namespace {
 
 const char* const kUsage =
     "usage: analyze --checkpoint CKPT [--moves \"D4 C3 pass\"] [--sgf FILE]\n"
-    "               [--simulations 400] [--komi 7.5] [--backend naive]\n"
+    "               [--simulations 400] [--komi 7.5] [--backend naive] [--random-symmetry]\n"
     "\n"
     "Plays the moves (GTP coordinates, or the main line of an SGF file) from the\n"
     "empty board, then prints the network's value, its ownership map (only for a\n"
     "checkpoint with an ownership head) and policy for the position, and the\n"
     "result of an MCTS search. With --sgf the file's komi is used unless --komi\n"
-    "is given.\n";
+    "is given. --random-symmetry makes the search evaluate each position under a\n"
+    "random one of the 8 board symmetries, as AlphaGo Zero did; the raw network\n"
+    "output above it always sees the board as it is.\n";
 
 constexpr char kColumns[] = "ABCDEFGHJKLMNOPQRST";   // GTP skips I
 constexpr int kMctsBatch = 8;
@@ -116,7 +119,7 @@ int main(int argc, char** argv) {
         args = std::make_unique<ArgParser>(
             argc, argv,
             std::vector<std::string>{"checkpoint", "moves", "sgf", "simulations", "komi", "backend"},
-            std::vector<std::string>{"help"});
+            std::vector<std::string>{"help", "random-symmetry"});
     } catch (const std::invalid_argument& e) {
         return usageError(e.what());
     }
@@ -243,11 +246,12 @@ int main(int argc, char** argv) {
         mc.simulations = simulations;
         mc.batchSize = kMctsBatch;
         mc.addNoise = false;
+        mc.randomSymmetry = args->flag("random-symmetry");
         azgo::Mcts mcts(mc, evaluator);
         azgo::Rng rng(1);
         mcts.search(game, rng);
-        std::printf("\nMCTS value (side to move): %+.2f after %d simulations\n", mcts.rootValue(),
-                    simulations);
+        std::printf("\nMCTS value (side to move): %+.2f after %d simulations%s\n", mcts.rootValue(),
+                    simulations, mc.randomSymmetry ? " with random symmetry" : "");
 
         // The root is the one node without a parent. Its edges carry Q from
         // the root player's point of view: valueSum / visits.

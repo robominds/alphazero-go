@@ -321,6 +321,40 @@ static void test_ownership_keys() {
     }
 }
 
+static void test_random_symmetry_keys() {
+    Config c;
+    assert(!c.mctsRandomSymmetry && !c.arenaRandomSymmetry);
+    // Each sits with the search settings it changes: self-play's after
+    // temperature_moves, the arena's after arena_temperature_moves.
+    assert(contains(configToString(c), "temperature_moves = 20\nmcts_random_symmetry = false\n"));
+    assert(contains(configToString(c), "arena_temperature_moves = 4\narena_random_symmetry = false\n"));
+
+    c = parseConfigText("mcts_random_symmetry = on\narena_random_symmetry = 1\n", "t.cfg");
+    assert(c.mctsRandomSymmetry && c.arenaRandomSymmetry);
+    assert(contains(configToString(c), "mcts_random_symmetry = true\n"));
+    assert(contains(configToString(c), "arena_random_symmetry = true\n"));
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    Config o;
+    applyOverride(o, "arena_random_symmetry=true");
+    assert(o.arenaRandomSymmetry && !o.mctsRandomSymmetry);
+    assert(contains(errorOf("mcts_random_symmetry = maybe"), "t.cfg:1: mcts_random_symmetry: "));
+    assert(contains(errorOf("arena_random_symmetry = 2"), "t.cfg:1: arena_random_symmetry: "));
+
+    // They change how search reads the network, not its shape or the
+    // players' IDs: both are tunable on resume.
+    Config a;
+    assert(architectureDiff(a, c).empty() && resumeLockedDiff(a, c).empty());
+
+    // A config.cfg written before these keys existed leaves both off, and
+    // the presets do not turn them on.
+    const Config old = parseConfigText("filters = 96\n", "old.cfg");
+    assert(!old.mctsRandomSymmetry && !old.arenaRandomSymmetry);
+    for (const char* name : {"5x5.cfg", "9x9.cfg", "19x19.cfg"}) {
+        const Config p = loadConfigFile(preset(name));
+        assert(!p.mctsRandomSymmetry && !p.arenaRandomSymmetry);
+    }
+}
+
 static void test_errors_name_key_and_line() {
     std::string msg = errorOf("komi = 7.5\nfoo = 1\n");
     assert(contains(msg, "t.cfg:2") && contains(msg, "foo") && contains(msg, "unknown key"));
@@ -394,6 +428,7 @@ int main() {
     test_resume_locked_diff();
     test_reference_networks_key();
     test_ownership_keys();
+    test_random_symmetry_keys();
     test_errors_name_key_and_line();
     test_hand_edited_files();
     std::printf("test_config: all tests passed\n");

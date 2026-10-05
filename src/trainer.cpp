@@ -134,6 +134,7 @@ ArenaConfig arenaConfig(const Config& cfg) {
     ac.temperatureMoves = cfg.arenaTemperatureMoves;
     ac.komi = cfg.komi;
     ac.maxMoves = cfg.effectiveMaxMoves();
+    ac.randomSymmetry = cfg.arenaRandomSymmetry;
     return ac;
 }
 
@@ -463,6 +464,7 @@ GenerationStats Trainer::runGeneration() {
         sp.mcts.cPuct = cfg_.cPuct;
         sp.mcts.dirichletScale = cfg_.dirichletScale;
         sp.mcts.noiseFraction = cfg_.noiseFraction;
+        sp.mcts.randomSymmetry = cfg_.mctsRandomSymmetry;
         sp.temperatureMoves = cfg_.temperatureMoves;
         sp.komi = cfg_.komi;
         sp.maxMoves = cfg_.effectiveMaxMoves();

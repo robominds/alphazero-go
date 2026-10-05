@@ -24,6 +24,7 @@ struct ArenaConfig {
     int temperatureMoves = 4;    // opening plies sampled at temperature 1
     float komi = 7.5f;
     int maxMoves = 0;            // 0 = defaultMaxMoves(n)
+    bool randomSymmetry = false; // MctsConfig::randomSymmetry for network players (a bot gains nothing)
 };
 
 struct MatchResult {

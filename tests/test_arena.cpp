@@ -73,6 +73,26 @@ static void test_deterministic_across_workers_and_runs() {
     assert(sameResult(one, again));
 }
 
+// Random symmetry draws from each game's own Rng, so a match stays
+// deterministic for its seed and independent of the worker count. An
+// untrained network is not equivariant, so the draws change its games.
+// A bot's uniform priors look the same under every transform; it gives
+// nothing to average and draws nothing.
+static void test_random_symmetry_matches() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22);
+    ArenaConfig cfg = tinyArena();
+    cfg.temperatureMoves = 2;
+    const MatchResult plain = playMatch(a, b, cfg, 42, 1, "naive");
+    cfg.randomSymmetry = true;
+    const MatchResult one = playMatch(a, b, cfg, 42, 1, "naive");
+    checkBookkeeping(one, 8);
+    assert(sameResult(one, playMatch(a, b, cfg, 42, 3, "naive")));
+    assert(sameResult(one, playMatch(a, b, cfg, 42, 1, "naive")));
+    assert(!sameResult(one, plain));
+    assert(sameResult(playMatch(ArenaPlayer::network(a), ArenaPlayer::bot(16), cfg, 5, 1, "naive"),
+                      playMatch(ArenaPlayer::network(a), ArenaPlayer::bot(16), cfg, 5, 3, "naive")));
+}
+
 static void test_colors_balanced() {
     // With komi 100 on 5x5 (area score at most 25) White wins every game, so
     // A's score counts exactly the games in which A played White.
@@ -279,6 +299,7 @@ int main() {
     test_gate();
     test_match_score();
     test_deterministic_across_workers_and_runs();
+    test_random_symmetry_matches();
     test_colors_balanced();
     test_opening_temperature_diversifies();
     test_rejects_bad_setup();

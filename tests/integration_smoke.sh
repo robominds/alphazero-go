@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test of the executables on a tiny 5x5 run:
 # train -> resume -> re-rate (as live, then against a reference network) ->
-# arena (checkpoint and bot) -> analyze (good and
+# arena (checkpoint, bot, random symmetry) -> analyze (good, random symmetry and
 # bad input) -> bench -> grow (deeper, wider, and a run started from the grown network), plus the refusal to change the architecture on resume,
 # then the ownership head: a run with it, grow --ownership, and analyze's ownership map.
 #
@@ -73,6 +73,12 @@ out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --a-simulati
 echo "$out"
 echo "$out" | grep -q '(2 simulations) vs B .*(16 simulations): A scored' || fail "arena --a/--b-simulations did not name both counts"
 
+echo "== arena: random symmetry =="
+out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --random-symmetry --games 4 --simulations 4 --workers 2)"
+echo "$out"
+echo "$out" | grep -Eq '^A .* scored' || fail "arena --random-symmetry did not print a score line"
+echo "$out" | grep -q '^Search: random symmetry' || fail "arena --random-symmetry did not say so"
+
 # B is exactly one of a checkpoint and a bot, and a bot must search.
 expect_arena_error() {
     local want="$1"; shift
@@ -92,6 +98,10 @@ echo "== analyze: a legal position =="
 out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --simulations 16)"
 echo "$out"
 echo "$out" | grep -q "MCTS value" || fail "analyze printed no MCTS value"
+
+echo "== analyze: random symmetry =="
+out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --simulations 16 --random-symmetry)"
+echo "$out" | grep -q "MCTS value .* with random symmetry" || fail "analyze --random-symmetry did not say so"
 
 echo "== analyze: SGF input =="
 printf '(;GM[1]FF[4]SZ[5]KM[7.5];B[cc];W[dd])\n' > "$W/ok.sgf"

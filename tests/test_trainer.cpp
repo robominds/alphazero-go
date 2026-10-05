@@ -1082,6 +1082,39 @@ static void test_rerate_with_reference_networks() {
     assert(msg.find(c.referenceNetworks[0]) != std::string::npos && msg.find("changed") != std::string::npos);
 }
 
+// mcts_random_symmetry reaches self-play and arena_random_symmetry reaches
+// the arena (live rounds and rerate share one match function), each draw
+// from a per-game Rng, so a run with both on is still independent of the
+// worker count. Each comparison with the plain run is fixed by the seed.
+static void test_random_symmetry_run() {
+    TempDir plain("sym_off"), one("sym_workers1"), three("sym_workers3");
+    Config c = tinyConfig();
+    c.arenaGames = 8;
+    startQuiet(c, plain)->runUntil(2);
+    c.mctsRandomSymmetry = true;
+    c.arenaRandomSymmetry = true;
+    c.workers = 1;
+    startQuiet(c, one)->runUntil(2);
+    c.workers = 3;
+    startQuiet(c, three)->runUntil(2);
+    for (const char* f : {"checkpoints/gen_0002.azn", "state.bin", "results.csv", "references.csv"})
+        assert(readFile(one.file(f)) == readFile(three.file(f)));
+    // Other self-play games, so another generation 1.
+    assert(readFile(one.file("checkpoints/gen_0001.azn")) != readFile(plain.file("checkpoints/gen_0001.azn")));
+
+    // The same checkpoints met under random symmetry play other games.
+    rerateRun(plain.str(), {"arena_random_symmetry=on"}, nullptr);
+    assert(readFile(plain.file("rerate/results.csv")) != readFile(plain.file("results.csv")));
+
+    // Both are tunable: a resume may turn them on, and config.cfg keeps them.
+    std::unique_ptr<Trainer> t = resumeQuiet(plain, {"mcts_random_symmetry=on", "arena_random_symmetry=on"});
+    assert(t->config().mctsRandomSymmetry && t->config().arenaRandomSymmetry);
+    const Config saved = loadConfigFile(configPath(plain.str()));
+    assert(saved.mctsRandomSymmetry && saved.arenaRandomSymmetry);
+    t->runUntil(3);
+    assert(t->generation() == 3);
+}
+
 int main() {
     test_start_new_writes_run_files();
     test_two_generations();
@@ -1108,6 +1141,7 @@ int main() {
     test_resume_refuses_changed_reference_networks();
     test_reference_network_determinism();
     test_rerate_with_reference_networks();
+    test_random_symmetry_run();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }

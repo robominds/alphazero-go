@@ -5,6 +5,7 @@
 //   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0020.azn
 //   arena --a runs/nine/checkpoints/gen_0040.azn --b-bot 100
 //   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0020.azn --b-simulations 3200
+//   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0020.azn --random-symmetry
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -26,14 +27,16 @@ namespace {
 const char* const kUsage =
     "usage: arena --a CKPT (--b CKPT | --b-bot SIMS) [--games 40] [--simulations 200]\n"
     "             [--a-simulations N] [--b-simulations N] [--komi 7.5] [--temperature-moves 4]\n"
-    "             [--workers 0] [--backend naive] [--seed 1]\n"
+    "             [--workers 0] [--backend naive] [--seed 1] [--random-symmetry]\n"
     "\n"
     "Colors alternate: A plays Black in even-numbered games. --workers 0 uses every core.\n"
     "--b-bot SIMS makes B a uniform bot: MCTS with equal priors and value 0, searching\n"
     "SIMS simulations per move (1-100000) on A's board size.\n"
     "--a-simulations and --b-simulations (1-100000) override --simulations for one side, so a\n"
     "frozen checkpoint can serve as a stronger reference by searching more. A bot already has its\n"
-    "own count, so --b-bot and --b-simulations cannot be combined.\n";
+    "own count, so --b-bot and --b-simulations cannot be combined.\n"
+    "--random-symmetry evaluates every position in both networks' searches under a random\n"
+    "one of the 8 board symmetries, as AlphaGo Zero did (a bot is unaffected).\n";
 
 int usageError(const std::string& message) {
     std::fprintf(stderr, "error: %s\n\n%s", message.c_str(), kUsage);
@@ -50,7 +53,7 @@ int main(int argc, char** argv) {
             std::vector<std::string>{"a", "b", "b-bot", "games", "simulations", "a-simulations",
                                      "b-simulations", "komi",
                                      "temperature-moves", "workers", "backend", "seed"},
-            std::vector<std::string>{"help"});
+            std::vector<std::string>{"help", "random-symmetry"});
     } catch (const std::invalid_argument& e) {
         return usageError(e.what());
     }
@@ -68,6 +71,7 @@ int main(int argc, char** argv) {
         cfg.simulations = args->getInt("simulations", 200);
         cfg.komi = static_cast<float>(args->getDouble("komi", 7.5));
         cfg.temperatureMoves = args->getInt("temperature-moves", 4);
+        cfg.randomSymmetry = args->flag("random-symmetry");
         const int workers = args->getInt("workers", 0);
         const int seed = args->getInt("seed", 1);
         const std::string backend = args->get("backend", "naive");
@@ -115,6 +119,7 @@ int main(int argc, char** argv) {
                     labelA.c_str(), nameB.c_str(), r.scoreA, r.games, r.scoreA / r.games,
                     ci.first, ci.second, r.distinctGames);
         std::printf("A wins %d, B wins %d, draws %d\n", r.winsA, r.winsB, r.draws);
+        if (cfg.randomSymmetry) std::printf("Search: random symmetry per network evaluation\n");
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());
