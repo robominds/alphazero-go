@@ -49,6 +49,7 @@ public:
 
     bool quitRequested() const { return quit_; }
     const Game& game() const { return game_; }
+    const Mcts& search() const { return mcts_; }   // the search tree, for tests
 
     // Every command handle() knows, in list_commands order.
     static const std::vector<std::string>& commands();

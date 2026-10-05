@@ -244,6 +244,74 @@ static void test_genmove_deterministic() {
     }
 }
 
+// The engine's whole promise: genmove is exactly an evaluation search --
+// no root noise even if the options ask for it, temperature 0, the tree
+// kept between moves -- so it equals Mcts driven directly with the same
+// settings and seed, move for move and visit for visit.
+static void test_genmove_is_plain_search() {
+    Network net(tinyNet(), 5);
+    NaiveBackend backend;
+    for (bool symmetry : {false, true}) {
+        LocalEvaluator engineEval(net, backend, 4), directEval(net, backend, 4);
+        GtpOptions o = fastOptions(32);
+        o.seed = 9;
+        o.search.randomSymmetry = symmetry;
+        o.search.addNoise = true;                            // must be ignored
+        GtpEngine e(engineEval, o);
+
+        MctsConfig plain = o.search;
+        plain.addNoise = false;
+        Mcts direct(plain, directEval);
+        Rng rng(9);
+        Game game(5, o.komi, 1 << 30);
+        for (int k = 0; k < 6 && !game.isTerminal(); ++k) {
+            direct.search(game, rng);
+            const int want = direct.selectAction(0.0f, rng);
+            const std::string got = ok(e, game.board().toMove() == Color::Black ? "genmove b" : "genmove w");
+            assert(got == actionToString(want, 5));
+            game.play(want);
+            direct.advance(want);
+            assert(e.search().nodeCount() == direct.nodeCount());
+            assert(e.search().rootVisits() == direct.rootVisits());
+        }
+    }
+}
+
+// clear_board forgets the game's moves, so there is nothing to undo.
+static void test_clear_board_forgets_undo() {
+    UniformEvaluator eval(9, 2);
+    GtpEngine e(eval, fastOptions());
+    ok(e, "play b C3");
+    ok(e, "play w D4");
+    ok(e, "clear_board");
+    assert(e.handle("undo") == "? cannot undo\n\n");
+    ok(e, "play b C3");
+    ok(e, "boardsize 9");
+    assert(e.handle("undo") == "? cannot undo\n\n");
+    assert(e.game().moveCount() == 0);
+}
+
+// A mid-game komi drops the tree (its terminal values used the old komi):
+// the next genmove equals a fresh engine's on the same moves and komi.
+static void test_komi_mid_game_searches_afresh() {
+    Network net(tinyNet(), 5);
+    NaiveBackend backend;
+    for (const char* komi : {"komi 0.5", "komi 30"}) {
+        LocalEvaluator evalA(net, backend, 4), evalB(net, backend, 4);
+        GtpEngine a(evalA, fastOptions(32)), b(evalB, fastOptions(32));
+        const std::string m1 = ok(a, "genmove b");
+        const std::string m2 = ok(a, "genmove w");
+        ok(a, komi);
+        const std::string next = ok(a, "genmove b");
+        ok(b, komi);
+        ok(b, "play b " + m1);
+        ok(b, "play w " + m2);
+        assert(ok(b, "genmove b") == next);
+        assert(a.search().nodeCount() == b.search().nodeCount());
+        assert(a.search().rootVisits() == b.search().rootVisits());
+    }
+}
+
 // final_score is Tromp-Taylor area minus komi, from the board as it stands.
 static void test_final_score() {
     UniformEvaluator eval(5, 2);
@@ -280,6 +348,9 @@ int main() {
     test_genmove();
     test_genmove_deterministic();
     test_final_score();
+    test_genmove_is_plain_search();
+    test_clear_board_forgets_undo();
+    test_komi_mid_game_searches_afresh();
     std::printf("test_gtp: all tests passed\n");
     return 0;
 }
