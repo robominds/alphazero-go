@@ -111,8 +111,9 @@ void ReplayBuffer::sample(int B, int history, Rng& rng, TrainingBatch& out) cons
 // then per game: i32 boardSize, f32 komi, u32 moves + i32 each, the stones as
 // raw bytes (positions * n * n), per ply u32 count + u32 (action << 16 | count)
 // each, f32 resultForBlack, then (withOwnership) finalOwnership as n * n
-// signed bytes.
-void ReplayBuffer::save(BinaryWriter& w, bool withOwnership) const {
+// signed bytes, then (withResigned) one byte, 1 if the game ended by
+// resignation.
+void ReplayBuffer::save(BinaryWriter& w, bool withOwnership, bool withResigned) const {
     w.u64(capacity_);
     w.u64(static_cast<uint64_t>(totalAdded_));
     w.u32(static_cast<uint32_t>(games_.size()));
@@ -132,10 +133,14 @@ void ReplayBuffer::save(BinaryWriter& w, bool withOwnership) const {
             assert(g.finalOwnership.size() == static_cast<size_t>(g.boardSize) * g.boardSize);
             w.bytes(g.finalOwnership.data(), g.finalOwnership.size());
         }
+        if (withResigned) {
+            const uint8_t resigned = g.resigned ? 1 : 0;
+            w.bytes(&resigned, 1);
+        }
     }
 }
 
-ReplayBuffer ReplayBuffer::load(BinaryReader& r, bool withOwnership) {
+ReplayBuffer ReplayBuffer::load(BinaryReader& r, bool withOwnership, bool withResigned) {
     const uint64_t capacity = r.u64();
     if (capacity == 0) throw std::runtime_error("replay buffer: capacity is 0");
     ReplayBuffer buf(static_cast<size_t>(capacity));
@@ -186,6 +191,12 @@ ReplayBuffer ReplayBuffer::load(BinaryReader& r, bool withOwnership) {
                 throw std::runtime_error("replay buffer: game " + std::to_string(i) +
                                          " does not replay: " + e.what());
             }
+        }
+        if (withResigned) {
+            uint8_t resigned = 0;
+            r.bytes(&resigned, 1);
+            if (resigned > 1) throw std::runtime_error("replay buffer: bad resigned flag");
+            g.resigned = resigned == 1;
         }
         // Straight into the deque: the saved window already respected the
         // capacity, and totalAdded is restored below rather than recounted.

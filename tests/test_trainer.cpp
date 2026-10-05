@@ -434,7 +434,7 @@ static void test_resume_from_version1_state() {
     std::ostringstream with, without;
     BinaryWriter ww(with), wo(without);
     current.buffer.save(ww, true);
-    current.buffer.save(wo, false);
+    current.buffer.save(wo, false, false);
     const size_t header = 24;   // magic, version, generation, best generation, samples trained
     assert(bytes.compare(header, with.str().size(), with.str()) == 0);
     std::string v1 = bytes.substr(0, header) + without.str() +
@@ -851,7 +851,7 @@ static void test_resume_run_from_before_ownership() {
     std::ostringstream with, without;
     BinaryWriter ww(with), wo(without);
     current.buffer.save(ww, true);
-    current.buffer.save(wo, false);
+    current.buffer.save(wo, false, false);
     const size_t header = 24;
     std::string v2 = bytes.substr(0, header) + without.str() +
                      bytes.substr(header + with.str().size(), bytes.size() - header - with.str().size() - 12);
@@ -1171,7 +1171,7 @@ static void test_resignation_run() {
     int resignedSgf = 0;
     bool calibrated = false;   // some generation resigned at a threshold the data chose
     float expectedThreshold = 0.0f;
-    std::vector<float> window;
+    std::vector<ResignTrace> window;
     for (int g = 1; g <= 3; ++g) {
         const GenerationStats st = t->runGeneration();
         assert(st.resignation && st.resignThreshold == expectedThreshold);
@@ -1179,7 +1179,6 @@ static void test_resignation_run() {
         const TrainingState s = loadTrainingState(statePath(dir.str()));
         // The window gained this generation's disabled games, at most 6 kept.
         assert(s.resignWindow.size() >= window.size() && s.resignWindow.size() <= 6u);
-        for (float m : s.resignWindow) assert(m >= -1.0f && m <= 1.0f);
         window = s.resignWindow;
         assert(window.empty() ? st.resignFalsePositive == -1
                               : st.resignFalsePositive ==
@@ -1211,6 +1210,12 @@ static void test_resignation_run() {
         assert(resigned == 0 || st.resignRate > 0);
     }
     assert(resignedSgf > 0);       // the untrained network gives up somewhere
+    // The buffer (every game: nothing evicted yet) knows which games resigned.
+    const TrainingState last = loadTrainingState(statePath(dir.str()));
+    assert(last.buffer.games() == 24u);
+    int resignedInBuffer = 0;
+    for (size_t i = 0; i < last.buffer.games(); ++i) resignedInBuffer += last.buffer.game(i).resigned ? 1 : 0;
+    assert(resignedInBuffer == resignedSgf);
     assert(!window.empty());       // and some games were played out to measure
     assert(calibrated);            // which moved v_resign off its initial value
     assert(splitLines(readFile(dir.file("log.csv")))[0] ==
@@ -1307,6 +1312,29 @@ static void test_resume_adds_resignation_columns() {
     for (const std::string& row : rows) assert(std::count(row.begin(), row.end(), ',') == 18);
 }
 
+// A resigned game's last board is no final position, so a run with the
+// ownership head must not train on one: --buffer-from refuses a donor whose
+// buffer holds resigned games, naming it. Without the head it is accepted.
+static void test_buffer_from_refuses_resigned_games_for_ownership() {
+    TempDir donor("resign_donor"), target("resign_donor_own"), plain("resign_donor_plain");
+    startQuiet(resignConfig(), donor)->runUntil(1);
+    const TrainingState s = loadTrainingState(statePath(donor.str()));
+    bool anyResigned = false;
+    for (size_t i = 0; i < s.buffer.games(); ++i) anyResigned = anyResigned || s.buffer.game(i).resigned;
+    assert(anyResigned);
+
+    Trainer::RunInit init;
+    init.bufferFrom = donor.str();
+    const std::string msg = configErrorOf([&] { Trainer::startNew(ownershipConfig(), target.str(), init); });
+    assert(msg.find(donor.str()) != std::string::npos && msg.find("resign") != std::string::npos &&
+           msg.find("ownership") != std::string::npos);
+    assert(!fs::exists(statePath(target.str())));
+
+    std::unique_ptr<Trainer> t = Trainer::startNew(tinyConfig(), plain.str(), init);
+    t->setLog(nullptr);
+    assert(loadTrainingState(statePath(plain.str())).buffer.games() == s.buffer.games());
+}
+
 int main() {
     test_start_new_writes_run_files();
     test_two_generations();
@@ -1338,6 +1366,7 @@ int main() {
     test_resignation_determinism();
     test_resignation_refusals_and_resume();
     test_resume_adds_resignation_columns();
+    test_buffer_from_refuses_resigned_games_for_ownership();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }

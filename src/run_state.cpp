@@ -14,7 +14,8 @@ namespace azgo {
 namespace {
 constexpr uint32_t kStateMagic = 0x54535A41;   // "AZST" read as little-endian bytes
 // 2 added the reference set and bot list, 3 the buffer's ownership targets,
-// 4 the reference networks, 5 resignation's threshold and window.
+// 4 the reference networks, 5 resignation (the buffer's resigned flags, the
+// threshold and the window of disabled games).
 constexpr uint32_t kStateVersion = 5;
 } // namespace
 
@@ -54,7 +55,14 @@ void saveTrainingState(const std::string& path, const TrainingState& state) {
     }
     w.f32(state.resignThreshold);
     w.u32(static_cast<uint32_t>(state.resignWindow.size()));
-    w.floats(state.resignWindow.data(), state.resignWindow.size());
+    for (const ResignTrace& t : state.resignWindow)
+        for (const ResignLows* lows : {&t.winnerLows, &t.loserLows}) {
+            w.u32(static_cast<uint32_t>(lows->size()));
+            for (const auto& [ply, value] : *lows) {
+                w.u32(static_cast<uint32_t>(ply));
+                w.f32(value);
+            }
+        }
     writeFileAtomically(path, os.str());
 }
 
@@ -77,7 +85,7 @@ TrainingState loadTrainingState(const std::string& path, const std::vector<int>&
         state.generation = r.i32();
         state.bestGeneration = r.i32();
         state.samplesTrained = static_cast<long long>(r.u64());
-        state.buffer = ReplayBuffer::load(r, version >= 3);
+        state.buffer = ReplayBuffer::load(r, version >= 3, version >= 5);
         uint32_t tensors = r.u32();
         state.velocity.resize(tensors);
         for (std::vector<float>& v : state.velocity) {
@@ -124,10 +132,29 @@ TrainingState loadTrainingState(const std::string& path, const std::vector<int>&
                                          "the bot and reference network lists)");
             if (version >= 5) {
                 state.resignThreshold = r.f32();
+                // A threshold the config could not have produced means a damaged file.
+                if (!(state.resignThreshold >= -1.0f && state.resignThreshold <= 0.0f))
+                    throw std::runtime_error("invalid resignation threshold");
                 uint32_t games = r.u32();
-                if (games > bytes.size() / sizeof(float)) throw std::runtime_error("truncated resignation window");
+                // Each game is at least two u32 counts.
+                if (games > bytes.size() / 8) throw std::runtime_error("truncated resignation window");
                 state.resignWindow.resize(games);
-                r.floats(state.resignWindow.data(), state.resignWindow.size());
+                for (ResignTrace& t : state.resignWindow)
+                    for (ResignLows* lows : {&t.winnerLows, &t.loserLows}) {
+                        uint32_t count = r.u32();
+                        if (count > bytes.size() / 8) throw std::runtime_error("truncated resignation window");
+                        lows->resize(count);
+                        for (size_t i = 0; i < lows->size(); ++i) {
+                            auto& [ply, value] = (*lows)[i];
+                            ply = static_cast<int>(r.u32());
+                            value = r.f32();
+                            // Record lows, as self-play writes them: from ply
+                            // 1 on, plies rising, values in [-1, 1] and falling.
+                            const bool ok = ply >= 1 && ply <= 1000000 && value >= -1.0f && value <= 1.0f &&
+                                            (i == 0 || (ply > (*lows)[i - 1].first && value < (*lows)[i - 1].second));
+                            if (!ok) throw std::runtime_error("invalid resignation window entry");
+                        }
+                    }
             }
         }
         if (is.peek() != std::char_traits<char>::eof())

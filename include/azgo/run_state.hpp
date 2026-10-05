@@ -39,12 +39,14 @@ struct TrainingState {
     // The run's reference_networks, in order: reference network j (1-based)
     // is player -(botSimulations.size() + j). Recorded for the same reason.
     std::vector<ReferenceNetwork> referenceNetworks;
-    // Resignation: the v_resign the next generation's self-play uses
-    // (resign_threshold_initial's default until a trainer sets it), and the
-    // winner minimums (GameRecord::winnerMinResignValue) of the most recent
-    // resignation-disabled games, oldest first, at most resign_window.
+    // Resignation: the traces of recent resignation-disabled games, oldest
+    // first (the trainer keeps at most resign_window, trimming as it
+    // appends), and the v_resign calibrated from them after the last
+    // generation, which the next one uses. The trainer recalibrates it on
+    // resume from the window and the current keys, so the stored value only
+    // records it; it is resign_threshold_initial's default until set.
     float resignThreshold = -0.9f;
-    std::vector<float> resignWindow;
+    std::vector<ResignTrace> resignWindow;
 };
 
 // The reference set of a new run: every fixed player (-numFixed, ..., -1:
@@ -52,13 +54,14 @@ struct TrainingState {
 std::vector<int> initialReferences(int numFixed);
 
 // Binary, magic "AZST" (u32 0x54535A41), version u32 = 5 (the replay buffer
-// stores each game's final ownership; references, the bot list, the
-// reference networks, then the resignation threshold and window come last).
-// Atomic replace.
+// stores each game's final ownership and whether it ended by resignation;
+// references, the bot list, the reference networks, then the resignation
+// threshold and window come last). Atomic replace.
 void saveTrainingState(const std::string& path, const TrainingState& state);
 // Reads versions 5, 4, 3, 2 and 1. Versions 1 to 4 predate resignation and
-// load with an empty window and the default threshold (the trainer
-// recalibrates it on resume). Versions 1 to 3 predate reference networks
+// load with no resigned games, an empty window and the default threshold.
+// A version-5 threshold outside [-1, 0] or window entries that are not
+// record lows (ply >= 1 rising, values in [-1, 1] falling) are refused. Versions 1 to 3 predate reference networks
 // and load with none. Versions 1 and 2 predate stored ownership: each
 // game's is recomputed by replaying its moves (a game that does not replay is
 // an error). Version 1 also predates the reference set and the bot list: it

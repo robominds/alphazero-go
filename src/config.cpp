@@ -395,6 +395,11 @@ void checkConsistency(const Config& cfg) {
     if (cfg.resignation && cfg.ownership)
         throw ConfigError("resignation = true cannot be combined with ownership = true: a resigned "
                           "game has no final position to take ownership targets from");
+    // AlphaGo Zero measures false positives on the games played out with
+    // resignation disabled; with none, v_resign could never be checked.
+    if (cfg.resignation && cfg.resignDisabledFraction <= 0.0f)
+        throw ConfigError("resignation = true needs resign_disabled_fraction > 0: false positives are "
+                          "measured on the games played out with resignation disabled");
     if (cfg.resignMinGames > cfg.resignWindow)
         throw ConfigError("resign_min_games (" + std::to_string(cfg.resignMinGames) +
                           ") exceeds resign_window (" + std::to_string(cfg.resignWindow) +

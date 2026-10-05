@@ -424,6 +424,13 @@ static void test_resignation_keys() {
     assert(contains(consistencyErrorOf(small), "resign_min_games"));
     small.resignMinGames = 10;
     assert(consistencyErrorOf(small).empty());
+    // With no disabled games, false positives cannot be measured, and v_resign
+    // would never be checked against how games really end.
+    Config unmeasured = c;
+    unmeasured.resignDisabledFraction = 0.0f;
+    assert(contains(consistencyErrorOf(unmeasured), "resign_disabled_fraction"));
+    unmeasured.resignation = false;
+    assert(consistencyErrorOf(unmeasured).empty());   // only with resignation on
 
     // A config.cfg written before these keys existed leaves resignation off,
     // as do the presets; the 9x9 preset names the keys in comments.

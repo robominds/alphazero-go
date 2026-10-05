@@ -253,7 +253,7 @@ ResignCalibration resignCalibration(const Config& cfg) {
 }
 
 // Keeps only the most recent `window` disabled games.
-void trimResignWindow(std::vector<float>& games, int window) {
+void trimResignWindow(std::vector<ResignTrace>& games, int window) {
     if (games.size() > static_cast<size_t>(window))
         games.erase(games.begin(), games.end() - window);
 }
@@ -372,6 +372,16 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
         TrainingState donorState = loadTrainingState(statePath(init.bufferFrom), donor.botSimulations);
         donorBuffer.emplace(std::move(donorState.buffer));
         donorBuffer->setCapacity(static_cast<size_t>(cfg.bufferPositions));
+        // The ownership target is the final board's owners, and a resigned
+        // game's last board is not one: an ownership run must not train on it.
+        if (cfg.ownership) {
+            size_t resigned = 0;
+            for (size_t i = 0; i < donorBuffer->games(); ++i) resigned += donorBuffer->game(i).resigned ? 1 : 0;
+            if (resigned > 0)
+                throw ConfigError("--buffer-from run " + init.bufferFrom + " holds " + std::to_string(resigned) +
+                                  " games that ended by resignation; their last boards are not final "
+                                  "positions, so a run with ownership = true cannot train on them");
+        }
     }
 
     fs::create_directories(fs::path(runDir) / "checkpoints");
@@ -470,9 +480,9 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     state.buffer.setCapacity(static_cast<size_t>(cfg.bufferPositions));
     // The resignation keys are tunable, so v_resign is recalibrated from the
     // stored window with today's values (unchanged keys give the stored
-    // threshold back); a state.bin from before resignation has no window and
-    // gets resign_threshold_initial.
-    trimResignWindow(state.resignWindow, cfg.resignWindow);
+    // threshold back; calibration reads only the last resign_window games);
+    // a state.bin from before resignation has no window and gets
+    // resign_threshold_initial.
     state.resignThreshold = calibrateResignThreshold(state.resignWindow, resignCalibration(cfg));
     // Rewritten only after every check passed, so a refused resume leaves the
     // run directory untouched.
@@ -553,13 +563,13 @@ GenerationStats Trainer::runGeneration() {
     stats.blackWinRate = static_cast<double>(blackWins) / numGames;
 
     // Resignation: how often it ended a game, and the disabled games'
-    // winners, in game order, for the next calibration (AlphaGo Zero keeps
+    // traces, in game order, for the next calibration (AlphaGo Zero keeps
     // false positives, games the winner would have resigned, below 5%).
     if (cfg_.resignation) {
         int enabled = 0, resigned = 0;
         for (const GameRecord& r : records) {
             if (r.resignDisabled) {
-                state_.resignWindow.push_back(r.winnerMinResignValue());
+                state_.resignWindow.push_back(resignTrace(r));
             } else {
                 ++enabled;
                 if (r.resigned) ++resigned;

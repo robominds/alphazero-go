@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -33,9 +34,18 @@ static void writeBytes(const fs::path& p, const std::string& bytes) {
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
+// Bytes of the resignation state at the end of a version-5 file: the f32
+// threshold, the u32 game count, and per game the winner's and the loser's
+// lows (u32 count, then u32 ply + f32 value each).
+static size_t resignTailSize(const TrainingState& state) {
+    size_t size = 4 + 4;
+    for (const ResignTrace& t : state.resignWindow) size += 4 + 8 * t.winnerLows.size() + 4 + 8 * t.loserLows.size();
+    return size;
+}
+
 // The bytes an older version wrote for `state`, given the current (version
-// 5) bytes: without the resignation threshold and window at the end
-// (version 4); for a state without reference networks also without their
+// 5) bytes: without the resignation threshold and window at the end and
+// the buffer's resigned flags (version 4); for a state without reference networks also without their
 // list (version 3, an empty list is one u32), also the replay buffer without
 // ownership (version 2), and for version 1 also without the reference set
 // and the bot list.
@@ -44,11 +54,11 @@ static std::string olderStateBytes(const std::string& v5, const TrainingState& s
     std::ostringstream with, without;
     BinaryWriter ww(with), wo(without);
     state.buffer.save(ww, true);
-    state.buffer.save(wo, version >= 3);
+    state.buffer.save(wo, version >= 3, version >= 5);
     const size_t header = 4 + 4 + 4 + 4 + 8;   // magic, version, generation, best, samples
     assert(v5.compare(header, with.str().size(), with.str()) == 0);
     std::string tail = v5.substr(header + with.str().size());
-    tail.resize(tail.size() - 4 - 4 - 4 * state.resignWindow.size());   // f32, u32 count, the floats
+    tail.resize(tail.size() - resignTailSize(state));
     if (version <= 3) tail.resize(tail.size() - 4);
     if (version == 1)
         tail.resize(tail.size() - 8 - 4 * (state.references.size() + state.botSimulations.size()));
@@ -87,7 +97,7 @@ static TrainingState makeState() {
 static bool sameGame(const GameRecord& x, const GameRecord& y) {
     return x.boardSize == y.boardSize && x.komi == y.komi && x.moves == y.moves &&
            x.stones == y.stones && x.visits == y.visits && x.resultForBlack == y.resultForBlack &&
-           x.finalOwnership == y.finalOwnership;
+           x.finalOwnership == y.finalOwnership && x.resigned == y.resigned;
 }
 
 static void assertSameState(const TrainingState& x, const TrainingState& y) {
@@ -109,7 +119,10 @@ static void assertSameState(const TrainingState& x, const TrainingState& y) {
         assert(x.referenceNetworks[i].path == y.referenceNetworks[i].path &&
                x.referenceNetworks[i].hash == y.referenceNetworks[i].hash);
     assert(x.resignThreshold == y.resignThreshold);
-    assert(x.resignWindow == y.resignWindow);
+    assert(x.resignWindow.size() == y.resignWindow.size());
+    for (size_t i = 0; i < x.resignWindow.size(); ++i)
+        assert(x.resignWindow[i].winnerLows == y.resignWindow[i].winnerLows &&
+               x.resignWindow[i].loserLows == y.resignWindow[i].loserLows);
 }
 
 static void test_round_trip() {
@@ -301,24 +314,33 @@ static void test_reference_networks_round_trip() {
     fs::remove_all(dir);
 }
 
-// Version 5 adds resignation at the end: the v_resign the next generation
-// uses and the window of recent resignation-disabled games, each game's
-// winner minimum. A version-4 file loads with an empty window and the
-// default threshold (the trainer recalibrates from the window and config).
+// Version 5 adds resignation: each buffered game's resigned flag, and at
+// the end the threshold calibrated after the last generation and the window
+// of recent resignation-disabled games (each its winner's and loser's
+// lows). A version-4 file loads with no flags, an empty window and the
+// default threshold (resume recalibrates from the window and the config).
 static void test_resignation_round_trip() {
     fs::path dir = freshDir("resign");
     std::string path = (dir / "state.bin").string();
     TrainingState original = makeState();
     assert(original.resignThreshold == -0.9f && original.resignWindow.empty());   // the defaults
     original.resignThreshold = -0.83f;
-    original.resignWindow = {-0.95f, 1.0f, 0.25f, -0.5f};
+    ResignTrace a, b;
+    a.winnerLows = {{1, -0.5f}, {7, -0.95f}};
+    a.loserLows = {{2, 0.25f}};
+    b.loserLows = {{4, -1.0f}};   // the winner never dipped
+    original.resignWindow = {a, b, ResignTrace{}};   // the last one a draw
     original.referenceNetworks = {{"/abs/ref.azn", 42}};
     original.references = {-3, -2, -1, 0, 5};
+    GameRecord resigned = original.buffer.game(1);
+    resigned.resigned = true;
+    original.buffer.add(resigned);
     saveTrainingState(path, original);
     const std::string v5 = readBytes(path);
     assert(v5[4] == 5);
     TrainingState loaded = loadTrainingState(path);
     assertSameState(original, loaded);
+    assert(loaded.buffer.game(2).resigned && !loaded.buffer.game(0).resigned);
     saveTrainingState((dir / "again.bin").string(), loaded);
     assert(readBytes(dir / "again.bin") == v5);
 
@@ -328,15 +350,40 @@ static void test_resignation_round_trip() {
     TrainingState expected = original;
     expected.resignThreshold = -0.9f;
     expected.resignWindow.clear();
+    expected.buffer = ReplayBuffer(original.buffer.capacity());
+    for (size_t i = 0; i < original.buffer.games(); ++i) {
+        GameRecord g = original.buffer.game(i);
+        g.resigned = false;
+        expected.buffer.add(g);
+    }
     assertSameState(expected, v4);
 
-    // A window count larger than the file is refused, naming the file.
+    // Damaged resignation state is refused, naming the file: a game count
+    // larger than the file, a threshold out of [-1, 0] or not finite, and
+    // lows that are out of [-1, 1], not falling, or not at increasing plies.
+    const size_t tail = v5.size() - resignTailSize(original);
+    auto refused = [&](TrainingState s) {
+        saveTrainingState(path, s);
+        const std::string msg = loadError(path);
+        return msg.find(path) != std::string::npos && msg.find("resign") != std::string::npos;
+    };
     std::string bad = v5;
-    bad[bad.size() - 4 * 4 - 4] = static_cast<char>(0xff);   // low byte of the u32 count
-    bad[bad.size() - 4 * 4 - 1] = static_cast<char>(0x7f);
+    bad[tail + 4] = static_cast<char>(0xff);   // low byte of the u32 game count
+    bad[tail + 7] = static_cast<char>(0x7f);
     writeBytes(path, bad);
-    const std::string msg = loadError(path);
-    assert(msg.find(path) != std::string::npos);
+    assert(loadError(path).find(path) != std::string::npos);
+    for (float threshold : {0.5f, -1.5f, std::nanf("")}) {
+        TrainingState s = original;
+        s.resignThreshold = threshold;
+        assert(refused(s));
+    }
+    for (const ResignLows& lows : {ResignLows{{1, -1.5f}}, ResignLows{{1, std::nanf("")}},
+                                   ResignLows{{1, -0.5f}, {3, -0.4f}}, ResignLows{{3, -0.5f}, {3, -0.6f}},
+                                   ResignLows{{0, -0.5f}}}) {
+        TrainingState s = original;
+        s.resignWindow[0].loserLows = lows;
+        assert(refused(s));
+    }
     fs::remove_all(dir);
 }
 

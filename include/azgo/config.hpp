@@ -110,7 +110,8 @@ std::vector<std::string> resumeLockedDiff(const Config& a, const Config& b);
 // Rules between keys, which no single key's parser can check; a run checks
 // them once every override is applied. ConfigError if resignation is on
 // with ownership (a resigned game has no final position to take ownership
-// targets from), or resign_min_games exceeds resign_window.
+// targets from) or with resign_disabled_fraction = 0 (no games to measure
+// false positives on), or resign_min_games exceeds resign_window.
 void checkConsistency(const Config& cfg);
 
 } // namespace azgo

@@ -312,7 +312,7 @@ static void test_save_load_round_trip() {
         const GameRecord& b = back.game(g);
         assert(a.boardSize == b.boardSize && a.komi == b.komi && a.moves == b.moves);
         assert(a.stones == b.stones && a.visits == b.visits && a.resultForBlack == b.resultForBlack);
-        assert(a.finalOwnership == b.finalOwnership);
+        assert(a.finalOwnership == b.finalOwnership && a.resigned == b.resigned);
     }
     TrainingBatch x, y;
     Rng r1(77), r2(77);
@@ -323,15 +323,16 @@ static void test_save_load_round_trip() {
     assert(std::memcmp(x.z.data(), y.z.data(), x.z.size() * sizeof(float)) == 0);
     assert(x.ownership == y.ownership);
 
-    // The older layout (state.bin versions 1 and 2) has no ownership; loading
-    // it recomputes each game's by replaying the moves, and gets the same.
+    // The older layout (state.bin versions 1 and 2) has no ownership and no
+    // resigned flag; loading it recomputes each game's ownership by replaying
+    // the moves, and gets the same.
     std::ostringstream oldOs;
     BinaryWriter oldW(oldOs);
-    buf.save(oldW, false);
-    assert(oldOs.str().size() == bytes.size() - 25 * buf.games());
+    buf.save(oldW, false, false);
+    assert(oldOs.str().size() == bytes.size() - (25 + 1) * buf.games());
     std::istringstream oldIs(oldOs.str());
     BinaryReader oldR(oldIs);
-    ReplayBuffer recomputed = ReplayBuffer::load(oldR, false);
+    ReplayBuffer recomputed = ReplayBuffer::load(oldR, false, false);
     for (size_t g = 0; g < buf.games(); ++g)
         assert(recomputed.game(g).finalOwnership == buf.game(g).finalOwnership);
 
@@ -357,16 +358,56 @@ static void test_old_layout_that_does_not_replay() {
     buf.add(bad);
     std::ostringstream os;
     BinaryWriter w(os);
-    buf.save(w, false);
+    buf.save(w, false, false);
     std::istringstream is(os.str());
     BinaryReader r(is);
     std::string msg;
     try {
-        ReplayBuffer::load(r, false);
+        ReplayBuffer::load(r, false, false);
     } catch (const std::runtime_error& e) {
         msg = e.what();
     }
     assert(msg == "replay buffer: game 1 does not replay: move 2 (B4) is illegal");
+}
+
+// State.bin version 5 keeps whether each game ended by resignation (a
+// resigned game's final board is no game end, so ownership cannot use it).
+// Version 3 and 4 files have no flag and load as not resigned.
+static void test_resigned_flag_round_trip() {
+    ReplayBuffer buf(100);
+    GameRecord resigned = makeRecord({6, 18, 12});
+    resigned.resigned = true;
+    buf.add(resigned);
+    buf.add(makeRecord({6, 18}));
+    std::ostringstream os;
+    BinaryWriter w(os);
+    buf.save(w);
+    std::istringstream is(os.str());
+    BinaryReader r(is);
+    const ReplayBuffer back = ReplayBuffer::load(r);
+    assert(back.game(0).resigned && !back.game(1).resigned);
+
+    std::ostringstream v4;
+    BinaryWriter w4(v4);
+    buf.save(w4, true, false);
+    assert(v4.str().size() == os.str().size() - buf.games());
+    std::istringstream is4(v4.str());
+    BinaryReader r4(is4);
+    const ReplayBuffer old = ReplayBuffer::load(r4, true, false);
+    assert(!old.game(0).resigned && !old.game(1).resigned);
+
+    // The flag is one byte, 0 or 1; anything else is a damaged file.
+    std::string bad = os.str();
+    bad[bad.size() - 1] = 2;   // the second game's flag is the last byte
+    std::istringstream isBad(bad);
+    BinaryReader rBad(isBad);
+    bool threw = false;
+    try {
+        ReplayBuffer::load(rBad);
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find("resigned") != std::string::npos;
+    }
+    assert(threw);
 }
 
 int main() {
@@ -384,6 +425,7 @@ int main() {
     test_ownership_target_with_territory();
     test_save_load_round_trip();
     test_old_layout_that_does_not_replay();
+    test_resigned_flag_round_trip();
     std::printf("test_replay_buffer: all tests passed\n");
     return 0;
 }

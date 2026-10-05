@@ -48,12 +48,14 @@ public:
                       float* input, float* pi, float* z, float* ownership = nullptr) const;
 
     // withOwnership = false writes the layout of state.bin versions 1 and 2,
-    // which stored no ownership; tests use it to make old files.
-    void save(BinaryWriter& w, bool withOwnership = true) const;
+    // which stored no ownership; withResigned = false that of versions 1 to
+    // 4, which stored no resigned flag. Tests use them to make old files.
+    void save(BinaryWriter& w, bool withOwnership = true, bool withResigned = true) const;
     // withOwnership = false reads that older layout and recomputes each
     // game's finalOwnership with replayFinalOwnership (a std::runtime_error
-    // naming the game if one does not replay).
-    static ReplayBuffer load(BinaryReader& r, bool withOwnership = true);
+    // naming the game if one does not replay); withResigned = false loads
+    // every game as not resigned (resignation did not exist yet).
+    static ReplayBuffer load(BinaryReader& r, bool withOwnership = true, bool withResigned = true);
 
 private:
     size_t capacity_;

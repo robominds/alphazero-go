@@ -14,14 +14,37 @@ float GameRecord::zAt(int ply) const {
     return toMoveAt(ply) == Color::Black ? resultForBlack : -resultForBlack;
 }
 
-float GameRecord::winnerMinResignValue() const {
-    if (resultForBlack > 0) return minResignValue[0];
-    if (resultForBlack < 0) return minResignValue[1];
-    return 1.0f;
+float resignValue(float rootValue, float bestChildValue) {
+    return std::max(rootValue, bestChildValue);
 }
 
 float resignValue(const Mcts& mcts) {
-    return std::max(mcts.rootValue(), mcts.bestChildValue());
+    return resignValue(mcts.rootValue(), mcts.bestChildValue());
+}
+
+namespace {
+// The ply where `lows` first goes strictly below threshold, or -1.
+int firstPlyBelow(const ResignLows& lows, float threshold) {
+    for (const auto& [ply, value] : lows)
+        if (value < threshold) return ply;
+    return -1;
+}
+} // namespace
+
+bool ResignTrace::falsePositiveAt(float threshold) const {
+    const int winner = firstPlyBelow(winnerLows, threshold);
+    if (winner < 0) return false;
+    const int loser = firstPlyBelow(loserLows, threshold);
+    return loser < 0 || winner < loser;
+}
+
+ResignTrace resignTrace(const GameRecord& record) {
+    ResignTrace t;
+    if (record.resultForBlack == 0) return t;   // a draw: nobody could have resigned a win
+    const int winner = record.resultForBlack > 0 ? 0 : 1;
+    t.winnerLows = record.resignLows[winner];
+    t.loserLows = record.resignLows[1 - winner];
+    return t;
 }
 
 GameRecord playSelfPlayGame(Evaluator& evaluator, const SelfPlayConfig& cfg, Rng& rng) {
@@ -46,8 +69,8 @@ GameRecord playSelfPlayGame(Evaluator& evaluator, const SelfPlayConfig& cfg, Rng
         // empty board, so every record keeps at least one position.
         if (cfg.resignation && game.moveCount() > 0) {
             const float v = resignValue(mcts);
-            float& lowest = rec.minResignValue[game.board().toMove() == Color::Black ? 0 : 1];
-            lowest = std::min(lowest, v);
+            ResignLows& lows = rec.resignLows[game.board().toMove() == Color::Black ? 0 : 1];
+            if (lows.empty() || v < lows.back().second) lows.emplace_back(game.moveCount(), v);
             if (!rec.resignDisabled && v < cfg.resignThreshold) {
                 rec.resigned = true;
                 break;
@@ -109,8 +132,8 @@ std::vector<int8_t> replayFinalOwnership(const GameRecord& record) {
     return owner;
 }
 
-float calibrateResignThreshold(const std::vector<float>& winnerMinimums, const ResignCalibration& c) {
-    const size_t games = std::min(winnerMinimums.size(), static_cast<size_t>(std::max(0, c.window)));
+float calibrateResignThreshold(const std::vector<ResignTrace>& traces, const ResignCalibration& c) {
+    const size_t games = std::min(traces.size(), static_cast<size_t>(std::max(0, c.window)));
     if (games == 0 || games < static_cast<size_t>(c.minGames)) return c.initialThreshold;
     // From the most aggressive threshold down: the first one whose false
     // positives fit. The integer grid keeps every step an exact k / 100.
@@ -118,18 +141,18 @@ float calibrateResignThreshold(const std::vector<float>& winnerMinimums, const R
         const float v = static_cast<float>(k) / 100.0f;
         // Compared as floats, like the config value: a rate exactly at the
         // limit (say 25 of 500 against 0.05) is within it.
-        const double rate = resignFalsePositiveRate(winnerMinimums, c.window, v);
+        const double rate = resignFalsePositiveRate(traces, c.window, v);
         if (static_cast<float>(rate) <= c.maxFalsePositive) return v;
     }
     return -1.0f;
 }
 
-double resignFalsePositiveRate(const std::vector<float>& winnerMinimums, int window, float threshold) {
-    const size_t games = std::min(winnerMinimums.size(), static_cast<size_t>(std::max(0, window)));
+double resignFalsePositiveRate(const std::vector<ResignTrace>& traces, int window, float threshold) {
+    const size_t games = std::min(traces.size(), static_cast<size_t>(std::max(0, window)));
     if (games == 0) return 0.0;
     int falsePositives = 0;
-    for (size_t i = winnerMinimums.size() - games; i < winnerMinimums.size(); ++i)
-        if (winnerMinimums[i] < threshold) ++falsePositives;
+    for (size_t i = traces.size() - games; i < traces.size(); ++i)
+        if (traces[i].falsePositiveAt(threshold)) ++falsePositives;
     return static_cast<double>(falsePositives) / static_cast<double>(games);
 }
 

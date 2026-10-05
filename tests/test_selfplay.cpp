@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -183,7 +184,7 @@ static void test_replay_rejects_a_bad_record() {
 static bool sameRecord(const GameRecord& a, const GameRecord& b) {
     return a.boardSize == b.boardSize && a.komi == b.komi && a.moves == b.moves &&
            a.stones == b.stones && a.visits == b.visits && a.resultForBlack == b.resultForBlack &&
-           a.finalOwnership == b.finalOwnership;
+           a.finalOwnership == b.finalOwnership && a.resigned == b.resigned;
 }
 
 static std::vector<GameRecord> playGames(const Network& net, const Backend& be, int workers,
@@ -298,9 +299,9 @@ static void test_hopeless_side_resigns() {
     assert(rec.stones.size() == 25u && rec.finalOwnership.size() == 25u);
     assert(rec.resultForBlack == 1.0f);
     assert(rec.zAt(0) == 1.0f);
-    assert(rec.minResignValue[1] < -0.9f);
-    assert(rec.minResignValue[0] == 1.0f);   // Black's ply 0 is never considered
-    assert(rec.winnerMinResignValue() == 1.0f);
+    assert(rec.resignLows[1].size() == 1 && rec.resignLows[1][0].first == 1);
+    assert(rec.resignLows[1][0].second < -0.9f);
+    assert(rec.resignLows[0].empty());   // Black's ply 0 is never considered
 }
 
 // Black is never offered resignation at the empty board (every record keeps
@@ -313,27 +314,75 @@ static void test_black_resigns_after_the_first_move() {
     assert(rec.positions() == 2);
     assert(rec.resultForBlack == -1.0f);
     assert(rec.zAt(0) == -1.0f && rec.zAt(1) == 1.0f);
-    assert(rec.minResignValue[0] < -0.9f);
-    assert(rec.minResignValue[1] > 0.9f && rec.minResignValue[1] < 1.0f);
-    assert(rec.winnerMinResignValue() == rec.minResignValue[1]);
+    assert(rec.resignLows[0].size() == 1 && rec.resignLows[0][0].first == 2);
+    assert(rec.resignLows[1].size() == 1 && rec.resignLows[1][0].first == 1);
+    assert(rec.resignLows[1][0].second > 0.9f);
 }
 
-// A resignation-disabled game is played to the end, recording what each
-// side's minimum was, so calibration can ask "would the winner have resigned?".
-static void test_disabled_game_plays_on_and_records_minimums() {
+// The resignation test is strict: a value exactly at v_resign plays on.
+// HopelessSideEvaluator makes White's value exactly -0.95f (every child Q is
+// -0.95f, and so is their mean).
+static void test_resignation_needs_a_value_strictly_below_the_threshold() {
+    HopelessSideEvaluator ev(Color::White);
+    Rng a(3), b(3);
+    const GameRecord at = playSelfPlayGame(ev, resignConfig(-0.95f, 0.0f), a);
+    assert(at.resignLows[1].front().second == -0.95f);
+    assert(at.positions() > 1);   // not at ply 1
+    const GameRecord above = playSelfPlayGame(ev, resignConfig(std::nextafter(-0.95f, 0.0f), 0.0f), b);
+    assert(above.resigned && above.positions() == 1);
+}
+
+// AlphaGo Zero resigns only when the root value AND the best child's value
+// are below v_resign: the larger of the two decides.
+static void test_resign_value_needs_both_below() {
+    assert(resignValue(-0.95f, 0.5f) == 0.5f);    // root below, best child above: plays on
+    assert(resignValue(0.5f, -0.95f) == 0.5f);    // and the reverse
+    assert(resignValue(-0.95f, -0.92f) == -0.92f);
+    assert(!(resignValue(-0.95f, 0.5f) < -0.9f) && !(resignValue(0.5f, -0.95f) < -0.9f));
+    assert(resignValue(-0.95f, -0.92f) < -0.9f);
+
+    // On a real search the two differ, and the larger one is used. Black
+    // passed on an empty board, so White's pass ends the game and wins by
+    // komi: the pass child's Q is +1, the other children's 0. It takes a
+    // long search before the exploration bonus sends visits elsewhere.
+    Game game(5, 7.5f, defaultMaxMoves(5));
+    game.play(25);
+    UniformEvaluator ev(5, 2);
+    MctsConfig m;
+    m.simulations = 1000;
+    m.batchSize = 1;
+    Mcts mcts(m, ev);
+    Rng rng(16);
+    mcts.search(game, rng);
+    assert(mcts.bestChildValue() == 1.0f && mcts.rootValue() < 1.0f);
+    assert(resignValue(mcts) == 1.0f);
+}
+
+// A resignation-disabled game is played to the end. Each side keeps its
+// record lows, (ply, value) each time its resignation value reached a new
+// minimum, so calibration can replay "who would have resigned first?".
+static void test_disabled_game_plays_on_and_records_lows() {
     HopelessSideEvaluator ev(Color::White);
     Rng rng(3);
     const GameRecord rec = playSelfPlayGame(ev, resignConfig(-0.9f, 1.0f), rng);
     assert(!rec.resigned && rec.resignDisabled);
     assert(rec.positions() == 12);   // the move cap: nobody passes
-    // White saw -0.95 at every search (Black's minimum can be lower: near the
-    // move cap the search reaches terminal positions scored by the rules).
-    assert(rec.minResignValue[1] < -0.9f && rec.minResignValue[0] < 1.0f);
+    for (int side = 0; side < 2; ++side) {
+        const ResignLows& lows = rec.resignLows[side];
+        assert(!lows.empty());
+        for (size_t i = 0; i < lows.size(); ++i) {
+            assert(lows[i].first >= 1 && lows[i].first % 2 == side);   // its own plies, never ply 0
+            if (i > 0) assert(lows[i].first > lows[i - 1].first && lows[i].second < lows[i - 1].second);
+        }
+    }
+    // White saw -0.95 from its first move on.
+    assert(rec.resignLows[1][0].first == 1 && rec.resignLows[1][0].second == -0.95f);
     Game replay(5, 7.5f, 12);
     for (int a : rec.moves) replay.play(a);
     assert(rec.resultForBlack == replay.resultForBlack());
-    assert(rec.winnerMinResignValue() ==
-           (rec.resultForBlack > 0 ? rec.minResignValue[0] : rec.minResignValue[1]));
+    const ResignTrace t = resignTrace(rec);
+    const int winner = rec.resultForBlack > 0 ? 0 : 1;
+    assert(t.winnerLows == rec.resignLows[winner] && t.loserLows == rec.resignLows[1 - winner]);
 }
 
 // With resignation on, a game draws exactly once more from its Rng (whether
@@ -362,21 +411,46 @@ static void test_resignation_draws_once_per_game() {
     }
 }
 
-static void test_winner_minimum() {
+static ResignTrace trace(ResignLows winner, ResignLows loser = {}) {
+    ResignTrace t;
+    t.winnerLows = std::move(winner);
+    t.loserLows = std::move(loser);
+    return t;
+}
+
+// A disabled game is a false positive at threshold v exactly when the
+// winner's resignation value first drops below v before the loser's does:
+// resigning at v would then have ended it as the winner's loss. The search
+// draws nothing for the test, so the game is the same up to that ply.
+static void test_false_positive_is_who_would_resign_first() {
+    // The loser always crosses first (its lows lie below the winner's, earlier).
+    const ResignTrace loserFirst = trace({{3, -0.9f}}, {{2, -0.95f}});
+    for (float v : {-0.96f, -0.94f, -0.9f, -0.89f, -0.5f, 0.0f}) assert(!loserFirst.falsePositiveAt(v));
+    // The winner dips to -0.3 at ply 1 and -0.8 at ply 5; the loser to -0.6 at ply 4.
+    const ResignTrace t = trace({{1, -0.3f}, {5, -0.8f}}, {{4, -0.6f}});
+    assert(t.falsePositiveAt(-0.2f));    // winner at ply 1, loser at ply 4
+    assert(!t.falsePositiveAt(-0.5f));   // the loser at ply 4 comes before the winner's ply 5
+    assert(t.falsePositiveAt(-0.7f));    // only the winner gets that low
+    assert(!t.falsePositiveAt(-0.8f));   // strictly below: -0.8 is not
+    assert(!t.falsePositiveAt(-0.85f));
+    // A draw keeps no lows: never one.
+    assert(!trace({}, {}).falsePositiveAt(0.0f));
+
+    // resignTrace takes the winner's and the loser's lows from a record.
     GameRecord r;
-    r.minResignValue[0] = -0.4f;
-    r.minResignValue[1] = -0.7f;
+    r.resignLows[0] = {{2, -0.4f}};
+    r.resignLows[1] = {{1, -0.7f}, {3, -0.75f}};
     r.resultForBlack = 1.0f;
-    assert(r.winnerMinResignValue() == -0.4f);
+    assert(resignTrace(r).winnerLows == r.resignLows[0] && resignTrace(r).loserLows == r.resignLows[1]);
     r.resultForBlack = -1.0f;
-    assert(r.winnerMinResignValue() == -0.7f);
-    r.resultForBlack = 0.0f;   // a draw has no winner who could have resigned wrongly
-    assert(r.winnerMinResignValue() == 1.0f);
+    assert(resignTrace(r).winnerLows == r.resignLows[1] && resignTrace(r).loserLows == r.resignLows[0]);
+    r.resultForBlack = 0.0f;
+    assert(resignTrace(r).winnerLows.empty() && resignTrace(r).loserLows.empty());
 }
 
 // v_resign is the largest threshold on the 0.01 grid from -1 to 0 whose
-// false-positive rate over the window (winners whose minimum lies below it)
-// stays within the limit; with fewer games than minGames, the initial one.
+// false-positive rate over the window stays within the limit; with fewer
+// games than minGames, the initial one.
 static void test_calibrate_resign_threshold() {
     ResignCalibration c;
     c.window = 100;
@@ -384,24 +458,31 @@ static void test_calibrate_resign_threshold() {
     c.maxFalsePositive = 0.05f;
     c.initialThreshold = -0.9f;
     // 20 games: three winners dipped to -0.9, -0.7 and -0.3 (the oldest
-    // three); the rest never did.
-    std::vector<float> mins = {-0.9f, -0.7f, -0.3f};
-    mins.insert(mins.end(), 17, 1.0f);
-    assert(mins.size() == 20);
+    // three) while their losers never did; the other winners never dipped.
+    std::vector<ResignTrace> games = {trace({{1, -0.9f}}), trace({{1, -0.7f}}), trace({{1, -0.3f}})};
+    games.insert(games.end(), 17, trace({}));
+    assert(games.size() == 20);
     // At -0.70 only the -0.9 game counts (1/20 = 5%); at -0.69 the -0.7 game joins (10%).
-    assert(calibrateResignThreshold(mins, c) == -0.7f);
-    assert(resignFalsePositiveRate(mins, c.window, -0.7f) == 0.05);
-    assert(resignFalsePositiveRate(mins, c.window, -0.69f) == 0.10);
+    assert(calibrateResignThreshold(games, c) == -0.7f);
+    assert(resignFalsePositiveRate(games, c.window, -0.7f) == 0.05);
+    assert(resignFalsePositiveRate(games, c.window, -0.69f) == 0.10);
     c.maxFalsePositive = 0.10f;
-    assert(calibrateResignThreshold(mins, c) == -0.3f);
+    assert(calibrateResignThreshold(games, c) == -0.3f);
     c.maxFalsePositive = 0.0f;
-    assert(calibrateResignThreshold(mins, c) == -0.9f);
+    assert(calibrateResignThreshold(games, c) == -0.9f);
     c.maxFalsePositive = 0.5f;
-    assert(calibrateResignThreshold(mins, c) == 0.0f);   // the top of the grid
+    assert(calibrateResignThreshold(games, c) == 0.0f);   // the top of the grid
+
+    // A game whose loser would have resigned first is no false positive:
+    // with it in place of the -0.3 game, 0 is within 10%.
+    std::vector<ResignTrace> saved = games;
+    saved[2] = trace({{3, -0.3f}}, {{2, -0.5f}});
+    c.maxFalsePositive = 0.10f;
+    assert(calibrateResignThreshold(saved, c) == 0.0f);
 
     // Fewer than minGames: the initial threshold, whatever the data says.
     c.maxFalsePositive = 0.05f;
-    const std::vector<float> few(mins.begin(), mins.begin() + 19);
+    const std::vector<ResignTrace> few(games.begin(), games.begin() + 19);
     assert(calibrateResignThreshold(few, c) == -0.9f);
     assert(calibrateResignThreshold({}, c) == -0.9f);
     assert(resignFalsePositiveRate({}, c.window, -0.5f) == 0.0);
@@ -409,13 +490,13 @@ static void test_calibrate_resign_threshold() {
     // Only the last `window` games count: the three low ones fall out.
     c.window = 17;
     c.minGames = 17;
-    assert(calibrateResignThreshold(mins, c) == 0.0f);
-    assert(resignFalsePositiveRate(mins, 17, 0.0f) == 0.0);
+    assert(calibrateResignThreshold(games, c) == 0.0f);
+    assert(resignFalsePositiveRate(games, 17, 0.0f) == 0.0);
     // Every winner sank to -1: only the bottom of the grid, -1, counts none
     // of them (a value is counted when it lies strictly below the threshold).
     c.window = 20;
     c.minGames = 1;
-    assert(calibrateResignThreshold(std::vector<float>(5, -1.0f), c) == -1.0f);
+    assert(calibrateResignThreshold(std::vector<ResignTrace>(5, trace({{1, -1.0f}})), c) == -1.0f);
 }
 
 int main() {
@@ -427,9 +508,11 @@ int main() {
     test_replay_rejects_a_bad_record();
     test_hopeless_side_resigns();
     test_black_resigns_after_the_first_move();
-    test_disabled_game_plays_on_and_records_minimums();
+    test_resignation_needs_a_value_strictly_below_the_threshold();
+    test_resign_value_needs_both_below();
+    test_disabled_game_plays_on_and_records_lows();
     test_resignation_draws_once_per_game();
-    test_winner_minimum();
+    test_false_positive_is_who_would_resign_first();
     test_calibrate_resign_threshold();
     std::printf("test_selfplay: all tests passed\n");
     return 0;
