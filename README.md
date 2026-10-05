@@ -487,6 +487,11 @@ From `docs/results/README.md`, which has the details and the sources.
   gave at best a small edge at equal generations (61/100 at generation 25,
   56/100 at 50, interval 0.462–0.653), not clearly real, for 1.59× the time
   (see [the section](docs/results/README.md#more-self-play-games-per-generation-200-vs-100)).
+- **9×9, learning-rate restart.** Restarting the learning rate at 0.02 and
+  stepping it down to 0.006 and 0.002, instead of a flat 0.002, put the run
+  behind the control at generation 25 (36/100, interval 0.273–0.458) and
+  level with it at 50 (49/100): no measurable gain at 100-game resolution
+  (see [the section](docs/results/README.md#a-learning-rate-restart-002-to-0002)).
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is

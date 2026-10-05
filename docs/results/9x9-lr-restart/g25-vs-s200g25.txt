@@ -1,0 +1,2 @@
+A runs/9x9-lr-restart/checkpoints/gen_0025.azn vs B runs/9x9-sims200/checkpoints/gen_0025.azn: A scored 36/100 = 0.360 (95% CI 0.273-0.458), distinct games 97
+A wins 36, B wins 64, draws 0

@@ -407,7 +407,10 @@ capacity alone is not the bottleneck at this compute budget.
   Tested (400 vs 200, 50 generations): no measurable gain per
   generation and worse per unit of compute; see
   [the section](#more-simulations-in-self-play-400-vs-200).
-- Learning-rate changes (the grown run held 0.002 constant).
+- Learning-rate changes (the grown run held 0.002 constant). Tested (a
+  restart at 0.02 stepped back to 0.002, 50 generations): behind the
+  control at generation 25, level at 50; see
+  [the section](#a-learning-rate-restart-002-to-0002).
 - More self-play games per generation (100 at the time, with a replay
   ratio of about 5.8). Tested (200 vs 100, 50 generations): at best a small
   edge, not clearly real, at 1.6× the time; see
@@ -798,10 +801,13 @@ log. Paths in the copied script, log and CSVs were made repo-relative.
 | sims400 | +105 | +147 | +91 | 0.26 of 80 games |
 | ownership | +85 | +105 | +140 | 0.26 of 80 games |
 | games200 (200 games per generation; added later) | +101 | +49 | +88 | 0.26 of 80 games |
+| lr-restart (learning rate 0.02 → 0.006 → 0.002; added later) | +105 | +182 | +126 | 0.26 of 80 games |
 
 (`ref1` scored 29/80 against gen 0 of wide96 and grow10 and 21/80 against
-the other three, which share a start; the table is `elo.csv`
-minus `references.csv` in each run's folder.)
+the other runs, which share a start; the table is `elo.csv` minus
+`references.csv` in each run's folder: `9x9-ref200/<run>/` for the first
+five rows, `9x9-games200/rerate/` and `9x9-lr-restart/rerate/` for the
+rows added later, which were re-rated the same way after their runs.)
 
 Reading it, honestly:
 
@@ -874,8 +880,109 @@ at generation 50 (interval includes 0.5). Against its own start it is
 does not show an edge either. Together that is not clearly a real
 difference, and it cost about 1.6 times as much time per generation. This
 does not support data quantity as the main bottleneck at this budget.
-One seed per arm; no claim beyond that. The next test is the learning
-rate (a learning-rate restart run is in progress; no result yet).
+One seed per arm; no claim beyond that. The next test was the learning
+rate; see [the section below](#a-learning-rate-restart-002-to-0002).
+
+### A learning-rate restart (0.02 to 0.002)
+
+Hypothesis, from the "next levers" above: every post-250 run trained at
+a flat learning rate of 0.002, the 9×9 preset's late rate. A restart at a
+higher rate, stepped back down, might move the network further from where
+it started and end stronger than the flat-rate control. The result: the
+restart fell behind while the rate was high, caught up once it was back
+at 0.002, and at generation 50 is level with the control (49/100). No
+measurable gain.
+
+- *Setup.* The control is `9x9-sims/sims200/`, as for the games run. The
+  new run, `9x9-lr-restart/`, has the same start (generation 50 of
+  `9x9-wide96`, 6×96), buffer, seed and settings: 200 simulations, 100
+  games and 200 training steps of 256 positions per generation, 50
+  generations. Its `config.cfg` differs from the control's only in
+  `lr_schedule = 0:0.02,20:0.006,35:0.002`, apart from three keys added
+  to the code since the control ran, at their defaults (`ownership`,
+  `ownership_weight`, `reference_networks`). The learning rate was 0.02
+  for generations 1–19, 0.006 for 20–34 and 0.002 for 35–50 (`log.csv`).
+  0.02 is the presets' from-scratch rate. The run took the same 10,000
+  SGD steps as the control, with a mean replay ratio of 5.81 against
+  5.80. Sources: `docs/results/9x9-lr-restart/` (`log.csv`, `elo.csv`,
+  `results.csv`, `references.csv`, `init.txt`, `progress.txt`, the three
+  eval files, `lr-restart.sh`, `lr-restart.log`, and `rerate/` with the
+  re-rate CSVs and progress lines). Absolute paths in `init.txt` and the
+  script are made repo-relative. The matches below were run after
+  training, in the script.
+- *Cost.* Mean seconds per generation (self-play + training + arena,
+  `log.csv`): 358.0 (205.5 + 95.5 + 57.0) against 351.3 for the control;
+  4.97 h of generation time. The learning rate does not change the cost.
+- *Training curves* (`log.csv`, mean per phase; these are losses on the
+  training batches and not a strength measure):
+
+  | generations (rate) | policy loss | control | value loss | control |
+  |---|---|---|---|---|
+  | 1–19 (0.02) | 2.444 | 2.401 | 0.352 | 0.367 |
+  | 20–34 (0.006) | 2.415 | 2.388 | 0.302 | 0.362 |
+  | 35–50 (0.002) | 2.385 | 2.379 | 0.330 | 0.356 |
+
+  At 0.02 the policy loss rose at once (2.460 at generation 1, against
+  the control's 2.411 on the same self-play games) and stayed about 0.04
+  above the control; back at 0.002 it ended within 0.01 of it (2.369 at
+  generation 50, control 2.376). The value loss went the other way: below
+  the control at the higher rates, lowest at 0.006 (0.293), and back up
+  to 0.345 at generation 50 (control 0.359). The batches are drawn from a
+  buffer in which each position is sampled about 5.8 times, so a lower
+  value loss there may mean a closer fit to the buffer rather than better
+  judgment; without a loss on held-out games this cannot be told apart.
+
+**Matches** (100 games, 200 simulations for both sides, komi 7.5, colors
+alternating; 95% Wilson intervals as `arena` prints them; Elo is
+400·log10(p/(1−p)), approximate; "start" is `9x9-wide96` generation 50;
+files in `9x9-lr-restart/`):
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| restart vs control, gen 25 (`g25-vs-s200g25.txt`) | 36/100 | 0.273-0.458 | −100 (−170 to −29) |
+| restart vs control, gen 50 (`g50-vs-s200g50.txt`) | 49/100 | 0.394-0.587 | −7 (−75 to +61) |
+| restart gen 50 vs start (`g50-vs-start.txt`) | 62/100 | 0.522-0.709 | +85 (+15 to +155) |
+
+For comparison, the control's generation 50 scored 64/100 (0.542-0.727)
+against the same start (`9x9-sims/s200g50-vs-start.txt`).
+
+**Against gen 200.** Re-rated like the other runs (`rerate/`), Elo minus
+`ref1`'s Elo (−105.4 in `rerate/references.csv`) is +105 at the start,
++182 at generation 25 and +126 at generation 50, on the scale of the
+all-runs table above (the control: +104, +152, +132). Single generations
+carry the table's ±40 noise: generation 25's +182 is above the control's
++152, yet it lost the direct match 36/100. Averaged over stretches of the
+run, the same numbers show the high-rate dip:
+
+| generations | restart | control |
+|---|---|---|
+| 1–10 (0.02) | +25 | +128 |
+| 11–19 (0.02) | +85 | +125 |
+| 20–34 (0.006) | +118 | +152 |
+| 35–50 (0.002) | +153 | +150 |
+
+For its first ten generations the restart sat below its own start (+105;
+lowest −35 at generation 9), and generation 1 scored 0.40 against
+generation 0 in the training arena (`progress.txt`). These are means of
+neighbouring ratings, which are not independent: a description of the
+curve, not a test.
+
+**Verdict.** The higher rate cost ground while it was high and the run
+made it back once the rate returned to 0.002. At generation 25 the
+restart was behind the control, 36/100 (interval 0.273-0.458, about −100
+Elo), the one clear difference in these matches; at generation 50 it was
+level, 49/100 (0.394-0.587), and its gain over the start (62/100) matches
+the control's (64/100). So this restart gave **no measurable gain** at
+100-game resolution. It fits the warning in the main README that 0.02
+would wreck what a trained network learned: it set the network back,
+though not beyond recovery in 50 generations.
+
+What it does not show: that the learning rate does not matter. It tests
+one schedule (a peak of 0.02 with steps at generations 20 and 35), one
+seed and 50 generations; a smaller restart or a longer tail at 0.002
+might differ, and a gain under about 70 Elo would not show in a 100-game
+match. Nor is it a test of more learning: it took the same 10,000 SGD
+steps as the control.
 
 ### 19×19: criterion met (it runs)
 
@@ -986,6 +1093,19 @@ Two generations say nothing about strength, and none is claimed.
   `eye-own50-killed.txt`, `eye-own50-saved.txt`; and the fair eye
   comparison, `fair-{own50,own0,sims200g50,main250}-{tenuki,save}.txt`
   with its commands `fair-comparison.sh`.
+- `9x9-ref200/`: the post-250 runs re-rated against generation 200 of
+  `9x9-main`: one folder per run (`wide96/`, `grow10/`, `sims200/`,
+  `sims400/`, `ownership/`, each with `elo.csv`, `references.csv`,
+  `results.csv`, `log.csv`, `reference-networks.csv`, `progress.txt`),
+  the commands `rerate-ref200.sh` and their log, and the head-to-head
+  `g250-vs-g200.txt`.
+- `9x9-games200/`: the 200-games-per-generation run: `log.csv`,
+  `elo.csv`, `results.csv`, `references.csv`, `init.txt`, `progress.txt`,
+  the matches `g25-vs-s200g25.txt`, `g50-vs-s200g50.txt`,
+  `g50-vs-start.txt`, the commands `games200.sh` and their output
+  `games200.log`, and `rerate/` (the re-rate against generation 200).
+- `9x9-lr-restart/`: the learning-rate restart run, with the same files
+  as `9x9-games200/` (commands `lr-restart.sh`, output `lr-restart.log`).
 - `5x5/rerate-opp4/`: `elo.csv`, `references.csv` and `log.csv` of a
   re-rate of 5×5 seed 1 with `--set arena_opponents=4`, made on a copy of
   the run, for the scale caveat above.
