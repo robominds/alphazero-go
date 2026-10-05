@@ -1411,7 +1411,7 @@ public:
     rec.resultForBlack = game.resultForBlack();   /* ... or a loss for a side that resigned ... */
     return rec;
 }</code></pre>
-<span class="src">src/selfplay.cpp:27 — <code>playSelfPlayGame</code> (abridged)</span>
+<span class="src">src/selfplay.cpp:50 — <code>playSelfPlayGame</code> (abridged)</span>
 <p>The presets sample 8 plies on 5×5, 20 on 9×9 and 30 on 19×19 (AlphaGo Zero's value), roughly the first fifth of a typical game on each board (5×5 games average 30 to 44 plies, <code>docs/results/5x5/log.csv</code>; 9×9 games 87 to 116, <code>docs/results/9x9/log.csv</code>; the two 19×19 generations 145 and 365, <code>docs/results/19x19/log.csv</code>). Tic-tac-toe taught the lesson this number encodes: its default used to be 2, and training plateaued because self-play kept replaying the same few games — the network can only learn positions self-play reaches. In a 9-move game the answer was to sample the whole game. In Go that would be the other mistake: a sampled blunder in the endgame flips the result, and with it the value label of every position in the game. Sample the opening, where variety is cheap, then play well.</p>
 <p><strong>Tree reuse and compaction.</strong> After a move, the subtree under the move just played is exactly the search a player would like to continue, so it is kept: the chosen child becomes the new root, with all its visits. The rest of the tree can never be reached again. Rather than leaving it in the vectors, <code>advance</code> copies only the reachable subtree into fresh vectors and swaps them in:</p>
 <pre><code>void Mcts::advance(int action) {
@@ -1445,8 +1445,8 @@ public:
         // empty board, so every record keeps at least one position.
         if (cfg.resignation &amp;&amp; game.moveCount() &gt; 0) {
             const float v = resignValue(mcts);
-            float&amp; lowest = rec.minResignValue[game.board().toMove() == Color::Black ? 0 : 1];
-            lowest = std::min(lowest, v);
+            ResignLows&amp; lows = rec.resignLows[game.board().toMove() == Color::Black ? 0 : 1];
+            if (lows.empty() || v &lt; lows.back().second) lows.emplace_back(game.moveCount(), v);
             if (!rec.resignDisabled &amp;&amp; v &lt; cfg.resignThreshold) {
                 rec.resigned = true;
                 break;
@@ -1456,22 +1456,30 @@ public:
     }
     /* ... the result: a loss for whoever resigned, else the Tromp-Taylor score ... */
 }</code></pre>
-<span class="src">src/selfplay.cpp:27 — <code>playSelfPlayGame</code> (resignation only)</span>
-<p>The danger is a <em>false positive</em>: a game resigned that could still have been won. It costs more than the plies it saves, because every position of that game is then labelled with the wrong result, and the value head learns that a won position is lost, which makes the next resignation even more eager. AlphaGo Zero measured the risk instead of guessing it: resignation is disabled in 10% of self-play games (<code>resign_disabled_fraction</code>), which are played to the end, and v_resign is "selected automatically to keep the fraction of false positives below 5%" (<code>resign_false_positive</code>). A disabled game remembers each side's lowest value; at threshold v it is a false positive when its eventual winner's lowest value is below v (the winner would have resigned). A draw has no winner and never counts. After each generation's self-play, the threshold is the largest one on a 0.01 grid that keeps false positives within the limit over the last <code>resign_window</code> (500) disabled games:</p>
-<pre><code>float calibrateResignThreshold(const std::vector&lt;float&gt;&amp; winnerMinimums, const ResignCalibration&amp; c) {
-    const size_t games = std::min(winnerMinimums.size(), static_cast&lt;size_t&gt;(std::max(0, c.window)));
+<span class="src">src/selfplay.cpp:50 — <code>playSelfPlayGame</code> (resignation only)</span>
+<p>The danger is a <em>false positive</em>: a game resigned that could still have been won. It costs more than the plies it saves, because every position of that game is then labelled with the wrong result, and the value head learns that a won position is lost, which makes the next resignation even more eager. AlphaGo Zero measured the risk instead of guessing it: resignation is disabled in 10% of self-play games (<code>resign_disabled_fraction</code>), which are played to the end, and v_resign is "selected automatically to keep the fraction of false positives below 5%" (<code>resign_false_positive</code>). A disabled game remembers each side's <em>record lows</em>, the ply and value each time its value reached a new minimum. That is enough to replay the game with resignation on at any threshold v: the first low below v is where that side would have resigned. Nothing in the resignation check draws from the <code>Rng</code>, so up to that ply the game would have been exactly this one. It is a false positive when the eventual winner gets there first, since the winner would have resigned a won game. If the loser crosses first, resigning would only have ended the game sooner with the right result. A draw has no winner and never counts:</p>
+<pre><code>bool ResignTrace::falsePositiveAt(float threshold) const {
+    const int winner = firstPlyBelow(winnerLows, threshold);
+    if (winner &lt; 0) return false;
+    const int loser = firstPlyBelow(loserLows, threshold);
+    return loser &lt; 0 || winner &lt; loser;
+}</code></pre>
+<span class="src">src/selfplay.cpp:34 — <code>ResignTrace::falsePositiveAt</code></span>
+<p>After each generation's self-play, the threshold is the largest one on a 0.01 grid that keeps false positives within the limit over the last <code>resign_window</code> (500) disabled games:</p>
+<pre><code>float calibrateResignThreshold(const std::vector&lt;ResignTrace&gt;&amp; traces, const ResignCalibration&amp; c) {
+    const size_t games = std::min(traces.size(), static_cast&lt;size_t&gt;(std::max(0, c.window)));
     if (games == 0 || games &lt; static_cast&lt;size_t&gt;(c.minGames)) return c.initialThreshold;
     // From the most aggressive threshold down: the first one whose false
     // positives fit. The integer grid keeps every step an exact k / 100.
     for (int k = 0; k &gt; -100; --k) {
         const float v = static_cast&lt;float&gt;(k) / 100.0f;
-        /* ... return v if resignFalsePositiveRate(winnerMinimums, c.window, v)
+        /* ... return v if resignFalsePositiveRate(traces, c.window, v)
                is at most c.maxFalsePositive ... */
     }
     return -1.0f;
 }</code></pre>
-<span class="src">src/selfplay.cpp:112 — <code>calibrateResignThreshold</code> (abridged)</span>
-<p>Until <code>resign_min_games</code> (20) disabled games exist, the threshold is <code>resign_threshold_initial</code> (−0.9). Generation g resigns at the threshold calibrated after generation g − 1, from earlier games only, and the one "disabled?" draw comes from each game's own <code>Rng</code>, so a run stays reproducible from its seed and independent of the worker count; <code>state.bin</code> keeps the window, so a resumed run continues byte for byte. <code>log.csv</code> records the threshold, the share of resignation-enabled games that resigned and the false-positive rate. Resignation is off in every preset, and it is refused together with the ownership head (chapter 06): a resigned game has no final board to take ownership targets from. No reference run used it, so this repository has no measurement of what it saves.</p>
+<span class="src">src/selfplay.cpp:135 — <code>calibrateResignThreshold</code> (abridged)</span>
+<p>Until <code>resign_min_games</code> (20) disabled games exist, the threshold is <code>resign_threshold_initial</code> (−0.9). Generation g resigns at the threshold calibrated after generation g − 1, from earlier games only, and the one "disabled?" draw comes from each game's own <code>Rng</code>, so a run stays reproducible from its seed and independent of the worker count; <code>state.bin</code> keeps the window, so a resumed run continues byte for byte. <code>resign_disabled_fraction = 0</code> is refused with resignation on, since there would be nothing to measure. <code>log.csv</code> records the threshold, the share of resignation-enabled games that resigned and the false-positive rate. Resignation is off in every preset, and it is refused together with the ownership head (chapter 06): a resigned game has no final board to take ownership targets from. The replay buffer marks resigned games, so <code>--buffer-from</code> refuses to seed an ownership run with them. No reference run used it, so this repository has no measurement of what it saves.</p>
 </section>
 
 <section id="credit">
@@ -2001,7 +2009,7 @@ A wins 4, B wins 0, draws 0</code></pre>
         });
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }</code></pre>
-<span class="src">src/trainer.cpp:487 — <code>Trainer::runGeneration</code> (abridged)</span>
+<span class="src">src/trainer.cpp:497 — <code>Trainer::runGeneration</code> (abridged)</span>
 <p><code>parallelFor</code> hands out indices from an atomic counter; which worker plays game 17 varies from run to run, but game 17 itself does not. The row split in the naive gemm keeps the arithmetic identical too:</p>
 <pre><code>void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alpha,
                         const float* A, const float* B, float beta, float* C) const {
@@ -2138,11 +2146,11 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Dirichlet root noise</dt>
   <dd><code>Mcts::setRootPriors</code> <span class="loc">— src/mcts.cpp:351</span>; <code>dirichlet</code> <span class="loc">— src/rng.cpp:122</span></dd>
   <dt>Temperature</dt>
-  <dd><code>Mcts::selectAction</code> <span class="loc">— src/mcts.cpp:314</span>; <code>playSelfPlayGame</code> <span class="loc">— src/selfplay.cpp:27</span></dd>
+  <dd><code>Mcts::selectAction</code> <span class="loc">— src/mcts.cpp:314</span>; <code>playSelfPlayGame</code> <span class="loc">— src/selfplay.cpp:50</span></dd>
   <dt>Tree reuse and compaction</dt>
   <dd><code>Mcts::advance</code> <span class="loc">— src/mcts.cpp:368</span></dd>
   <dt>Resignation and its calibration</dt>
-  <dd><code>resignValue</code>, <code>calibrateResignThreshold</code> <span class="loc">— src/selfplay.cpp:23, 112</span></dd>
+  <dd><code>resignValue</code>, <code>ResignTrace::falsePositiveAt</code>, <code>calibrateResignThreshold</code> <span class="loc">— src/selfplay.cpp:17, 34, 135</span></dd>
   <dt>Passes and the end of the game</dt>
   <dd><code>Game::play</code>, <code>Game::isTerminal</code> <span class="loc">— src/game.cpp:39, 53</span></dd>
   <dt>The value target z</dt>
@@ -2152,7 +2160,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Symmetry augmentation</dt>
   <dd><code>transformPoint</code>, <code>transformAction</code> <span class="loc">— src/symmetry.cpp:6, 21</span></dd>
   <dt>Ownership, an auxiliary target</dt>
-  <dd><code>replayFinalOwnership</code> <span class="loc">— src/selfplay.cpp:89</span>; <code>addOwnershipHead</code> <span class="loc">— src/grow.cpp:219</span>; <code>printOwnershipMap</code> <span class="loc">— apps/analyze.cpp:100</span></dd>
+  <dd><code>replayFinalOwnership</code> <span class="loc">— src/selfplay.cpp:112</span>; <code>addOwnershipHead</code> <span class="loc">— src/grow.cpp:219</span>; <code>printOwnershipMap</code> <span class="loc">— apps/analyze.cpp:100</span></dd>
   <dt>SGD with momentum, weight decay</dt>
   <dd><code>SgdMomentum::step</code> <span class="loc">— src/optimizer.cpp:19</span></dd>
   <dt>Learning-rate schedule</dt>
@@ -2170,7 +2178,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
   <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:109, 82</span></dd>
   <dt>One generation</dt>
-  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:487</span></dd>
+  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:497</span></dd>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
@@ -2178,7 +2186,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
-  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:29</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:416</span></dd>
+  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:30</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:426</span></dd>
   <dt>Inspecting a position</dt>
   <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:77, 117</span></dd>
 </dl>

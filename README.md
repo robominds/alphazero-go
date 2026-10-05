@@ -342,6 +342,7 @@ commented out). Six tunable config keys control it:
   `--rerate` and the tools never resign.
 - `resign_disabled_fraction` (0–1, default 0.1): the share of games
   played to the end with resignation disabled, to measure false positives.
+  It must be above 0 when `resignation` is on.
 - `resign_false_positive` (0–0.5, default 0.05): the largest
   false-positive rate v_resign may cause.
 - `resign_threshold_initial` (−1–0, default −0.9): v_resign until
@@ -358,20 +359,27 @@ How it works:
   `Mcts::bestChildValue`), with v_resign. Black is never offered
   resignation at the empty board. A side that resigns loses; z follows
   from that as from any result, and the SGF says `RE[B+R]` or `RE[W+R]`.
-- A disabled game records each side's lowest such value. It is a false
-  positive at threshold v when its winner's lowest value is below v;
-  a draw never is. After each generation's self-play, v_resign becomes
-  the largest threshold on the grid −1.00, −0.99, …, 0.00 whose
-  false-positive rate over the window is within `resign_false_positive`.
+- A disabled game records each side's record lows: the ply and value
+  each time its value reached a new minimum. At threshold v it is a false
+  positive exactly when the winner's value first drops below v before the
+  loser's does (or the loser's never does). In that case resigning at v
+  would have lost a won game. Nothing in the check draws from the `Rng`,
+  so the game is the same up to that ply. A draw is never a false
+  positive.
+- After each generation's self-play, v_resign becomes the largest
+  threshold on the grid −1.00, −0.99, …, 0.00 whose false-positive rate
+  over the last `resign_window` disabled games is within
+  `resign_false_positive`.
 - Generation g resigns at the threshold computed after generation g − 1,
   and each game draws "disabled?" once from its own `Rng`, so a run stays
   reproducible and independent of the worker count. With
   `resignation = false` nothing is drawn: runs play exactly the games
   they did before the feature existed.
-- `state.bin` (version 5) keeps v_resign and the window, so `--resume`
-  continues exactly; since the keys are tunable, resume recalibrates
-  with the current values. A run with an older `state.bin` starts with an
-  empty window.
+- `state.bin` (version 5) keeps the window of disabled games and which
+  buffered games resigned, so `--resume` continues exactly. Since the
+  keys are tunable, resume recalibrates v_resign from the window with the
+  current values; unchanged keys give the same threshold. A run with an
+  older `state.bin` starts with an empty window.
 - `log.csv` gains `resign_threshold` (the v_resign used), `resign_rate`
   (resigned games / games with resignation enabled) and
   `resign_false_positive` (the false-positive rate at that threshold over
@@ -379,7 +387,9 @@ How it works:
   without resignation, and an older run's `log.csv` gets them, empty, on
   resume. The progress line adds, for example, `resign -0.87 rate 0.62 fp 0.031`.
 - `ownership = true` with `resignation = true` is refused: a resigned game
-  has no final position to take the ownership target from.
+  has no final position to take the ownership target from. For the same
+  reason, `--buffer-from` refuses to seed a run with the ownership head
+  from a buffer that holds resigned games.
 
 No reference run used resignation, so nothing here measures what it
 saves.

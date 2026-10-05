@@ -1323,7 +1323,7 @@ GameRecord playSelfPlayGame(Evaluator& evaluator, const SelfPlayConfig& cfg, Rng
     return rec;
 }
 ```
-*src/selfplay.cpp:27 — `playSelfPlayGame` (abridged)*
+*src/selfplay.cpp:50 — `playSelfPlayGame` (abridged)*
 
 The presets sample 8 plies on 5×5, 20 on 9×9 and 30 on 19×19 (AlphaGo
 Zero's value), roughly the first fifth of a typical game on each board
@@ -1401,8 +1401,8 @@ GameRecord playSelfPlayGame(Evaluator& evaluator, const SelfPlayConfig& cfg, Rng
         // empty board, so every record keeps at least one position.
         if (cfg.resignation && game.moveCount() > 0) {
             const float v = resignValue(mcts);
-            float& lowest = rec.minResignValue[game.board().toMove() == Color::Black ? 0 : 1];
-            lowest = std::min(lowest, v);
+            ResignLows& lows = rec.resignLows[game.board().toMove() == Color::Black ? 0 : 1];
+            if (lows.empty() || v < lows.back().second) lows.emplace_back(game.moveCount(), v);
             if (!rec.resignDisabled && v < cfg.resignThreshold) {
                 rec.resigned = true;
                 break;
@@ -1413,7 +1413,7 @@ GameRecord playSelfPlayGame(Evaluator& evaluator, const SelfPlayConfig& cfg, Rng
     /* ... the result: a loss for whoever resigned, else the Tromp-Taylor score ... */
 }
 ```
-*src/selfplay.cpp:27 — `playSelfPlayGame` (resignation only)*
+*src/selfplay.cpp:50 — `playSelfPlayGame` (resignation only)*
 
 The danger is a *false positive*: a game resigned that could still have
 been won. It costs more than the plies it saves, because every position
@@ -1423,28 +1423,45 @@ even more eager. AlphaGo Zero measured the risk instead of guessing it:
 resignation is disabled in 10% of self-play games (`resign_disabled_fraction`),
 which are played to the end, and v_resign is "selected automatically to
 keep the fraction of false positives below 5%" (`resign_false_positive`).
-A disabled game remembers each side's lowest value; at threshold v it is
-a false positive when its eventual winner's lowest value is below v (the
-winner would have resigned). A draw has no winner and never counts.
+A disabled game remembers each side's *record lows*, the ply and value
+each time its value reached a new minimum. That is enough to replay the
+game with resignation on at any threshold v: the first low below v is
+where that side would have resigned. Nothing in the resignation check
+draws from the `Rng`, so up to that ply the game would have been exactly
+this one. It is a false positive when the eventual winner gets there
+first, since the winner would have resigned a won game. If the loser
+crosses first, resigning would only have ended the game sooner with the
+right result. A draw has no winner and never counts:
+
+```cpp
+bool ResignTrace::falsePositiveAt(float threshold) const {
+    const int winner = firstPlyBelow(winnerLows, threshold);
+    if (winner < 0) return false;
+    const int loser = firstPlyBelow(loserLows, threshold);
+    return loser < 0 || winner < loser;
+}
+```
+*src/selfplay.cpp:34 — `ResignTrace::falsePositiveAt`*
+
 After each generation's self-play, the threshold is the largest one on a
 0.01 grid that keeps false positives within the limit over the last
 `resign_window` (500) disabled games:
 
 ```cpp
-float calibrateResignThreshold(const std::vector<float>& winnerMinimums, const ResignCalibration& c) {
-    const size_t games = std::min(winnerMinimums.size(), static_cast<size_t>(std::max(0, c.window)));
+float calibrateResignThreshold(const std::vector<ResignTrace>& traces, const ResignCalibration& c) {
+    const size_t games = std::min(traces.size(), static_cast<size_t>(std::max(0, c.window)));
     if (games == 0 || games < static_cast<size_t>(c.minGames)) return c.initialThreshold;
     // From the most aggressive threshold down: the first one whose false
     // positives fit. The integer grid keeps every step an exact k / 100.
     for (int k = 0; k > -100; --k) {
         const float v = static_cast<float>(k) / 100.0f;
-        /* ... return v if resignFalsePositiveRate(winnerMinimums, c.window, v)
+        /* ... return v if resignFalsePositiveRate(traces, c.window, v)
                is at most c.maxFalsePositive ... */
     }
     return -1.0f;
 }
 ```
-*src/selfplay.cpp:112 — `calibrateResignThreshold` (abridged)*
+*src/selfplay.cpp:135 — `calibrateResignThreshold` (abridged)*
 
 Until `resign_min_games` (20) disabled games exist, the threshold is
 `resign_threshold_initial` (−0.9). Generation g resigns at the threshold
@@ -1452,10 +1469,14 @@ calibrated after generation g − 1, from earlier games only, and the one
 "disabled?" draw comes from each game's own `Rng`, so a run stays
 reproducible from its seed and independent of the worker count;
 `state.bin` keeps the window, so a resumed run continues byte for byte.
+`resign_disabled_fraction = 0` is refused with resignation on, since
+there would be nothing to measure.
 `log.csv` records the threshold, the share of resignation-enabled games
 that resigned and the false-positive rate. Resignation is off in every
 preset, and it is refused together with the ownership head (chapter
 06): a resigned game has no final board to take ownership targets from.
+The replay buffer marks resigned games, so `--buffer-from` refuses to
+seed an ownership run with them.
 No reference run used it, so this repository has no measurement of what
 it saves.
 
@@ -2393,7 +2414,7 @@ GenerationStats Trainer::runGeneration() {
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:487 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:497 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not. The
@@ -2616,14 +2637,14 @@ see again in place.
 | Virtual loss and batched search | `Mcts::search`, `Mcts::addVirtualLoss` — `src/mcts.cpp:213, 108` |
 | The evaluator seam | `Evaluator` — `include/azgo/evaluator.hpp:17`; `LocalEvaluator::evaluate` — `src/evaluator.cpp:19` |
 | Dirichlet root noise | `Mcts::setRootPriors` — `src/mcts.cpp:351`; `dirichlet` — `src/rng.cpp:122` |
-| Temperature | `Mcts::selectAction` — `src/mcts.cpp:314`; `playSelfPlayGame` — `src/selfplay.cpp:27` |
+| Temperature | `Mcts::selectAction` — `src/mcts.cpp:314`; `playSelfPlayGame` — `src/selfplay.cpp:50` |
 | Tree reuse and compaction | `Mcts::advance` — `src/mcts.cpp:368` |
-| Resignation and its calibration | `resignValue`, `calibrateResignThreshold` — `src/selfplay.cpp:23, 112` |
+| Resignation and its calibration | `resignValue`, `ResignTrace::falsePositiveAt`, `calibrateResignThreshold` — `src/selfplay.cpp:17, 34, 135` |
 | Passes and the end of the game | `Game::play`, `Game::isTerminal` — `src/game.cpp:39, 53` |
 | The value target z | `GameRecord::zAt` — `src/selfplay.cpp:12` |
 | Replay buffer of whole games | `ReplayBuffer::encodeSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:54, 85` |
 | Symmetry augmentation | `transformPoint`, `transformAction` — `src/symmetry.cpp:6, 21` |
-| Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:89`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:100` |
+| Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:112`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:100` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:19` |
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:100` |
 | Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:51, 89` |
@@ -2632,11 +2653,11 @@ see again in place.
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
 | `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:109, 82` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:487` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:497` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:12` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:29`; `Trainer::resume` — `src/trainer.cpp:416` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:30`; `Trainer::resume` — `src/trainer.cpp:426` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:77, 117` |
 
 ---

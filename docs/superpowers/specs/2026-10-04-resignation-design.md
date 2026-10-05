@@ -67,31 +67,48 @@ below v_resign.
   resigns. The game ends before that position is recorded (no move was
   played from it). `resultForBlack` is a loss for the resigning side, and
   z follows from it as for any game.
-- Every game, enabled or not, records per side the minimum
-  `resignValue` over its moves from ply 1 on (+1 when there were none).
-  `GameRecord` gains `resigned`, `resignDisabled` and
-  `minResignValue[2]`. These fields are for the generation's statistics
-  only; the replay buffer does not store them.
-- `GameRecord::winnerMinResignValue()` is the winner's minimum. A
-  disabled game is a false positive at threshold v when this is below v:
-  the winner would have resigned. A draw (possible only with integer
-  komi) has no winner and counts as +1, never a false positive.
+- Every game, enabled or not, records each side's **record lows** from
+  ply 1 on: `(ply, value)` each time its `resignValue` reaches a new
+  minimum, so plies rise and values fall. The first low below a threshold
+  v is the ply where that side would have resigned at v.
+- `GameRecord` gains `resigned`, `resignDisabled` and `resignLows[2]`.
+  - The replay buffer stores `resigned`, because a resigned game's last
+    board is not a final position.
+  - The other two are for the generation's statistics only.
+- `ResignTrace` keeps the winner's and the loser's lows of a disabled
+  game. Both are empty for a draw, which is possible only with integer
+  komi.
+- `ResignTrace::falsePositiveAt(v)` is AlphaGo Zero's counterfactual,
+  computed exactly. The game is a false positive when the winner's first
+  low below v comes at an earlier ply than the loser's, or the loser never
+  goes below v. With resignation on at v, the winner would then have
+  resigned a game it went on to win; if the loser crosses first, the game
+  only ends sooner with the same result.
+  - This is exact, not an estimate: the resignation check draws nothing
+    from the `Rng`. The only draw, "disabled?", is made in both cases. So
+    the game with resignation on is this game up to the first crossing.
+  - A draw is never a false positive.
+  - Unlike the simpler "the winner ever dipped below v", the false-positive
+    rate is not monotone in v. Calibration therefore scans the whole grid
+    from the top.
 
 ### Calibration
 
-- `calibrateResignThreshold(winnerMinimums, {window, minGames,
+- `calibrateResignThreshold(traces, {window, minGames,
   maxFalsePositive, initialThreshold})`:
   - It considers the last `window` entries.
   - With fewer than `minGames` entries it returns `initialThreshold`.
   - Otherwise it returns the largest v on the grid −1.00, −0.99, …,
     0.00 (v = k / 100) whose false-positive rate
-    (count(min < v) / games) is at most `maxFalsePositive`, compared as
+    (count(falsePositiveAt(v)) / games) is at most `maxFalsePositive`, compared as
     floats so a rate exactly at the limit qualifies. v = −1 always
     qualifies, since no value is below −1.
-- `resignFalsePositiveRate(winnerMinimums, window, v)` gives that rate,
-  or 0 for an empty window.
-- The trainer appends each generation's disabled games, in game-index
-  order, to `TrainingState::resignWindow` and trims it to `resign_window`.
+- `resignFalsePositiveRate(traces, window, v)` gives that rate, or 0 for
+  an empty window.
+- The trainer appends each generation's disabled games' traces, in
+  game-index order, to `TrainingState::resignWindow`, and trims the window
+  to `resign_window` only when appending. Calibration reads only the
+  last `resign_window` entries anyway.
   It then calibrates the threshold for the **next** generation. So
   generation g's threshold depends only on games of generations before g:
   every game of a generation shares it, and the result does not depend on
@@ -119,6 +136,9 @@ Six tunable keys, after `mcts_random_symmetry`:
   It refuses (`ConfigError`):
   - `resignation = true` with `ownership = true`: a resigned game has no
     final position to take ownership targets from;
+  - `resignation = true` with `resign_disabled_fraction = 0`: there would
+    be no games to measure false positives on, and v_resign would never be
+    checked against how games really end;
   - `resign_min_games > resign_window`: the threshold could never be
     calibrated.
 - The presets leave resignation off; `configs/9x9.cfg` lists the keys
@@ -126,15 +146,26 @@ Six tunable keys, after `mcts_random_symmetry`:
 
 ### Training state
 
-- `state.bin` version 5 appends an f32 `resignThreshold` (the v_resign
-  the next generation uses) and the window: a u32 count, then the f32
-  winner minimums.
-- Versions 1–4 load with an empty window and the default threshold.
-- `Trainer::resume` trims the window to `resign_window` and recalibrates
-  the threshold from the window and the current keys. With unchanged keys
-  this gives back the stored value, so resume stays byte-identical. With
-  changed keys the new values take effect at once, and an old run gets
+- `state.bin` version 5 adds, per buffered game, a `resigned` byte after
+  its ownership.
+- At the end of the file it appends:
+  - an f32 `resignThreshold`, the v_resign calibrated after the last
+    generation (a record only, see below);
+  - the window: a u32 game count, then per game the winner's and the
+    loser's lows, each a u32 count followed by (u32 ply, f32 value) pairs.
+- Loading refuses a threshold outside [−1, 0] or not finite, and lows
+  that are not record lows (ply ≥ 1 and rising, value in [−1, 1] and
+  falling). The error names the file.
+- Versions 1–4 load with no resigned games, an empty window and the
+  default threshold.
+- `Trainer::resume` recalibrates the threshold from the window and the
+  current keys, without trimming. With unchanged keys this gives back the
+  stored value, so resume stays byte-identical. With changed keys the new
+  values take effect at once, and an old run gets
   `resign_threshold_initial`.
+- `--buffer-from` into a run with `ownership = true` is refused
+  (`ConfigError` naming the donor) when the donor's buffer, after
+  trimming to `buffer_positions`, holds resigned games.
 
 ### Output
 
@@ -158,34 +189,51 @@ Six tunable keys, after `mcts_random_symmetry`:
 - Inconsistent keys are a `ConfigError` before anything is written, for a
   new run and for a resume. A refused resume leaves `config.cfg`
   untouched.
-- A version-5 `state.bin` whose window count exceeds the file is an error
-  that names the file.
+- A version-5 `state.bin` whose window count exceeds the file, or whose
+  threshold or lows are invalid, is an error that names the file.
 
 ## Testing
 
-- **MCTS:** `bestChildValue` is the most visited edge's Q, with the best
-  Q among ties, and 0 before any search.
+- **MCTS:**
+  - `bestChildValue` is the most visited edge's Q, and 0 before any
+    search;
+  - a forced visit tie with different Qs returns the best Q.
 - **Self-play:**
   - with an evaluator that thinks White is lost, White resigns at ply 1:
     one position, Black wins, z = +1, and Black's ply 0 is never
     considered;
   - a hopeless Black resigns at ply 2, never at the empty board;
-  - a disabled game plays to the end and records the minimums;
+  - a value exactly at v_resign does not resign, and one just below it
+    does;
+  - "both below": `resignValue` is the larger of root value and best-child
+    Q, so root < v < best (and the reverse) does not resign; on a real
+    search where the two differ, the larger is used;
+  - a disabled game plays to the end and records record lows of the
+    right parity;
   - resignation on draws exactly one extra number per game, first, so a
     game that never resigns equals the resignation-off game with one
     `uniform()` drawn beforehand. The existing determinism tests pass
     unchanged with resignation off.
-- **Calibration** on hand-made data covers the grid answer at 5% and
-  10%, the strict "below", the top and bottom of the grid, the
-  `minGames` fallback and window trimming.
+- **Calibration** on hand-made data:
+  - `falsePositiveAt` with the winner first, the loser first, the strict
+    "below" and draws;
+  - the grid answer at 5% and 10%, including a game where the loser crosses
+    first and so does not count;
+  - the top and bottom of the grid;
+  - the `minGames` fallback and window trimming.
 - **SGF:** `RE[B+R]` and `RE[W+R]`.
 - **Config:**
   - the keys' defaults, order, round trip, bounds and tunability;
-  - the ownership refusal and the `resign_min_games` rule;
+  - the ownership refusal, the disabled-fraction-0 refusal and the
+    `resign_min_games` rule;
   - presets off, with the 9×9 commented lines present.
-- **State:** a version-5 round trip including the window; a version-4
-  file loads with an empty window; an oversized window count is refused.
-  Older-version tests are updated to the new trailing bytes.
+- **State and buffer:**
+  - a version-5 round trip including traces and resigned flags;
+  - a version-4 file loads with an empty window and no flags;
+  - an oversized window count, a bad threshold and bad lows are refused;
+  - the buffer's resigned flag round-trips and rejects values other than
+    0 and 1.
+  Older-version tests are updated to the new layout.
 - **Trainer (tiny 5×5 run):**
   - generation g uses the threshold calibrated after g−1;
   - the log columns match the statistics;
@@ -194,6 +242,9 @@ Six tunable keys, after `mcts_random_symmetry`:
   - resume is byte-identical and the worker count changes nothing with
     resignation on;
   - ownership with resignation is refused by `startNew` and `resume`;
+  - `--buffer-from` a resignation run into an ownership run is refused,
+    naming the donor, but accepted without the head;
+  - the buffer's resigned flags match the resigned SGFs;
   - resignation can be switched on at resume;
   - older logs gain the columns.
 - **Integration smoke:**
