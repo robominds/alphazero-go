@@ -4,7 +4,8 @@
 # arena (checkpoint, bot, random symmetry, c_puct and MCTS batch, on both sides or one) -> analyze (good, random symmetry and
 # bad input) -> bench -> grow (deeper, wider, and a run started from the grown network), plus the refusal to change the architecture on resume,
 # then the ownership head: a run with it, grow --ownership, and analyze's ownership map,
-# and resignation: a run with it, and its refusal alongside the ownership head.
+# and resignation: a run with it, and its refusal alongside the ownership head,
+# and the GTP engine: a scripted session.
 #
 # usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR
 set -euo pipefail
@@ -349,5 +350,27 @@ out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/resign_own" "${T
 [ "$status" -eq 1 ] || fail "resignation with the ownership head exited $status, expected 1"
 echo "$out" | grep -q "cannot be combined with ownership" || fail "unexpected refusal: $out"
 test ! -e "$W/resign_own/state.bin" || fail "a refused start left a run behind"
+
+echo "== gtp: a scripted session =="
+# Nine commands, so nine responses, each a line starting with = or ? and
+# ending in a blank line; nothing else may reach stdout.
+printf '%s\n' '1 protocol_version' 'boardsize 9' 'boardsize 5' '# a comment' 'komi 6.5' 'play b C3' \
+    'play w c3' '2 genmove w' 'final_score' 'quit' 'name' \
+    | "$BUILD/gtp" --checkpoint "$CK/gen_0003.azn" --simulations 8 > "$W/gtp.out" 2> "$W/gtp.err"
+out="$(cat "$W/gtp.out")"
+echo "$out"
+[ "$(grep -c '^[=?]' "$W/gtp.out")" = "9" ] || fail "gtp did not answer exactly the nine commands before quit"
+[ "$(grep -c '^$' "$W/gtp.out")" = "9" ] && [ "$(wc -l < "$W/gtp.out" | tr -d ' ')" = "18" ] \
+    || fail "gtp responses are not each followed by one blank line"
+echo "$out" | grep -qx '=1 2' || fail "gtp protocol_version"
+echo "$out" | grep -qx '? unacceptable size' || fail "gtp accepted a board size the checkpoint cannot play"
+echo "$out" | grep -qx '? illegal move' || fail "gtp accepted a move on an occupied point"
+echo "$out" | grep -Eqx '=2 ([A-E][1-5]|pass)' || fail "gtp genmove did not answer a vertex"
+echo "$out" | grep -Eqx '= (B\+|W\+)[0-9.]+|= 0' || fail "gtp final_score is not in B+3.5 form"
+grep -q '^genmove W: ' "$W/gtp.err" || fail "gtp logged no genmove line on stderr"
+status=0
+out="$("$BUILD/gtp" --checkpoint "$W/missing.azn" < /dev/null 2>&1)" || status=$?
+[ "$status" -eq 1 ] || fail "gtp with a missing checkpoint exited $status, expected 1"
+echo "$out" | grep -q '^error: ' || fail "gtp did not report the missing checkpoint: $out"
 
 echo "integration_smoke: all checks passed"

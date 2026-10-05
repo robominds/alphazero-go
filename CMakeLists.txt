@@ -82,7 +82,7 @@ target_include_directories(train PRIVATE ${CMAKE_SOURCE_DIR}/apps)
 add_test(NAME integration_smoke
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration_smoke.sh ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR})
 
-foreach(app arena analyze bench grow)
+foreach(app arena analyze bench grow gtp)
   add_executable(${app} apps/${app}.cpp)
   target_link_libraries(${app} PRIVATE azgo)
   target_include_directories(${app} PRIVATE ${CMAKE_SOURCE_DIR}/apps)
