@@ -482,11 +482,15 @@ From `docs/results/README.md`, which has the details and the sources.
 - **All post-250 runs against one reference (gen 200).** Re-rated against the
   same frozen gen-200 network, wide96, grow10, sims200, sims400 and ownership
   all gained a similar, modest amount in 50 generations, within about ±40 Elo
-  noise (see [the section](docs/results/README.md#all-post-250-runs-against-one-reference-gen-200)).
+  noise. All of them took the same 10,000 SGD steps at learning rate 0.002,
+  which fits that pattern (see [the section](docs/results/README.md#all-post-250-runs-against-one-reference-gen-200)).
 - **9×9, more self-play games.** Doubling games per generation (200 vs 100)
   gave at best a small edge at equal generations (61/100 at generation 25,
-  56/100 at 50, interval 0.462–0.653), not clearly real, for 1.59× the time
-  (see [the section](docs/results/README.md#more-self-play-games-per-generation-200-vs-100)).
+  56/100 at 50, interval 0.462–0.653), not clearly real, for 1.59× the time.
+  The run kept 200 training steps per generation, so its replay ratio fell
+  from 5.8 to 2.9: it tested fresher data, not more learning, and does not
+  show that data quantity is not the bottleneck. A run with 200 games and
+  400 steps is queued (see [the section](docs/results/README.md#more-self-play-games-per-generation-200-vs-100)).
 - **9×9, learning-rate restart.** Restarting the learning rate at 0.02 and
   stepping it down to 0.006 and 0.002, instead of a flat 0.002, put the run
   behind the control at generation 25 (36/100, interval 0.273–0.458) and

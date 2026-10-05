@@ -401,7 +401,8 @@ top is C7 at 23.5%) or the top ten visited moves, and the network gives
 the position −0.54 (value) and −0.72 (after 200 simulations). So
 capacity alone is not the bottleneck at this compute budget.
 
-**Next levers, all untested hypotheses.** None of these was run.
+**Next levers, all untested hypotheses when this was written.** The first
+three have since been tested; each says where.
 
 - More simulations per move, for self-play and training targets.
   Tested (400 vs 200, 50 generations): no measurable gain per
@@ -414,7 +415,9 @@ capacity alone is not the bottleneck at this compute budget.
 - More self-play games per generation (100 at the time, with a replay
   ratio of about 5.8). Tested (200 vs 100, 50 generations): at best a small
   edge, not clearly real, at 1.6× the time; see
-  [the section](#more-self-play-games-per-generation-200-vs-100).
+  [the section](#more-self-play-games-per-generation-200-vs-100). That run
+  kept 200 training steps, halving the replay ratio to 2.9, so it tested
+  fresher data, not more learning; 200 games with 400 steps is queued.
 - A targeted analysis of why the eye shape is rare in self-play: if the
   network never reaches such positions, no amount of capacity adds the
   training signal.
@@ -825,6 +828,13 @@ Reading it, honestly:
 - **Conclusion.** Every post-250 experiment gained a similar, modest
   amount in 50 generations, and none stands clear of the noise. That
   agrees with the direct 100-game matches reported in the sections above.
+- **They all had the same learning budget.** Every run in the table
+  took 200 SGD steps of 256 positions per generation, 10,000 steps in
+  50 generations, at a learning rate of 0.002 (the lr-restart run took
+  the same number of steps, most of them at higher rates). That is
+  consistent with every lever gaining about the same, though it does not
+  show that the budget is the limit. A run that doubles both games and steps is in progress (see
+  the games section below).
 
 ### More self-play games per generation (200 vs 100)
 
@@ -833,6 +843,19 @@ head) gained about the same, which would fit a run limited by the amount
 of data rather than by the model or the search. If so, doubling the games
 per generation should help where those did not. The result: a small edge
 at best, not clearly real, for 1.6 times the time.
+
+**Correction: this did not test the amount of learning.** The run kept
+`train_steps = 200`, so it took the same 10,000 SGD steps as the control
+while generating twice the positions, and the replay ratio (`train_steps
+× batch_size / (games × average plies)`, the `replay_ratio` column of
+`log.csv`) fell by half: a mean of 2.90 against the control's 5.80
+(200 × 256 / (100 × 88.3) = 5.80). Each position was drawn about half as
+often. What the run tested is fresher data at half the replay ratio, not
+more data with more learning, so it does **not** show that data quantity
+is not the bottleneck; an earlier version of this section said it did.
+The test that keeps the replay ratio constant, 200 games and 400
+training steps per generation (`runs/9x9-budget-g200-s400`), is queued
+and has no result yet.
 
 - *Setup.* The control is `9x9-sims/sims200/` (generation 50 of
   `9x9-wide96` as the start, its buffer, same seed, `simulations = 200`,
@@ -869,7 +892,7 @@ files in `9x9-games200/`):
 **Against gen 200.** Re-rated like the other runs (`rerate/`), Elo minus
 `ref1`'s Elo (−100.8 in `rerate/references.csv`) is +101 at the start,
 +49 at generation 25 and +88 at generation 50, on the scale of the
-all-runs table below (the sims200 control: +104, +152, +132). The
+all-runs table above (the sims200 control: +104, +152, +132). The
 same-scale noise there is about ±40 Elo, and this run's generation 25 and
 50 sit below the control's.
 
@@ -878,8 +901,11 @@ the control: +78 at generation 25 (lower bound 0.512, one match) and +42
 at generation 50 (interval includes 0.5). Against its own start it is
 +28 at generation 50, with an interval that includes 0.5. The re-rate
 does not show an edge either. Together that is not clearly a real
-difference, and it cost about 1.6 times as much time per generation. This
-does not support data quantity as the main bottleneck at this budget.
+difference, and it cost about 1.6 times as much time per generation.
+What this shows is narrow: with the number of SGD steps fixed, twice the
+self-play games at half the replay ratio neither clearly helped nor
+clearly hurt. It says nothing about whether more data with
+proportionally more training would help (see the correction above).
 One seed per arm; no claim beyond that. The next test was the learning
 rate; see [the section below](#a-learning-rate-restart-002-to-0002).
 
@@ -982,7 +1008,7 @@ one schedule (a peak of 0.02 with steps at generations 20 and 35), one
 seed and 50 generations; a smaller restart or a longer tail at 0.002
 might differ, and a gain under about 70 Elo would not show in a 100-game
 match. Nor is it a test of more learning: it took the same 10,000 SGD
-steps as the control.
+steps as the control (see the correction in the games section above).
 
 ### 19×19: criterion met (it runs)
 
