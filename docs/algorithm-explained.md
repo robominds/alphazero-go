@@ -2537,7 +2537,7 @@ see again in place.
 | The value target z | `GameRecord::zAt` — `src/selfplay.cpp:12` |
 | Replay buffer of whole games | `ReplayBuffer::encodeSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:54, 85` |
 | Symmetry augmentation | `transformPoint`, `transformAction` — `src/symmetry.cpp:6, 21` |
-| Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:61`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:99` |
+| Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:61`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:100` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:19` |
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:100` |
 | Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:51, 89` |
@@ -2551,7 +2551,7 @@ see again in place.
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:12` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
 | Training state and resume | `saveTrainingState` — `src/run_state.cpp:29`; `Trainer::resume` — `src/trainer.cpp:377` |
-| Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:76, 116` |
+| Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:77, 117` |
 
 ---
 

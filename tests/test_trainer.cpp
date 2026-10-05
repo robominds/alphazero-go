@@ -1087,11 +1087,16 @@ static void test_rerate_with_reference_networks() {
 // from a per-game Rng, so a run with both on is still independent of the
 // worker count. Each comparison with the plain run is fixed by the seed.
 static void test_random_symmetry_run() {
-    TempDir plain("sym_off"), one("sym_workers1"), three("sym_workers3");
+    TempDir plain("sym_off"), selfPlayOnly("sym_selfplay"), one("sym_workers1"), three("sym_workers3");
     Config c = tinyConfig();
     c.arenaGames = 8;
     startQuiet(c, plain)->runUntil(2);
+    // mcts_random_symmetry alone (arena key off): other self-play games, so
+    // another generation 1. A self-play wired to the arena key would not differ.
     c.mctsRandomSymmetry = true;
+    startQuiet(c, selfPlayOnly)->runUntil(1);
+    assert(readFile(selfPlayOnly.file("checkpoints/gen_0001.azn")) !=
+           readFile(plain.file("checkpoints/gen_0001.azn")));
     c.arenaRandomSymmetry = true;
     c.workers = 1;
     startQuiet(c, one)->runUntil(2);
@@ -1099,10 +1104,8 @@ static void test_random_symmetry_run() {
     startQuiet(c, three)->runUntil(2);
     for (const char* f : {"checkpoints/gen_0002.azn", "state.bin", "results.csv", "references.csv"})
         assert(readFile(one.file(f)) == readFile(three.file(f)));
-    // Other self-play games, so another generation 1.
-    assert(readFile(one.file("checkpoints/gen_0001.azn")) != readFile(plain.file("checkpoints/gen_0001.azn")));
 
-    // The same checkpoints met under random symmetry play other games.
+    // arena_random_symmetry alone: the same checkpoints play other games.
     rerateRun(plain.str(), {"arena_random_symmetry=on"}, nullptr);
     assert(readFile(plain.file("rerate/results.csv")) != readFile(plain.file("results.csv")));
 

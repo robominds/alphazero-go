@@ -821,6 +821,9 @@ static void test_random_symmetry_maps_the_policy_back() {
     std::sort(distinct.begin(), distinct.end());
     distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
     assert(distinct.size() >= 4);
+    // Quarter turns 1 and 3 are each other's inverse (every other transform
+    // is its own), so only they catch a map-back in the wrong direction.
+    assert(std::count(ev.seen.begin(), ev.seen.end(), 1) + std::count(ev.seen.begin(), ev.seen.end(), 3) > 0);
     checkPriorsAreTrue(on);
     const std::vector<float> pOn = on.rootPriors(), pOff = off.rootPriors();
     for (size_t a = 0; a < pOn.size(); ++a) assert(near(pOn[a], pOff[a]));

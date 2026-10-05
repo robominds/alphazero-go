@@ -44,8 +44,9 @@ const char* const kUsage =
     "checkpoint with an ownership head) and policy for the position, and the\n"
     "result of an MCTS search. With --sgf the file's komi is used unless --komi\n"
     "is given. --random-symmetry makes the search evaluate each position under a\n"
-    "random one of the 8 board symmetries, as AlphaGo Zero did; the raw network\n"
-    "output above it always sees the board as it is.\n";
+    "random one of the 8 board symmetries, as AlphaGo Zero did, so each node's\n"
+    "priors come from one random transform; the raw network output printed above\n"
+    "the search always sees the board as it is.\n";
 
 constexpr char kColumns[] = "ABCDEFGHJKLMNOPQRST";   // GTP skips I
 constexpr int kMctsBatch = 8;
