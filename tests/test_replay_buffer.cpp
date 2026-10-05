@@ -5,6 +5,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 #include "azgo/encode.hpp"
 #include "azgo/game.hpp"
@@ -410,6 +411,30 @@ static void test_resigned_flag_round_trip() {
     assert(threw);
 }
 
+// locate numbers positions from the oldest game's first, as sample() draws
+// them; encodeTrainingSample encodes a position of any record, buffered or
+// not, exactly as the buffer does.
+static void test_locate_and_encode_training_sample() {
+    ReplayBuffer buf(100);
+    buf.add(makeRecord({6, 18, 12, 25}));
+    buf.add(makeRecord({25, 25}));
+    buf.add(makeRecord({7}, 7.5f, -1.0f));
+    assert(buf.positions() == 7);
+    const std::pair<size_t, int> expected[] = {{0, 0}, {0, 1}, {0, 2}, {0, 3}, {1, 0}, {1, 1}, {2, 0}};
+    for (size_t i = 0; i < 7; ++i) assert(buf.locate(i) == expected[i]);
+
+    const int H = 2, planes = numPlanes(H) * 25;
+    std::vector<float> in1(planes), in2(planes), pi1(26), pi2(26), own1(25), own2(25);
+    float z1 = 0, z2 = 0;
+    for (size_t g = 0; g < buf.games(); ++g)
+        for (int ply = 0; ply < buf.game(g).positions(); ++ply)
+            for (int sym : {0, 5}) {
+                buf.encodeSample(g, ply, H, sym, in1.data(), pi1.data(), &z1, own1.data());
+                encodeTrainingSample(buf.game(g), ply, H, sym, in2.data(), pi2.data(), &z2, own2.data());
+                assert(in1 == in2 && pi1 == pi2 && z1 == z2 && own1 == own2);
+            }
+}
+
 int main() {
     test_add_evicts_oldest_games();
     test_oversized_game_is_kept_alone();
@@ -426,6 +451,7 @@ int main() {
     test_save_load_round_trip();
     test_old_layout_that_does_not_replay();
     test_resigned_flag_round_trip();
+    test_locate_and_encode_training_sample();
     std::printf("test_replay_buffer: all tests passed\n");
     return 0;
 }

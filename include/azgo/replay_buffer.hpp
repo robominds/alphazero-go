@@ -9,6 +9,7 @@
 #pragma once
 #include <cstddef>
 #include <deque>
+#include <utility>
 #include <vector>
 #include "azgo/rng.hpp"
 #include "azgo/selfplay.hpp"
@@ -23,6 +24,15 @@ struct TrainingBatch {
     std::vector<float> z;       // [size]
     std::vector<float> ownership;   // [size][area]: final owner of each point, side to move's view
 };
+
+// One training sample of `game`, buffered or not, into caller buffers:
+// input numPlanes(history)*area (history from the same game's earlier
+// positions), pi area+1 (the visit counts normalised), *z (the result from
+// the side to move's view) and, unless null, ownership area
+// (finalOwnership, negated when White is to move), all moved by symmetry
+// `sym`.
+void encodeTrainingSample(const GameRecord& game, int ply, int history, int sym,
+                          float* input, float* pi, float* z, float* ownership = nullptr);
 
 // Sliding window of whole games. A sample is (game, ply); its history planes
 // come from the same game's earlier positions, so history costs no storage.
@@ -41,11 +51,13 @@ public:
     // B samples uniformly over positions (with replacement), each with a
     // uniformly random symmetry. Asserts positions() > 0.
     void sample(int B, int history, Rng& rng, TrainingBatch& out) const;
-    // One sample into caller buffers: input numPlanes(H)*area, pi area+1, *z,
-    // and, unless null, ownership area (finalOwnership, negated when White is
-    // to move, each point moved where the symmetry moves it).
+    // encodeTrainingSample of game(gameIndex).
     void encodeSample(size_t gameIndex, int ply, int history, int sym,
                       float* input, float* pi, float* z, float* ownership = nullptr) const;
+    // (game index, ply) of position number `position`, counting from the
+    // oldest game's first position: what sample() draws uniformly.
+    // Asserts position < positions().
+    std::pair<size_t, int> locate(size_t position) const;
 
     // withOwnership = false writes the layout of state.bin versions 1 and 2,
     // which stored no ownership; withResigned = false that of versions 1 to

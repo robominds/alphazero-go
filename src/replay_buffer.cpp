@@ -51,9 +51,8 @@ void ReplayBuffer::rebuildIndex() {
     for (const GameRecord& g : games_) firstPosition_.push_back(firstPosition_.back() + g.positions());
 }
 
-void ReplayBuffer::encodeSample(size_t gameIndex, int ply, int history, int sym,
-                                float* input, float* pi, float* z, float* ownership) const {
-    const GameRecord& g = games_[gameIndex];
+void encodeTrainingSample(const GameRecord& g, int ply, int history, int sym,
+                          float* input, float* pi, float* z, float* ownership) {
     assert(ply >= 0 && ply < g.positions());
     const int n = g.boardSize;
 
@@ -82,6 +81,19 @@ void ReplayBuffer::encodeSample(size_t gameIndex, int ply, int history, int sym,
     }
 }
 
+void ReplayBuffer::encodeSample(size_t gameIndex, int ply, int history, int sym,
+                                float* input, float* pi, float* z, float* ownership) const {
+    encodeTrainingSample(games_[gameIndex], ply, history, sym, input, pi, z, ownership);
+}
+
+std::pair<size_t, int> ReplayBuffer::locate(size_t position) const {
+    assert(position < positions_);
+    // Last game whose first position is <= position.
+    const size_t g = static_cast<size_t>(
+        std::upper_bound(firstPosition_.begin(), firstPosition_.end(), position) - firstPosition_.begin() - 1);
+    return {g, static_cast<int>(position - firstPosition_[g])};
+}
+
 void ReplayBuffer::sample(int B, int history, Rng& rng, TrainingBatch& out) const {
     assert(positions_ > 0 && B >= 1);
     assert(positions_ <= static_cast<size_t>(INT_MAX));
@@ -98,10 +110,7 @@ void ReplayBuffer::sample(int B, int history, Rng& rng, TrainingBatch& out) cons
         // Uniform over positions, not games: long games are sampled more.
         const size_t global = static_cast<size_t>(rng.below(static_cast<int>(positions_)));
         const int sym = rng.below(kNumSymmetries);
-        // Last game whose first position is <= global.
-        const size_t g = static_cast<size_t>(
-            std::upper_bound(firstPosition_.begin(), firstPosition_.end(), global) - firstPosition_.begin() - 1);
-        const int ply = static_cast<int>(global - firstPosition_[g]);
+        const auto [g, ply] = locate(global);
         encodeSample(g, ply, history, sym, out.input.data() + b * inputStride,
                      out.pi.data() + b * piStride, out.z.data() + b, out.ownership.data() + b * area);
     }
