@@ -20,6 +20,7 @@
 #include "azgo/elo.hpp"
 #include "azgo/network.hpp"
 #include "azgo/run_state.hpp"
+#include "azgo/selfplay.hpp"
 #include "azgo/serialize.hpp"
 #include "azgo/trainer.hpp"
 
@@ -149,7 +150,7 @@ static void test_start_new_writes_run_files() {
     assert(readFile(dir.file("log.csv")) ==
            "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
            "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev,"
-           "ownership_loss\n");
+           "ownership_loss,resign_threshold,resign_rate,resign_false_positive\n");
     assert(readFile(dir.file("elo.csv")) ==
            "generation,elo,winrate_vs_prev,wr_low,wr_high\n0,0.0,,,\n");
 }
@@ -174,13 +175,15 @@ static void test_two_generations() {
     assert(st.distinctVsPrev >= 1 && st.distinctVsPrev <= 2);   // arena_games = 2
 
     assert(st.ownershipLoss == -1.0f);   // no ownership head
+    assert(!st.resignation);
     {
-        // The log row ends with the same diversity count and an empty
-        // ownership_loss field.
+        // The log row ends with the same diversity count, then empty
+        // ownership_loss and resignation fields (no head, no resignation).
         const std::vector<std::string> rows = splitLines(readFile(dir.file("log.csv")));
         const std::string& row = rows.back();
-        assert(std::count(row.begin(), row.end(), ',') == 15 && row.back() == ',');
-        const std::string fields = row.substr(0, row.size() - 1);
+        assert(std::count(row.begin(), row.end(), ',') == 18);
+        assert(row.size() > 4 && row.compare(row.size() - 4, 4, ",,,,") == 0);
+        const std::string fields = row.substr(0, row.size() - 4);
         const std::string distinct = fields.substr(fields.find_last_of(',') + 1);
         assert(!distinct.empty() && std::stoi(distinct) == st.distinctVsPrev);
     }
@@ -423,8 +426,9 @@ static void test_resume_from_version1_state() {
     startQuiet(c, dir)->runUntil(1);
 
     // state.bin as version 1: the buffer without ownership, and without the
-    // reference set {0} (u32 count + one i32), the empty bot list (u32 count)
-    // and the empty reference network list (u32 count).
+    // reference set {0} (u32 count + one i32), the empty bot list (u32 count),
+    // the empty reference network list (u32 count) and the resignation
+    // threshold and empty window (f32 + u32 count).
     const std::string bytes = readFile(statePath(dir.str()));
     const TrainingState current = loadTrainingState(statePath(dir.str()));
     std::ostringstream with, without;
@@ -434,7 +438,7 @@ static void test_resume_from_version1_state() {
     const size_t header = 24;   // magic, version, generation, best generation, samples trained
     assert(bytes.compare(header, with.str().size(), with.str()) == 0);
     std::string v1 = bytes.substr(0, header) + without.str() +
-                     bytes.substr(header + with.str().size(), bytes.size() - header - with.str().size() - 16);
+                     bytes.substr(header + with.str().size(), bytes.size() - header - with.str().size() - 24);
     v1[4] = 1;
     writeFile(statePath(dir.str()), v1);
     // config.cfg without the keys the old code did not know.
@@ -454,7 +458,7 @@ static void test_resume_from_version1_state() {
     assert(!pairs.count({-1, 1}));           // generation 1 ran before the bot existed
     TrainingState s = loadTrainingState(statePath(dir.str()));
     assert(s.references.front() == -1);
-    assert(readFile(statePath(dir.str()))[4] == 4);   // saved as version 4
+    assert(readFile(statePath(dir.str()))[4] == 5);   // saved as version 5
     assert(readFile(dir.file("references.csv")).find("\n-1,bot,100,0,") != std::string::npos);
 }
 
@@ -727,8 +731,11 @@ static void test_ownership_run_trains_the_head() {
     const GenerationStats st = t->runGeneration();
     // A mean squared error of values in [-1, 1].
     assert(std::isfinite(st.ownershipLoss) && st.ownershipLoss > 0 && st.ownershipLoss < 4);
+    // ownership_loss, then the three resignation columns, empty.
     const std::string row = splitLines(readFile(dir.file("log.csv"))).back();
-    const std::string last = row.substr(row.find_last_of(',') + 1);
+    assert(row.size() > 3 && row.compare(row.size() - 3, 3, ",,,") == 0);
+    const std::string fields = row.substr(0, row.size() - 3);
+    const std::string last = fields.substr(fields.find_last_of(',') + 1);
     char expected[32];
     std::snprintf(expected, sizeof expected, "%.5f", st.ownershipLoss);
     assert(last == expected);
@@ -836,8 +843,9 @@ static void test_resume_run_from_before_ownership() {
     TempDir dir("pre_ownership");
     startQuiet(tinyConfig(), dir)->runUntil(1);
 
-    // state.bin version 2: the buffer without ownership and no reference
-    // network list (an empty one is a u32 count at the end).
+    // state.bin version 2: the buffer without ownership, no reference
+    // network list (an empty one is a u32 count) and no resignation state
+    // at the end (an f32 threshold and an empty window's u32 count).
     const std::string bytes = readFile(statePath(dir.str()));
     const TrainingState current = loadTrainingState(statePath(dir.str()));
     std::ostringstream with, without;
@@ -846,7 +854,7 @@ static void test_resume_run_from_before_ownership() {
     current.buffer.save(wo, false);
     const size_t header = 24;
     std::string v2 = bytes.substr(0, header) + without.str() +
-                     bytes.substr(header + with.str().size(), bytes.size() - header - with.str().size() - 4);
+                     bytes.substr(header + with.str().size(), bytes.size() - header - with.str().size() - 12);
     v2[4] = 2;
     writeFile(statePath(dir.str()), v2);
     // config.cfg and log.csv as the old code wrote them.
@@ -856,8 +864,11 @@ static void test_resume_run_from_before_ownership() {
     writeFile(configPath(dir.str()), oldConfig);
     std::vector<std::string> rows = splitLines(readFile(dir.file("log.csv")));
     assert(rows.size() == 2 && rows[1].back() == ',');
-    std::string oldLog = rows[0].substr(0, rows[0].size() - std::string(",ownership_loss").size()) +
-                         "\n" + rows[1].substr(0, rows[1].size() - 1) + "\n";
+    // Without the ownership_loss and resignation columns (four empty fields).
+    const std::string newColumns = ",ownership_loss,resign_threshold,resign_rate,resign_false_positive";
+    std::string oldLog = rows[0].substr(0, rows[0].size() - newColumns.size()) + "\n" +
+                         rows[1].substr(0, rows[1].size() - 4) + "\n";
+    assert(std::count(oldLog.begin(), oldLog.end(), ',') == 2 * 14);
     writeFile(dir.file("log.csv"), oldLog);
 
     std::unique_ptr<Trainer> t = resumeQuiet(dir, {});
@@ -867,9 +878,9 @@ static void test_resume_run_from_before_ownership() {
         assert(resumed.buffer.game(i).finalOwnership == current.buffer.game(i).finalOwnership);
     t->runUntil(2);
     rows = splitLines(readFile(dir.file("log.csv")));
-    assert(rows.size() == 3 && rows[0].find(",distinct_vs_prev,ownership_loss") != std::string::npos);
-    for (const std::string& row : rows) assert(std::count(row.begin(), row.end(), ',') == 15);
-    assert(readFile(statePath(dir.str()))[4] == 4);
+    assert(rows.size() == 3 && rows[0].find(",distinct_vs_prev,ownership_loss,") != std::string::npos);
+    for (const std::string& row : rows) assert(std::count(row.begin(), row.end(), ',') == 18);
+    assert(readFile(statePath(dir.str()))[4] == 5);
 }
 
 // ---- reference networks ------------------------------------------------------
@@ -1118,6 +1129,184 @@ static void test_random_symmetry_run() {
     assert(t->generation() == 3);
 }
 
+// ---- resignation --------------------------------------------------------------
+
+// Aggressive enough that an untrained 5x5 network resigns: v_resign starts
+// at 0 (resign as soon as the search thinks it is behind), half the games
+// play on to measure false positives, and calibration starts after 2 of them.
+static Config resignConfig() {
+    Config c = tinyConfig();
+    c.resignation = true;
+    c.resignThresholdInitial = 0.0f;
+    c.resignDisabledFraction = 0.5f;
+    c.resignWindow = 6;
+    c.resignMinGames = 2;
+    c.gamesPerGeneration = 8;
+    c.sgfPerGeneration = 8;
+    return c;
+}
+
+static ResignCalibration calibrationOf(const Config& c) {
+    ResignCalibration cal;
+    cal.window = c.resignWindow;
+    cal.minGames = c.resignMinGames;
+    cal.maxFalsePositive = c.resignFalsePositive;
+    cal.initialThreshold = c.resignThresholdInitial;
+    return cal;
+}
+
+// Generation g resigns at the threshold calibrated from generations before
+// it; its disabled games join the window afterwards. Resigned games say so
+// in their SGF, and log.csv and the progress line report the threshold,
+// the resignation rate and the measured false-positive rate.
+static void test_resignation_run() {
+    TempDir dir("resign");
+    const Config c = resignConfig();
+    std::unique_ptr<Trainer> t = startQuiet(c, dir);
+    TrainingState s0 = loadTrainingState(statePath(dir.str()));
+    assert(s0.resignWindow.empty() && s0.resignThreshold == 0.0f);   // the initial threshold
+
+    std::ostringstream out;
+    t->setLog(&out);
+    int resignedSgf = 0;
+    bool calibrated = false;   // some generation resigned at a threshold the data chose
+    float expectedThreshold = 0.0f;
+    std::vector<float> window;
+    for (int g = 1; g <= 3; ++g) {
+        const GenerationStats st = t->runGeneration();
+        assert(st.resignation && st.resignThreshold == expectedThreshold);
+        if (st.resignThreshold != c.resignThresholdInitial) calibrated = true;
+        const TrainingState s = loadTrainingState(statePath(dir.str()));
+        // The window gained this generation's disabled games, at most 6 kept.
+        assert(s.resignWindow.size() >= window.size() && s.resignWindow.size() <= 6u);
+        for (float m : s.resignWindow) assert(m >= -1.0f && m <= 1.0f);
+        window = s.resignWindow;
+        assert(window.empty() ? st.resignFalsePositive == -1
+                              : st.resignFalsePositive ==
+                                    resignFalsePositiveRate(window, c.resignWindow, st.resignThreshold));
+        assert(st.resignRate >= 0 && st.resignRate <= 1);
+        // The next generation's threshold is calibrated now, from this window.
+        expectedThreshold = calibrateResignThreshold(window, calibrationOf(c));
+        assert(s.resignThreshold == expectedThreshold);
+
+        const std::string row = splitLines(readFile(dir.file("log.csv"))).back();
+        assert(std::count(row.begin(), row.end(), ',') == 18);
+        char tail[96];
+        std::snprintf(tail, sizeof tail, ",%.2f,%.4f,", st.resignThreshold, st.resignRate);
+        if (st.resignFalsePositive >= 0)
+            std::snprintf(tail + std::strlen(tail), sizeof tail - std::strlen(tail), "%.4f",
+                          st.resignFalsePositive);
+        assert(row.size() > std::strlen(tail) &&
+               row.compare(row.size() - std::strlen(tail), std::string::npos, tail) == 0);
+
+        int resigned = 0;
+        for (int i = 0; i < 8; ++i) {
+            char name[64];
+            std::snprintf(name, sizeof name, "sgf/gen_%04d_game_%02d.sgf", g, i);
+            const std::string sgf = readFile(dir.file(name));
+            if (sgf.find("RE[B+R]") != std::string::npos || sgf.find("RE[W+R]") != std::string::npos) ++resigned;
+        }
+        resignedSgf += resigned;
+        // rate = resigned / resign-enabled games, and only enabled games resign.
+        assert(resigned == 0 || st.resignRate > 0);
+    }
+    assert(resignedSgf > 0);       // the untrained network gives up somewhere
+    assert(!window.empty());       // and some games were played out to measure
+    assert(calibrated);            // which moved v_resign off its initial value
+    assert(splitLines(readFile(dir.file("log.csv")))[0] ==
+           "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
+           "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev,"
+           "ownership_loss,resign_threshold,resign_rate,resign_false_positive");
+    assert(out.str().find("gen 1 | selfplay 8 games avg ") != std::string::npos);
+    assert(out.str().find(" resign 0.00 rate ") != std::string::npos);
+}
+
+// Resignation keeps a run reproducible: a resumed run continues byte for
+// byte, and the worker count changes nothing, because each generation's
+// threshold depends only on earlier generations' games.
+static void test_resignation_determinism() {
+    TempDir a("resign_a"), b("resign_b");
+    const Config c = resignConfig();
+    startQuiet(c, a)->runUntil(3);
+    startQuiet(c, b)->runUntil(1);
+    resumeQuiet(b, {})->runUntil(3);
+    for (const char* f : {"checkpoints/gen_0003.azn", "state.bin", "elo.csv", "results.csv",
+                          "references.csv", "sgf/gen_0003_game_00.sgf", "sgf/gen_0003_game_07.sgf"})
+        assert(readFile(a.file(f)) == readFile(b.file(f)));
+
+    TempDir one("resign_workers1"), three("resign_workers3");
+    Config w = c;
+    w.workers = 1;
+    startQuiet(w, one)->runUntil(2);
+    w.workers = 3;
+    startQuiet(w, three)->runUntil(2);
+    for (const char* f : {"checkpoints/gen_0002.azn", "state.bin", "results.csv", "references.csv"})
+        assert(readFile(one.file(f)) == readFile(three.file(f)));
+
+    // Resignation changes the games: the same run without it trains another network.
+    TempDir off("resign_off");
+    Config plain = c;
+    plain.resignation = false;
+    startQuiet(plain, off)->runUntil(1);
+    assert(readFile(off.file("checkpoints/gen_0001.azn")) != readFile(a.file("checkpoints/gen_0001.azn")));
+}
+
+// ownership = true and resignation = true together are refused, by a new
+// run and by a resume, before anything is written; on a run without the
+// head, resignation is an ordinary tunable key.
+static void test_resignation_refusals_and_resume() {
+    TempDir target("resign_own");
+    Config both = ownershipConfig();
+    both.resignation = true;
+    std::string msg;
+    try {
+        Trainer::startNew(both, target.str());
+    } catch (const ConfigError& e) {
+        msg = e.what();
+    }
+    assert(msg.find("resignation") != std::string::npos && msg.find("ownership") != std::string::npos);
+    assert(!fs::exists(target.path));
+
+    TempDir owner("resign_owner");
+    startQuiet(ownershipConfig(), owner);
+    const std::string before = readFile(configPath(owner.str()));
+    msg.clear();
+    try {
+        Trainer::resume(owner.str(), {"resignation=true"});
+    } catch (const ConfigError& e) {
+        msg = e.what();
+    }
+    assert(msg.find("resignation") != std::string::npos && msg.find("ownership") != std::string::npos);
+    assert(readFile(configPath(owner.str())) == before);
+
+    // A plain run turns resignation on at resume; its window starts empty,
+    // so the first generation uses resign_threshold_initial.
+    TempDir plain("resign_later");
+    startQuiet(tinyConfig(), plain)->runUntil(1);
+    std::unique_ptr<Trainer> t = resumeQuiet(plain, {"resignation=on", "resign_threshold_initial=-0.5"});
+    assert(t->config().resignation && loadConfigFile(configPath(plain.str())).resignation);
+    const GenerationStats st = t->runGeneration();
+    assert(st.resignation && st.resignThreshold == -0.5f);
+}
+
+// A log.csv written after ownership_loss but before the resignation columns
+// gets them, empty in every old row, on resume.
+static void test_resume_adds_resignation_columns() {
+    TempDir dir("pre_resign_log");
+    startQuiet(tinyConfig(), dir)->runUntil(1);
+    std::vector<std::string> rows = splitLines(readFile(dir.file("log.csv")));
+    const std::string suffix = ",resign_threshold,resign_rate,resign_false_positive";
+    assert(rows.size() == 2 && rows[0].size() > suffix.size());
+    std::string oldLog = rows[0].substr(0, rows[0].size() - suffix.size()) + "\n" +
+                         rows[1].substr(0, rows[1].size() - 3) + "\n";
+    assert(std::count(oldLog.begin(), oldLog.end(), ',') == 2 * 15);
+    writeFile(dir.file("log.csv"), oldLog);
+    resumeQuiet(dir, {})->runUntil(2);
+    rows = splitLines(readFile(dir.file("log.csv")));
+    assert(rows.size() == 3 && rows[0].compare(rows[0].size() - suffix.size(), suffix.size(), suffix) == 0);
+    for (const std::string& row : rows) assert(std::count(row.begin(), row.end(), ',') == 18);
+}
+
 int main() {
     test_start_new_writes_run_files();
     test_two_generations();
@@ -1145,6 +1334,10 @@ int main() {
     test_reference_network_determinism();
     test_rerate_with_reference_networks();
     test_random_symmetry_run();
+    test_resignation_run();
+    test_resignation_determinism();
+    test_resignation_refusals_and_resume();
+    test_resume_adds_resignation_columns();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }

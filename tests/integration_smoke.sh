@@ -3,7 +3,8 @@
 # train -> resume -> re-rate (as live, then against a reference network) ->
 # arena (checkpoint, bot, random symmetry) -> analyze (good, random symmetry and
 # bad input) -> bench -> grow (deeper, wider, and a run started from the grown network), plus the refusal to change the architecture on resume,
-# then the ownership head: a run with it, grow --ownership, and analyze's ownership map.
+# then the ownership head: a run with it, grow --ownership, and analyze's ownership map,
+# and resignation: a run with it, and its refusal alongside the ownership head.
 #
 # usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR
 set -euo pipefail
@@ -229,9 +230,9 @@ test ! -e "$CK/gen_0004.azn" || fail "a refused resume still trained"
 echo "== train: a run with the ownership head =="
 "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/own_run" "${TINY[@]}" --set ownership=true \
     --generations 1
-head -1 "$W/own_run/log.csv" | grep -q ',distinct_vs_prev,ownership_loss$' || fail "log.csv has no ownership_loss column"
-tail -1 "$W/own_run/log.csv" | grep -Eq ',[0-9]+\.[0-9]{5}$' || fail "log.csv row has no ownership loss"
-tail -1 "$RUN/log.csv" | grep -q ',$' || fail "a run without the head should leave ownership_loss empty"
+head -1 "$W/own_run/log.csv" | grep -q ',distinct_vs_prev,ownership_loss,' || fail "log.csv has no ownership_loss column"
+tail -1 "$W/own_run/log.csv" | grep -Eq ',[0-9]+\.[0-9]{5},,,$' || fail "log.csv row has no ownership loss"
+tail -1 "$RUN/log.csv" | grep -q ',,,,$' || fail "a run without the head or resignation should leave those columns empty"
 status=0
 out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/own_bad" "${TINY[@]}" --set ownership=true \
     --init-from "$CK/gen_0003.azn" --generations 1 2>&1)" || status=$?
@@ -268,5 +269,23 @@ rows="$(echo "$out" | sed -n '/^Ownership/,/^$/p' | grep -Ec '^ [1-5] ( [+-][1-9
     || fail "the ownership map should follow the value line"
 "$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --simulations 8 | grep -q '^Ownership' \
     && fail "analyze printed an ownership map for a checkpoint without the head"
+
+echo "== train: a run with resignation =="
+# v_resign 0: the untrained network resigns whenever its search thinks it is behind.
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/resign_run" "${TINY[@]}" --set resignation=true \
+    --set resign_threshold_initial=0 --set resign_disabled_fraction=0.5 --set games_per_generation=8 \
+    --set sgf_per_generation=8 --generations 2 | tee "$W/resign.out"
+grep -Eq '^gen 1 \| selfplay 8 games avg [0-9.]+ plies resign 0\.00 rate ' "$W/resign.out" \
+    || fail "the progress line does not report resignation"
+head -1 "$W/resign_run/log.csv" | grep -q ',ownership_loss,resign_threshold,resign_rate,resign_false_positive$' \
+    || fail "log.csv has no resignation columns"
+tail -1 "$W/resign_run/log.csv" | grep -Eq ',,-?[01]\.[0-9]{2},[0-9.]*,[0-9.]*$' || fail "log.csv row has no resign_threshold"
+grep -lq 'RE\[[BW]+R\]' "$W"/resign_run/sgf/*.sgf || fail "no self-play SGF records a resignation"
+status=0
+out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/resign_own" "${TINY[@]}" --set ownership=true \
+    --set resignation=true --generations 1 2>&1)" || status=$?
+[ "$status" -eq 1 ] || fail "resignation with the ownership head exited $status, expected 1"
+echo "$out" | grep -q "cannot be combined with ownership" || fail "unexpected refusal: $out"
+test ! -e "$W/resign_own/state.bin" || fail "a refused start left a run behind"
 
 echo "integration_smoke: all checks passed"

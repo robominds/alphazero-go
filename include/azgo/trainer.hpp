@@ -31,6 +31,13 @@ struct GenerationStats {
     double elo = 0;             // after refit; previous value if no arena this generation
     double winRateVsPrev = -1;  // -1 when no match vs g-1
     int distinctVsPrev = -1;    // distinct games in that match; -1 when no match vs g-1
+    // Resignation, when the config turns it on (the fields below are unset otherwise).
+    bool resignation = false;
+    float resignThreshold = 0;        // v_resign this generation's self-play used
+    double resignRate = -1;           // resigned / games with resignation enabled; -1 when none were
+    // False positives at resignThreshold over the window, this generation's
+    // disabled games included; -1 while the window is empty.
+    double resignFalsePositive = -1;
 };
 
 // The generation loop: self-play -> train -> arena/Elo -> checkpoint + state.
@@ -60,8 +67,11 @@ public:
     // if an architecture key, bot_simulations or reference_networks changed,
     // or if a reference network's file no longer matches the hash in
     // state.bin; loads state.bin and the latest checkpoint.
-    // Rewrites config.cfg with the overridden values, and gives a log.csv
-    // written before the ownership_loss column existed that column (empty).
+    // Refuses inconsistent keys (checkConsistency) the same way, as does
+    // startNew. Recalibrates v_resign from state.bin's window and the
+    // (possibly overridden) resignation keys. Rewrites config.cfg with the
+    // overridden values, and gives a log.csv written before the
+    // ownership_loss or resignation columns existed those columns (empty).
     static std::unique_ptr<Trainer> resume(const std::string& runDir,
                                            const std::vector<std::string>& overrides);
 

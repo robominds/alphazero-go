@@ -39,17 +39,26 @@ struct TrainingState {
     // The run's reference_networks, in order: reference network j (1-based)
     // is player -(botSimulations.size() + j). Recorded for the same reason.
     std::vector<ReferenceNetwork> referenceNetworks;
+    // Resignation: the v_resign the next generation's self-play uses
+    // (resign_threshold_initial's default until a trainer sets it), and the
+    // winner minimums (GameRecord::winnerMinResignValue) of the most recent
+    // resignation-disabled games, oldest first, at most resign_window.
+    float resignThreshold = -0.9f;
+    std::vector<float> resignWindow;
 };
 
 // The reference set of a new run: every fixed player (-numFixed, ..., -1:
 // the bots, then the reference networks) and generation 0.
 std::vector<int> initialReferences(int numFixed);
 
-// Binary, magic "AZST" (u32 0x54535A41), version u32 = 4 (the replay buffer
-// stores each game's final ownership; references, the bot list, then the
-// reference networks come last). Atomic replace.
+// Binary, magic "AZST" (u32 0x54535A41), version u32 = 5 (the replay buffer
+// stores each game's final ownership; references, the bot list, the
+// reference networks, then the resignation threshold and window come last).
+// Atomic replace.
 void saveTrainingState(const std::string& path, const TrainingState& state);
-// Reads versions 4, 3, 2 and 1. Versions 1 to 3 predate reference networks
+// Reads versions 5, 4, 3, 2 and 1. Versions 1 to 4 predate resignation and
+// load with an empty window and the default threshold (the trainer
+// recalibrates it on resume). Versions 1 to 3 predate reference networks
 // and load with none. Versions 1 and 2 predate stored ownership: each
 // game's is recomputed by replaying its moves (a game that does not replay is
 // an error). Version 1 also predates the reference set and the bot list: it

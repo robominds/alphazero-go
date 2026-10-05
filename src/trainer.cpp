@@ -38,11 +38,16 @@ namespace {
 const char* const kLogHeader =
     "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
     "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev,"
-    "ownership_loss\n";
-// The header before ownership_loss was added; Trainer::resume upgrades it.
+    "ownership_loss,resign_threshold,resign_rate,resign_false_positive\n";
+// Earlier headers, which Trainer::resume upgrades: before ownership_loss,
+// and before the resignation columns.
 const char* const kLogHeaderBeforeOwnership =
     "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
     "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev\n";
+const char* const kLogHeaderBeforeResignation =
+    "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
+    "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev,"
+    "ownership_loss\n";
 const char* const kEloHeader = "generation,elo,winrate_vs_prev,wr_low,wr_high\n";
 const char* const kRerateLogHeader =
     "generation,opponents,score_vs_prev,score_vs_strongest,promoted,elo\n";
@@ -186,12 +191,23 @@ void appendLogRow(const std::string& runDir, const GenerationStats& s) {
     if (s.distinctVsPrev >= 0) std::snprintf(distinct, sizeof distinct, "%d", s.distinctVsPrev);
     char ownership[32] = "";
     if (s.ownershipLoss >= 0) std::snprintf(ownership, sizeof ownership, "%.5f", s.ownershipLoss);
+    // resign_threshold,resign_rate,resign_false_positive: all empty without
+    // resignation; a rate or rate of false positives that does not exist
+    // yet (no enabled games, an empty window) is empty too.
+    char threshold[32] = "", rate[32] = "", falsePositive[32] = "";
+    if (s.resignation) {
+        std::snprintf(threshold, sizeof threshold, "%.2f", s.resignThreshold);
+        if (s.resignRate >= 0) std::snprintf(rate, sizeof rate, "%.4f", s.resignRate);
+        if (s.resignFalsePositive >= 0)
+            std::snprintf(falsePositive, sizeof falsePositive, "%.4f", s.resignFalsePositive);
+    }
     char line[512];
     std::snprintf(line, sizeof line,
-                  "%d,%d,%.2f,%.4f,%.4f,%.5f,%.5f,%g,%.3f,%.3f,%.3f,%.3f,%.1f,%s,%s,%s\n",
+                  "%d,%d,%.2f,%.4f,%.4f,%.5f,%.5f,%g,%.3f,%.3f,%.3f,%.3f,%.1f,%s,%s,%s,%s,%s,%s\n",
                   s.generation, s.games, s.avgLength, s.passRate, s.blackWinRate,
                   s.policyLoss, s.valueLoss, s.lr, s.replayRatio, s.selfPlaySeconds,
-                  s.trainSeconds, s.arenaSeconds, s.elo, winRate, distinct, ownership);
+                  s.trainSeconds, s.arenaSeconds, s.elo, winRate, distinct, ownership,
+                  threshold, rate, falsePositive);
     std::ofstream out(logPath(runDir), std::ios::app | std::ios::binary);
     out << line;
     if (!out) throw std::runtime_error("cannot append to " + logPath(runDir));
@@ -206,19 +222,40 @@ std::string shapeString(const NetConfig& c) {
            (c.ownership ? ", ownership head" : "");
 }
 
-// A run started before log.csv had the ownership_loss column gets it, empty
-// in every old row (those generations had no ownership head), so every row
-// has as many fields as the header. Anything else is left alone.
-void addOwnershipColumn(const std::string& runDir) {
+// A run started before log.csv had the ownership_loss or the resignation
+// columns gets them, empty in every old row (those generations had neither
+// an ownership head nor resignation), so every row has as many fields as
+// the header. Anything else is left alone.
+void addMissingLogColumns(const std::string& runDir) {
     std::ifstream in(logPath(runDir), std::ios::binary);
     if (!in) return;
     const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    if (text.compare(0, std::strlen(kLogHeaderBeforeOwnership), kLogHeaderBeforeOwnership) != 0) return;
-    std::string out = kLogHeader;
-    std::istringstream rows(text.substr(std::strlen(kLogHeaderBeforeOwnership)));
-    for (std::string row; std::getline(rows, row);)
-        if (!row.empty()) out += row + ",\n";
-    writeFileAtomically(logPath(runDir), out);
+    const std::pair<const char*, const char*> upgrades[] = {{kLogHeaderBeforeOwnership, ",,,,"},
+                                                            {kLogHeaderBeforeResignation, ",,,"}};
+    for (const auto& [header, emptyFields] : upgrades) {
+        if (text.compare(0, std::strlen(header), header) != 0) continue;
+        std::string out = kLogHeader;
+        std::istringstream rows(text.substr(std::strlen(header)));
+        for (std::string row; std::getline(rows, row);)
+            if (!row.empty()) out += row + emptyFields + "\n";
+        writeFileAtomically(logPath(runDir), out);
+        return;
+    }
+}
+
+ResignCalibration resignCalibration(const Config& cfg) {
+    ResignCalibration c;
+    c.window = cfg.resignWindow;
+    c.minGames = cfg.resignMinGames;
+    c.maxFalsePositive = cfg.resignFalsePositive;
+    c.initialThreshold = cfg.resignThresholdInitial;
+    return c;
+}
+
+// Keeps only the most recent `window` disabled games.
+void trimResignWindow(std::vector<float>& games, int window) {
+    if (games.size() > static_cast<size_t>(window))
+        games.erase(games.begin(), games.end() - window);
 }
 
 std::string joinInts(const std::vector<int>& v) {
@@ -292,6 +329,7 @@ Trainer::Trainer(const Config& cfg, const std::string& runDir, Network net, Trai
 
 std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string& runDir,
                                            const RunInit& init) {
+    checkConsistency(cfg);
     try {
         LrSchedule::parse(cfg.lrSchedule);
     } catch (const std::invalid_argument& e) {
@@ -349,6 +387,7 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     state.velocity = SgdMomentum(net, cfg.momentum, cfg.weightDecay).velocity();   // all zeros
     state.botSimulations = cfg.botSimulations;
     state.referenceNetworks = referenceNets.recorded;
+    state.resignThreshold = calibrateResignThreshold(state.resignWindow, resignCalibration(cfg));   // the initial one
     state.references = initialReferences(
         static_cast<int>(cfg.botSimulations.size() + cfg.referenceNetworks.size()));
     // Each fixed player plays generation 0 now, so it has a rating before it can be chosen.
@@ -394,6 +433,7 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
                               "the bots, so both lists are fixed for a run)");
         throw ConfigError("cannot change architecture keys on resume: " + keys);
     }
+    checkConsistency(cfg);
 
     // A version-1 state.bin (written before bots existed) adopts the
     // configured bots and gets each as a reference.
@@ -428,10 +468,16 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
                                  ": optimizer state does not match the network's parameters");
 
     state.buffer.setCapacity(static_cast<size_t>(cfg.bufferPositions));
+    // The resignation keys are tunable, so v_resign is recalibrated from the
+    // stored window with today's values (unchanged keys give the stored
+    // threshold back); a state.bin from before resignation has no window and
+    // gets resign_threshold_initial.
+    trimResignWindow(state.resignWindow, cfg.resignWindow);
+    state.resignThreshold = calibrateResignThreshold(state.resignWindow, resignCalibration(cfg));
     // Rewritten only after every check passed, so a refused resume leaves the
     // run directory untouched.
     writeFileAtomically(configPath(runDir), configToString(cfg));
-    addOwnershipColumn(runDir);
+    addMissingLogColumns(runDir);
 
     std::unique_ptr<Trainer> trainer(new Trainer(cfg, runDir, std::move(net), std::move(state)));
     trainer->referenceNets_ = std::move(referenceNets.networks);
@@ -468,6 +514,12 @@ GenerationStats Trainer::runGeneration() {
         sp.temperatureMoves = cfg_.temperatureMoves;
         sp.komi = cfg_.komi;
         sp.maxMoves = cfg_.effectiveMaxMoves();
+        // v_resign was calibrated after the previous generation, from earlier
+        // generations' games only, so every game of this one shares it
+        // whichever worker plays it.
+        sp.resignation = cfg_.resignation;
+        sp.resignThreshold = state_.resignThreshold;
+        sp.resignDisabledFraction = cfg_.resignDisabledFraction;
 
         // One single-threaded backend and evaluator per worker; the network
         // itself is shared read-only.
@@ -500,17 +552,48 @@ GenerationStats Trainer::runGeneration() {
     stats.passRate = plies > 0 ? static_cast<double>(passes) / plies : 0.0;
     stats.blackWinRate = static_cast<double>(blackWins) / numGames;
 
+    // Resignation: how often it ended a game, and the disabled games'
+    // winners, in game order, for the next calibration (AlphaGo Zero keeps
+    // false positives, games the winner would have resigned, below 5%).
+    if (cfg_.resignation) {
+        int enabled = 0, resigned = 0;
+        for (const GameRecord& r : records) {
+            if (r.resignDisabled) {
+                state_.resignWindow.push_back(r.winnerMinResignValue());
+            } else {
+                ++enabled;
+                if (r.resigned) ++resigned;
+            }
+        }
+        trimResignWindow(state_.resignWindow, cfg_.resignWindow);
+        stats.resignation = true;
+        stats.resignThreshold = state_.resignThreshold;
+        if (enabled > 0) stats.resignRate = static_cast<double>(resigned) / enabled;
+        if (!state_.resignWindow.empty())
+            stats.resignFalsePositive =
+                resignFalsePositiveRate(state_.resignWindow, cfg_.resignWindow, state_.resignThreshold);
+    }
+    // The threshold generation g + 1 will use.
+    state_.resignThreshold = calibrateResignThreshold(state_.resignWindow, resignCalibration(cfg_));
+
     // A few games per generation as SGF. The record stores only the result's
-    // sign, so the Tromp-Taylor margin for RE[] comes from replaying the moves.
+    // sign, so the Tromp-Taylor margin for RE[] comes from replaying the
+    // moves; a resigned game has none ("B+R" or "W+R").
     const int sgfGames = std::min(cfg_.sgfPerGeneration, numGames);
     for (int i = 0; i < sgfGames; ++i) {
         const GameRecord& r = records[static_cast<size_t>(i)];
-        Game replay(n, r.komi, cfg_.effectiveMaxMoves());
-        for (int a : r.moves) replay.play(a);
         const std::string comment = "azgo self-play, generation " + std::to_string(g) +
-                                    ", game " + std::to_string(i);
-        writeFileAtomically(sgfPath(runDir_, g, i),
-                            gameToSgf(n, r.komi, r.moves, replay.scoreForBlack(), comment));
+                                    ", game " + std::to_string(i) +
+                                    (r.resignDisabled ? ", resignation disabled" : "");
+        std::string sgf;
+        if (r.resigned) {
+            sgf = gameToSgf(n, r.komi, r.moves, r.resultForBlack > 0 ? "B+R" : "W+R", comment);
+        } else {
+            Game replay(n, r.komi, cfg_.effectiveMaxMoves());
+            for (int a : r.moves) replay.play(a);
+            sgf = gameToSgf(n, r.komi, r.moves, replay.scoreForBlack(), comment);
+        }
+        writeFileAtomically(sgfPath(runDir_, g, i), sgf);
     }
 
     for (GameRecord& r : records) state_.buffer.add(std::move(r));   // index order
@@ -624,11 +707,23 @@ GenerationStats Trainer::runGeneration() {
         char ownership[32] = "";
         if (stats.ownershipLoss >= 0)
             std::snprintf(ownership, sizeof ownership, " o %.3f", stats.ownershipLoss);
+        // With resignation, e.g. "avg 41.2 plies resign -0.87 rate 0.62 fp 0.031 7.1s":
+        // the threshold used, the share of enabled games resigned, the
+        // false-positive rate ("-" where there is none yet).
+        char resign[96] = "";
+        if (stats.resignation) {
+            char rate[16] = "-", falsePositive[16] = "-";
+            if (stats.resignRate >= 0) std::snprintf(rate, sizeof rate, "%.2f", stats.resignRate);
+            if (stats.resignFalsePositive >= 0)
+                std::snprintf(falsePositive, sizeof falsePositive, "%.3f", stats.resignFalsePositive);
+            std::snprintf(resign, sizeof resign, " resign %.2f rate %s fp %s", stats.resignThreshold, rate,
+                          falsePositive);
+        }
         char line[512];
         std::snprintf(line, sizeof line,
-                      "gen %d | selfplay %d games avg %.1f plies %.1fs | "
+                      "gen %d | selfplay %d games avg %.1f plies%s %.1fs | "
                       "train loss p %.2f v %.2f%s lr %g %.1fs | ",
-                      g, stats.games, stats.avgLength, stats.selfPlaySeconds, stats.policyLoss,
+                      g, stats.games, stats.avgLength, resign, stats.selfPlaySeconds, stats.policyLoss,
                       stats.valueLoss, ownership, stats.lr, stats.trainSeconds);
         *log_ << line;
         if (arenaThisGeneration) {

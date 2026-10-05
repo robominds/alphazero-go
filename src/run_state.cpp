@@ -14,8 +14,8 @@ namespace azgo {
 namespace {
 constexpr uint32_t kStateMagic = 0x54535A41;   // "AZST" read as little-endian bytes
 // 2 added the reference set and bot list, 3 the buffer's ownership targets,
-// 4 the reference networks.
-constexpr uint32_t kStateVersion = 4;
+// 4 the reference networks, 5 resignation's threshold and window.
+constexpr uint32_t kStateVersion = 5;
 } // namespace
 
 std::vector<int> initialReferences(int numFixed) {
@@ -52,6 +52,9 @@ void saveTrainingState(const std::string& path, const TrainingState& state) {
         w.str(n.path);
         w.u64(n.hash);
     }
+    w.f32(state.resignThreshold);
+    w.u32(static_cast<uint32_t>(state.resignWindow.size()));
+    w.floats(state.resignWindow.data(), state.resignWindow.size());
     writeFileAtomically(path, os.str());
 }
 
@@ -119,6 +122,13 @@ TrainingState loadTrainingState(const std::string& path, const std::vector<int>&
                 -static_cast<long long>(numBots + state.referenceNetworks.size()))
                 throw std::runtime_error("invalid reference set (names a fixed player missing from "
                                          "the bot and reference network lists)");
+            if (version >= 5) {
+                state.resignThreshold = r.f32();
+                uint32_t games = r.u32();
+                if (games > bytes.size() / sizeof(float)) throw std::runtime_error("truncated resignation window");
+                state.resignWindow.resize(games);
+                r.floats(state.resignWindow.data(), state.resignWindow.size());
+            }
         }
         if (is.peek() != std::char_traits<char>::eof())
             throw std::runtime_error("unexpected trailing bytes");

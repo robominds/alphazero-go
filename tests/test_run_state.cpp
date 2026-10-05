@@ -33,24 +33,26 @@ static void writeBytes(const fs::path& p, const std::string& bytes) {
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
-// The bytes an older version wrote for `state`, which has no reference
-// networks, given the current (version 4) bytes: without the reference
-// network list at the end (version 3, an empty list is one u32), also the
-// replay buffer without ownership (version 2), and for version 1 also
-// without the reference set and the bot list.
-static std::string olderStateBytes(const std::string& v4, const TrainingState& state, int version) {
-    assert(state.referenceNetworks.empty());
+// The bytes an older version wrote for `state`, given the current (version
+// 5) bytes: without the resignation threshold and window at the end
+// (version 4); for a state without reference networks also without their
+// list (version 3, an empty list is one u32), also the replay buffer without
+// ownership (version 2), and for version 1 also without the reference set
+// and the bot list.
+static std::string olderStateBytes(const std::string& v5, const TrainingState& state, int version) {
+    assert(version >= 4 || state.referenceNetworks.empty());
     std::ostringstream with, without;
     BinaryWriter ww(with), wo(without);
     state.buffer.save(ww, true);
     state.buffer.save(wo, version >= 3);
     const size_t header = 4 + 4 + 4 + 4 + 8;   // magic, version, generation, best, samples
-    assert(v4.compare(header, with.str().size(), with.str()) == 0);
-    std::string tail = v4.substr(header + with.str().size());
-    tail.resize(tail.size() - 4);
+    assert(v5.compare(header, with.str().size(), with.str()) == 0);
+    std::string tail = v5.substr(header + with.str().size());
+    tail.resize(tail.size() - 4 - 4 - 4 * state.resignWindow.size());   // f32, u32 count, the floats
+    if (version <= 3) tail.resize(tail.size() - 4);
     if (version == 1)
         tail.resize(tail.size() - 8 - 4 * (state.references.size() + state.botSimulations.size()));
-    std::string out = v4.substr(0, header) + without.str() + tail;
+    std::string out = v5.substr(0, header) + without.str() + tail;
     out[4] = static_cast<char>(version);
     return out;
 }
@@ -106,6 +108,8 @@ static void assertSameState(const TrainingState& x, const TrainingState& y) {
     for (size_t i = 0; i < x.referenceNetworks.size(); ++i)
         assert(x.referenceNetworks[i].path == y.referenceNetworks[i].path &&
                x.referenceNetworks[i].hash == y.referenceNetworks[i].hash);
+    assert(x.resignThreshold == y.resignThreshold);
+    assert(x.resignWindow == y.resignWindow);
 }
 
 static void test_round_trip() {
@@ -185,7 +189,7 @@ static void test_crash_leftovers() {
 
     // A newer format version.
     std::string newer = bytes;
-    newer[4] = 5;   // version is the u32 after the magic, little-endian
+    newer[4] = 6;   // version is the u32 after the magic, little-endian
     writeBytes(wrong, newer);
     msg = loadError(wrong.string());
     assert(msg.find("version") != std::string::npos);
@@ -208,8 +212,8 @@ static void test_initial_references() {
 static void test_version1_gets_default_references() {
     fs::path dir = freshDir("version1");
     TrainingState original = makeState();
-    saveTrainingState((dir / "v4.bin").string(), original);
-    std::string v1 = olderStateBytes(readBytes(dir / "v4.bin"), original, 1);
+    saveTrainingState((dir / "current.bin").string(), original);
+    std::string v1 = olderStateBytes(readBytes(dir / "current.bin"), original, 1);
     fs::path path = dir / "v1.bin";
     writeBytes(path, v1);
 
@@ -222,29 +226,29 @@ static void test_version1_gets_default_references() {
     assert((loadTrainingState(path.string()).references == std::vector<int>{0}));   // no bots
     assert(loadTrainingState(path.string()).botSimulations.empty());
 
-    // Saving it again writes version 4.
+    // Saving it again writes version 5.
     saveTrainingState(path.string(), loaded);
-    assert(readBytes(path)[4] == 4);
+    assert(readBytes(path)[4] == 5);
     assert((loadTrainingState(path.string()).references == std::vector<int>{-2, -1, 0}));
     fs::remove_all(dir);
 }
 
 // A version-2 file has everything but the buffer's ownership, which loading
 // recomputes by replaying each game: the result equals what self-play
-// recorded, and saving writes version 4 again, byte for byte.
+// recorded, and saving writes version 5 again, byte for byte.
 static void test_version2_recomputes_ownership() {
     fs::path dir = freshDir("version2");
     TrainingState original = makeState();
-    saveTrainingState((dir / "v4.bin").string(), original);
-    const std::string v4 = readBytes(dir / "v4.bin");
+    saveTrainingState((dir / "current.bin").string(), original);
+    const std::string current = readBytes(dir / "current.bin");
     fs::path path = dir / "v2.bin";
-    writeBytes(path, olderStateBytes(v4, original, 2));
+    writeBytes(path, olderStateBytes(current, original, 2));
     TrainingState loaded = loadTrainingState(path.string());
     assertSameState(original, loaded);   // finalOwnership included
     for (size_t i = 0; i < loaded.buffer.games(); ++i)
         assert(loaded.buffer.game(i).finalOwnership.size() == 25);
     saveTrainingState(path.string(), loaded);
-    assert(readBytes(path) == v4);
+    assert(readBytes(path) == current);
 
     // A game that does not replay makes the file unreadable, naming it.
     TrainingState broken = original;
@@ -271,29 +275,68 @@ static void test_reference_networks_round_trip() {
                                   {"/abs/b.azn", ~0ull}};
     original.references = {-4, -3, -2, -1, 0, 5};
     saveTrainingState(path, original);
-    assert(readBytes(path)[4] == 4);
+    assert(readBytes(path)[4] == 5);
     TrainingState loaded = loadTrainingState(path);
     assertSameState(original, loaded);
     saveTrainingState((dir / "again.bin").string(), loaded);
     assert(readBytes(path) == readBytes(dir / "again.bin"));
 
     // A version-3 file (no list) loads with no reference networks, and
-    // saving it writes version 4.
+    // saving it writes version 5.
     TrainingState plain = makeState();
     saveTrainingState(path, plain);
-    const std::string v4 = readBytes(path);
-    writeBytes(path, olderStateBytes(v4, plain, 3));
+    const std::string current = readBytes(path);
+    writeBytes(path, olderStateBytes(current, plain, 3));
     TrainingState v3 = loadTrainingState(path, {7});   // the bot list is stored, so {7} is unused
     assertSameState(plain, v3);
     assert(v3.referenceNetworks.empty());
     saveTrainingState(path, v3);
-    assert(readBytes(path) == v4);
+    assert(readBytes(path) == current);
 
     // Player -5 is neither a bot nor a reference network.
     original.references = {-5, -4, -3, -2, -1, 0, 5};
     saveTrainingState(path, original);
     const std::string msg = loadError(path);
     assert(msg.find(path) != std::string::npos && msg.find("reference") != std::string::npos);
+    fs::remove_all(dir);
+}
+
+// Version 5 adds resignation at the end: the v_resign the next generation
+// uses and the window of recent resignation-disabled games, each game's
+// winner minimum. A version-4 file loads with an empty window and the
+// default threshold (the trainer recalibrates from the window and config).
+static void test_resignation_round_trip() {
+    fs::path dir = freshDir("resign");
+    std::string path = (dir / "state.bin").string();
+    TrainingState original = makeState();
+    assert(original.resignThreshold == -0.9f && original.resignWindow.empty());   // the defaults
+    original.resignThreshold = -0.83f;
+    original.resignWindow = {-0.95f, 1.0f, 0.25f, -0.5f};
+    original.referenceNetworks = {{"/abs/ref.azn", 42}};
+    original.references = {-3, -2, -1, 0, 5};
+    saveTrainingState(path, original);
+    const std::string v5 = readBytes(path);
+    assert(v5[4] == 5);
+    TrainingState loaded = loadTrainingState(path);
+    assertSameState(original, loaded);
+    saveTrainingState((dir / "again.bin").string(), loaded);
+    assert(readBytes(dir / "again.bin") == v5);
+
+    writeBytes(path, olderStateBytes(v5, original, 4));
+    TrainingState v4 = loadTrainingState(path);
+    assert(v4.resignWindow.empty() && v4.resignThreshold == -0.9f);
+    TrainingState expected = original;
+    expected.resignThreshold = -0.9f;
+    expected.resignWindow.clear();
+    assertSameState(expected, v4);
+
+    // A window count larger than the file is refused, naming the file.
+    std::string bad = v5;
+    bad[bad.size() - 4 * 4 - 4] = static_cast<char>(0xff);   // low byte of the u32 count
+    bad[bad.size() - 4 * 4 - 1] = static_cast<char>(0x7f);
+    writeBytes(path, bad);
+    const std::string msg = loadError(path);
+    assert(msg.find(path) != std::string::npos);
     fs::remove_all(dir);
 }
 
@@ -356,6 +399,7 @@ int main() {
     test_version1_gets_default_references();
     test_version2_recomputes_ownership();
     test_reference_networks_round_trip();
+    test_resignation_round_trip();
     test_file_hash();
     test_rejects_bad_references();
     test_paths();

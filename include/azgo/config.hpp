@@ -47,6 +47,13 @@ struct Config {
     float noiseFraction = 0.25f;
     int temperatureMoves = 20;
     bool mctsRandomSymmetry = false;   // self-play search: random symmetry per evaluation (AlphaGo Zero)
+    // Resignation in self-play (AlphaGo Zero); the arena never resigns.
+    bool resignation = false;
+    float resignThresholdInitial = -0.9f;   // v_resign until resignMinGames disabled games exist
+    float resignDisabledFraction = 0.1f;    // games played out with resignation off, to measure it
+    float resignFalsePositive = 0.05f;      // most false positives v_resign may cause, as a fraction
+    int resignWindow = 500;                 // most recent disabled games v_resign is calibrated on
+    int resignMinGames = 20;                // disabled games needed before calibrating
     // training
     int bufferPositions = 200000;
     int trainSteps = 200;
@@ -99,5 +106,11 @@ std::vector<std::string> architectureDiff(const Config& a, const Config& b);
 // Keys a resume must refuse to change: architectureDiff, then bot_simulations,
 // then reference_networks.
 std::vector<std::string> resumeLockedDiff(const Config& a, const Config& b);
+
+// Rules between keys, which no single key's parser can check; a run checks
+// them once every override is applied. ConfigError if resignation is on
+// with ownership (a resigned game has no final position to take ownership
+// targets from), or resign_min_games exceeds resign_window.
+void checkConsistency(const Config& cfg);
 
 } // namespace azgo

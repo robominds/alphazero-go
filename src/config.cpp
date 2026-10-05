@@ -214,6 +214,20 @@ const KeyEntry kKeys[] = {
     {"mcts_random_symmetry", false,
      [](Config& c, const std::string& v) { return parseBool(v, c.mctsRandomSymmetry); },
      [](const Config& c) { return std::string(c.mctsRandomSymmetry ? "true" : "false"); }},
+    {"resignation", false, [](Config& c, const std::string& v) { return parseBool(v, c.resignation); },
+     [](const Config& c) { return std::string(c.resignation ? "true" : "false"); }},
+    {"resign_threshold_initial", false,
+     [](Config& c, const std::string& v) { return parseFloat(v, -1, 0, c.resignThresholdInitial); },
+     printFloat<&Config::resignThresholdInitial>},
+    {"resign_disabled_fraction", false,
+     [](Config& c, const std::string& v) { return parseFloat(v, 0, 1, c.resignDisabledFraction); },
+     printFloat<&Config::resignDisabledFraction>},
+    {"resign_false_positive", false,
+     [](Config& c, const std::string& v) { return parseFloat(v, 0, 0.5, c.resignFalsePositive); },
+     printFloat<&Config::resignFalsePositive>},
+    {"resign_window", false, intKey<&Config::resignWindow, 1, 1000000>, printInt<&Config::resignWindow>},
+    {"resign_min_games", false, intKey<&Config::resignMinGames, 1, 1000000>,
+     printInt<&Config::resignMinGames>},
     // training
     {"buffer_positions", false, intKey<&Config::bufferPositions, 1, 100000000>,
      printInt<&Config::bufferPositions>},
@@ -373,6 +387,18 @@ std::vector<std::string> resumeLockedDiff(const Config& a, const Config& b) {
     if (a.botSimulations != b.botSimulations) keys.push_back("bot_simulations");
     if (a.referenceNetworks != b.referenceNetworks) keys.push_back("reference_networks");
     return keys;
+}
+
+void checkConsistency(const Config& cfg) {
+    // The ownership target is the final board's owners; a resigned game
+    // stops before it has one, so the two cannot be combined.
+    if (cfg.resignation && cfg.ownership)
+        throw ConfigError("resignation = true cannot be combined with ownership = true: a resigned "
+                          "game has no final position to take ownership targets from");
+    if (cfg.resignMinGames > cfg.resignWindow)
+        throw ConfigError("resign_min_games (" + std::to_string(cfg.resignMinGames) +
+                          ") exceeds resign_window (" + std::to_string(cfg.resignWindow) +
+                          "): the threshold could never be calibrated");
 }
 
 } // namespace azgo

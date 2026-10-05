@@ -360,6 +360,87 @@ static void test_random_symmetry_keys() {
     assert(contains(text, "\n# arena_random_symmetry = false\n"));
 }
 
+static std::string consistencyErrorOf(const Config& c) {
+    try {
+        checkConsistency(c);
+    } catch (const ConfigError& e) {
+        return e.what();
+    }
+    return "";
+}
+
+static void test_resignation_keys() {
+    Config c;
+    assert(!c.resignation && c.resignThresholdInitial == -0.9f && c.resignDisabledFraction == 0.1f);
+    assert(c.resignFalsePositive == 0.05f && c.resignWindow == 500 && c.resignMinGames == 20);
+    // With the self-play settings, after mcts_random_symmetry.
+    assert(contains(configToString(c),
+                    "mcts_random_symmetry = false\nresignation = false\nresign_threshold_initial = -0.9\n"
+                    "resign_disabled_fraction = 0.1\nresign_false_positive = 0.05\n"
+                    "resign_window = 500\nresign_min_games = 20\n"));
+
+    c = parseConfigText("resignation = on\nresign_threshold_initial = -0.95\n"
+                        "resign_disabled_fraction = 0.2\nresign_false_positive = 0.1\n"
+                        "resign_window = 1000\nresign_min_games = 50\n", "t.cfg");
+    assert(c.resignation && c.resignThresholdInitial == -0.95f && c.resignDisabledFraction == 0.2f);
+    assert(c.resignFalsePositive == 0.1f && c.resignWindow == 1000 && c.resignMinGames == 50);
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    Config o;
+    applyOverride(o, "resignation=true");
+    assert(o.resignation);
+
+    // Bounds: v_resign in [-1, 0], fractions in [0, 1] and [0, 0.5].
+    for (const char* ok : {"resign_threshold_initial = -1", "resign_threshold_initial = 0",
+                           "resign_disabled_fraction = 0", "resign_disabled_fraction = 1",
+                           "resign_false_positive = 0", "resign_false_positive = 0.5",
+                           "resign_window = 1", "resign_min_games = 1"})
+        parseConfigText(ok, "t.cfg");
+    for (const char* bad : {"resignation = maybe", "resign_threshold_initial = 0.1",
+                            "resign_threshold_initial = -1.5", "resign_disabled_fraction = 1.5",
+                            "resign_disabled_fraction = -0.1", "resign_false_positive = 0.6",
+                            "resign_window = 0", "resign_min_games = 0"}) {
+        const std::string text = bad;
+        const std::string key = text.substr(0, text.find(' '));
+        assert(contains(errorOf(text), "t.cfg:1: " + key + ": "));
+    }
+
+    // All tunable: they change when games end, not the network or the players.
+    Config a;
+    assert(architectureDiff(a, c).empty() && resumeLockedDiff(a, c).empty());
+
+    // Cross-key rules. A resigned game has no final position, so no
+    // ownership targets; and a window smaller than resign_min_games could
+    // never calibrate.
+    Config both;
+    both.ownership = true;
+    assert(consistencyErrorOf(both).empty());
+    both.resignation = true;
+    const std::string msg = consistencyErrorOf(both);
+    assert(contains(msg, "resignation") && contains(msg, "ownership"));
+    assert(consistencyErrorOf(c).empty());
+    Config small = c;
+    small.resignWindow = 10;
+    small.resignMinGames = 11;
+    assert(contains(consistencyErrorOf(small), "resign_min_games"));
+    small.resignMinGames = 10;
+    assert(consistencyErrorOf(small).empty());
+
+    // A config.cfg written before these keys existed leaves resignation off,
+    // as do the presets; the 9x9 preset names the keys in comments.
+    assert(!parseConfigText("filters = 96\n", "old.cfg").resignation);
+    for (const char* name : {"5x5.cfg", "9x9.cfg", "19x19.cfg"}) {
+        const Config p = loadConfigFile(preset(name));
+        assert(!p.resignation);
+        assert(consistencyErrorOf(p).empty());
+    }
+    std::ifstream in(preset("9x9.cfg"));
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    for (const char* line : {"\n# resignation = false\n", "\n# resign_threshold_initial = -0.9\n",
+                             "\n# resign_disabled_fraction = 0.1\n", "\n# resign_false_positive = 0.05\n",
+                             "\n# resign_window = 500\n", "\n# resign_min_games = 20\n"})
+        assert(contains(text, line));
+}
+
 static void test_errors_name_key_and_line() {
     std::string msg = errorOf("komi = 7.5\nfoo = 1\n");
     assert(contains(msg, "t.cfg:2") && contains(msg, "foo") && contains(msg, "unknown key"));
@@ -434,6 +515,7 @@ int main() {
     test_reference_networks_key();
     test_ownership_keys();
     test_random_symmetry_keys();
+    test_resignation_keys();
     test_errors_name_key_and_line();
     test_hand_edited_files();
     std::printf("test_config: all tests passed\n");
