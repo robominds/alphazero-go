@@ -471,16 +471,20 @@ resume) each generation also measures:
   the games unless gating is on) on every position of generation g's
   self-play games, measured before those games join the buffer.
 - `seen_policy_loss`, `seen_value_loss`, `seen_ownership_loss`: the same
-  network on as many positions drawn uniformly from the buffer it was
-  trained on (the window as it stood after generation g − 1). Empty at
-  generation 1, or whenever the buffer is still empty.
+  network on as many positions drawn uniformly from its training
+  distribution, the buffer as it stood after generation g − 1. Training
+  drew from that window at random symmetries, so some of these
+  positions it saw several times and some rarely or never. Empty
+  whenever the buffer is empty, as at generation 1 of a run started
+  without `--buffer-from`.
 
 Both use the training loss's terms: the policy cross-entropy against the
 visit distribution π, (z − v)², and, with the ownership head, the
 unweighted per-point squared error (like `ownership_loss`). Each position
 is shown once, at the identity symmetry, with batch norm in inference
 mode (running statistics, as search uses it). The ownership columns are
-empty without the head. The progress line adds, for example,
+empty without the head; a measurement that is not a number is logged as
+`nan`, not left empty. The progress line adds, for example,
 `val p 2.41 v 0.37 seen p 2.36 v 0.31`. An older run's `log.csv` gets the
 six columns, empty, on resume.
 
@@ -490,16 +494,24 @@ How to read them:
   loss. They measure one network the same way; the training loss uses
   batch statistics and random symmetries, and averages over a network
   that changes during the generation's steps.
-- `seen` below `val` is how much better the network does on positions
-  it was fitted to. It also includes how much the fresh games differ
-  from the older games in the window, so read it as a trend. A gap that
-  keeps widening while `val` stops falling is overfitting the buffer.
-  Both falling together is learning.
+- `seen` below `val` is how much better the network does on its
+  training distribution than on new games. It mixes fitting with how
+  much the fresh games differ from the older games in the window, so
+  read it as a trend. A gap that keeps widening while `val` stops
+  falling is overfitting the buffer. Both falling together is learning.
+- `val` below `seen` is possible and not a fault. Without gating, the π
+  targets of the fresh games come from this network's own search, which
+  its policy agrees with more than with the searches of the older
+  networks that made most of the buffer's targets.
 - The policy loss cannot fall below the entropy of the targets (about
   1.99 nats on 9×9, `tools/buf.py`), so compare changes, not levels.
-- Generation 1's `val` row measures the random generation-0 network,
-  whose batch-norm running statistics are still their initial values;
-  its numbers are not comparable with later rows.
+- In a run started from scratch, generation 1's `val` row measures the
+  random generation-0 network, whose batch-norm running statistics are
+  still their initial values, so its numbers are not comparable with
+  later rows. With `--init-from` generation 0 is the given network
+  instead. With `--buffer-from`, generation 1's `seen` row is measured
+  on the donor's games, which generation 0 never trained on, so it is a
+  held-out number too.
 
 Nothing feeds back into the run. The pass draws from no generator of
 self-play, training or the arena (the buffer sample has its own,

@@ -21,8 +21,8 @@ overfitting, and the logs cannot say.
 ## Goal
 
 Measure, each generation, the network's loss on data it has never
-trained on, and on data it has, in the same way, so the two can be
-compared. Measurement only: the algorithm stays AlphaGo Zero's, and a run
+trained on, and on its training distribution, in the same way, so the
+two can be compared. Measurement only: the algorithm stays AlphaGo Zero's, and a run
 produces exactly the same checkpoints, buffer and ratings with the
 measurement on or off.
 
@@ -49,11 +49,15 @@ and **before** its games are added to the buffer:
   being trained, so `net_` is the one measured. It has never trained on
   these positions.
 - **seen**: the same network scored on positions drawn uniformly, with
-  replacement, from the buffer as it stands (the window after generation
-  g − 1, which is exactly what generation g − 1 trained on). The sample
-  has as many positions as the fresh games, so both means are equally
-  noisy. With an empty buffer (generation 1 of a run started without
-  `--buffer-from`) nothing is measured.
+  replacement, from the buffer as it stands: its training distribution,
+  the window generation g − 1 sampled its batches from. Training drew
+  from it at random symmetries, so some of these positions were seen
+  several times and some rarely or never. The sample has as many
+  positions as the fresh games, so both means are equally noisy. With an
+  empty buffer (generation 1 of a run started without `--buffer-from`)
+  nothing is measured. With `--buffer-from`, generation 1's sample comes
+  from the donor's games, which generation 0 never trained on, so that
+  one row is held out too.
 
 Both use the training loss's terms (`Network::loss`): policy cross-entropy
 against the normalised visit counts π, (z − v)², and with the ownership
@@ -66,7 +70,15 @@ the network.
 Seen against val in the same generation is a like-for-like comparison:
 the same network, mode and encoding. The training loss is not: it uses
 batch statistics and random symmetries, and its mean runs over a network
-that changes during the generation's steps.
+that changes during the generation's steps. The gap mixes fitting with
+the drift between older and fresh games. Val below seen is possible and
+not a fault: without gating the fresh games' π targets come from this
+network's own search, the buffer's mostly from older networks'.
+
+In a run started from scratch, generation 1's val row scores the random
+generation-0 network with batch norm's initial running statistics, so it
+is not comparable with later rows; with `--init-from`, generation 0 is the
+given network.
 
 ### Why it cannot change a run
 
@@ -111,7 +123,8 @@ On resume it can be turned off or on; the next row follows.
 - `log.csv` gains six trailing columns after `resign_false_positive`:
   `val_policy_loss, val_value_loss, val_ownership_loss, seen_policy_loss,
   seen_value_loss, seen_ownership_loss`, printed `%.5f`, empty when not
-  measured. `Trainer::resume` upgrades every older header (before
+  measured, `nan` when a measurement is not a number (so a broken
+  network shows instead of looking unmeasured). `Trainer::resume` upgrades every older header (before
   ownership, before resignation, before validation) to the new one,
   adding empty fields to old rows.
 - The progress line adds `val p X v Y` after the learning rate, and
@@ -156,7 +169,10 @@ time of the generation's 200 training steps of 256.
     `log.csv` fields are byte-identical;
   - the values do not depend on the worker count;
   - a `log.csv` without the six columns is upgraded on resume, and
-    `validation_loss` can be switched on resume.
+    `validation_loss` can be switched on resume;
+  - a resumed run logs the same six values as an uninterrupted one;
+  - a generation-0 network whose ownership running means are NaN (never
+    read by search or by training) logs `nan` for the ownership columns.
   The existing log tests read `log.csv` by column name now, not by
   trailing commas.
 - **Against the previous binary:** short 5×5 runs (40 games, 50

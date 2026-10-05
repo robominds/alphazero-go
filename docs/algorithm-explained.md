@@ -1820,13 +1820,13 @@ scores the network about to train on them, generation g − 1's, on every
 one of their positions: the same cross-entropy and squared-error terms as
 the training loss, with batch norm in inference mode and no symmetry
 augmentation (`heldOutLoss` in `src/validation.cpp`). It scores the same
-network the same way on as many positions drawn from the buffer it was
-trained on. The gap between the two (`val_*` against `seen_*` in
-`log.csv`) is what fitting those positions bought, plus the difference
-between older games and fresh ones; a gap that widens while the held-out
-loss stalls is overfitting. Nothing feeds back: the algorithm is
-AlphaGo Zero's, unchanged, and every checkpoint is byte-identical with
-the measurement on or off.
+network the same way on as many positions drawn from its training
+distribution, the buffer it trains on. The gap between the two (`val_*`
+against `seen_*` in `log.csv`) mixes what training on that window bought
+with the difference between older games and fresh ones; a gap that
+widens while the held-out loss stalls is overfitting. Nothing feeds
+back: the algorithm is AlphaGo Zero's, unchanged, and every checkpoint is
+byte-identical with the measurement on or off.
 
 **An auxiliary target: ownership.** Every 9×9 network so far fails the
 eye check (`docs/results/README.md`): it rates White's B1, which kills a
