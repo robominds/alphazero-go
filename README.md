@@ -130,7 +130,8 @@ score with a 95% Wilson interval
 `--simulations`, so a frozen checkpoint can be a stronger reference by
 searching more (`--b ckpt --b-simulations 3200`). `--random-symmetry`
 searches with AlphaGo Zero's random symmetries (see Random symmetry in
-search below):
+search below); `--a-random-symmetry` or `--b-random-symmetry` does so for
+one side only (not for a `--b-bot`, which gains nothing from it):
 
 ```
 $ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0150.azn --b runs/9x9-main/checkpoints/gen_0000.azn --games 100 --simulations 200 --komi 7.5 --backend blas
@@ -318,7 +319,8 @@ untransformed board; two config keys switch on AlphaGo Zero's version:
 - `arena_random_symmetry` (default `false`): the arena's search, in the
   trainer's arena rounds and in `--rerate`, for network players only (a
   bot's equal priors are the same under every transform). The `arena`
-  and `analyze` tools take `--random-symmetry` instead.
+  and `analyze` tools take `--random-symmetry` instead; `arena` also
+  takes `--a-random-symmetry` and `--b-random-symmetry` for one side.
 
 Each evaluated position draws one symmetry from the game's own `Rng`
 (the root included), so a run stays reproducible from its seed and
@@ -327,6 +329,15 @@ independent of the worker count. Both keys are tunable: `--resume` and
 `arena_random_symmetry` from the live run plays other games and no longer
 reproduces its `results.csv`. Every preset leaves both off; `configs/9x9.cfg`
 lists them commented out.
+
+To measure what the symmetries are worth before turning a key on, play a
+checkpoint against itself with them on one side only. Both sides have the
+same network and the same budget, so A's score away from 0.5 is the
+effect of the search change alone:
+
+```
+$ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0150.azn --b runs/9x9-main/checkpoints/gen_0150.azn --a-random-symmetry --games 200 --simulations 200 --backend blas
+```
 
 ### Resignation
 

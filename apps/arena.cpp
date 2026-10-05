@@ -6,6 +6,7 @@
 //   arena --a runs/nine/checkpoints/gen_0040.azn --b-bot 100
 //   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0020.azn --b-simulations 3200
 //   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0020.azn --random-symmetry
+//   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0040.azn --a-random-symmetry
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -28,6 +29,7 @@ const char* const kUsage =
     "usage: arena --a CKPT (--b CKPT | --b-bot SIMS) [--games 40] [--simulations 200]\n"
     "             [--a-simulations N] [--b-simulations N] [--komi 7.5] [--temperature-moves 4]\n"
     "             [--workers 0] [--backend naive] [--seed 1] [--random-symmetry]\n"
+    "             [--a-random-symmetry] [--b-random-symmetry]\n"
     "\n"
     "Colors alternate: A plays Black in even-numbered games. --workers 0 uses every core.\n"
     "--b-bot SIMS makes B a uniform bot: MCTS with equal priors and value 0, searching\n"
@@ -36,7 +38,10 @@ const char* const kUsage =
     "frozen checkpoint can serve as a stronger reference by searching more. A bot already has its\n"
     "own count, so --b-bot and --b-simulations cannot be combined.\n"
     "--random-symmetry evaluates every position in both networks' searches under a random\n"
-    "one of the 8 board symmetries, as AlphaGo Zero did (a bot is unaffected).\n";
+    "one of the 8 board symmetries, as AlphaGo Zero did (a bot is unaffected).\n"
+    "--a-random-symmetry and --b-random-symmetry do so for one side only, so a checkpoint can\n"
+    "play itself with symmetry on one side to measure what it is worth. A bot gains nothing\n"
+    "from it, so --b-bot and --b-random-symmetry cannot be combined.\n";
 
 int usageError(const std::string& message) {
     std::fprintf(stderr, "error: %s\n\n%s", message.c_str(), kUsage);
@@ -53,7 +58,8 @@ int main(int argc, char** argv) {
             std::vector<std::string>{"a", "b", "b-bot", "games", "simulations", "a-simulations",
                                      "b-simulations", "komi",
                                      "temperature-moves", "workers", "backend", "seed"},
-            std::vector<std::string>{"help", "random-symmetry"});
+            std::vector<std::string>{"help", "random-symmetry", "a-random-symmetry",
+                                     "b-random-symmetry"});
     } catch (const std::invalid_argument& e) {
         return usageError(e.what());
     }
@@ -92,6 +98,11 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("--b-simulations must be in [1, 100000]");
         if (args->has("b-bot") && (botSims < 1 || botSims > 100000))
             throw std::invalid_argument("--b-bot must be in [1, 100000]");
+        if (args->has("b-bot") && args->flag("b-random-symmetry"))
+            throw std::invalid_argument("--b-random-symmetry applies to a checkpoint B; a bot's equal priors gain nothing from it");
+        // Which sides search with random symmetry: --random-symmetry is both.
+        const bool symA = cfg.randomSymmetry || args->flag("a-random-symmetry");
+        const bool symB = args->has("b") && (cfg.randomSymmetry || args->flag("b-random-symmetry"));
 
         const std::string pathA = args->get("a");
         const azgo::Network a = azgo::loadNetwork(pathA);   // errors name the file
@@ -101,7 +112,7 @@ int main(int argc, char** argv) {
         if (args->has("b")) {
             nameB = args->get("b");
             b = std::make_unique<azgo::Network>(azgo::loadNetwork(nameB));
-            playerB = azgo::ArenaPlayer::network(*b, simsB);
+            playerB = azgo::ArenaPlayer::network(*b, simsB, args->flag("b-random-symmetry"));
         }
         // Name each side's search budget when it differs from --simulations.
         auto budget = [&](int override_) {
@@ -112,14 +123,16 @@ int main(int argc, char** argv) {
         if (args->has("b")) nameB += budget(simsB);
 
         const azgo::MatchResult r =
-            azgo::playMatch(azgo::ArenaPlayer::network(a, simsA), playerB, cfg, static_cast<uint64_t>(seed),
-                            azgo::resolveWorkers(workers), backend);
+            azgo::playMatch(azgo::ArenaPlayer::network(a, simsA, args->flag("a-random-symmetry")), playerB,
+                            cfg, static_cast<uint64_t>(seed), azgo::resolveWorkers(workers), backend);
         const std::pair<double, double> ci = azgo::wilsonInterval(r.scoreA, r.games);
         std::printf("A %s vs B %s: A scored %g/%d = %.3f (95%% CI %.3f-%.3f), distinct games %d\n",
                     labelA.c_str(), nameB.c_str(), r.scoreA, r.games, r.scoreA / r.games,
                     ci.first, ci.second, r.distinctGames);
         std::printf("A wins %d, B wins %d, draws %d\n", r.winsA, r.winsB, r.draws);
-        if (cfg.randomSymmetry) std::printf("Search: random symmetry per network evaluation\n");
+        if (symA || symB)
+            std::printf("Search: random symmetry per network evaluation%s\n",
+                        symA && symB ? "" : symA ? ", A only" : ", B only");
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());

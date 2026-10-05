@@ -1749,7 +1749,8 @@ three games. This project always augments in training, and by default
 its search does what AlphaZero's did: it evaluates the untransformed
 board. `mcts_random_symmetry` (self-play) and `arena_random_symmetry`
 (arena rounds and `--rerate`; the `arena` and `analyze` tools take
-`--random-symmetry`) switch on AlphaGo Zero's version: each position the
+`--random-symmetry`, and `arena` also `--a-random-symmetry` or
+`--b-random-symmetry` for one side) switch on AlphaGo Zero's version: each position the
 search sends to the network gets one of the 8 symmetries, drawn from the
 game's own `Rng`, is encoded with it, and the logit of action `a` is read
 back at `transformAction(sym, a)`; the value needs no mapping. A network

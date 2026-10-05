@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test of the executables on a tiny 5x5 run:
 # train -> resume -> re-rate (as live, then against a reference network) ->
-# arena (checkpoint, bot, random symmetry) -> analyze (good, random symmetry and
+# arena (checkpoint, bot, random symmetry on both sides or one) -> analyze (good, random symmetry and
 # bad input) -> bench -> grow (deeper, wider, and a run started from the grown network), plus the refusal to change the architecture on resume,
 # then the ownership head: a run with it, grow --ownership, and analyze's ownership map,
 # and resignation: a run with it, and its refusal alongside the ownership head.
@@ -80,6 +80,24 @@ echo "$out"
 echo "$out" | grep -Eq '^A .* scored' || fail "arena --random-symmetry did not print a score line"
 echo "$out" | grep -q '^Search: random symmetry' || fail "arena --random-symmetry did not say so"
 
+echo "== arena: random symmetry for one side =="
+out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0003.azn" --a-random-symmetry --games 4 --simulations 4 --workers 2)"
+echo "$out"
+echo "$out" | grep -Eq '^A .* scored' || fail "arena --a-random-symmetry did not print a score line"
+echo "$out" | grep -qx 'Search: random symmetry per network evaluation, A only' || fail "arena --a-random-symmetry did not say A only"
+out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --b-random-symmetry --games 4 --simulations 4 --workers 2)"
+echo "$out" | grep -qx 'Search: random symmetry per network evaluation, B only' || fail "arena --b-random-symmetry did not say B only"
+# Both one-sided flags are --random-symmetry: the same games, the same lines.
+both="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --a-random-symmetry --b-random-symmetry --games 4 --simulations 4 --workers 2)"
+all="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --random-symmetry --games 4 --simulations 4 --workers 1)"
+[ "$both" = "$all" ] || fail "arena --a- plus --b-random-symmetry differs from --random-symmetry: '$both' vs '$all'"
+echo "$both" | grep -qx 'Search: random symmetry per network evaluation' || fail "arena with both one-sided flags did not say both"
+# Against a bot only A has a network, so --random-symmetry is A's alone.
+bot="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --a-random-symmetry --games 4 --simulations 4 --workers 2)"
+[ "$bot" = "$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --random-symmetry --games 4 --simulations 4 --workers 2)" ] \
+    || fail "arena --a-random-symmetry against a bot differs from --random-symmetry"
+echo "$bot" | grep -qx 'Search: random symmetry per network evaluation, A only' || fail "arena against a bot did not say A only"
+
 # B is exactly one of a checkpoint and a bot, and a bot must search.
 expect_arena_error() {
     local want="$1"; shift
@@ -94,6 +112,7 @@ expect_arena_error "give exactly one of --b CKPT and --b-bot SIMS"
 expect_arena_error "--b-bot must be in [1, 100000]" --b-bot 0
 expect_arena_error "--b-simulations applies to a checkpoint B" --b-bot 8 --b-simulations 16
 expect_arena_error "--b-simulations must be in [1, 100000]" --b "$CK/gen_0000.azn" --b-simulations 0
+expect_arena_error "--b-random-symmetry applies to a checkpoint B" --b-bot 8 --b-random-symmetry
 
 echo "== analyze: a legal position =="
 out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --simulations 16)"
