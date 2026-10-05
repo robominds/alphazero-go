@@ -25,9 +25,15 @@ example a ko retake that is legal under one program's ko rule but not
 under the other's) ends the game as a loss for the side that played it,
 and is recorded as a forfeit.
 
+Each command must be answered within --timeout seconds (default 600; 0
+waits forever). An engine that takes longer is taken to be hung: the match
+stops with an error naming the engine and the command, both engines are
+stopped, and results.csv and the SGFs keep the games finished before it.
+
 Results: --out DIR receives one SGF per game (game_0001.sgf, ...; PB and
-PW are the engines' name and version, RE the scorer's result, C how the
-game ended and both engines' scores), results.csv with one row per game,
+PW are the engines' name and version, RE the scorer's result, RU
+Tromp-Taylor only when the scorer is our engine, C how the game ended and
+both engines' scores), results.csv with one row per game,
 and each engine's stderr (a.stderr.log, b.stderr.log). The summary
 printed at the end gives A's score with a 95% Wilson interval, the Elo
 difference A - B implied by it (400 * log10(p / (1 - p)), with the
@@ -43,10 +49,12 @@ import argparse
 import csv
 import math
 import os
+import queue
 import re
 import shlex
 import subprocess
 import sys
+import threading
 
 COLUMNS = "ABCDEFGHJKLMNOPQRSTUVWXYZ"   # GTP skips I
 SCORE = re.compile(r"^(?:([BW])\+(\d+(?:\.\d+)?)|0)$", re.IGNORECASE)
@@ -59,9 +67,10 @@ class EngineError(RuntimeError):
 class Engine:
     """One GTP engine process: send a command, read its response."""
 
-    def __init__(self, label, command, stderr_path):
+    def __init__(self, label, command, stderr_path, timeout):
         self.label = label
         self.command = command
+        self.timeout = timeout or None   # seconds per command; None waits forever
         self.stderr = open(stderr_path, "w")
         try:
             self.proc = subprocess.Popen(shlex.split(command), stdin=subprocess.PIPE,
@@ -70,10 +79,22 @@ class Engine:
         except OSError as e:
             self.stderr.close()
             raise EngineError("%s: cannot start %r: %s" % (label, command, e))
-        self.name = self.label
+        self.name = self.label           # "name version" once asked
+        self.gtp_name = ""               # the answer to name alone
+        self.hung = False                # timed out: close() kills it rather than ask it to quit
+        # A thread feeds stdout into a queue, so a read can give up after
+        # the timeout; readline() on the pipe itself would wait forever.
+        self.lines = queue.Queue()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        for line in self.proc.stdout:
+            self.lines.put(line)
+        self.lines.put("")               # end of output: the engine exited
 
     def send(self, command):
-        """(succeeded, text) for one command; raises EngineError if the engine dies."""
+        """(succeeded, text) for one command; raises EngineError if the engine
+        dies or takes longer than the timeout to answer."""
         try:
             self.proc.stdin.write(command + "\n")
             self.proc.stdin.flush()
@@ -81,7 +102,12 @@ class Engine:
             raise EngineError("%s (%s) stopped reading before %r" % (self.label, self.command, command))
         lines = []
         while True:
-            line = self.proc.stdout.readline()
+            try:
+                line = self.lines.get(timeout=self.timeout)
+            except queue.Empty:
+                self.hung = True
+                raise EngineError("%s (%s) gave no answer to %r within %g s (--timeout)"
+                                  % (self.label, self.command, command, self.timeout))
             if line == "":
                 raise EngineError("%s (%s) exited during %r; see its stderr log"
                                   % (self.label, self.command, command))
@@ -104,8 +130,12 @@ class Engine:
         return text
 
     def close(self):
+        if self.proc.poll() is None and self.hung:
+            self.proc.kill()
+            self.proc.wait()
         if self.proc.poll() is None:
             try:
+                self.timeout = 10
                 self.send("quit")
                 self.proc.wait(timeout=10)
             except (EngineError, subprocess.TimeoutExpired):
@@ -139,8 +169,9 @@ def sgf_escape(s):
     return s.replace("\\", "\\\\").replace("]", "\\]")
 
 
-def write_sgf(path, n, komi, black, white, result, comment, moves):
-    out = ["(;GM[1]FF[4]CA[UTF-8]SZ[%d]KM[%g]RU[Tromp-Taylor, positional superko]" % (n, komi),
+def write_sgf(path, n, komi, rules, black, white, result, comment, moves):
+    out = ["(;GM[1]FF[4]CA[UTF-8]SZ[%d]KM[%g]" % (n, komi),
+           "RU[%s]" % rules if rules else "",
            "PB[%s]PW[%s]RE[%s]C[%s]" % (sgf_escape(black), sgf_escape(white), result, sgf_escape(comment))]
     for k, v in enumerate(moves):
         point = "" if v is None else chr(ord("a") + v[0]) + chr(ord("a") + v[1])
@@ -218,6 +249,8 @@ def main():
     ap.add_argument("--max-moves", type=int, default=0, help="adjudicate after this many moves (0: 2*size*size)")
     ap.add_argument("--scorer", choices=["a", "b"], default="a", help="whose final_score decides a game")
     ap.add_argument("--out", required=True, help="directory for SGFs, results.csv and engine logs")
+    ap.add_argument("--timeout", type=float, default=600,
+                    help="seconds an engine may take to answer one command (0: no limit)")
     args = ap.parse_args()
     if args.games < 2 or args.games % 2:
         ap.error("--games must be even and at least 2 (colors are balanced)")
@@ -226,19 +259,26 @@ def main():
     max_moves = args.max_moves or 2 * args.size * args.size
     if max_moves < 1:
         ap.error("--max-moves must be positive")
+    if args.timeout < 0:
+        ap.error("--timeout must be >= 0")
     os.makedirs(args.out, exist_ok=True)
 
     engines = []
     try:
-        a = Engine("A", args.a, os.path.join(args.out, "a.stderr.log"))
+        a = Engine("A", args.a, os.path.join(args.out, "a.stderr.log"), args.timeout)
         engines.append(a)
-        b = Engine("B", args.b, os.path.join(args.out, "b.stderr.log"))
+        b = Engine("B", args.b, os.path.join(args.out, "b.stderr.log"), args.timeout)
         engines.append(b)
         for e in engines:
             name = e.send("name")
             version = e.send("version")
             e.name = " ".join(t for ok, t in (name, version) if ok and t) or e.command
+            e.gtp_name = name[1] if name[0] else ""
         scorer = a if args.scorer == "a" else b
+        # RU names the rules only when they are known: our engine scores
+        # Tromp-Taylor. Another scorer's rules are its own, so the SGF
+        # leaves RU out and the comment names the scorer.
+        rules = "Tromp-Taylor" if scorer.gtp_name == "alphazero-go" else ""
 
         score_a, wins_a, wins_b, draws, disagreements = 0.0, 0, 0, 0, 0
         distinct = set()
@@ -250,7 +290,7 @@ def main():
                 black, white = (a, b) if g % 2 == 1 else (b, a)
                 moves, end, winner, scores = play_game(black, white, args.size, args.komi, max_moves)
                 distinct.add(tuple(moves))
-                comment = "Game %d: %s. " % (g, end)
+                comment = ["Game %d: %s." % (g, end)]
                 if winner is not None:
                     result = winner + "+R" if "resigned" in end else winner + "+F"
                 else:
@@ -264,8 +304,8 @@ def main():
                     other = parse_score(other_text) if other_text is not None else None
                     if other is not None and (other > 0) - (other < 0) != (s > 0) - (s < 0):
                         disagreements += 1   # a different winner, not just a different margin
-                    comment += "final_score: A %s, B %s; scored by %s." % (
-                        scores.get("A"), scores.get("B"), scorer.label)
+                    comment.append("final_score: A %s, B %s; scored by %s (%s)." % (
+                        scores.get("A"), scores.get("B"), scorer.label, scorer.name))
                 if winner is None:
                     pts = 0.5
                     draws += 1
@@ -276,8 +316,8 @@ def main():
                     pts = 0.0
                     wins_b += 1
                 score_a += pts
-                write_sgf(os.path.join(args.out, "game_%04d.sgf" % g), args.size, args.komi, black.name,
-                          white.name, result, comment, moves)
+                write_sgf(os.path.join(args.out, "game_%04d.sgf" % g), args.size, args.komi, rules,
+                          black.name, white.name, result, " ".join(comment), moves)
                 rows.writerow([g, black.label, white.label, len(moves), end, result, pts,
                                scores.get("A", ""), scores.get("B", "")])
                 f.flush()

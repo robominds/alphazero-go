@@ -585,7 +585,11 @@ and its training count Tromp-Taylor. The other engine's `final_score` is
 recorded too, and the summary counts games where it names a different
 winner. A move the other engine refuses (a ko retake that one program's
 ko rule allows and the other's forbids) loses the game for the side that
-played it, recorded as a forfeit. `--out` gets an SGF per game, a
+played it, recorded as a forfeit. An engine that takes longer than
+`--timeout` seconds (default 600; 0 for no limit) to answer one command is
+taken to be hung: the match stops with an error naming it and the
+command, keeping the games already finished. `--out` gets an SGF per game
+(with `RU[Tromp-Taylor]` only when our engine is the scorer), a
 `results.csv` row per game and each engine's stderr. The summary prints
 A's score with a 95% Wilson interval, the Elo difference A − B it implies
 (400 · log10(p / (1 − p)), the interval's ends converted the same way)
