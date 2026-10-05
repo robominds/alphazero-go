@@ -1193,9 +1193,11 @@ matches (`runs/agz-experiment.sh`, not in the repository).
 Evaluation only (the algorithm unchanged): a validation loss on
 held-out fresh games each generation is merged (`validation_loss`, on by
 default: `val_*` and `seen_*` columns in `log.csv`; see "The validation
-loss" in the main README), with no run measured yet. Not started:
-400-game matches at temperature 0 (AGZ's evaluation size), and an
-outside reference opponent over GTP, for example GNU Go.
+loss" in the main README), with no run measured yet. An outside
+reference opponent over GTP has its tools merged (the `gtp` engine and
+`tools/gtp_match.py`; see "Playing other programs via GTP" in the main
+README), with no match against GNU Go played yet. Not started: 400-game
+matches at temperature 0 (AGZ's evaluation size).
 
 ## What did not work
 

@@ -31,20 +31,22 @@ cmake --build build-blas -j
 ctest --test-dir build-blas --output-on-failure
 ```
 
-Each build has 25 component tests plus an integration smoke test (26 in
-ctest; `ctest -N | tail -1` prints `Total Tests: 26`).
+Each build has 27 component tests plus an integration smoke test (28 in
+ctest; `ctest -N | tail -1` prints `Total Tests: 28`). The smoke test
+also runs `tools/gtp_match.py`, so it needs `python3` on the path.
 
 **The presets in `configs/` say `backend = blas`**, because BLAS is 2.9×
 faster on 5×5 and 18× faster on 19×19 (`docs/results/bench.txt`). Use them
 with the `build-blas` binaries. On the default build, add
-`--set backend=naive` to `train` (and pass `--backend naive` to `arena` and
-`analyze`, which is their default); otherwise `train` stops with
+`--set backend=naive` to `train` (and pass `--backend naive` to `arena`,
+`analyze` and `gtp`, which is their default); otherwise `train` stops with
 `error: backend 'blas' not available: rebuild with -DAZ_USE_BLAS=ON`.
 
 ## Usage
 
-Five programs are built next to the tests. Each prints its options with
-`--help`.
+Six programs are built next to the tests. Each prints its options with
+`--help`. The sixth, `gtp`, plays other Go programs and is described in
+Playing other programs via GTP below.
 
 **`train`** runs the generation loop (self-play, training, checkpoint,
 arena, commit). A new run copies the config into the run directory:
@@ -521,6 +523,81 @@ the buffer, and does not depend on the worker count. Checkpoints,
 forward pass over about twice a generation's new positions: on 9×9
 (6×96 network, BLAS), 69 inference batches of 256 took 8% of the time
 of 200 training steps. Its time is counted in `train_s`.
+
+### Playing other programs via GTP
+
+Every rating above is measured against the run's own networks and the
+uniform bot. `gtp` lets a checkpoint play an outside program instead: it
+speaks the Go Text Protocol (GTP version 2), the plain-text protocol Go
+programs, match controllers and board programs such as Sabaki use. It is
+for evaluation only. Each `genmove` is an MCTS search at temperature 0
+with no root noise, reusing the subtree from the previous move, as in the
+arena after its opening moves; nothing is trained, and it never resigns.
+
+```
+$ ./build-blas/gtp --checkpoint runs/9x9-main/checkpoints/gen_0250.azn --backend blas
+```
+
+It reads commands on stdin and answers on stdout, which carries nothing
+but GTP; a startup line, one line per `genmove` (the move, its visits and
+the root value) and errors go to stderr. `--simulations` (default 200),
+`--mcts-batch`, `--c-puct`, `--backend`, `--random-symmetry` and
+`--seed` work as in `arena`; `--komi` (7.5) holds until the controller
+sends `komi`. It knows `protocol_version`, `name`, `version`,
+`known_command`, `list_commands`, `quit`, `boardsize`, `clear_board`,
+`komi`, `play`, `genmove`, `undo`, `showboard` and `final_score`. Vertices
+are GTP's (columns skip I) in either case, and command names are
+case-sensitive, as the protocol says. The rules are the project's: a
+network plays only the board size it was trained for (`boardsize 19` to
+a 9×9 checkpoint answers `? unacceptable size`), suicide is illegal,
+positional superko is enforced (`? illegal move`), and `final_score` is
+the Tromp-Taylor area score minus komi, every stone on the board
+counting, in the form `B+3.5`. The engine sets no move cap of its own:
+the controller decides when a game ends. GTP allows two moves of one
+color in a row; the engine records the side to move as passing in
+between.
+
+`tools/gtp_match.py` (standard-library Python) plays a match between any
+two GTP engine command lines, `--a` and `--b`, colors alternating (A is
+Black in odd-numbered games). For GNU Go:
+
+```
+$ python3 tools/gtp_match.py \
+      --a "./build-blas/gtp --checkpoint runs/9x9-main/checkpoints/gen_0250.azn --backend blas --random-symmetry" \
+      --b "gnugo --mode gtp --boardsize 9 --komi 7.5 --chinese-rules --capture-all-dead --positional-superko" \
+      --games 40 --size 9 --komi 7.5 --out runs/gnugo-gen250
+```
+
+A game ends after two passes in a row, after `--max-moves` moves
+(default 2 × size², the project's cap) or on a resignation. It is scored
+by `--scorer`'s `final_score`, A's by default, so put our engine in A: GNU
+Go counts Japanese-style territory by default and, even with
+`--chinese-rules`, removes the stones it judges dead, while our engine
+and its training count Tromp-Taylor. The other engine's `final_score` is
+recorded too, and the summary counts games where it names a different
+winner. A move the other engine refuses (a ko retake that one program's
+ko rule allows and the other's forbids) loses the game for the side that
+played it, recorded as a forfeit. `--out` gets an SGF per game, a
+`results.csv` row per game and each engine's stderr. The summary prints
+A's score with a 95% Wilson interval, the Elo difference A − B it implies
+(400 · log10(p / (1 − p)), the interval's ends converted the same way)
+and the number of distinct games: two engines that both play
+deterministically repeat the same two games, so give our engine
+`--random-symmetry` (and GNU Go a different seed per run, if needed) to
+make games differ.
+
+The GNU Go flags are from GNU Go 3.8's documentation and not tested here;
+check them with `gnugo --help` on your version. `--mode gtp` selects the
+protocol; `--chinese-rules` selects area scoring; `--capture-all-dead`
+makes it capture dead stones before passing, so a Tromp-Taylor count
+agrees with its own judgment; `--positional-superko` selects our ko rule
+(its default is simple ko); `--level` (0 to 10, default 10) sets its
+strength. To play the network yourself, add `gtp` as an engine in a GTP
+board program such as Sabaki, with arguments like
+`--checkpoint runs/9x9-main/checkpoints/gen_0250.azn --backend blas`, and
+start a game on the checkpoint's board size.
+
+No match against GNU Go has been played for `docs/results/` yet.
 
 ## Presets
 
