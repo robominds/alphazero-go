@@ -24,7 +24,7 @@ struct ArenaConfig {
     int temperatureMoves = 4;    // opening plies sampled at temperature 1
     float komi = 7.5f;
     int maxMoves = 0;            // 0 = defaultMaxMoves(n)
-    bool randomSymmetry = false; // MctsConfig::randomSymmetry for network players (a bot gains nothing)
+    bool randomSymmetry = false; // MctsConfig::randomSymmetry for both network players (a bot gains nothing)
 };
 
 struct MatchResult {
@@ -40,10 +40,16 @@ struct MatchResult {
 // more. With net == nullptr it is a uniform bot: MCTS whose priors are all
 // equal and whose value is always 0, searching with `simulations`, which a bot
 // must set (>= 1). A bot's strength depends only on its simulation count.
+// randomSymmetry turns on MctsConfig::randomSymmetry for this network player
+// alone (ArenaConfig::randomSymmetry turns it on for both), so a network can
+// play itself with the search change on one side only. A bot ignores it.
 struct ArenaPlayer {
     const Network* net = nullptr;
     int simulations = 0;   // network: 0 = ArenaConfig::simulations; bot: required, >= 1
-    static ArenaPlayer network(const Network& n, int simulations = 0) { return {&n, simulations}; }
+    bool randomSymmetry = false;
+    static ArenaPlayer network(const Network& n, int simulations = 0, bool randomSymmetry = false) {
+        return {&n, simulations, randomSymmetry};
+    }
     static ArenaPlayer bot(int simulations) { return {nullptr, simulations}; }
 };
 

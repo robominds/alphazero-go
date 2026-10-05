@@ -31,7 +31,7 @@ struct Seat {
             backend = makeBackend(backendName, 1);
             evaluator.reset(new LocalEvaluator(*player.net, *backend, cfg.mctsBatch));
             mcts.simulations = player.simulations > 0 ? player.simulations : cfg.simulations;
-            mcts.randomSymmetry = cfg.randomSymmetry;   // a bot's equal priors look the same either way
+            mcts.randomSymmetry = cfg.randomSymmetry || player.randomSymmetry;   // a bot gains nothing
         } else {
             evaluator.reset(new UniformEvaluator(shape.boardSize, shape.history, 0.0f, cfg.mctsBatch));
             mcts.simulations = player.simulations;

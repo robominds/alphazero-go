@@ -93,6 +93,60 @@ static void test_random_symmetry_matches() {
                       playMatch(ArenaPlayer::network(a), ArenaPlayer::bot(16), cfg, 5, 3, "naive")));
 }
 
+// Random symmetry for one side only (ArenaPlayer::randomSymmetry), so a
+// network can be screened against itself with the search change on one side.
+// A seat searches with it if either the config or its player asks.
+static void test_one_sided_random_symmetry() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22);
+    // Matches are deterministic, so these are fixed comparisons, not
+    // statistical ones. 8 games give only a coarse summary, so the seed is one
+    // whose summaries tell off, on and each one-sided match apart.
+    ArenaConfig cfg = tinyArena();
+    ArenaConfig cfgOn = cfg;
+    cfgOn.randomSymmetry = true;
+    const ArenaPlayer plainA = ArenaPlayer::network(a), symA = ArenaPlayer::network(a, 0, true);
+    const ArenaPlayer plainB = ArenaPlayer::network(b), symB = ArenaPlayer::network(b, 0, true);
+    assert(!plainA.randomSymmetry && symA.randomSymmetry);
+
+    const MatchResult off = playMatch(plainA, plainB, cfg, 5, 1, "naive");
+    const MatchResult on = playMatch(plainA, plainB, cfgOn, 5, 1, "naive");
+    // Both players asking is the same as the config asking, and the config
+    // still turns it on for a player that does not ask.
+    assert(sameResult(on, playMatch(symA, symB, cfg, 5, 1, "naive")));
+    assert(sameResult(on, playMatch(symA, plainB, cfgOn, 5, 1, "naive")));
+
+    for (const MatchResult& oneSided : {playMatch(symA, plainB, cfg, 5, 1, "naive"),
+                                        playMatch(plainA, symB, cfg, 5, 1, "naive")}) {
+        checkBookkeeping(oneSided, 8);
+        assert(!sameResult(oneSided, off));
+        assert(!sameResult(oneSided, on));
+    }
+    // Deterministic for the seed and independent of the worker count.
+    assert(sameResult(playMatch(symA, plainB, cfg, 5, 1, "naive"),
+                      playMatch(symA, plainB, cfg, 5, 3, "naive")));
+    assert(sameResult(playMatch(plainA, symB, cfg, 5, 1, "naive"),
+                      playMatch(plainA, symB, cfg, 5, 3, "naive")));
+
+    // The network against itself, symmetry on one side: the screening match.
+    const MatchResult self = playMatch(symA, plainA, cfg, 5, 1, "naive");
+    checkBookkeeping(self, 8);
+    assert(sameResult(self, playMatch(symA, plainA, cfg, 5, 3, "naive")));
+    assert(!sameResult(self, playMatch(plainA, plainA, cfg, 5, 1, "naive")));
+
+    // Against a bot the flag reaches its own seat: a's flag alone equals the
+    // config asking (a bot never searches with symmetry), from either side.
+    const ArenaPlayer bot = ArenaPlayer::bot(16);
+    assert(sameResult(playMatch(symA, bot, cfg, 5, 1, "naive"),
+                      playMatch(plainA, bot, cfgOn, 5, 1, "naive")));
+    assert(sameResult(playMatch(bot, symA, cfg, 5, 1, "naive"),
+                      playMatch(bot, plainA, cfgOn, 5, 1, "naive")));
+    // A bot ignores the flag: asking for it changes nothing.
+    ArenaPlayer symBot = bot;
+    symBot.randomSymmetry = true;
+    assert(sameResult(playMatch(plainA, symBot, cfg, 5, 1, "naive"),
+                      playMatch(plainA, bot, cfg, 5, 1, "naive")));
+}
+
 static void test_colors_balanced() {
     // With komi 100 on 5x5 (area score at most 25) White wins every game, so
     // A's score counts exactly the games in which A played White.
@@ -300,6 +354,7 @@ int main() {
     test_match_score();
     test_deterministic_across_workers_and_runs();
     test_random_symmetry_matches();
+    test_one_sided_random_symmetry();
     test_colors_balanced();
     test_opening_temperature_diversifies();
     test_rejects_bad_setup();
