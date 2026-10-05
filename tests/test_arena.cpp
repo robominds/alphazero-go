@@ -147,6 +147,75 @@ static void test_one_sided_random_symmetry() {
                       playMatch(plainA, bot, cfg, 5, 1, "naive")));
 }
 
+static ArenaPlayer withSearch(ArenaPlayer p, float cPuct, int mctsBatch) {
+    p.cPuct = cPuct;
+    p.mctsBatch = mctsBatch;
+    return p;
+}
+
+// Per-player c_puct and MCTS batch size (ArenaPlayer::cPuct and ::mctsBatch,
+// 0 = ArenaConfig's), so a network can play itself with one search setting
+// changed on one side. As with the other one-sided tests, these are fixed
+// comparisons of deterministic matches, on a seed (29) whose 8-game
+// summaries tell the matches apart.
+static void test_search_overrides() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22);
+    ArenaConfig cfg = tinyArena();   // c_puct 1.5, batch 4
+    const ArenaPlayer plainA = ArenaPlayer::network(a), plainB = ArenaPlayer::network(b);
+    assert(plainA.cPuct == 0 && plainA.mctsBatch == 0);   // inherit by default
+    const MatchResult base = playMatch(plainA, plainB, cfg, 29, 1, "naive");
+
+    // Overrides equal to the config's values are the default match exactly.
+    assert(sameResult(base, playMatch(withSearch(plainA, 1.5f, 4), withSearch(plainB, 1.5f, 4),
+                                      cfg, 29, 1, "naive")));
+    assert(sameResult(base, playMatch(withSearch(plainA, 1.5f, 0), withSearch(plainB, 0, 4),
+                                      cfg, 29, 1, "naive")));
+
+    // Both sides overriding is the same as the config changing.
+    ArenaConfig wide = cfg;
+    wide.cPuct = 4.0f;
+    wide.mctsBatch = 1;
+    const MatchResult both = playMatch(withSearch(plainA, 4.0f, 1), withSearch(plainB, 4.0f, 1),
+                                       cfg, 29, 1, "naive");
+    assert(sameResult(both, playMatch(plainA, plainB, wide, 29, 1, "naive")));
+    assert(!sameResult(both, base));
+    // The override replaces the config for its own side only: A at c_puct 4
+    // under the 1.5 config equals the 4 config with B overridden back to 1.5.
+    ArenaConfig cfg4 = cfg;
+    cfg4.cPuct = 4.0f;
+    assert(sameResult(playMatch(withSearch(plainA, 4.0f, 0), plainB, cfg, 29, 1, "naive"),
+                      playMatch(plainA, withSearch(plainB, 1.5f, 0), cfg4, 29, 1, "naive")));
+
+    // The network against itself with one setting changed on one side: the
+    // tuning match. It differs from the unchanged self-play match, it is
+    // deterministic, and it does not depend on the worker count.
+    const MatchResult self = playMatch(plainA, plainA, cfg, 29, 1, "naive");
+    for (const ArenaPlayer& changed : {withSearch(plainA, 4.0f, 0), withSearch(plainA, 0.5f, 0),
+                                       withSearch(plainA, 0, 1)}) {
+        const MatchResult oneSided = playMatch(changed, plainA, cfg, 29, 1, "naive");
+        checkBookkeeping(oneSided, 8);
+        assert(!sameResult(oneSided, self));
+        assert(sameResult(oneSided, playMatch(changed, plainA, cfg, 29, 1, "naive")));
+        assert(sameResult(oneSided, playMatch(changed, plainA, cfg, 29, 3, "naive")));
+        const MatchResult flipped = playMatch(plainA, changed, cfg, 29, 1, "naive");
+        assert(!sameResult(flipped, self));
+        assert(sameResult(flipped, playMatch(plainA, changed, cfg, 29, 3, "naive")));
+    }
+
+    // A bot searches with c_puct and a batch too, so its overrides apply:
+    // a bot at c_puct 4 next to a network pinned to 1.5 is the 4 config with
+    // the network pinned to 1.5.
+    const ArenaPlayer bot = ArenaPlayer::bot(16);
+    assert(sameResult(playMatch(withSearch(plainA, 1.5f, 0), withSearch(bot, 4.0f, 0), cfg, 29, 1, "naive"),
+                      playMatch(withSearch(plainA, 1.5f, 0), bot, cfg4, 29, 1, "naive")));
+    ArenaConfig cfg1 = cfg;
+    cfg1.mctsBatch = 1;
+    assert(sameResult(playMatch(withSearch(plainA, 0, 4), withSearch(bot, 0, 1), cfg, 29, 1, "naive"),
+                      playMatch(withSearch(plainA, 0, 4), bot, cfg1, 29, 1, "naive")));
+    assert(sameResult(playMatch(plainA, withSearch(bot, 4.0f, 1), cfg, 29, 1, "naive"),
+                      playMatch(plainA, withSearch(bot, 4.0f, 1), cfg, 29, 3, "naive")));
+}
+
 static void test_colors_balanced() {
     // With komi 100 on 5x5 (area score at most 25) White wins every game, so
     // A's score counts exactly the games in which A played White.
@@ -263,6 +332,16 @@ static void test_rejects_bad_players() {
     assert(playersThrow(ArenaPlayer::network(a, -1), ArenaPlayer::network(a)));   // override < 0
     assert(playersThrow(ArenaPlayer::network(a), ArenaPlayer::network(a, 100001)));
     assert(playersThrow(ArenaPlayer::network(a), ArenaPlayer::bot(100001)));
+    // c_puct and batch overrides: 0 inherits, otherwise the train config's
+    // ranges, c_puct in (0, 100] and mcts_batch in [1, 256].
+    const ArenaPlayer net = ArenaPlayer::network(a);
+    assert(!playersThrow(withSearch(net, 100.0f, 256), withSearch(ArenaPlayer::bot(8), 0.01f, 1)));
+    assert(playersThrow(withSearch(net, -1.0f, 0), net));
+    assert(playersThrow(net, withSearch(net, 100.5f, 0)));
+    assert(playersThrow(withSearch(net, std::nanf(""), 0), net));
+    assert(playersThrow(withSearch(net, 0, -1), net));
+    assert(playersThrow(net, withSearch(net, 0, 257)));
+    assert(playersThrow(net, withSearch(ArenaPlayer::bot(8), 0, 257)));
 }
 
 static void test_strongest_reference() {
@@ -347,6 +426,17 @@ static void test_rejects_bad_setup() {
     assert(throwsInvalid(a, a, cfg));
     cfg.games = 0;
     assert(throwsInvalid(a, a, cfg));
+    // The config's own c_puct and batch size: the train config's ranges.
+    cfg = tinyArena();
+    cfg.cPuct = 0.0f;
+    assert(throwsInvalid(a, a, cfg));
+    cfg.cPuct = 101.0f;
+    assert(throwsInvalid(a, a, cfg));
+    cfg = tinyArena();
+    cfg.mctsBatch = 0;
+    assert(throwsInvalid(a, a, cfg));
+    cfg.mctsBatch = 257;
+    assert(throwsInvalid(a, a, cfg));
 }
 
 int main() {
@@ -355,6 +445,7 @@ int main() {
     test_deterministic_across_workers_and_runs();
     test_random_symmetry_matches();
     test_one_sided_random_symmetry();
+    test_search_overrides();
     test_colors_balanced();
     test_opening_temperature_diversifies();
     test_rejects_bad_setup();

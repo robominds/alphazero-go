@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end smoke test of the executables on a tiny 5x5 run:
 # train -> resume -> re-rate (as live, then against a reference network) ->
-# arena (checkpoint, bot, random symmetry on both sides or one) -> analyze (good, random symmetry and
+# arena (checkpoint, bot, random symmetry, c_puct and MCTS batch, on both sides or one) -> analyze (good, random symmetry and
 # bad input) -> bench -> grow (deeper, wider, and a run started from the grown network), plus the refusal to change the architecture on resume,
 # then the ownership head: a run with it, grow --ownership, and analyze's ownership map,
 # and resignation: a run with it, and its refusal alongside the ownership head.
@@ -98,6 +98,24 @@ bot="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --a-random-symmetry --gam
     || fail "arena --a-random-symmetry against a bot differs from --random-symmetry"
 echo "$bot" | grep -qx 'Search: random symmetry per network evaluation, A only' || fail "arena against a bot did not say A only"
 
+echo "== arena: c_puct and MCTS batch, for both sides or one =="
+plain="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0003.azn" --games 4 --simulations 4 --workers 2)"
+if echo "$plain" | grep -q '^Search: c_puct'; then fail "arena with the default search settings printed a settings line"; fi
+# The defaults spelled out are the default match, line for line.
+same="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0003.azn" --c-puct 1.5 --mcts-batch 8 \
+    --a-c-puct 1.5 --b-mcts-batch 8 --games 4 --simulations 4 --workers 1)"
+[ "$same" = "$plain" ] || fail "arena with the default search settings spelled out differs: '$same' vs '$plain'"
+out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0003.azn" --a-c-puct 3 --b-mcts-batch 1 --games 4 --simulations 4 --workers 2)"
+echo "$out"
+echo "$out" | grep -q '^A .*(c_puct 3) vs B .*(mcts batch 1): A scored' || fail "arena did not name the one-sided settings"
+echo "$out" | grep -qx 'Search: c_puct A 3, B 1.5; mcts batch A 8, B 1' || fail "arena did not print the per-side settings"
+out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --c-puct 2 --mcts-batch 1 --games 4 --simulations 4 --workers 2)"
+echo "$out" | grep -qx 'Search: c_puct 2; mcts batch 1' || fail "arena did not print the shared settings"
+echo "$out" | grep -q '^A [^(]* vs B [^(]*: A scored' || fail "arena labelled a side for settings both share"
+# A bot searches with c_puct and a batch too, so B's settings reach it.
+out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --b-c-puct 3 --b-mcts-batch 1 --games 4 --simulations 4 --workers 2)"
+echo "$out" | grep -q 'vs B bot(8 simulations) (c_puct 3, mcts batch 1): A scored' || fail "arena did not name the bot's settings"
+
 # B is exactly one of a checkpoint and a bot, and a bot must search.
 expect_arena_error() {
     local want="$1"; shift
@@ -113,6 +131,13 @@ expect_arena_error "--b-bot must be in [1, 100000]" --b-bot 0
 expect_arena_error "--b-simulations applies to a checkpoint B" --b-bot 8 --b-simulations 16
 expect_arena_error "--b-simulations must be in [1, 100000]" --b "$CK/gen_0000.azn" --b-simulations 0
 expect_arena_error "--b-random-symmetry applies to a checkpoint B" --b-bot 8 --b-random-symmetry
+expect_arena_error "--c-puct must be in (0, 100]" --b-bot 8 --c-puct 0
+expect_arena_error "--a-c-puct must be in (0, 100]" --b-bot 8 --a-c-puct 101
+expect_arena_error "--b-c-puct must be in (0, 100]" --b-bot 8 --b-c-puct -1
+expect_arena_error "option --c-puct expects a number" --b-bot 8 --c-puct nan
+expect_arena_error "--mcts-batch must be in [1, 256]" --b-bot 8 --mcts-batch 0
+expect_arena_error "--a-mcts-batch must be in [1, 256]" --b-bot 8 --a-mcts-batch 257
+expect_arena_error "--b-mcts-batch must be in [1, 256]" --b "$CK/gen_0000.azn" --b-mcts-batch 0
 
 echo "== analyze: a legal position =="
 out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --simulations 16)"

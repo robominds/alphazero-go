@@ -7,6 +7,8 @@
 //   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0020.azn --b-simulations 3200
 //   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0020.azn --random-symmetry
 //   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0040.azn --a-random-symmetry
+//   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0040.azn --a-c-puct 3
+//   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0040.azn --a-mcts-batch 1
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -29,7 +31,8 @@ const char* const kUsage =
     "usage: arena --a CKPT (--b CKPT | --b-bot SIMS) [--games 40] [--simulations 200]\n"
     "             [--a-simulations N] [--b-simulations N] [--komi 7.5] [--temperature-moves 4]\n"
     "             [--workers 0] [--backend naive] [--seed 1] [--random-symmetry]\n"
-    "             [--a-random-symmetry] [--b-random-symmetry]\n"
+    "             [--a-random-symmetry] [--b-random-symmetry] [--c-puct 1.5] [--mcts-batch 8]\n"
+    "             [--a-c-puct X] [--b-c-puct X] [--a-mcts-batch N] [--b-mcts-batch N]\n"
     "\n"
     "Colors alternate: A plays Black in even-numbered games. --workers 0 uses every core.\n"
     "--b-bot SIMS makes B a uniform bot: MCTS with equal priors and value 0, searching\n"
@@ -41,11 +44,47 @@ const char* const kUsage =
     "one of the 8 board symmetries, as AlphaGo Zero did (a bot is unaffected).\n"
     "--a-random-symmetry and --b-random-symmetry do so for one side only, so a checkpoint can\n"
     "play itself with symmetry on one side to measure what it is worth. A bot gains nothing\n"
-    "from it, so --b-bot and --b-random-symmetry cannot be combined.\n";
+    "from it, so --b-bot and --b-random-symmetry cannot be combined.\n"
+    "--c-puct (0, 100] and --mcts-batch ([1, 256], the descents per network call, kept apart by\n"
+    "virtual loss) set both sides' search; --a-c-puct, --b-c-puct, --a-mcts-batch and\n"
+    "--b-mcts-batch set one side's, so a checkpoint can play itself with one search setting\n"
+    "changed on one side. A bot searches with both, so B's apply to --b-bot too.\n";
 
 int usageError(const std::string& message) {
     std::fprintf(stderr, "error: %s\n\n%s", message.c_str(), kUsage);
     return 1;
+}
+
+std::string formatNumber(double x) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%g", x);
+    return buf;
+}
+
+// --NAME as a c_puct, in the train config's range (0, 100]; `def` if absent.
+float cPuctOption(const ArgParser& args, const std::string& name, float def) {
+    if (!args.has(name)) return def;
+    const double x = args.getDouble(name, def);
+    if (!(x > 0.0 && x <= 100.0)) throw std::invalid_argument("--" + name + " must be in (0, 100]");
+    return static_cast<float>(x);
+}
+
+// --NAME as an MCTS batch size, in the train config's range [1, 256]; `def` if absent.
+int mctsBatchOption(const ArgParser& args, const std::string& name, int def) {
+    if (!args.has(name)) return def;
+    const int b = args.getInt(name, def);
+    if (b < 1 || b > 256) throw std::invalid_argument("--" + name + " must be in [1, 256]");
+    return b;
+}
+
+// "Search: c_puct 2; mcts batch A 8, B 1": each setting once if the sides
+// share it, per side otherwise.
+std::string searchLine(float cPuctA, float cPuctB, int batchA, int batchB) {
+    auto setting = [](const std::string& name, const std::string& a, const std::string& b) {
+        return a == b ? name + " " + a : name + " A " + a + ", B " + b;
+    };
+    return "Search: " + setting("c_puct", formatNumber(cPuctA), formatNumber(cPuctB)) + "; " +
+           setting("mcts batch", std::to_string(batchA), std::to_string(batchB));
 }
 
 } // namespace
@@ -56,7 +95,8 @@ int main(int argc, char** argv) {
         args = std::make_unique<ArgParser>(
             argc, argv,
             std::vector<std::string>{"a", "b", "b-bot", "games", "simulations", "a-simulations",
-                                     "b-simulations", "komi",
+                                     "b-simulations", "komi", "c-puct", "mcts-batch",
+                                     "a-c-puct", "b-c-puct", "a-mcts-batch", "b-mcts-batch",
                                      "temperature-moves", "workers", "backend", "seed"},
             std::vector<std::string>{"help", "random-symmetry", "a-random-symmetry",
                                      "b-random-symmetry"});
@@ -78,6 +118,13 @@ int main(int argc, char** argv) {
         cfg.komi = static_cast<float>(args->getDouble("komi", 7.5));
         cfg.temperatureMoves = args->getInt("temperature-moves", 4);
         cfg.randomSymmetry = args->flag("random-symmetry");
+        cfg.cPuct = cPuctOption(*args, "c-puct", cfg.cPuct);
+        cfg.mctsBatch = mctsBatchOption(*args, "mcts-batch", cfg.mctsBatch);
+        // Each side's c_puct and batch: its own option, else the shared one.
+        const float cPuctA = cPuctOption(*args, "a-c-puct", cfg.cPuct);
+        const float cPuctB = cPuctOption(*args, "b-c-puct", cfg.cPuct);
+        const int batchA = mctsBatchOption(*args, "a-mcts-batch", cfg.mctsBatch);
+        const int batchB = mctsBatchOption(*args, "b-mcts-batch", cfg.mctsBatch);
         const int workers = args->getInt("workers", 0);
         const int seed = args->getInt("seed", 1);
         const std::string backend = args->get("backend", "naive");
@@ -114,17 +161,35 @@ int main(int argc, char** argv) {
             b = std::make_unique<azgo::Network>(azgo::loadNetwork(nameB));
             playerB = azgo::ArenaPlayer::network(*b, simsB, args->flag("b-random-symmetry"));
         }
-        // Name each side's search budget when it differs from --simulations.
-        auto budget = [&](int override_) {
-            return override_ > 0 && override_ != cfg.simulations
-                       ? " (" + std::to_string(override_) + " simulations)" : std::string();
+        azgo::ArenaPlayer playerA = azgo::ArenaPlayer::network(a, simsA, args->flag("a-random-symmetry"));
+        playerA.cPuct = cPuctA;
+        playerA.mctsBatch = batchA;
+        playerB.cPuct = cPuctB;
+        playerB.mctsBatch = batchB;
+        // Name each side's search settings where they differ from the shared
+        // ones (--simulations, --c-puct, --mcts-batch).
+        auto settings = [&](int sims, float cPuct, int batch) {
+            std::string parts;
+            auto add = [&](const std::string& part) { parts += (parts.empty() ? "" : ", ") + part; };
+            if (sims > 0 && sims != cfg.simulations) add(std::to_string(sims) + " simulations");
+            if (cPuct != cfg.cPuct) add("c_puct " + formatNumber(cPuct));
+            if (batch != cfg.mctsBatch) add("mcts batch " + std::to_string(batch));
+            return parts.empty() ? parts : " (" + parts + ")";
         };
-        const std::string labelA = pathA + budget(simsA);
-        if (args->has("b")) nameB += budget(simsB);
+        const std::string labelA = pathA + settings(simsA, cPuctA, batchA);
+        nameB += settings(args->has("b") ? simsB : 0, cPuctB, batchB);
+        // Settings other than the defaults (1.5 and 8) are named before the
+        // match starts, so a long run's output says what it is measuring.
+        const azgo::ArenaConfig defaults;
+        if (cPuctA != defaults.cPuct || cPuctB != defaults.cPuct || batchA != defaults.mctsBatch ||
+            batchB != defaults.mctsBatch) {
+            std::printf("%s\n", searchLine(cPuctA, cPuctB, batchA, batchB).c_str());
+            std::fflush(stdout);
+        }
 
         const azgo::MatchResult r =
-            azgo::playMatch(azgo::ArenaPlayer::network(a, simsA, args->flag("a-random-symmetry")), playerB,
-                            cfg, static_cast<uint64_t>(seed), azgo::resolveWorkers(workers), backend);
+            azgo::playMatch(playerA, playerB, cfg, static_cast<uint64_t>(seed),
+                            azgo::resolveWorkers(workers), backend);
         const std::pair<double, double> ci = azgo::wilsonInterval(r.scoreA, r.games);
         std::printf("A %s vs B %s: A scored %g/%d = %.3f (95%% CI %.3f-%.3f), distinct games %d\n",
                     labelA.c_str(), nameB.c_str(), r.scoreA, r.games, r.scoreA / r.games,

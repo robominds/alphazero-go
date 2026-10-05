@@ -131,7 +131,13 @@ score with a 95% Wilson interval
 searching more (`--b ckpt --b-simulations 3200`). `--random-symmetry`
 searches with AlphaGo Zero's random symmetries (see Random symmetry in
 search below); `--a-random-symmetry` or `--b-random-symmetry` does so for
-one side only (not for a `--b-bot`, which gains nothing from it):
+one side only (not for a `--b-bot`, which gains nothing from it).
+`--c-puct X` (default 1.5) and `--mcts-batch N` (default 8) set both
+sides' search, and `--a-c-puct`, `--b-c-puct`, `--a-mcts-batch` and
+`--b-mcts-batch` set one side's (see Tuning search settings in the arena
+below); a side's label names any setting it does not share, and a
+`Search:` line, printed before the match starts, gives both sides'
+values whenever one differs from the defaults:
 
 ```
 $ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0150.azn --b runs/9x9-main/checkpoints/gen_0000.azn --games 100 --simulations 200 --komi 7.5 --backend blas
@@ -338,6 +344,32 @@ effect of the search change alone:
 ```
 $ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0150.azn --b runs/9x9-main/checkpoints/gen_0150.azn --a-random-symmetry --games 200 --simulations 200 --backend blas
 ```
+
+### Tuning search settings in the arena
+
+The same one-sided match tunes the search's other settings without a
+training run: `c_puct`, the weight of the prior in PUCT, and `mcts_batch`,
+the descents gathered into one network call. AlphaGo Zero evaluated
+leaves in mini-batches of 8 (Silver et al. 2017, Methods, "Expand and
+evaluate"), and here the batch changes the search, not just its speed:
+each descent in a batch counts as a loss on its path (virtual loss)
+until its leaf is evaluated, so the others spread out instead of
+following it. A batch of 1 is plain sequential PUCT. Change one setting
+on one side and play the checkpoint against itself; A's score away from
+0.5 is that setting's effect at this checkpoint and budget:
+
+```
+$ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0250.azn --b runs/9x9-main/checkpoints/gen_0250.azn --a-c-puct 3 --games 400 --simulations 200 --backend blas
+Search: c_puct A 3, B 1.5; mcts batch 8
+$ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0250.azn --b runs/9x9-main/checkpoints/gen_0250.azn --a-mcts-batch 1 --games 400 --simulations 200 --backend blas
+Search: c_puct 1.5; mcts batch A 1, B 8
+```
+
+The options take the train config's ranges, `c_puct` in (0, 100] and
+`mcts_batch` in 1..256. A `--b-bot` searches with both too, so `--b-c-puct`
+and `--b-mcts-batch` apply to it. A setting found this way makes the
+arena's search stronger; whether self-play with it (the config keys
+`c_puct` and `mcts_batch`) trains a stronger network takes a run.
 
 ### Resignation
 

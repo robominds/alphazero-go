@@ -1976,7 +1976,7 @@ GameOutcome playArenaGame(WorkerContext& ctx, const ArenaConfig& cfg, int n, uin
     return {matchScore(game.resultForBlack(), aIsBlack), game.moves()};
 }
 ```
-*src/arena.cpp:51 — `playArenaGame` (abridged)*
+*src/arena.cpp:52 — `playArenaGame` (abridged)*
 
 **Opening diversity.** Without noise, search is deterministic up to
 random tie-breaks, and two fixed networks would replay nearly the same
@@ -2035,7 +2035,7 @@ std::vector<int> selectOpponents(int generation, const std::map<int, double>& ra
     return out;
 }
 ```
-*src/arena.cpp:163 — `selectOpponents` (abridged)*
+*src/arena.cpp:185 — `selectOpponents` (abridged)*
 
 The candidates are the **references**: a frozen set of players that
 starts as generation 0 plus the fixed players, and only grows.
@@ -2648,8 +2648,8 @@ see again in place.
 | Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:112`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:100` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:19` |
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:100` |
-| Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:51, 89` |
-| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:163, 191` |
+| Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:52, 107` |
+| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:185, 213` |
 | Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:23, 40` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |

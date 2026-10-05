@@ -43,10 +43,17 @@ struct MatchResult {
 // randomSymmetry turns on MctsConfig::randomSymmetry for this network player
 // alone (ArenaConfig::randomSymmetry turns it on for both), so a network can
 // play itself with the search change on one side only. A bot ignores it.
+// cPuct and mctsBatch replace ArenaConfig::cPuct and ::mctsBatch for this
+// player alone (0 = the config's), so a network can play itself with one of
+// AlphaGo Zero's search settings changed on one side. The batch size changes
+// the search itself, not just its speed: the descents of a batch steer around
+// each other by virtual loss. A bot searches with both, so they apply to it.
 struct ArenaPlayer {
     const Network* net = nullptr;
     int simulations = 0;   // network: 0 = ArenaConfig::simulations; bot: required, >= 1
     bool randomSymmetry = false;
+    float cPuct = 0;       // 0 = ArenaConfig::cPuct; otherwise (0, 100]
+    int mctsBatch = 0;     // 0 = ArenaConfig::mctsBatch; otherwise 1..256
     static ArenaPlayer network(const Network& n, int simulations = 0, bool randomSymmetry = false) {
         return {&n, simulations, randomSymmetry};
     }
@@ -57,7 +64,9 @@ struct ArenaPlayer {
 // tree reuse on. Board size and history come from whichever player has a
 // network. Throws std::invalid_argument for two bots, two networks with
 // different NetConfigs, a bot with simulations < 1, a simulations override
-// outside 0..100000 (bots: 1..100000), or an odd or < 2 game count. Bots are capped at 100000
+// outside 0..100000 (bots: 1..100000), a c_puct outside (0, 100] or an MCTS
+// batch outside 1..256 (the train config's ranges; for an override, 0 is
+// also allowed), or an odd or < 2 game count. Bots are capped at 100000
 // simulations here too. Game i uses Rng(deriveSeed(seed, i)). Deterministic
 // for a seed.
 MatchResult playMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& cfg,

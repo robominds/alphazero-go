@@ -17,23 +17,24 @@ namespace azgo {
 namespace {
 
 // One player's per-thread resources and search settings. A network gets its
-// own backend and workspace; a bot needs only a UniformEvaluator.
+// own backend and workspace; a bot needs only a UniformEvaluator. A player's
+// c_puct and batch overrides (0 = the config's) apply to either kind.
 struct Seat {
     std::unique_ptr<Backend> backend;
     std::unique_ptr<Evaluator> evaluator;
     MctsConfig mcts;
     Seat(const ArenaPlayer& player, const NetConfig& shape, const ArenaConfig& cfg,
          const std::string& backendName) {
-        mcts.batchSize = cfg.mctsBatch;
-        mcts.cPuct = cfg.cPuct;
+        mcts.batchSize = player.mctsBatch > 0 ? player.mctsBatch : cfg.mctsBatch;
+        mcts.cPuct = player.cPuct > 0 ? player.cPuct : cfg.cPuct;
         mcts.addNoise = false;   // measuring strength, not exploring
         if (player.net) {
             backend = makeBackend(backendName, 1);
-            evaluator.reset(new LocalEvaluator(*player.net, *backend, cfg.mctsBatch));
+            evaluator.reset(new LocalEvaluator(*player.net, *backend, mcts.batchSize));
             mcts.simulations = player.simulations > 0 ? player.simulations : cfg.simulations;
             mcts.randomSymmetry = cfg.randomSymmetry || player.randomSymmetry;   // a bot gains nothing
         } else {
-            evaluator.reset(new UniformEvaluator(shape.boardSize, shape.history, 0.0f, cfg.mctsBatch));
+            evaluator.reset(new UniformEvaluator(shape.boardSize, shape.history, 0.0f, mcts.batchSize));
             mcts.simulations = player.simulations;
         }
     }
@@ -83,6 +84,23 @@ double expectedScore(double rating, double opponent) {
 }
 
 constexpr int kMaxSimulations = 100000;   // the same bound as the arena app's --b-bot
+// The train config's ranges for c_puct and mcts_batch (src/config.cpp).
+constexpr float kMaxCPuct = 100.0f;
+constexpr int kMaxMctsBatch = 256;
+
+// "" if c is a valid c_puct, (0, 100], or 0 when `inherit` allows it;
+// otherwise the reason. The negated test also refuses NaN.
+std::string checkCPuct(float c, bool inherit) {
+    if ((inherit && c == 0.0f) || (c > 0.0f && c <= kMaxCPuct)) return "";
+    return std::string("c_puct must be in (0, 100]") + (inherit ? " or 0" : "") + ", got " +
+           std::to_string(c);
+}
+
+std::string checkMctsBatch(int b, bool inherit) {
+    if ((inherit && b == 0) || (b >= 1 && b <= kMaxMctsBatch)) return "";
+    return std::string("mcts batch must be in [1, 256]") + (inherit ? " or 0" : "") + ", got " +
+           std::to_string(b);
+}
 
 } // namespace
 
@@ -102,7 +120,11 @@ MatchResult playMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaCon
             throw std::invalid_argument(who + " simulations must be in [0, " +
                                         std::to_string(kMaxSimulations) + "], got " +
                                         std::to_string(p->simulations));
+        for (const std::string& reason : {checkCPuct(p->cPuct, true), checkMctsBatch(p->mctsBatch, true)})
+            if (!reason.empty()) throw std::invalid_argument(who + " " + reason);
     }
+    for (const std::string& reason : {checkCPuct(cfg.cPuct, false), checkMctsBatch(cfg.mctsBatch, false)})
+        if (!reason.empty()) throw std::invalid_argument("playMatch: config " + reason);
     if (cfg.games < 2 || cfg.games % 2 != 0)
         throw std::invalid_argument("playMatch: games must be even and >= 2, got " +
                                     std::to_string(cfg.games));
