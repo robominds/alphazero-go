@@ -1,0 +1,6 @@
+start Mon Oct  5 01:16:47 PDT 2026
+cpuct1: A runs/9x9-main/checkpoints/gen_0250.azn (c_puct 1) vs B runs/9x9-main/checkpoints/gen_0250.azn: A scored 212/400 = 0.530 (95% CI 0.481-0.578), distinct games 400
+cpuct2: A runs/9x9-main/checkpoints/gen_0250.azn (c_puct 2) vs B runs/9x9-main/checkpoints/gen_0250.azn: A scored 174/400 = 0.435 (95% CI 0.387-0.484), distinct games 400
+cpuct3: A runs/9x9-main/checkpoints/gen_0250.azn (c_puct 3) vs B runs/9x9-main/checkpoints/gen_0250.azn: A scored 143/400 = 0.357 (95% CI 0.312-0.406), distinct games 400
+batch1: A runs/9x9-main/checkpoints/gen_0250.azn (mcts batch 1) vs B runs/9x9-main/checkpoints/gen_0250.azn: A scored 217/400 = 0.542 (95% CI 0.494-0.591), distinct games 400
+all done Mon Oct  5 02:33:50 PDT 2026

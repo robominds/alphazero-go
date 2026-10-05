@@ -546,6 +546,15 @@ From `docs/results/README.md`, which has the details and the sources.
   behind the control at generation 25 (36/100, interval 0.273–0.458) and
   level with it at 50 (49/100): no measurable gain at 100-game resolution
   (see [the section](docs/results/README.md#a-learning-rate-restart-002-to-0002)).
+- **9×9, arena screens of AlphaGo Zero search settings.** Generation 250
+  against itself, 400 games, one setting changed on one side. Random
+  symmetry in search scored 0.557 at 200 simulations (interval
+  0.509–0.605, about +40 Elo) and 0.585 at 800 (+60): stronger play,
+  not yet shown to train better (a self-play run is in progress).
+  `c_puct` 0.75 to 1.25 was within noise of the preset 1.5, while 2.0
+  and 3.0 were clearly worse; a batch of 1 against 8 was +30 Elo, not
+  significant, so the presets' `c_puct` and batch stay (see
+  [the section](docs/results/README.md#arena-screens-of-alphago-zero-search-settings)).
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is

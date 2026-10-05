@@ -1,0 +1,3 @@
+Search: random symmetry per network evaluation; c_puct A 1.25, B 1.5; mcts batch 8
+A runs/9x9-main/checkpoints/gen_0250.azn (c_puct 1.25) vs B runs/9x9-main/checkpoints/gen_0250.azn: A scored 198/400 = 0.495 (95% CI 0.446-0.544), distinct games 400
+A wins 198, B wins 202, draws 0

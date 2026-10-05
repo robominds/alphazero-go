@@ -1011,6 +1011,93 @@ might differ, and a gain under about 70 Elo would not show in a 100-game
 match. Nor is it a test of more learning: it took the same 10,000 SGD
 steps as the control (see the correction in the games section above).
 
+### Arena screens of AlphaGo Zero search settings
+
+Two cheap screens from the [Next experiments](#next-experiments) list
+(items 2 and 6), made with arena games only and no training: AlphaGo
+Zero's random symmetry in search, and its search settings `c_puct` and
+`mcts_batch`. The result: random symmetry makes the search clearly
+stronger at play time (about +40 Elo at 200 simulations, +60 at 800);
+the preset `c_puct = 1.5` and `mcts_batch = 8` are as good as anything
+tried, so they stay.
+
+- *Method.* Generation 250 of `9x9-main` (6×64) plays itself, 400 games,
+  komi 7.5, colors alternating, with one setting changed on side A only
+  (arena's one-sided flags; see "Random symmetry in search" and "Tuning
+  search settings in the arena" in the main README). Both sides have the
+  same network and budget, so A's score away from 0.5 is the effect of
+  that setting alone, at this network and budget. Elo is
+  400·log10(p/(1−p)), approximate; intervals are the 95% Wilson
+  intervals `arena` prints. At 400 games an even match's interval is
+  about ±35 Elo.
+- *Symmetry screen* (`sym-screen.sh`): `--a-random-symmetry` at 200 and
+  at 800 simulations, with arena's default opening temperature
+  (`--temperature-moves 4`). Random symmetry changes the evaluations, not
+  PUCT's exploration rule, so the opening sampling should penalise it far
+  less than it does the settings below (main README).
+- *Tuning screen* (`tune-screen.sh`, then `tune-screen2.sh` for the
+  points around 1.5): `--a-c-puct` or `--a-mcts-batch 1` at 200
+  simulations, with `--temperature-moves 0` and `--random-symmetry` on
+  both sides. Opening temperature samples the first plies from each
+  side's visit counts, and a setting that spreads those counts would be
+  penalised for sampling worse moves rather than for searching worse; at
+  temperature 0 each side plays its most-visited move and the symmetries
+  keep the games apart. Every match had 400 distinct games. Side B keeps
+  the presets' `c_puct = 1.5` and `mcts_batch = 8`.
+- *Sources.* `docs/results/9x9-arena-screens/`: the three scripts and
+  their logs, `sym-screen/*.txt` and `tune-screen/*.txt` (each `arena`'s
+  output, with its `Search:` line). The scripts ran binaries copied from
+  builds of main (`runs/bin-sym`, `runs/bin-tune`; the latter at commit
+  d2e7047); the `cd` to the absolute checkout path is made `cd .`.
+
+| side A (B: 1.5, batch 8, same network) | file | A's score | 95% interval | Elo (interval) |
+|---|---|---|---|---|
+| random symmetry, 200 sims | `sym-screen/g250-symA-vs-g250.txt` | 223/400 = 0.557 | 0.509-0.605 | +40 (+6 to +74) |
+| random symmetry, 800 sims | `sym-screen/g250-symA-vs-g250-s800.txt` | 234/400 = 0.585 | 0.536-0.632 | +60 (+25 to +94) |
+| `c_puct` 0.75 | `tune-screen/cpuct0.75.txt` | 193/400 = 0.482 | 0.434-0.531 | −12 (−46 to +22) |
+| `c_puct` 1.0 | `tune-screen/cpuct1.txt` | 212/400 = 0.530 | 0.481-0.578 | +21 (−13 to +55) |
+| `c_puct` 1.25 | `tune-screen/cpuct1.25.txt` | 198/400 = 0.495 | 0.446-0.544 | −3 (−38 to +31) |
+| `c_puct` 1.5 (the preset) | — | 0.5 by construction | | 0 |
+| `c_puct` 2.0 | `tune-screen/cpuct2.txt` | 174/400 = 0.435 | 0.387-0.484 | −45 (−80 to −11) |
+| `c_puct` 3.0 | `tune-screen/cpuct3.txt` | 143/400 = 0.357 | 0.312-0.406 | −102 (−137 to −66) |
+| `mcts_batch` 1 | `tune-screen/batch1.txt` | 217/400 = 0.542 | 0.494-0.591 | +30 (−4 to +64) |
+
+(No draws in any match. The symmetry rows used opening temperature 4;
+the rest temperature 0 with symmetry on both sides.)
+
+Reading it, honestly:
+
+- **Random symmetry: a real gain in play strength.** Both intervals
+  exclude 0.5. Each evaluation sees the position in a random one of its
+  8 orientations, so the network's orientation-specific errors average
+  out over the tree instead of repeating at every visit. The gain at 800
+  simulations (+60) is larger than at 200 (+40), but the intervals
+  overlap, so this does not show that it grows with the budget. This is
+  search strength at play time; it is **not yet evidence that it helps
+  training**. That is the self-play arm, running as `runs/9x9-sym`: the
+  `sims200` control's start, seed and settings plus
+  `mcts_random_symmetry = true`, evaluated with 400-game matches.
+- **`c_puct`: flat from 0.75 to 1.5, worse above.** 0.75, 1.0 and 1.25
+  are all within about 20 Elo of the preset, and every interval includes
+  0.5; 2.0 (−45) and 3.0 (−102) are clearly worse. The preset 1.5 is at
+  or near the best for this network at 200 simulations, and no change is
+  recommended.
+- **`mcts_batch` 1 against 8: no significant difference.** A sequential
+  search scored +30 Elo, with an interval that includes 0.5. Virtual-loss
+  batches of 8, AlphaGo Zero's mini-batch size, cost little or nothing
+  measurable at 400 games while making 8 times fewer network calls (on
+  this CPU backend a batch of 8 evaluates about 1.3 times as many
+  positions per second as a batch of 1; `bench.txt`).
+
+What this does not show: one network (generation 250), one simulation
+count for the tuning, and matches against itself, which measure how
+well a setting plays, not what it does to training. Settings that
+search better at play time need not train a better network, and a
+smaller effect than about ±35 Elo would not show at 400 games. Six
+tuning matches were run, so one interval excluding 0.5 by chance would
+not be surprising; the two that do (2.0 and 3.0) agree with each other
+in direction and size.
+
 ### 19×19: criterion met (it runs)
 
 The criterion is that both generations complete, the losses are finite
@@ -1094,11 +1181,11 @@ matches (`runs/agz-experiment.sh`, not in the repository).
 | # | experiment (AlphaGo Zero) | why | status |
 |---|---|---|---|
 | 1 | Resignation: `v_resign` set so that wrong resignations stay under 5%, with 10% of games played out with resignation off | finding 2; the review estimates it saves about 30% of self-play time | merged (`resignation`; state.bin version 5); running as `runs/9x9-resign`: the `sims200` control's start and settings plus `resignation = true`, 400-game evaluations |
-| 2 | A random symmetry for each network evaluation in search | AGZ's search; screen with arena games only | merged (`mcts_random_symmetry`, `arena_random_symmetry`, and arena's one-sided `--a-random-symmetry` / `--b-random-symmetry`; see "Random symmetry in search" in the main README); screening: generation 250 against itself with symmetry on side A only, 400 games at 200 and at 800 simulations (`runs/sym-screen.sh`) |
+| 2 | A random symmetry for each network evaluation in search | AGZ's search; screen with arena games only | merged (`mcts_random_symmetry`, `arena_random_symmetry`, and arena's one-sided `--a-random-symmetry` / `--b-random-symmetry`; see "Random symmetry in search" in the main README); screened: generation 250 against itself with symmetry on side A only, 400 games, scored 0.557 at 200 simulations and 0.585 at 800 (about +40 and +60 Elo, both intervals exclude 0.5) at play time; see [Arena screens](#arena-screens-of-alphago-zero-search-settings). Self-play arm running as `runs/9x9-sym` (the `sims200` control plus `mcts_random_symmetry = true`) |
 | 3 | `temperature_moves = 7`: AGZ's 30 moves of 361 points is about 8%, about 7 moves on 9×9 (the preset uses 20) | config only | running (`runs/9x9-temp7`) |
 | 4 | Learning budget: more `train_steps`, or steps scaled with games so the replay ratio stays constant | finding 3 | 200 games and 400 steps per generation (`runs/9x9-budget-g200-s400`) queued after `temp7` |
 | 5 | More simulations (AGZ used 1,600) | only after the evaluation additions below, since the gain will be small for its cost | not started |
-| 6 | Arena-only tuning of `c_puct`, and `mcts_batch` 1 against 8 (AGZ evaluated leaves in batches of 8): generation 250 against itself, 400 games per setting | cheap: arena games only, no training | not started |
+| 6 | Arena-only tuning of `c_puct`, and `mcts_batch` 1 against 8 (AGZ evaluated leaves in batches of 8): generation 250 against itself, 400 games per setting | cheap: arena games only, no training | done, no change: `c_puct` 0.75 to 1.25 within noise of the preset 1.5, 2.0 and 3.0 clearly worse (−45, −102 Elo); batch 1 +30 Elo, not significant; see [Arena screens](#arena-screens-of-alphago-zero-search-settings) |
 | 7 | AGZ gating (`gating = true`, 55% over 400 games) | expensive; only if regressions appear | not started |
 | 8 | `value_hidden = 256`, as in AGZ | architecture change, low priority | not started |
 

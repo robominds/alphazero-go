@@ -1,0 +1,4 @@
+start Sun Oct  4 23:39:53 PDT 2026
+symA: A runs/9x9-main/checkpoints/gen_0250.azn vs B runs/9x9-main/checkpoints/gen_0250.azn: A scored 223/400 = 0.557 (95% CI 0.509-0.605), distinct games 400
+symA s800: A runs/9x9-main/checkpoints/gen_0250.azn vs B runs/9x9-main/checkpoints/gen_0250.azn: A scored 234/400 = 0.585 (95% CI 0.536-0.632), distinct games 400
+all done Mon Oct  5 01:16:43 PDT 2026

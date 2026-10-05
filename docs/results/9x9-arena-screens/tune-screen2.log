@@ -1,0 +1,4 @@
+start Mon Oct  5 02:34:48 PDT 2026
+cpuct0.75: A runs/9x9-main/checkpoints/gen_0250.azn (c_puct 0.75) vs B runs/9x9-main/checkpoints/gen_0250.azn: A scored 193/400 = 0.482 (95% CI 0.434-0.531), distinct games 400
+cpuct1.25: A runs/9x9-main/checkpoints/gen_0250.azn (c_puct 1.25) vs B runs/9x9-main/checkpoints/gen_0250.azn: A scored 198/400 = 0.495 (95% CI 0.446-0.544), distinct games 400
+all done Mon Oct  5 03:26:42 PDT 2026
