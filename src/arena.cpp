@@ -17,25 +17,20 @@ namespace azgo {
 namespace {
 
 // One player's per-thread resources and search settings. A network gets its
-// own backend and workspace; a bot needs only a UniformEvaluator. A player's
-// c_puct and batch overrides (0 = the config's) apply to either kind.
+// own backend and workspace; a bot needs only a UniformEvaluator. Both are
+// sized for the player's own batch.
 struct Seat {
     std::unique_ptr<Backend> backend;
     std::unique_ptr<Evaluator> evaluator;
     MctsConfig mcts;
     Seat(const ArenaPlayer& player, const NetConfig& shape, const ArenaConfig& cfg,
-         const std::string& backendName) {
-        mcts.batchSize = player.mctsBatch > 0 ? player.mctsBatch : cfg.mctsBatch;
-        mcts.cPuct = player.cPuct > 0 ? player.cPuct : cfg.cPuct;
-        mcts.addNoise = false;   // measuring strength, not exploring
+         const std::string& backendName)
+        : mcts(arenaSearchConfig(player, cfg)) {
         if (player.net) {
             backend = makeBackend(backendName, 1);
             evaluator.reset(new LocalEvaluator(*player.net, *backend, mcts.batchSize));
-            mcts.simulations = player.simulations > 0 ? player.simulations : cfg.simulations;
-            mcts.randomSymmetry = cfg.randomSymmetry || player.randomSymmetry;   // a bot gains nothing
         } else {
             evaluator.reset(new UniformEvaluator(shape.boardSize, shape.history, 0.0f, mcts.batchSize));
-            mcts.simulations = player.simulations;
         }
     }
 };
@@ -103,6 +98,21 @@ std::string checkMctsBatch(int b, bool inherit) {
 }
 
 } // namespace
+
+MctsConfig arenaSearchConfig(const ArenaPlayer& player, const ArenaConfig& cfg) {
+    MctsConfig mcts;
+    mcts.batchSize = player.mctsBatch > 0 ? player.mctsBatch : cfg.mctsBatch;
+    mcts.cPuct = player.cPuct > 0 ? player.cPuct : cfg.cPuct;
+    mcts.addNoise = false;   // measuring strength, not exploring
+    if (player.net) {
+        mcts.simulations = player.simulations > 0 ? player.simulations : cfg.simulations;
+        mcts.randomSymmetry = cfg.randomSymmetry || player.randomSymmetry;
+    } else {
+        mcts.simulations = player.simulations;   // a bot's own count
+        mcts.randomSymmetry = false;             // equal priors gain nothing from it
+    }
+    return mcts;
+}
 
 MatchResult playMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& cfg,
                       uint64_t seed, int workers, const std::string& backendName) {

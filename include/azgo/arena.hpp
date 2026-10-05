@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include "azgo/mcts.hpp"
 #include "azgo/network.hpp"
 
 namespace azgo {
@@ -59,6 +60,13 @@ struct ArenaPlayer {
     }
     static ArenaPlayer bot(int simulations) { return {nullptr, simulations}; }
 };
+
+// The search a player's seat runs: the player's overrides where set, else
+// cfg's, and never root noise (the arena measures strength, not exploring).
+// batchSize is also the seat's evaluator batch. A bot's simulations are its
+// own and it never searches with random symmetry. No validation: playMatch
+// checks the player and the config first.
+MctsConfig arenaSearchConfig(const ArenaPlayer& player, const ArenaConfig& cfg);
 
 // Plays cfg.games games between a and b on `workers` threads, no root noise,
 // tree reuse on. Board size and history come from whichever player has a

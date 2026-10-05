@@ -153,6 +153,48 @@ static ArenaPlayer withSearch(ArenaPlayer p, float cPuct, int mctsBatch) {
     return p;
 }
 
+// The search each seat runs, player by player. A match's results cannot
+// tell which seat got which settings (swapping every setting between the
+// seats only relabels the players), so the mapping is checked here, on the
+// function the seats are built from.
+static void test_arena_search_config() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22);
+    ArenaConfig cfg = tinyArena();   // 8 simulations, c_puct 1.5, batch 4
+    cfg.cPuct = 2.5f;
+
+    // Nothing overridden: everything comes from the config, never noise.
+    const MctsConfig plain = arenaSearchConfig(ArenaPlayer::network(a), cfg);
+    assert(plain.simulations == 8 && plain.cPuct == 2.5f && plain.batchSize == 4);
+    assert(!plain.randomSymmetry && !plain.addNoise);
+
+    // Two players with different overrides, as A and B of one match: each
+    // gets its own, and an unset field still comes from the config.
+    ArenaPlayer playerA = withSearch(ArenaPlayer::network(a, 64, true), 3.0f, 0);
+    ArenaPlayer playerB = withSearch(ArenaPlayer::network(b), 0, 1);
+    const MctsConfig sa = arenaSearchConfig(playerA, cfg), sb = arenaSearchConfig(playerB, cfg);
+    assert(sa.simulations == 64 && sa.cPuct == 3.0f && sa.batchSize == 4 && sa.randomSymmetry);
+    assert(sb.simulations == 8 && sb.cPuct == 2.5f && sb.batchSize == 1 && !sb.randomSymmetry);
+    assert(!sa.addNoise && !sb.addNoise);
+    playerB.cPuct = 0.5f;
+    playerB.mctsBatch = 16;
+    assert(arenaSearchConfig(playerB, cfg).cPuct == 0.5f && arenaSearchConfig(playerB, cfg).batchSize == 16);
+    assert(arenaSearchConfig(playerA, cfg).cPuct == 3.0f && arenaSearchConfig(playerA, cfg).batchSize == 4);
+
+    // The config's random symmetry reaches every network player.
+    ArenaConfig sym = cfg;
+    sym.randomSymmetry = true;
+    assert(arenaSearchConfig(ArenaPlayer::network(b), sym).randomSymmetry);
+
+    // A bot: its own count, the overrides, and never random symmetry.
+    ArenaPlayer bot = withSearch(ArenaPlayer::bot(16), 4.0f, 2);
+    bot.randomSymmetry = true;
+    const MctsConfig sbot = arenaSearchConfig(bot, sym);
+    assert(sbot.simulations == 16 && sbot.cPuct == 4.0f && sbot.batchSize == 2);
+    assert(!sbot.randomSymmetry && !sbot.addNoise);
+    const MctsConfig plainBot = arenaSearchConfig(ArenaPlayer::bot(16), cfg);
+    assert(plainBot.cPuct == 2.5f && plainBot.batchSize == 4);
+}
+
 // Per-player c_puct and MCTS batch size (ArenaPlayer::cPuct and ::mctsBatch,
 // 0 = ArenaConfig's), so a network can play itself with one search setting
 // changed on one side. As with the other one-sided tests, these are fixed
@@ -445,6 +487,7 @@ int main() {
     test_deterministic_across_workers_and_runs();
     test_random_symmetry_matches();
     test_one_sided_random_symmetry();
+    test_arena_search_config();
     test_search_overrides();
     test_colors_balanced();
     test_opening_temperature_diversifies();

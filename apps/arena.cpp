@@ -62,11 +62,13 @@ std::string formatNumber(double x) {
 }
 
 // --NAME as a c_puct, in the train config's range (0, 100]; `def` if absent.
+// The range is checked on the float the search will use: 1e-50 rounds to 0,
+// which would otherwise slip through as "inherit".
 float cPuctOption(const ArgParser& args, const std::string& name, float def) {
     if (!args.has(name)) return def;
-    const double x = args.getDouble(name, def);
-    if (!(x > 0.0 && x <= 100.0)) throw std::invalid_argument("--" + name + " must be in (0, 100]");
-    return static_cast<float>(x);
+    const float c = static_cast<float>(args.getDouble(name, def));
+    if (!(c > 0.0f && c <= 100.0f)) throw std::invalid_argument("--" + name + " must be in (0, 100]");
+    return c;
 }
 
 // --NAME as an MCTS batch size, in the train config's range [1, 256]; `def` if absent.
@@ -77,14 +79,28 @@ int mctsBatchOption(const ArgParser& args, const std::string& name, int def) {
     return b;
 }
 
-// "Search: c_puct 2; mcts batch A 8, B 1": each setting once if the sides
-// share it, per side otherwise.
-std::string searchLine(float cPuctA, float cPuctB, int batchA, int batchB) {
-    auto setting = [](const std::string& name, const std::string& a, const std::string& b) {
-        return a == b ? name + " " + a : name + " A " + a + ", B " + b;
-    };
-    return "Search: " + setting("c_puct", formatNumber(cPuctA), formatNumber(cPuctB)) + "; " +
-           setting("mcts batch", std::to_string(batchA), std::to_string(batchB));
+// The one "Search:" line, from the searches the two seats will actually run,
+// or "" when every setting it covers is at its default:
+//   Search: random symmetry per network evaluation, A only; c_puct 2; mcts batch A 8, B 1
+// Random symmetry is named when either side has it; c_puct and the batch,
+// each once if the sides share it and per side otherwise, when either side
+// is off the defaults.
+std::string searchLine(const azgo::MctsConfig& a, const azgo::MctsConfig& b) {
+    std::string line;
+    auto add = [&](const std::string& part) { line += (line.empty() ? "Search: " : "; ") + part; };
+    if (a.randomSymmetry || b.randomSymmetry)
+        add(std::string("random symmetry per network evaluation") +
+            (a.randomSymmetry && b.randomSymmetry ? "" : a.randomSymmetry ? ", A only" : ", B only"));
+    const azgo::ArenaConfig defaults;
+    if (a.cPuct != defaults.cPuct || b.cPuct != defaults.cPuct || a.batchSize != defaults.mctsBatch ||
+        b.batchSize != defaults.mctsBatch) {
+        auto setting = [](const std::string& name, const std::string& x, const std::string& y) {
+            return x == y ? name + " " + x : name + " A " + x + ", B " + y;
+        };
+        add(setting("c_puct", formatNumber(a.cPuct), formatNumber(b.cPuct)));
+        add(setting("mcts batch", std::to_string(a.batchSize), std::to_string(b.batchSize)));
+    }
+    return line;
 }
 
 } // namespace
@@ -147,10 +163,6 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("--b-bot must be in [1, 100000]");
         if (args->has("b-bot") && args->flag("b-random-symmetry"))
             throw std::invalid_argument("--b-random-symmetry applies to a checkpoint B; a bot's equal priors gain nothing from it");
-        // Which sides search with random symmetry: --random-symmetry is both.
-        const bool symA = cfg.randomSymmetry || args->flag("a-random-symmetry");
-        const bool symB = args->has("b") && (cfg.randomSymmetry || args->flag("b-random-symmetry"));
-
         const std::string pathA = args->get("a");
         const azgo::Network a = azgo::loadNetwork(pathA);   // errors name the file
         std::unique_ptr<azgo::Network> b;
@@ -166,24 +178,28 @@ int main(int argc, char** argv) {
         playerA.mctsBatch = batchA;
         playerB.cPuct = cPuctB;
         playerB.mctsBatch = batchB;
-        // Name each side's search settings where they differ from the shared
-        // ones (--simulations, --c-puct, --mcts-batch).
-        auto settings = [&](int sims, float cPuct, int batch) {
+        // What each seat will search with, read back from the players
+        // themselves, so the labels and the Search: line record the match
+        // that is actually played.
+        const azgo::MctsConfig searchA = azgo::arenaSearchConfig(playerA, cfg);
+        const azgo::MctsConfig searchB = azgo::arenaSearchConfig(playerB, cfg);
+        // Name each side's settings where they differ from the shared ones
+        // (--simulations, --c-puct, --mcts-batch). A bot's name has its count.
+        auto settings = [&](const azgo::MctsConfig& m, bool bot) {
             std::string parts;
             auto add = [&](const std::string& part) { parts += (parts.empty() ? "" : ", ") + part; };
-            if (sims > 0 && sims != cfg.simulations) add(std::to_string(sims) + " simulations");
-            if (cPuct != cfg.cPuct) add("c_puct " + formatNumber(cPuct));
-            if (batch != cfg.mctsBatch) add("mcts batch " + std::to_string(batch));
+            if (!bot && m.simulations != cfg.simulations) add(std::to_string(m.simulations) + " simulations");
+            if (m.cPuct != cfg.cPuct) add("c_puct " + formatNumber(m.cPuct));
+            if (m.batchSize != cfg.mctsBatch) add("mcts batch " + std::to_string(m.batchSize));
             return parts.empty() ? parts : " (" + parts + ")";
         };
-        const std::string labelA = pathA + settings(simsA, cPuctA, batchA);
-        nameB += settings(args->has("b") ? simsB : 0, cPuctB, batchB);
-        // Settings other than the defaults (1.5 and 8) are named before the
-        // match starts, so a long run's output says what it is measuring.
-        const azgo::ArenaConfig defaults;
-        if (cPuctA != defaults.cPuct || cPuctB != defaults.cPuct || batchA != defaults.mctsBatch ||
-            batchB != defaults.mctsBatch) {
-            std::printf("%s\n", searchLine(cPuctA, cPuctB, batchA, batchB).c_str());
+        const std::string labelA = pathA + settings(searchA, false);
+        nameB += settings(searchB, !playerB.net);
+        // Printed before the match starts, so a long run's output says what
+        // it is measuring from the first line.
+        const std::string search = searchLine(searchA, searchB);
+        if (!search.empty()) {
+            std::printf("%s\n", search.c_str());
             std::fflush(stdout);
         }
 
@@ -195,9 +211,6 @@ int main(int argc, char** argv) {
                     labelA.c_str(), nameB.c_str(), r.scoreA, r.games, r.scoreA / r.games,
                     ci.first, ci.second, r.distinctGames);
         std::printf("A wins %d, B wins %d, draws %d\n", r.winsA, r.winsB, r.draws);
-        if (symA || symB)
-            std::printf("Search: random symmetry per network evaluation%s\n",
-                        symA && symB ? "" : symA ? ", A only" : ", B only");
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "error: %s\n", e.what());

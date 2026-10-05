@@ -135,9 +135,10 @@ one side only (not for a `--b-bot`, which gains nothing from it).
 `--c-puct X` (default 1.5) and `--mcts-batch N` (default 8) set both
 sides' search, and `--a-c-puct`, `--b-c-puct`, `--a-mcts-batch` and
 `--b-mcts-batch` set one side's (see Tuning search settings in the arena
-below); a side's label names any setting it does not share, and a
-`Search:` line, printed before the match starts, gives both sides'
-values whenever one differs from the defaults:
+below). A side's label names any setting it does not share, and one
+`Search:` line, printed before the match starts, names random symmetry
+when either side uses it and both sides' `c_puct` and batch whenever one
+differs from the defaults:
 
 ```
 $ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0150.azn --b runs/9x9-main/checkpoints/gen_0000.azn --games 100 --simulations 200 --komi 7.5 --backend blas
@@ -345,6 +346,11 @@ effect of the search change alone:
 $ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0150.azn --b runs/9x9-main/checkpoints/gen_0150.azn --a-random-symmetry --games 200 --simulations 200 --backend blas
 ```
 
+That example keeps the default `--temperature-moves 4`. Random symmetry
+changes the evaluations, not PUCT's exploration rule, so it should change
+how widely each side's opening plies are sampled far less than the
+settings below do.
+
 ### Tuning search settings in the arena
 
 The same one-sided match tunes the search's other settings without a
@@ -356,13 +362,25 @@ each descent in a batch counts as a loss on its path (virtual loss)
 until its leaf is evaluated, so the others spread out instead of
 following it. A batch of 1 is plain sequential PUCT. Change one setting
 on one side and play the checkpoint against itself; A's score away from
-0.5 is that setting's effect at this checkpoint and budget:
+0.5 is that setting's effect at this checkpoint and budget.
+
+Turn the opening temperature off for these matches. With
+`--temperature-moves` above 0 the first plies are sampled from each
+side's own visit counts, and the settings under test change how spread
+out those counts are: a higher `c_puct`, or a batch of 8 whose virtual
+loss pushes descents apart, samples more random opening moves, and is
+penalised for that rather than for how it searches. With
+`--temperature-moves 0` both sides play their most-visited move, and
+`--random-symmetry` (on both sides, so it cancels out) keeps the games
+apart instead; check the distinct games count in the score line. A batch
+of 1 makes 8 times as many network calls per move, so its games are
+slower.
 
 ```
-$ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0250.azn --b runs/9x9-main/checkpoints/gen_0250.azn --a-c-puct 3 --games 400 --simulations 200 --backend blas
-Search: c_puct A 3, B 1.5; mcts batch 8
-$ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0250.azn --b runs/9x9-main/checkpoints/gen_0250.azn --a-mcts-batch 1 --games 400 --simulations 200 --backend blas
-Search: c_puct 1.5; mcts batch A 1, B 8
+$ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0250.azn --b runs/9x9-main/checkpoints/gen_0250.azn --a-c-puct 3 --temperature-moves 0 --random-symmetry --games 400 --simulations 200 --backend blas
+Search: random symmetry per network evaluation; c_puct A 3, B 1.5; mcts batch 8
+$ ./build-blas/arena --a runs/9x9-main/checkpoints/gen_0250.azn --b runs/9x9-main/checkpoints/gen_0250.azn --a-mcts-batch 1 --temperature-moves 0 --random-symmetry --games 400 --simulations 200 --backend blas
+Search: random symmetry per network evaluation; c_puct 1.5; mcts batch A 1, B 8
 ```
 
 The options take the train config's ranges, `c_puct` in (0, 100] and

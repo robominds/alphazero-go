@@ -1703,7 +1703,7 @@ Ownership, Black + / White - (9 = certain, "." below 0.1):
     }
     return {matchScore(game.resultForBlack(), aIsBlack), game.moves()};
 }</code></pre>
-<span class="src">src/arena.cpp:52 — <code>playArenaGame</code> (abridged)</span>
+<span class="src">src/arena.cpp:47 — <code>playArenaGame</code> (abridged)</span>
 <p><strong>Opening diversity.</strong> Without noise, search is deterministic up to random tie-breaks, and two fixed networks would replay nearly the same game twenty times — twenty games of evidence that are really one. Tic-tac-toe's arena once did exactly that: 2 distinct games out of 40. So the first <code>arena_temperature_moves</code> plies (2 on 5×5, 4 on the larger boards) are sampled from the visit counts, and the arena counts the distinct move sequences it produced; <code>log.csv</code>'s last column, <code>distinct_vs_prev</code>, records that count for the match against g − 1. On 5×5 seed 1 it ranged from 9 to 20 out of 20 (<code>docs/results/5x5/log.csv</code>) — fewer once the network found the perfect line, which is evidence in its own right: the policy was collapsing onto one opening. On 9×9 it ranged from 19 to 20 out of 20 (<code>docs/results/9x9/log.csv</code>): with 81 points and 4 sampled plies, the openings almost never repeat.</p>
 <p><strong>Choosing informative opponents.</strong> Playing only g − 1 measures one step at a time, and small errors add up. Playing everyone is too expensive. So which earlier players are worth twenty games? A game the new network wins with probability p has a result with variance p(1 − p), and that is how much it can tell you: 0.25 at p = 0.5, 0.21 at 0.7, 0.09 at 0.9, 0.01 at 0.99. A game against an opponent it beats 99% of the time is worth a twenty-fifth of an even game. The rating fit adds a second limit (next section): a 20–0 sweep can never say more than 400·log₁₀(41) ≈ 645 Elo. The reference runs in <code>docs/results/</code> were made with a fixed ladder: g − 1, g − 2, g − 4, g − 8, and always generation 0. On 9×9, generation 0 scored at most 2 of 20 in every one of its 137 matches from generation 14 on, and 0 of 20 in 110 of all 150 matches (<code>docs/results/9x9/results.csv</code>). The end of this chapter shows what that did to the curve. The arena now picks its opponents from the current ratings instead:</p>
 <pre><code>std::vector&lt;int&gt; selectOpponents(int generation, const std::map&lt;int, double&gt;&amp; ratings,
@@ -1731,7 +1731,7 @@ Ownership, Black + / White - (9 = certain, "." below 0.1):
     if (bestNetwork &amp;&amp; !chosen(*bestNetwork)) out.push_back(*bestNetwork);   // gating
     return out;
 }</code></pre>
-<span class="src">src/arena.cpp:185 — <code>selectOpponents</code> (abridged)</span>
+<span class="src">src/arena.cpp:195 — <code>selectOpponents</code> (abridged)</span>
 <p>The candidates are the <strong>references</strong>: a frozen set of players that starts as generation 0 plus the fixed players, and only grows.</p>
 <ul>
 <li><strong>g − 1</strong> is always played. It is the progress signal, and its match is the one <code>log.csv</code> reports.</li>
@@ -2166,9 +2166,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Learning-rate schedule</dt>
   <dd><code>LrSchedule::at</code> <span class="loc">— src/optimizer.cpp:100</span></dd>
   <dt>Arena and opening diversity</dt>
-  <dd><code>playArenaGame</code>, <code>playMatch</code> <span class="loc">— src/arena.cpp:52, 107</span></dd>
+  <dd><code>playArenaGame</code>, <code>playMatch</code> <span class="loc">— src/arena.cpp:47, 117</span></dd>
   <dt>Choosing opponents, gating</dt>
-  <dd><code>selectOpponents</code>, <code>passesGate</code> <span class="loc">— src/arena.cpp:185, 213</span></dd>
+  <dd><code>selectOpponents</code>, <code>passesGate</code> <span class="loc">— src/arena.cpp:195, 223</span></dd>
   <dt>Arena rounds: calibration, promotion</dt>
   <dd><code>calibrateFixedPlayers</code>, <code>runArenaRound</code> <span class="loc">— src/arena_round.cpp:23, 40</span></dd>
   <dt>Bradley-Terry Elo with a virtual draw</dt>

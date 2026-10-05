@@ -115,6 +115,12 @@ echo "$out" | grep -q '^A [^(]* vs B [^(]*: A scored' || fail "arena labelled a 
 # A bot searches with c_puct and a batch too, so B's settings reach it.
 out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --b-c-puct 3 --b-mcts-batch 1 --games 4 --simulations 4 --workers 2)"
 echo "$out" | grep -q 'vs B bot(8 simulations) (c_puct 3, mcts batch 1): A scored' || fail "arena did not name the bot's settings"
+# Random symmetry and the other settings share one Search: line, the first
+# line of the output (printed before the match starts).
+out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0003.azn" --a-random-symmetry --b-c-puct 2 --games 4 --simulations 4 --workers 2)"
+[ "$(echo "$out" | grep -c '^Search:')" -eq 1 ] || fail "arena printed more than one Search: line: '$out'"
+[ "$(echo "$out" | head -n 1)" = 'Search: random symmetry per network evaluation, A only; c_puct A 1.5, B 2; mcts batch 8' ] \
+    || fail "arena did not start with the combined Search: line: '$out'"
 
 # B is exactly one of a checkpoint and a bot, and a bot must search.
 expect_arena_error() {
@@ -135,6 +141,8 @@ expect_arena_error "--c-puct must be in (0, 100]" --b-bot 8 --c-puct 0
 expect_arena_error "--a-c-puct must be in (0, 100]" --b-bot 8 --a-c-puct 101
 expect_arena_error "--b-c-puct must be in (0, 100]" --b-bot 8 --b-c-puct -1
 expect_arena_error "option --c-puct expects a number" --b-bot 8 --c-puct nan
+expect_arena_error "--a-c-puct must be in (0, 100]" --b-bot 8 --a-c-puct 1e-50   # 0 as a float
+expect_arena_error "--c-puct must be in (0, 100]" --b-bot 8 --c-puct 1e-50
 expect_arena_error "--mcts-batch must be in [1, 256]" --b-bot 8 --mcts-batch 0
 expect_arena_error "--a-mcts-batch must be in [1, 256]" --b-bot 8 --a-mcts-batch 257
 expect_arena_error "--b-mcts-batch must be in [1, 256]" --b "$CK/gen_0000.azn" --b-mcts-batch 0
