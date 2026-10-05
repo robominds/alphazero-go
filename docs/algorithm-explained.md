@@ -1268,7 +1268,7 @@ void Mcts::setRootPriors(Rng& rng) {
         e[i].prior = (1.0f - eps) * e[i].rawPrior + eps * static_cast<float>(eta[i]);
 }
 ```
-*src/mcts.cpp:336 — `Mcts::setRootPriors`*
+*src/mcts.cpp:351 — `Mcts::setRootPriors`*
 
 **Why α scales as 10/n².** A symmetric Dirichlet sample over L moves with
 concentration α is a random probability vector; the smaller α, the more
@@ -1303,6 +1303,7 @@ GameRecord playSelfPlayGame(Evaluator& evaluator, const SelfPlayConfig& cfg, Rng
     /* ... n, area, game, mcts with addNoise forced on, rec ... */
     while (!game.isTerminal()) {
         mcts.search(game, rng);
+        /* ... optionally resign here (see Resignation, below) ... */
 
         // Position before the move ...
         const size_t offset = rec.stones.size();
@@ -1318,11 +1319,11 @@ GameRecord playSelfPlayGame(Evaluator& evaluator, const SelfPlayConfig& cfg, Rng
         game.play(action);
         mcts.advance(action);   // reuse the subtree under the move just played
     }
-    rec.resultForBlack = game.resultForBlack();
+    rec.resultForBlack = game.resultForBlack();   /* ... or a loss for a side that resigned ... */
     return rec;
 }
 ```
-*src/selfplay.cpp:17 — `playSelfPlayGame` (abridged)*
+*src/selfplay.cpp:27 — `playSelfPlayGame` (abridged)*
 
 The presets sample 8 plies on 5×5, 20 on 9×9 and 30 on 19×19 (AlphaGo
 Zero's value), roughly the first fifth of a typical game on each board
@@ -1361,7 +1362,7 @@ void Mcts::advance(int action) {
     edges_.swap(edges);
 }
 ```
-*src/mcts.cpp:353 — `Mcts::advance` (abridged)*
+*src/mcts.cpp:368 — `Mcts::advance` (abridged)*
 
 Without compaction the node vector would only ever grow: a 19×19
 self-play game at 400 simulations per move and several hundred moves
@@ -1374,6 +1375,89 @@ worker. A reused root already has visits, and `search` adds
 `simulations` *new* ones on top, so reuse also buys a slightly deeper
 search for free. `tests/test_mcts.cpp` checks that `advance` keeps the
 chosen subtree's statistics intact.
+
+**Resignation (optional).** A lopsided game spends most of its plies
+confirming a result the search already knows. AlphaGo Zero stopped
+paying for them: "To save computation, clearly lost games are resigned"
+(Silver et al., "Mastering the game of Go without human knowledge",
+Nature 2017, Methods, "Self-play"). After each search the side to move
+compares the larger of the root value and the most visited child's Q
+(`Mcts::rootValue`, `Mcts::bestChildValue`) with a threshold v_resign;
+if both are below it, the side resigns and the game is a loss for it.
+z is assigned exactly as for a scored game, and the position the side
+resigned in is not stored (no move was played from it):
+
+```cpp
+GameRecord playSelfPlayGame(Evaluator& evaluator, const SelfPlayConfig& cfg, Rng& rng) {
+    /* ... n, area, game, mcts with addNoise forced on, rec ... */
+    // A fraction of games never resign, so the threshold can be checked
+    // against how they really end. Drawn only with resignation on: runs
+    // without it consume exactly the random numbers they always did.
+    if (cfg.resignation) rec.resignDisabled = rng.uniform() < cfg.resignDisabledFraction;
+    while (!game.isTerminal()) {
+        mcts.search(game, rng);
+
+        // Resign a clearly lost game instead of playing it out. Not at the
+        // empty board, so every record keeps at least one position.
+        if (cfg.resignation && game.moveCount() > 0) {
+            const float v = resignValue(mcts);
+            float& lowest = rec.minResignValue[game.board().toMove() == Color::Black ? 0 : 1];
+            lowest = std::min(lowest, v);
+            if (!rec.resignDisabled && v < cfg.resignThreshold) {
+                rec.resigned = true;
+                break;
+            }
+        }
+        /* ... record the position and pi, play the move ... */
+    }
+    /* ... the result: a loss for whoever resigned, else the Tromp-Taylor score ... */
+}
+```
+*src/selfplay.cpp:27 — `playSelfPlayGame` (resignation only)*
+
+The danger is a *false positive*: a game resigned that could still have
+been won. It costs more than the plies it saves, because every position
+of that game is then labelled with the wrong result, and the value head
+learns that a won position is lost, which makes the next resignation
+even more eager. AlphaGo Zero measured the risk instead of guessing it:
+resignation is disabled in 10% of self-play games (`resign_disabled_fraction`),
+which are played to the end, and v_resign is "selected automatically to
+keep the fraction of false positives below 5%" (`resign_false_positive`).
+A disabled game remembers each side's lowest value; at threshold v it is
+a false positive when its eventual winner's lowest value is below v (the
+winner would have resigned). A draw has no winner and never counts.
+After each generation's self-play, the threshold is the largest one on a
+0.01 grid that keeps false positives within the limit over the last
+`resign_window` (500) disabled games:
+
+```cpp
+float calibrateResignThreshold(const std::vector<float>& winnerMinimums, const ResignCalibration& c) {
+    const size_t games = std::min(winnerMinimums.size(), static_cast<size_t>(std::max(0, c.window)));
+    if (games == 0 || games < static_cast<size_t>(c.minGames)) return c.initialThreshold;
+    // From the most aggressive threshold down: the first one whose false
+    // positives fit. The integer grid keeps every step an exact k / 100.
+    for (int k = 0; k > -100; --k) {
+        const float v = static_cast<float>(k) / 100.0f;
+        /* ... return v if resignFalsePositiveRate(winnerMinimums, c.window, v)
+               is at most c.maxFalsePositive ... */
+    }
+    return -1.0f;
+}
+```
+*src/selfplay.cpp:112 — `calibrateResignThreshold` (abridged)*
+
+Until `resign_min_games` (20) disabled games exist, the threshold is
+`resign_threshold_initial` (−0.9). Generation g resigns at the threshold
+calibrated after generation g − 1, from earlier games only, and the one
+"disabled?" draw comes from each game's own `Rng`, so a run stays
+reproducible from its seed and independent of the worker count;
+`state.bin` keeps the window, so a resumed run continues byte for byte.
+`log.csv` records the threshold, the share of resignation-enabled games
+that resigned and the false-positive rate. Resignation is off in every
+preset, and it is refused together with the ownership head (chapter
+06): a resigned game has no final board to take ownership targets from.
+No reference run used it, so this repository has no measurement of what
+it saves.
 
 ---
 
@@ -2309,7 +2393,7 @@ GenerationStats Trainer::runGeneration() {
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:441 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:487 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not. The
@@ -2358,8 +2442,9 @@ configuration and the code, and of nothing else.
 
 **Crash safety and resume.** A network checkpoint alone is not enough
 to continue a run exactly; that also needs the optimizer's momentum, the
-replay buffer, the generation counter, the gating state and the arena
-table. All of it goes into one file, `state.bin`, and **`state.bin` is
+replay buffer, the generation counter, the gating state, the arena
+table and, with resignation, v_resign and its window of disabled games.
+All of it goes into one file, `state.bin`, and **`state.bin` is
 the commit point**: a generation exists once its `state.bin` is on disk.
 Everything written before it (the checkpoint, SGF files, `results.csv`,
 `elo.csv`) may be left half-updated by a crash, and is then simply
@@ -2530,14 +2615,15 @@ see again in place.
 | Terminal positions scored by the rules | `Mcts::isTerminal`, `Mcts::terminalValue` — `src/mcts.cpp:41, 52` |
 | Virtual loss and batched search | `Mcts::search`, `Mcts::addVirtualLoss` — `src/mcts.cpp:213, 108` |
 | The evaluator seam | `Evaluator` — `include/azgo/evaluator.hpp:17`; `LocalEvaluator::evaluate` — `src/evaluator.cpp:19` |
-| Dirichlet root noise | `Mcts::setRootPriors` — `src/mcts.cpp:336`; `dirichlet` — `src/rng.cpp:122` |
-| Temperature | `Mcts::selectAction` — `src/mcts.cpp:299`; `playSelfPlayGame` — `src/selfplay.cpp:17` |
-| Tree reuse and compaction | `Mcts::advance` — `src/mcts.cpp:353` |
+| Dirichlet root noise | `Mcts::setRootPriors` — `src/mcts.cpp:351`; `dirichlet` — `src/rng.cpp:122` |
+| Temperature | `Mcts::selectAction` — `src/mcts.cpp:314`; `playSelfPlayGame` — `src/selfplay.cpp:27` |
+| Tree reuse and compaction | `Mcts::advance` — `src/mcts.cpp:368` |
+| Resignation and its calibration | `resignValue`, `calibrateResignThreshold` — `src/selfplay.cpp:23, 112` |
 | Passes and the end of the game | `Game::play`, `Game::isTerminal` — `src/game.cpp:39, 53` |
 | The value target z | `GameRecord::zAt` — `src/selfplay.cpp:12` |
 | Replay buffer of whole games | `ReplayBuffer::encodeSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:54, 85` |
 | Symmetry augmentation | `transformPoint`, `transformAction` — `src/symmetry.cpp:6, 21` |
-| Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:61`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:100` |
+| Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:89`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:100` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:19` |
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:100` |
 | Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:51, 89` |
@@ -2545,12 +2631,12 @@ see again in place.
 | Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:23, 40` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:104, 77` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:441` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:109, 82` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:487` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:12` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:29`; `Trainer::resume` — `src/trainer.cpp:377` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:29`; `Trainer::resume` — `src/trainer.cpp:416` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:77, 117` |
 
 ---

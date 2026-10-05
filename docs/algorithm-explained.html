@@ -1384,7 +1384,7 @@ public:
     for (int i = 0; i &lt; root.numEdges; ++i)
         e[i].prior = (1.0f - eps) * e[i].rawPrior + eps * static_cast&lt;float&gt;(eta[i]);
 }</code></pre>
-<span class="src">src/mcts.cpp:336 — <code>Mcts::setRootPriors</code></span>
+<span class="src">src/mcts.cpp:351 — <code>Mcts::setRootPriors</code></span>
 <p><strong>Why α scales as 10/n².</strong> A symmetric Dirichlet sample over L moves with concentration α is a random probability vector; the smaller α, the more of its mass lands on a few moves. What matters for exploration is roughly α·L, the total concentration: a sample with α·L ≈ 10 looks like "a handful of moves get a real boost". The number of legal moves grows with the board, about n² early in a game, so keeping α·L constant means α = 10/n²: <strong>0.4 on 5×5, 0.12 on 9×9, 0.028 on 19×19</strong>. AlphaZero reported the same rule of thumb — α in inverse proportion to the typical number of legal moves, 0.3 for chess, 0.15 for shogi and 0.03 for Go. Using 19×19's 0.03 on 5×5 would put nearly all of each sample on one random move; using 5×5's 0.4 on 19×19 would spread it almost evenly over 362 moves, adding the same sliver to every prior instead of singling out a few moves to explore. Tic-tac-toe used a fixed 0.3 over at most 9 moves.</p>
 <p>Noise is added only at the root and only in self-play. The arena and <code>analyze</code> switch it off (<code>addNoise = false</code>): measuring strength and inspecting a position want the network's honest judgment. With tree reuse (below) the root was an interior node of the previous search, so it starts with its raw priors, and <code>setRootPriors</code> mixes fresh noise into them on every search.</p>
 <p><strong>Temperature.</strong> The second mechanism acts on which move is <em>played</em>, not which moves are searched. For the first <code>temperature_moves</code> plies of a self-play game the move is sampled in proportion to its visit count (temperature 1); after that, the most visited move is played (temperature 0, ties broken at random):</p>
@@ -1392,6 +1392,7 @@ public:
     /* ... n, area, game, mcts with addNoise forced on, rec ... */
     while (!game.isTerminal()) {
         mcts.search(game, rng);
+        /* ... optionally resign here (see Resignation, below) ... */
 
         // Position before the move ...
         const size_t offset = rec.stones.size();
@@ -1407,10 +1408,10 @@ public:
         game.play(action);
         mcts.advance(action);   // reuse the subtree under the move just played
     }
-    rec.resultForBlack = game.resultForBlack();
+    rec.resultForBlack = game.resultForBlack();   /* ... or a loss for a side that resigned ... */
     return rec;
 }</code></pre>
-<span class="src">src/selfplay.cpp:17 — <code>playSelfPlayGame</code> (abridged)</span>
+<span class="src">src/selfplay.cpp:27 — <code>playSelfPlayGame</code> (abridged)</span>
 <p>The presets sample 8 plies on 5×5, 20 on 9×9 and 30 on 19×19 (AlphaGo Zero's value), roughly the first fifth of a typical game on each board (5×5 games average 30 to 44 plies, <code>docs/results/5x5/log.csv</code>; 9×9 games 87 to 116, <code>docs/results/9x9/log.csv</code>; the two 19×19 generations 145 and 365, <code>docs/results/19x19/log.csv</code>). Tic-tac-toe taught the lesson this number encodes: its default used to be 2, and training plateaued because self-play kept replaying the same few games — the network can only learn positions self-play reaches. In a 9-move game the answer was to sample the whole game. In Go that would be the other mistake: a sampled blunder in the endgame flips the result, and with it the value label of every position in the game. Sample the opening, where variety is cheap, then play well.</p>
 <p><strong>Tree reuse and compaction.</strong> After a move, the subtree under the move just played is exactly the search a player would like to continue, so it is kept: the chosen child becomes the new root, with all its visits. The rest of the tree can never be reached again. Rather than leaving it in the vectors, <code>advance</code> copies only the reachable subtree into fresh vectors and swaps them in:</p>
 <pre><code>void Mcts::advance(int action) {
@@ -1428,8 +1429,49 @@ public:
     nodes_.swap(nodes);
     edges_.swap(edges);
 }</code></pre>
-<span class="src">src/mcts.cpp:353 — <code>Mcts::advance</code> (abridged)</span>
+<span class="src">src/mcts.cpp:368 — <code>Mcts::advance</code> (abridged)</span>
 <p>Without compaction the node vector would only ever grow: a 19×19 self-play game at 400 simulations per move and several hundred moves would keep every node of every search in memory. With it, the arena holds only positions still reachable from the current one, and everything built for moves that were not played is released at once. Each node holds a whole <code>Board</code> (the 441-byte padded array), so this is the difference between megabytes per game and a growing pile per worker. A reused root already has visits, and <code>search</code> adds <code>simulations</code> <em>new</em> ones on top, so reuse also buys a slightly deeper search for free. <code>tests/test_mcts.cpp</code> checks that <code>advance</code> keeps the chosen subtree's statistics intact.</p>
+<p><strong>Resignation (optional).</strong> A lopsided game spends most of its plies confirming a result the search already knows. AlphaGo Zero stopped paying for them: "To save computation, clearly lost games are resigned" (Silver et al., "Mastering the game of Go without human knowledge", Nature 2017, Methods, "Self-play"). After each search the side to move compares the larger of the root value and the most visited child's Q (<code>Mcts::rootValue</code>, <code>Mcts::bestChildValue</code>) with a threshold v_resign; if both are below it, the side resigns and the game is a loss for it. z is assigned exactly as for a scored game, and the position the side resigned in is not stored (no move was played from it):</p>
+<pre><code>GameRecord playSelfPlayGame(Evaluator&amp; evaluator, const SelfPlayConfig&amp; cfg, Rng&amp; rng) {
+    /* ... n, area, game, mcts with addNoise forced on, rec ... */
+    // A fraction of games never resign, so the threshold can be checked
+    // against how they really end. Drawn only with resignation on: runs
+    // without it consume exactly the random numbers they always did.
+    if (cfg.resignation) rec.resignDisabled = rng.uniform() &lt; cfg.resignDisabledFraction;
+    while (!game.isTerminal()) {
+        mcts.search(game, rng);
+
+        // Resign a clearly lost game instead of playing it out. Not at the
+        // empty board, so every record keeps at least one position.
+        if (cfg.resignation &amp;&amp; game.moveCount() &gt; 0) {
+            const float v = resignValue(mcts);
+            float&amp; lowest = rec.minResignValue[game.board().toMove() == Color::Black ? 0 : 1];
+            lowest = std::min(lowest, v);
+            if (!rec.resignDisabled &amp;&amp; v &lt; cfg.resignThreshold) {
+                rec.resigned = true;
+                break;
+            }
+        }
+        /* ... record the position and pi, play the move ... */
+    }
+    /* ... the result: a loss for whoever resigned, else the Tromp-Taylor score ... */
+}</code></pre>
+<span class="src">src/selfplay.cpp:27 — <code>playSelfPlayGame</code> (resignation only)</span>
+<p>The danger is a <em>false positive</em>: a game resigned that could still have been won. It costs more than the plies it saves, because every position of that game is then labelled with the wrong result, and the value head learns that a won position is lost, which makes the next resignation even more eager. AlphaGo Zero measured the risk instead of guessing it: resignation is disabled in 10% of self-play games (<code>resign_disabled_fraction</code>), which are played to the end, and v_resign is "selected automatically to keep the fraction of false positives below 5%" (<code>resign_false_positive</code>). A disabled game remembers each side's lowest value; at threshold v it is a false positive when its eventual winner's lowest value is below v (the winner would have resigned). A draw has no winner and never counts. After each generation's self-play, the threshold is the largest one on a 0.01 grid that keeps false positives within the limit over the last <code>resign_window</code> (500) disabled games:</p>
+<pre><code>float calibrateResignThreshold(const std::vector&lt;float&gt;&amp; winnerMinimums, const ResignCalibration&amp; c) {
+    const size_t games = std::min(winnerMinimums.size(), static_cast&lt;size_t&gt;(std::max(0, c.window)));
+    if (games == 0 || games &lt; static_cast&lt;size_t&gt;(c.minGames)) return c.initialThreshold;
+    // From the most aggressive threshold down: the first one whose false
+    // positives fit. The integer grid keeps every step an exact k / 100.
+    for (int k = 0; k &gt; -100; --k) {
+        const float v = static_cast&lt;float&gt;(k) / 100.0f;
+        /* ... return v if resignFalsePositiveRate(winnerMinimums, c.window, v)
+               is at most c.maxFalsePositive ... */
+    }
+    return -1.0f;
+}</code></pre>
+<span class="src">src/selfplay.cpp:112 — <code>calibrateResignThreshold</code> (abridged)</span>
+<p>Until <code>resign_min_games</code> (20) disabled games exist, the threshold is <code>resign_threshold_initial</code> (−0.9). Generation g resigns at the threshold calibrated after generation g − 1, from earlier games only, and the one "disabled?" draw comes from each game's own <code>Rng</code>, so a run stays reproducible from its seed and independent of the worker count; <code>state.bin</code> keeps the window, so a resumed run continues byte for byte. <code>log.csv</code> records the threshold, the share of resignation-enabled games that resigned and the false-positive rate. Resignation is off in every preset, and it is refused together with the ownership head (chapter 06): a resigned game has no final board to take ownership targets from. No reference run used it, so this repository has no measurement of what it saves.</p>
 </section>
 
 <section id="credit">
@@ -1959,7 +2001,7 @@ A wins 4, B wins 0, draws 0</code></pre>
         });
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }</code></pre>
-<span class="src">src/trainer.cpp:441 — <code>Trainer::runGeneration</code> (abridged)</span>
+<span class="src">src/trainer.cpp:487 — <code>Trainer::runGeneration</code> (abridged)</span>
 <p><code>parallelFor</code> hands out indices from an atomic counter; which worker plays game 17 varies from run to run, but game 17 itself does not. The row split in the naive gemm keeps the arithmetic identical too:</p>
 <pre><code>void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alpha,
                         const float* A, const float* B, float beta, float* C) const {
@@ -1984,7 +2026,7 @@ A wins 4, B wins 0, draws 0</code></pre>
        &lt;(cut -d, -f1-9,13-15 docs/results/passbug/5x5-seed1/log.csv) &amp;&amp; echo identical
 identical</code></pre>
 <p>The final seed-1 run (<code>docs/results/5x5/log.csv</code>) differs from both from generation 1 on — the pass fix changes what search plays — which is the other half of the same point: the output is a function of the seed, the configuration and the code, and of nothing else.</p>
-<p><strong>Crash safety and resume.</strong> A network checkpoint alone is not enough to continue a run exactly; that also needs the optimizer's momentum, the replay buffer, the generation counter, the gating state and the arena table. All of it goes into one file, <code>state.bin</code>, and <strong><code>state.bin</code> is the commit point</strong>: a generation exists once its <code>state.bin</code> is on disk. Everything written before it (the checkpoint, SGF files, <code>results.csv</code>, <code>elo.csv</code>) may be left half-updated by a crash, and is then simply rewritten by the rerun of the generation with identical bytes — every random stream is derived from the seed, so the rerun is bit-identical. <code>log.csv</code> is appended after the commit; a crash between the two loses one human-facing row, never the run. Every file is replaced with the same routine:</p>
+<p><strong>Crash safety and resume.</strong> A network checkpoint alone is not enough to continue a run exactly; that also needs the optimizer's momentum, the replay buffer, the generation counter, the gating state, the arena table and, with resignation, v_resign and its window of disabled games. All of it goes into one file, <code>state.bin</code>, and <strong><code>state.bin</code> is the commit point</strong>: a generation exists once its <code>state.bin</code> is on disk. Everything written before it (the checkpoint, SGF files, <code>results.csv</code>, <code>elo.csv</code>) may be left half-updated by a crash, and is then simply rewritten by the rerun of the generation with identical bytes — every random stream is derived from the seed, so the rerun is bit-identical. <code>log.csv</code> is appended after the commit; a crash between the two loses one human-facing row, never the run. Every file is replaced with the same routine:</p>
 <pre><code>void writeFileAtomically(const std::string&amp; path, const std::string&amp; contents) {
     const std::string tmp = path + ".tmp";
     // Truncates any leftover .tmp from an earlier crash.
@@ -2094,11 +2136,13 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>The evaluator seam</dt>
   <dd><code>Evaluator</code> <span class="loc">— include/azgo/evaluator.hpp:17</span>; <code>LocalEvaluator::evaluate</code> <span class="loc">— src/evaluator.cpp:19</span></dd>
   <dt>Dirichlet root noise</dt>
-  <dd><code>Mcts::setRootPriors</code> <span class="loc">— src/mcts.cpp:336</span>; <code>dirichlet</code> <span class="loc">— src/rng.cpp:122</span></dd>
+  <dd><code>Mcts::setRootPriors</code> <span class="loc">— src/mcts.cpp:351</span>; <code>dirichlet</code> <span class="loc">— src/rng.cpp:122</span></dd>
   <dt>Temperature</dt>
-  <dd><code>Mcts::selectAction</code> <span class="loc">— src/mcts.cpp:299</span>; <code>playSelfPlayGame</code> <span class="loc">— src/selfplay.cpp:17</span></dd>
+  <dd><code>Mcts::selectAction</code> <span class="loc">— src/mcts.cpp:314</span>; <code>playSelfPlayGame</code> <span class="loc">— src/selfplay.cpp:27</span></dd>
   <dt>Tree reuse and compaction</dt>
-  <dd><code>Mcts::advance</code> <span class="loc">— src/mcts.cpp:353</span></dd>
+  <dd><code>Mcts::advance</code> <span class="loc">— src/mcts.cpp:368</span></dd>
+  <dt>Resignation and its calibration</dt>
+  <dd><code>resignValue</code>, <code>calibrateResignThreshold</code> <span class="loc">— src/selfplay.cpp:23, 112</span></dd>
   <dt>Passes and the end of the game</dt>
   <dd><code>Game::play</code>, <code>Game::isTerminal</code> <span class="loc">— src/game.cpp:39, 53</span></dd>
   <dt>The value target z</dt>
@@ -2108,7 +2152,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Symmetry augmentation</dt>
   <dd><code>transformPoint</code>, <code>transformAction</code> <span class="loc">— src/symmetry.cpp:6, 21</span></dd>
   <dt>Ownership, an auxiliary target</dt>
-  <dd><code>replayFinalOwnership</code> <span class="loc">— src/selfplay.cpp:61</span>; <code>addOwnershipHead</code> <span class="loc">— src/grow.cpp:219</span>; <code>printOwnershipMap</code> <span class="loc">— apps/analyze.cpp:100</span></dd>
+  <dd><code>replayFinalOwnership</code> <span class="loc">— src/selfplay.cpp:89</span>; <code>addOwnershipHead</code> <span class="loc">— src/grow.cpp:219</span>; <code>printOwnershipMap</code> <span class="loc">— apps/analyze.cpp:100</span></dd>
   <dt>SGD with momentum, weight decay</dt>
   <dd><code>SgdMomentum::step</code> <span class="loc">— src/optimizer.cpp:19</span></dd>
   <dt>Learning-rate schedule</dt>
@@ -2124,9 +2168,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Wilson intervals</dt>
   <dd><code>wilsonInterval</code> <span class="loc">— src/elo.cpp:184</span></dd>
   <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
-  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:104, 77</span></dd>
+  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:109, 82</span></dd>
   <dt>One generation</dt>
-  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:441</span></dd>
+  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:487</span></dd>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
@@ -2134,7 +2178,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
-  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:29</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:377</span></dd>
+  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:29</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:416</span></dd>
   <dt>Inspecting a position</dt>
   <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:77, 117</span></dd>
 </dl>

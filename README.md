@@ -238,8 +238,8 @@ of the explainer. It is off in every preset. Two config keys control it:
   the head but does not train it.
 
 A run with the head shows its loss in the progress line
-(`train loss p 2.42 v 0.36 o 0.590 lr 0.002`) and in the last column of
-`log.csv`, `ownership_loss`, which stays empty for a run without the
+(`train loss p 2.42 v 0.36 o 0.590 lr 0.002`) and in the `log.csv`
+column `ownership_loss`, which stays empty for a run without the
 head. A run started before that column existed gets it, empty, on resume.
 
 `grow --ownership` adds a randomly initialized head to a trained
@@ -300,7 +300,7 @@ the second already has the run's shape.
 - `references.csv` lists it with kind `network` (no simulation count), and
   `reference-networks.csv` maps each player ID to its file
   (`player,name,path`).
-- `state.bin` (version 4) records each path with a 64-bit hash of the
+- `state.bin` (version 4 and later) records each path with a 64-bit hash of the
   file's bytes. `--resume` refuses a changed list or a changed file, and
   `--rerate` refuses a changed file when it keeps the run's list.
 
@@ -327,6 +327,62 @@ independent of the worker count. Both keys are tunable: `--resume` and
 `arena_random_symmetry` from the live run plays other games and no longer
 reproduces its `results.csv`. Every preset leaves both off; `configs/9x9.cfg`
 lists them commented out.
+
+### Resignation
+
+AlphaGo Zero resigned clearly lost self-play games to save computation
+(Silver et al. 2017, Methods, "Self-play"): the side to move resigns when
+both its root value and its best child's value are below a threshold
+v_resign, chosen automatically so that at most 5% of the games played
+out with resignation disabled would have been resigned by their eventual
+winner. It is off in every preset (`configs/9x9.cfg` lists the keys
+commented out). Six tunable config keys control it:
+
+- `resignation` (default `false`): self-play only; arena rounds,
+  `--rerate` and the tools never resign.
+- `resign_disabled_fraction` (0–1, default 0.1): the share of games
+  played to the end with resignation disabled, to measure false positives.
+- `resign_false_positive` (0–0.5, default 0.05): the largest
+  false-positive rate v_resign may cause.
+- `resign_threshold_initial` (−1–0, default −0.9): v_resign until
+  enough disabled games exist.
+- `resign_window` (default 500): how many of the most recent disabled
+  games the calibration uses.
+- `resign_min_games` (default 20, at most `resign_window`): disabled games
+  needed before v_resign is calibrated.
+
+How it works:
+
+- After each search the side to move compares max(root value, Q of the
+  most visited root child), from its own view (`Mcts::rootValue`,
+  `Mcts::bestChildValue`), with v_resign. Black is never offered
+  resignation at the empty board. A side that resigns loses; z follows
+  from that as from any result, and the SGF says `RE[B+R]` or `RE[W+R]`.
+- A disabled game records each side's lowest such value. It is a false
+  positive at threshold v when its winner's lowest value is below v;
+  a draw never is. After each generation's self-play, v_resign becomes
+  the largest threshold on the grid −1.00, −0.99, …, 0.00 whose
+  false-positive rate over the window is within `resign_false_positive`.
+- Generation g resigns at the threshold computed after generation g − 1,
+  and each game draws "disabled?" once from its own `Rng`, so a run stays
+  reproducible and independent of the worker count. With
+  `resignation = false` nothing is drawn: runs play exactly the games
+  they did before the feature existed.
+- `state.bin` (version 5) keeps v_resign and the window, so `--resume`
+  continues exactly; since the keys are tunable, resume recalibrates
+  with the current values. A run with an older `state.bin` starts with an
+  empty window.
+- `log.csv` gains `resign_threshold` (the v_resign used), `resign_rate`
+  (resigned games / games with resignation enabled) and
+  `resign_false_positive` (the false-positive rate at that threshold over
+  the window, this generation's disabled games included). They are empty
+  without resignation, and an older run's `log.csv` gets them, empty, on
+  resume. The progress line adds, for example, `resign -0.87 rate 0.62 fp 0.031`.
+- `ownership = true` with `resignation = true` is refused: a resigned game
+  has no final position to take the ownership target from.
+
+No reference run used resignation, so nothing here measures what it
+saves.
 
 ## Presets
 
@@ -460,6 +516,8 @@ python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-mai
 - [`docs/superpowers/specs/2026-10-03-ownership-head-design.md`](docs/superpowers/specs/2026-10-03-ownership-head-design.md)
   and [`docs/superpowers/plans/2026-10-03-ownership-head.md`](docs/superpowers/plans/2026-10-03-ownership-head.md)
   — the ownership head: an auxiliary per-point target, `grow --ownership` and the analyze map.
+- [`docs/superpowers/specs/2026-10-04-resignation-design.md`](docs/superpowers/specs/2026-10-04-resignation-design.md)
+  — resignation in self-play, with AlphaGo Zero's false-positive calibration.
 
 `python3 tools/check_citations.py` checks that every `file:line` citation
 in both explainers still points at the quoted definition.
