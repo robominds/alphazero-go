@@ -19,6 +19,9 @@ Three checks:
   html concept map    `<span class="loc">-- src/foo.cpp:NN, MM</span>` line
                       numbers must be the definition lines of the
                       `<code>Sym</code>` entries that precede them.
+  markdown concept    table rows `| ... | `Sym`, `Sym2` -- `src/foo.cpp:NN, MM` |`
+  map                 (symbols separated by commas or "and"), checked the
+                      same way as the html concept map.
 
 A definition is an unindented line where `Sym(` appears (a function or
 member function defined at file scope), or failing that an unindented
@@ -43,6 +46,7 @@ HTML = ROOT / "docs" / "algorithm-explained.html"
 
 MD_CAPTION = re.compile(r"^\*(?P<path>[\w./]+\.(?:cpp|hpp)):(?P<line>\d+)\s+—\s+`(?P<sym>[^`]+)`(?P<tail>[^*]*)\*\s*$")
 HTML_CAPTION = re.compile(r'<span class="src">(?P<path>[\w./]+\.(?:cpp|hpp)):(?P<line>\d+)\s+—\s+<code>(?P<sym>[^<]+)</code>')
+MD_LOC = re.compile(r'(?P<codes>(?:`[^`]+`(?:,\s*|\s+and\s+)?)+)\s*—\s*`(?P<path>[\w./]+\.(?:cpp|hpp)):(?P<lines>[\d,\s]+)`')
 HTML_LOC = re.compile(r'(?P<codes>(?:<code>[^<]+</code>(?:,\s*)?)+)\s*<span class="loc">—\s*(?P<path>[\w./]+\.(?:cpp|hpp)):(?P<lines>[\d,\s]+)</span>')
 
 _source_cache = {}
@@ -150,6 +154,56 @@ def check_markdown(fix):
     return problems, repairs, truth
 
 
+def check_locations(match, symbols, fix, label, counter):
+    """Concept-map entry: each symbol's cited line must be its definition.
+
+    Returns the (possibly corrected) matched text; problems and repairs are
+    appended to / counted in `counter` (a dict with "problems" and "repairs").
+    """
+    cited = [int(n) for n in re.findall(r"\d+", match["lines"])]
+    if len(symbols) != len(cited):
+        counter["problems"].append(f"{label}: concept-map entry lists {len(symbols)} symbols but {len(cited)} lines")
+        return match.group(0)
+    corrected = []
+    for sym, line in zip(symbols, cited):
+        actual = definition_line(match["path"], sym)
+        if actual is None:
+            counter["problems"].append(f"{label}: cannot locate `{sym}` in {match['path']}")
+            corrected.append(line)
+        elif actual != line:
+            if fix:
+                counter["repairs"] += 1
+                corrected.append(actual)
+            else:
+                counter["problems"].append(
+                    f"{label}: concept map cites {match['path']}:{line} for `{sym}`, defined at {actual}")
+                corrected.append(line)
+        else:
+            corrected.append(line)
+    if not fix or corrected == cited:
+        return match.group(0)
+    return match.group(0).replace(match["lines"].strip(), ", ".join(str(n) for n in corrected), 1)
+
+
+def check_markdown_map(fix):
+    """The markdown concept-map table, checked like the html one."""
+    lines = MD.read_text().splitlines()
+    counter = {"problems": [], "repairs": 0}
+    for index, line in enumerate(lines):
+        if not line.startswith("|"):
+            continue
+        label = f"{MD.name}:{index + 1}"
+
+        def fix_loc(m):
+            symbols = re.findall(r"`([^`]+)`", m["codes"])
+            return check_locations(m, symbols, fix, label, counter)
+
+        lines[index] = MD_LOC.sub(fix_loc, line)
+    if fix and counter["repairs"]:
+        MD.write_text("\n".join(lines) + "\n")
+    return counter["problems"], counter["repairs"]
+
+
 def check_html(truth, fix):
     text = HTML.read_text()
     problems, repairs = [], 0
@@ -170,33 +224,14 @@ def check_html(truth, fix):
 
     text = HTML_CAPTION.sub(fix_caption, text)
 
+    counter = {"problems": problems, "repairs": 0}
+
     def fix_loc(m):
-        nonlocal repairs
         symbols = [html.unescape(s) for s in re.findall(r"<code>([^<]+)</code>", m["codes"])]
-        cited = [int(n) for n in re.findall(r"\d+", m["lines"])]
-        if len(symbols) != len(cited):
-            problems.append(f"{HTML.name}: concept-map entry lists {len(symbols)} symbols but {len(cited)} lines")
-            return m.group(0)
-        corrected = []
-        for sym, line in zip(symbols, cited):
-            actual = definition_line(m["path"], sym)
-            if actual is None:
-                problems.append(f"{HTML.name}: cannot locate `{sym}` in {m['path']}")
-                corrected.append(line)
-            elif actual != line:
-                if fix:
-                    repairs += 1
-                    corrected.append(actual)
-                else:
-                    problems.append(f"{HTML.name}: concept map cites {m['path']}:{line} for `{sym}`, defined at {actual}")
-                    corrected.append(line)
-            else:
-                corrected.append(line)
-        if not fix or corrected == cited:
-            return m.group(0)
-        return m.group(0).replace(m["lines"].strip(), ", ".join(str(n) for n in corrected), 1)
+        return check_locations(m, symbols, fix, HTML.name, counter)
 
     text = HTML_LOC.sub(fix_loc, text)
+    repairs += counter["repairs"]
     if fix and repairs:
         HTML.write_text(text)
     return problems, repairs
@@ -208,6 +243,9 @@ def main():
     args = parser.parse_args()
 
     md_problems, md_repairs, truth = check_markdown(args.fix)
+    map_problems, map_repairs = check_markdown_map(args.fix)
+    md_problems += map_problems
+    md_repairs += map_repairs
     # The HTML rendering is written after the markdown; until it exists there
     # is nothing to compare against.
     html_present = HTML.exists()

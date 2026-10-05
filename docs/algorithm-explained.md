@@ -2646,9 +2646,9 @@ see again in place.
 | Convolution as im2col + gemm | `Conv2d::forward`, `Conv2d::backward` — `src/layers.cpp:34, 46`; `Backend::im2col`, `Backend::col2im` — `src/backend.cpp:17, 50` |
 | The compute backend seam | `Backend` — `include/azgo/backend.hpp:16`; `NaiveBackend::gemm` — `src/backend.cpp:138` |
 | Batch norm, training vs. inference | `BatchNorm2d::forwardTrain`, `BatchNorm2d::forwardInfer`, `BatchNorm2d::backward` — `src/layers.cpp:85, 74, 119` |
-| Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:200, 326` |
+| Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:208, 334` |
 | Growing a network (deeper or wider) without changing its function | `growBlocks`, `widenFilters` — `src/grow.cpp:17, 159` |
-| The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:276, 183` |
+| The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:284, 183` |
 | Gradient checking | `checkGradient` — `tests/test_layers.cpp:36` |
 | PUCT selection | `Mcts::selectEdge` — `src/mcts.cpp:57` |
 | Legal masking, superko in the tree | `Mcts::expand` — `src/mcts.cpp:150` |
@@ -2662,7 +2662,7 @@ see again in place.
 | Resignation and its calibration | `resignValue`, `ResignTrace::falsePositiveAt`, `calibrateResignThreshold` — `src/selfplay.cpp:17, 34, 135` |
 | Passes and the end of the game | `Game::play`, `Game::isTerminal` — `src/game.cpp:39, 53` |
 | The value target z | `GameRecord::zAt` — `src/selfplay.cpp:12` |
-| Replay buffer of whole games | `encodeTrainingSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:54, 85` |
+| Replay buffer of whole games | `encodeTrainingSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:54, 97` |
 | Symmetry augmentation | `transformPoint`, `transformAction` — `src/symmetry.cpp:6, 21` |
 | Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:112`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:100` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:19` |
@@ -2672,12 +2672,12 @@ see again in place.
 | Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:23, 40` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:109, 82` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:497` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:116, 89` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:515` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:12` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:30`; `Trainer::resume` — `src/trainer.cpp:426` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:30`; `Trainer::resume` — `src/trainer.cpp:444` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:77, 117` |
 
 ---
