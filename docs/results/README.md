@@ -958,6 +958,7 @@ measurable gain.
   value loss there may mean a closer fit to the buffer rather than better
   judgment; without a loss on held-out games (see
   [Next experiments](#next-experiments)) this cannot be told apart.
+  The run predates `validation_loss`; a rerun would log one.
 
 **Matches** (100 games, 200 simulations for both sides, komi 7.5, colors
 alternating; 95% Wilson intervals as `arena` prints them; Elo is
@@ -1189,10 +1190,12 @@ matches (`runs/agz-experiment.sh`, not in the repository).
 | 7 | AGZ gating (`gating = true`, 55% over 400 games) | expensive; only if regressions appear | not started |
 | 8 | `value_hidden = 256`, as in AGZ | architecture change, low priority | not started |
 
-Evaluation only (the algorithm unchanged), all not started: 400-game
-matches at temperature 0 (AGZ's evaluation size); a validation loss on
-held-out fresh games each generation; and an outside reference opponent
-over GTP, for example GNU Go.
+Evaluation only (the algorithm unchanged): a validation loss on
+held-out fresh games each generation is merged (`validation_loss`, on by
+default: `val_*` and `seen_*` columns in `log.csv`; see "The validation
+loss" in the main README), with no run measured yet. Not started:
+400-game matches at temperature 0 (AGZ's evaluation size), and an
+outside reference opponent over GTP, for example GNU Go.
 
 ## What did not work
 

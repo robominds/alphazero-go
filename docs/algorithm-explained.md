@@ -502,7 +502,7 @@ void Network::forward(Workspace& ws, const float* input, int B, Mode mode) {
     /* ... policy head, value head and (chapter 06) the ownership head ... */
 }
 ```
-*src/network.cpp:200 — `Network::forward` (abridged)*
+*src/network.cpp:208 — `Network::forward` (abridged)*
 
 With this layout the column matrix of a batch is just wider: M = B·n²
 columns instead of n², and one gemm computes the layer for every sample
@@ -743,7 +743,7 @@ void Network::backward(Workspace& ws, int B) {
     /* ... stem backward; no gradient needed for the input planes ... */
 }
 ```
-*src/network.cpp:326 — `Network::backward` (abridged)*
+*src/network.cpp:334 — `Network::backward` (abridged)*
 
 One memory detail: all 3×3 convolutions share a single `im2col` buffer,
 so by the time the backward pass reaches a convolution its columns have
@@ -1688,9 +1688,8 @@ A sample is a (game, ply) pair, and its planes are rebuilt when it is
 drawn:
 
 ```cpp
-void ReplayBuffer::encodeSample(size_t gameIndex, int ply, int history, int sym,
-                                float* input, float* pi, float* z, float* ownership) const {
-    const GameRecord& g = games_[gameIndex];
+void encodeTrainingSample(const GameRecord& g, int ply, int history, int sym,
+                          float* input, float* pi, float* z, float* ownership) {
     assert(ply >= 0 && ply < g.positions());
     const int n = g.boardSize;
 
@@ -1708,7 +1707,7 @@ void ReplayBuffer::encodeSample(size_t gameIndex, int ply, int history, int sym,
     /* ... the ownership target (end of this chapter) ... */
 }
 ```
-*src/replay_buffer.cpp:54 — `ReplayBuffer::encodeSample` (abridged)*
+*src/replay_buffer.cpp:54 — `encodeTrainingSample` (abridged)*
 
 `sample` draws each of a batch's positions uniformly over all positions
 in the window (so long games contribute more samples, in proportion to
@@ -1809,6 +1808,26 @@ falling after the drop at generation 40, from 0.147 to 0.092 at
 generation 60, while the policy loss stayed flat at 1.73–1.75
 (`docs/results/5x5/log.csv`).
 
+**Learning or memorizing?** Those losses are measured on batches from the
+replay buffer, the very data SGD is fitting, and each position there is
+drawn several times (5.8 on average in the late 9×9 runs). So a falling
+training loss cannot tell better judgment from a closer fit to the
+window. Supervised learning answers that with a held-out set, and
+self-play makes one every generation: the new games, which the network
+has never trained on. With `validation_loss = true` (the default), right
+after self-play and before those games join the buffer, the trainer
+scores the network about to train on them, generation g − 1's, on every
+one of their positions: the same cross-entropy and squared-error terms as
+the training loss, with batch norm in inference mode and no symmetry
+augmentation (`heldOutLoss` in `src/validation.cpp`). It scores the same
+network the same way on as many positions drawn from the buffer it was
+trained on. The gap between the two (`val_*` against `seen_*` in
+`log.csv`) is what fitting those positions bought, plus the difference
+between older games and fresh ones; a gap that widens while the held-out
+loss stalls is overfitting. Nothing feeds back: the algorithm is
+AlphaGo Zero's, unchanged, and every checkpoint is byte-identical with
+the measurement on or off.
+
 **An auxiliary target: ownership.** Every 9×9 network so far fails the
 eye check (`docs/results/README.md`): it rates White's B1, which kills a
 Black group on the bottom edge, about the same as Black's B1, which gives
@@ -1844,7 +1863,7 @@ network, next to its 1,032,349) and is optional (`ownership = true`):
         for (int j = 0; j < M; ++j) ws.ownership_[j] = std::tanh(ws.ownership_[j]);
     }
 ```
-*src/network.cpp:200 — `Network::forward` (abridged)*
+*src/network.cpp:208 — `Network::forward` (abridged)*
 
 The loss gains a third term, the squared error averaged over the n²
 points and weighted by `w = ownership_weight` (1.5 by default):
@@ -1870,7 +1889,7 @@ symmetry moves the input planes:
             ownership[transformPoint(sym, p, n)] = sign * g.finalOwnership[static_cast<size_t>(p)];
     }
 ```
-*src/replay_buffer.cpp:54 — `ReplayBuffer::encodeSample` (abridged)*
+*src/replay_buffer.cpp:54 — `encodeTrainingSample` (abridged)*
 
 Either mistake would teach nonsense without any error: a target from the
 wrong side's view says that every living group is dead, and one that is
@@ -2415,7 +2434,7 @@ GenerationStats Trainer::runGeneration() {
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:497 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:515 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not. The
@@ -2643,7 +2662,7 @@ see again in place.
 | Resignation and its calibration | `resignValue`, `ResignTrace::falsePositiveAt`, `calibrateResignThreshold` — `src/selfplay.cpp:17, 34, 135` |
 | Passes and the end of the game | `Game::play`, `Game::isTerminal` — `src/game.cpp:39, 53` |
 | The value target z | `GameRecord::zAt` — `src/selfplay.cpp:12` |
-| Replay buffer of whole games | `ReplayBuffer::encodeSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:54, 85` |
+| Replay buffer of whole games | `encodeTrainingSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:54, 85` |
 | Symmetry augmentation | `transformPoint`, `transformAction` — `src/symmetry.cpp:6, 21` |
 | Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:112`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:100` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:19` |

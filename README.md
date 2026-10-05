@@ -455,6 +455,61 @@ How it works:
 No reference run used resignation, so nothing here measures what it
 saves.
 
+### The validation loss
+
+The training loss (`policy_loss`, `value_loss` in `log.csv`) is measured
+on batches from the replay buffer, the data SGD is fitting, and each
+position there is drawn several times (the replay ratio). A lower
+training loss can mean better judgment or a closer fit to the buffer;
+the training loss alone cannot tell them apart. Each generation's new
+self-play games are a held-out set for free: the network has never
+trained on them. With `validation_loss = true` (the default; tunable on
+resume) each generation also measures:
+
+- `val_policy_loss`, `val_value_loss`, `val_ownership_loss`: the loss of
+  the network about to train (generation g − 1's, the one that played
+  the games unless gating is on) on every position of generation g's
+  self-play games, measured before those games join the buffer.
+- `seen_policy_loss`, `seen_value_loss`, `seen_ownership_loss`: the same
+  network on as many positions drawn uniformly from the buffer it was
+  trained on (the window as it stood after generation g − 1). Empty at
+  generation 1, or whenever the buffer is still empty.
+
+Both use the training loss's terms: the policy cross-entropy against the
+visit distribution π, (z − v)², and, with the ownership head, the
+unweighted per-point squared error (like `ownership_loss`). Each position
+is shown once, at the identity symmetry, with batch norm in inference
+mode (running statistics, as search uses it). The ownership columns are
+empty without the head. The progress line adds, for example,
+`val p 2.41 v 0.37 seen p 2.36 v 0.31`. An older run's `log.csv` gets the
+six columns, empty, on resume.
+
+How to read them:
+
+- Compare `val_*` with `seen_*` of the same row, not with the training
+  loss. They measure one network the same way; the training loss uses
+  batch statistics and random symmetries, and averages over a network
+  that changes during the generation's steps.
+- `seen` below `val` is how much better the network does on positions
+  it was fitted to. It also includes how much the fresh games differ
+  from the older games in the window, so read it as a trend. A gap that
+  keeps widening while `val` stops falling is overfitting the buffer.
+  Both falling together is learning.
+- The policy loss cannot fall below the entropy of the targets (about
+  1.99 nats on 9×9, `tools/buf.py`), so compare changes, not levels.
+- Generation 1's `val` row measures the random generation-0 network,
+  whose batch-norm running statistics are still their initial values;
+  its numbers are not comparable with later rows.
+
+Nothing feeds back into the run. The pass draws from no generator of
+self-play, training or the arena (the buffer sample has its own,
+`deriveSeed(seed, g, kPhaseValidation)`), changes neither the network nor
+the buffer, and does not depend on the worker count. Checkpoints,
+`state.bin` and the ratings are byte-identical with it on or off. It is a
+forward pass over about twice a generation's new positions: on 9×9
+(6×96 network, BLAS), 69 inference batches of 256 took 8% of the time
+of 200 training steps. Its time is counted in `train_s`.
+
 ## Presets
 
 `configs/5x5.cfg`, `configs/9x9.cfg` and `configs/19x19.cfg`; the comments
@@ -611,6 +666,8 @@ python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-mai
   — the ownership head: an auxiliary per-point target, `grow --ownership` and the analyze map.
 - [`docs/superpowers/specs/2026-10-04-resignation-design.md`](docs/superpowers/specs/2026-10-04-resignation-design.md)
   — resignation in self-play, with AlphaGo Zero's false-positive calibration.
+- [`docs/superpowers/specs/2026-10-05-validation-loss-design.md`](docs/superpowers/specs/2026-10-05-validation-loss-design.md)
+  — the validation loss: the network scored on each generation's fresh games before it trains on them.
 
 `python3 tools/check_citations.py` checks that every `file:line` citation
 in both explainers still points at the quoted definition.

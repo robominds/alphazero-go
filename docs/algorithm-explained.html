@@ -958,7 +958,7 @@ output         12 21 16
         reluForward(buf.out.data(), trunk);
     /* ... policy head, value head and (chapter 06) the ownership head ... */
 }</code></pre>
-<span class="src">src/network.cpp:200 — <code>Network::forward</code> (abridged)</span>
+<span class="src">src/network.cpp:208 — <code>Network::forward</code> (abridged)</span>
 <p>With this layout the column matrix of a batch is just wider: M = B·n² columns instead of n², and one gemm computes the layer for every sample at once. It also makes batch norm, which works one channel at a time, read one contiguous run of B·n² floats per channel.</p>
 <p><strong>Batch norm, and the bug you get if you mix up its two modes.</strong> After each convolution, batch norm rescales every channel to mean 0 and variance 1, then applies a learned scale γ and shift β. It is what makes a deep stack of convolutions trainable at a reasonable learning rate. The question is: mean and variance <em>of what</em>? In training, of the current minibatch, per channel, over all B·n² values:</p>
 <pre><code>void BatchNorm2d::forwardTrain(const float* x, int M, float* y, float* xhat, float* invStd,
@@ -1068,7 +1068,7 @@ output         12 21 16
     }
     /* ... stem backward; no gradient needed for the input planes ... */
 }</code></pre>
-<span class="src">src/network.cpp:326 — <code>Network::backward</code> (abridged)</span>
+<span class="src">src/network.cpp:334 — <code>Network::backward</code> (abridged)</span>
 <p>One memory detail: all 3×3 convolutions share a single <code>im2col</code> buffer, so by the time the backward pass reaches a convolution its columns have been overwritten. The code rebuilds them from the saved input just before use (<code>be.im2col(...)</code> above) — one extra cheap copy per layer instead of keeping 2·blocks + 1 column matrices alive.</p>
 <p><strong>How do you know it is right? Finite differences.</strong> A backprop bug compiles, runs, and often still lowers the loss, just towards a worse network. The defense, as in tic-tac-toe, is to check every analytic gradient against the definition of a derivative: nudge one number by ±h, measure the loss both ways, and compare the slope with what backward reported. <code>tests/test_layers.cpp</code> does this for every entry of every layer's input and parameters, using the loss <code>L = Σ rᵢ yᵢ</code> with random weights <code>r</code>, whose gradient with respect to the layer output is exactly <code>r</code>:</p>
 <pre><code>template &lt;typename LossFn&gt;
@@ -1571,9 +1571,8 @@ A wins 1, B wins 0, draws 3</code></pre>
 <span class="concept">concept — supervised learning on self-generated labels, with a replay buffer</span>
 <p>Once positions carry <code>(π, z)</code> labels, training is ordinary supervised learning on the loss from chapter 01. The Go-specific questions are where the examples live, how they are drawn, and how hard to train on them.</p>
 <p><strong>A replay buffer of whole games.</strong> Tic-tac-toe's buffer held encoded examples. Here an encoded example is 18 planes of n² floats — 26 KB on 19×19 — while the position itself is n² bytes, and the 16 history planes are just the previous 8 positions of the same game. So the buffer stores <strong>whole games</strong> (<code>GameRecord</code>: the moves, one byte per point per position, the sparse visit counts and the result) in a sliding window of at most <code>buffer_positions</code> positions, evicting the oldest games first. A sample is a (game, ply) pair, and its planes are rebuilt when it is drawn:</p>
-<pre><code>void ReplayBuffer::encodeSample(size_t gameIndex, int ply, int history, int sym,
-                                float* input, float* pi, float* z, float* ownership) const {
-    const GameRecord&amp; g = games_[gameIndex];
+<pre><code>void encodeTrainingSample(const GameRecord&amp; g, int ply, int history, int sym,
+                          float* input, float* pi, float* z, float* ownership) {
     assert(ply &gt;= 0 &amp;&amp; ply &lt; g.positions());
     const int n = g.boardSize;
 
@@ -1590,7 +1589,7 @@ A wins 1, B wins 0, draws 3</code></pre>
     *z = g.zAt(ply);
     /* ... the ownership target (end of this chapter) ... */
 }</code></pre>
-<span class="src">src/replay_buffer.cpp:54 — <code>ReplayBuffer::encodeSample</code> (abridged)</span>
+<span class="src">src/replay_buffer.cpp:54 — <code>encodeTrainingSample</code> (abridged)</span>
 <p><code>sample</code> draws each of a batch's positions uniformly over all positions in the window (so long games contribute more samples, in proportion to their length) and gives each its own random symmetry. The windows are sized in generations of play: 100,000 positions on 5×5 is about twelve generations of 200 games of ~40 plies; 200,000 on 9×9 about 25 generations of 100 games of ~80 plies.</p>
 <p><strong>Symmetry augmentation.</strong> Go's rules, and komi, are unchanged if the board is rotated or mirrored, so each position has up to 8 equivalent versions with the same value and correspondingly transformed best moves. Showing the network a random one of the 8 multiplies the data for free:</p>
 <pre><code>int transformPoint(int sym, int point, int n) {
@@ -1631,6 +1630,7 @@ A wins 1, B wins 0, draws 3</code></pre>
 <span class="src">src/optimizer.cpp:19 — <code>SgdMomentum::step</code></span>
 <p>Adding <code>λ·w</code> to the gradient is the same as adding <code>(λ/2)·‖w‖²</code> to the loss. Tic-tac-toe put the penalty in the loss and decayed every parameter; here it lives in the optimizer and applies only to convolution and linear weights (<code>ParamView::decay</code>), the usual choice for networks with batch norm. The velocity buffers are part of the saved training state (chapter 08), so a resumed run continues with the same momentum.</p>
 <p>The learning rate follows a stepped schedule keyed on generation, <code>lr_schedule = 0:0.02,40:0.002</code> on 5×5 and <code>0:0.02,90:0.002</code> on 9×9: fast progress first, finer steps later. On 5×5 seed 1 the value loss kept falling after the drop at generation 40, from 0.147 to 0.092 at generation 60, while the policy loss stayed flat at 1.73–1.75 (<code>docs/results/5x5/log.csv</code>).</p>
+<p><strong>Learning or memorizing?</strong> Those losses are measured on batches from the replay buffer, the very data SGD is fitting, and each position there is drawn several times (5.8 on average in the late 9×9 runs). So a falling training loss cannot tell better judgment from a closer fit to the window. Supervised learning answers that with a held-out set, and self-play makes one every generation: the new games, which the network has never trained on. With <code>validation_loss = true</code> (the default), right after self-play and before those games join the buffer, the trainer scores the network about to train on them, generation g − 1's, on every one of their positions: the same cross-entropy and squared-error terms as the training loss, with batch norm in inference mode and no symmetry augmentation (<code>heldOutLoss</code> in <code>src/validation.cpp</code>). It scores the same network the same way on as many positions drawn from the buffer it was trained on. The gap between the two (<code>val_*</code> against <code>seen_*</code> in <code>log.csv</code>) is what fitting those positions bought, plus the difference between older games and fresh ones; a gap that widens while the held-out loss stalls is overfitting. Nothing feeds back: the algorithm is AlphaGo Zero's, unchanged, and every checkpoint is byte-identical with the measurement on or off.</p>
 <p><strong>An auxiliary target: ownership.</strong> Every 9×9 network so far fails the eye check (<code>docs/results/README.md</code>): it rates White's B1, which kills a Black group on the bottom edge, about the same as Black's B1, which gives the group two eyes. That is a life-and-death judgment, the value head's job, and the value head learns it from one number per position, the game's result <code>z = ±1</code>. That signal is weak in two ways. It is noisy: a position's <code>z</code> also depends on every later move of both sides, so a position that was won gets −1 whenever the game was thrown away afterwards. And it is slow: under Tromp-Taylor rules a dead group only costs points once it has actually been captured (chapter 05), so "this group has one eye" and "this game was lost" can be dozens of moves apart.</p>
 <p>KataGo (David J. Wu, <em>Accelerating Self-Play Learning in Go</em>, 2019, arXiv:1902.10565) trains its network on auxiliary targets next to <code>π</code> and <code>z</code>. The simplest is <strong>ownership</strong>: for every point, who owns it when the game ends. The final board already holds the answer, and chapter 00's <code>Board::ownership</code> computes it, so each game now carries n² labels (<code>GameRecord::finalOwnership</code>, from Black's view) instead of one. Every point of a group that died is labelled with the opponent's color, which is the life-and-death lesson in its most direct form.</p>
 <p>The <strong>ownership head</strong> is the smallest head that can say this: a 1×1 convolution from the trunk's filters to one channel, batch norm, and a <code>tanh</code> at every point, n² numbers in [−1, 1] from the side to move's view, like the value. It has <code>filters</code> + 2 parameters (96 + 2 on the 6×96 network, next to its 1,032,349) and is optional (<code>ownership = true</code>):</p>
@@ -1640,7 +1640,7 @@ A wins 1, B wins 0, draws 3</code></pre>
              ws.ownershipInvStd_.data());
         for (int j = 0; j &lt; M; ++j) ws.ownership_[j] = std::tanh(ws.ownership_[j]);
     }</code></pre>
-<span class="src">src/network.cpp:200 — <code>Network::forward</code> (abridged)</span>
+<span class="src">src/network.cpp:208 — <code>Network::forward</code> (abridged)</span>
 <p>The loss gains a third term, the squared error averaged over the n² points and weighted by <code>w = ownership_weight</code> (1.5 by default):</p>
 <pre><code>L = (z − v)²  −  Σₐ π(a) · log softmax(logits)ₐ  +  w · (1/n²) · Σₚ (ôₚ − oₚ)²</code></pre>
 <p>Through the <code>tanh</code> its gradient is the value head's formula once per point, <code>2w(ô − o)(1 − ô²)</code>, divided by the batch size and n². With <code>w = 0</code> the head exists but nothing trains it. KataGo's own ownership loss differs in its details; the idea is the same.</p>
@@ -1651,7 +1651,7 @@ A wins 1, B wins 0, draws 3</code></pre>
         for (int p = 0; p &lt; n * n; ++p)
             ownership[transformPoint(sym, p, n)] = sign * g.finalOwnership[static_cast&lt;size_t&gt;(p)];
     }</code></pre>
-<span class="src">src/replay_buffer.cpp:54 — <code>ReplayBuffer::encodeSample</code> (abridged)</span>
+<span class="src">src/replay_buffer.cpp:54 — <code>encodeTrainingSample</code> (abridged)</span>
 <p>Either mistake would teach nonsense without any error: a target from the wrong side's view says that every living group is dead, and one that is not moved with the planes puts each point's label on another point. <code>tests/test_replay_buffer.cpp</code> checks both by hand on small games, for all 8 symmetries.</p>
 <p>Search does not read the head; MCTS still asks only for the policy and the value. The head's effect is on the shared trunk: features that predict which groups live are the features the value head was missing. Two tools make it usable on existing runs. <code>grow --ownership</code> adds a fresh head to a trained checkpoint without changing what it plays, and a replay buffer saved before ownership existed gets its targets by replaying each game's moves (<code>replayFinalOwnership</code>), so an old run can still donate its games.</p>
 <p><strong>The experiment.</strong> A run of 50 generations with the head (<code>ownership = true</code>, weight 1.5), started from the same 6×96 network and replay buffer as the 200-simulation run of the simulations experiment and otherwise identical to it, scored 55/100 against that run's generation 50: 95% interval 0.452–0.644, no measurable difference (<code>docs/results/9x9-ownership/own50-vs-s200g50.txt</code>). The eye check still fails: B1 is not among the ten most visited moves at 200 or 800 simulations (<code>docs/results/9x9-ownership/eye-own50-s200.txt</code>, <code>eye-own50-s800.txt</code>). But the head reads the group. Here is the eye position after Black plays elsewhere (C6) and White kills with B1, with generation 50's ownership map (<code>docs/results/9x9-ownership/eye-own50-killed.txt</code>):</p>
@@ -2009,7 +2009,7 @@ A wins 4, B wins 0, draws 0</code></pre>
         });
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }</code></pre>
-<span class="src">src/trainer.cpp:497 — <code>Trainer::runGeneration</code> (abridged)</span>
+<span class="src">src/trainer.cpp:515 — <code>Trainer::runGeneration</code> (abridged)</span>
 <p><code>parallelFor</code> hands out indices from an atomic counter; which worker plays game 17 varies from run to run, but game 17 itself does not. The row split in the naive gemm keeps the arithmetic identical too:</p>
 <pre><code>void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alpha,
                         const float* A, const float* B, float beta, float* C) const {
@@ -2124,11 +2124,11 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Batch norm, training vs. inference</dt>
   <dd><code>BatchNorm2d::forwardTrain</code>, <code>BatchNorm2d::forwardInfer</code>, <code>BatchNorm2d::backward</code> <span class="loc">— src/layers.cpp:85, 74, 119</span></dd>
   <dt>Residual ResNet, policy and value heads</dt>
-  <dd><code>Network::forward</code>, <code>Network::backward</code> <span class="loc">— src/network.cpp:200, 326</span></dd>
+  <dd><code>Network::forward</code>, <code>Network::backward</code> <span class="loc">— src/network.cpp:208, 334</span></dd>
   <dt>Growing a network (deeper or wider) without changing its function</dt>
   <dd><code>growBlocks</code>, <code>widenFilters</code> <span class="loc">— src/grow.cpp:17, 159</span></dd>
   <dt>The loss</dt>
-  <dd><code>Network::loss</code>, <code>Network::trainStep</code> <span class="loc">— src/network.cpp:276, 183</span></dd>
+  <dd><code>Network::loss</code>, <code>Network::trainStep</code> <span class="loc">— src/network.cpp:284, 183</span></dd>
   <dt>Gradient checking</dt>
   <dd><code>checkGradient</code> <span class="loc">— tests/test_layers.cpp:36</span></dd>
   <dt>PUCT selection</dt>
@@ -2156,7 +2156,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>The value target z</dt>
   <dd><code>GameRecord::zAt</code> <span class="loc">— src/selfplay.cpp:12</span></dd>
   <dt>Replay buffer of whole games</dt>
-  <dd><code>ReplayBuffer::encodeSample</code>, <code>ReplayBuffer::sample</code> <span class="loc">— src/replay_buffer.cpp:54, 85</span></dd>
+  <dd><code>encodeTrainingSample</code>, <code>ReplayBuffer::sample</code> <span class="loc">— src/replay_buffer.cpp:54, 97</span></dd>
   <dt>Symmetry augmentation</dt>
   <dd><code>transformPoint</code>, <code>transformAction</code> <span class="loc">— src/symmetry.cpp:6, 21</span></dd>
   <dt>Ownership, an auxiliary target</dt>
@@ -2176,9 +2176,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Wilson intervals</dt>
   <dd><code>wilsonInterval</code> <span class="loc">— src/elo.cpp:184</span></dd>
   <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
-  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:109, 82</span></dd>
+  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:116, 89</span></dd>
   <dt>One generation</dt>
-  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:497</span></dd>
+  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:515</span></dd>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
@@ -2186,7 +2186,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
-  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:30</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:426</span></dd>
+  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:30</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:444</span></dd>
   <dt>Inspecting a position</dt>
   <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:77, 117</span></dd>
 </dl>
