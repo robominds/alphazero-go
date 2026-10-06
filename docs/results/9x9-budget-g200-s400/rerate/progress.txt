@@ -1,0 +1,52 @@
+rerate calibration | ref1 vs 0: 0.26 of 80 games, elo -176.8
+rerate gen 1 | elo 64.4 vs 0:0.65 ref1:0.75 63.0s
+rerate gen 2 | elo 3.4 vs 1:0.60 0:0.50 ref1:0.60 75.5s
+rerate gen 3 | elo 1.1 vs 2:0.40 0:0.50 ref1:0.80 65.7s
+rerate gen 4 | elo 65.1 vs 3:0.50 0:0.70 ref1:0.75 71.1s
+rerate gen 5 | elo -53.9 vs 4:0.45 0:0.45 ref1:0.50 69.7s
+rerate gen 6 | elo 41.9 vs 5:0.50 0:0.70 ref1:0.70 69.6s
+rerate gen 7 | elo -10.4 vs 6:0.55 0:0.50 ref1:0.55 76.1s
+rerate gen 8 | elo -36.0 vs 7:0.55 0:0.45 ref1:0.55 74.7s
+rerate gen 9 | elo 35.3 vs 8:0.60 0:0.70 ref1:0.55 80.8s
+rerate gen 10 | elo 7.3 vs 9:0.50 0:0.45 ref1:0.70 72.9s
+rerate gen 11 | elo -21.1 vs 10:0.55 0:0.30 ref1:0.75 76.9s
+rerate gen 12 | elo 39.9 vs 11:0.70 0:0.55 ref1:0.65 77.9s
+rerate gen 13 | elo 64.2 vs 12:0.75 0:0.45 ref1:0.75 79.2s
+rerate gen 14 | elo 31.5 vs 13:0.60 0:0.55 ref1:0.60 72.8s
+rerate gen 15 | elo 17.3 vs 14:0.45 0:0.45 ref1:0.80 73.8s
+rerate gen 16 | elo -2.6 vs 15:0.35 0:0.60 ref1:0.65 79.6s
+rerate gen 17 | elo 68.5 vs 16:0.60 0:0.75 ref1:0.60 76.2s
+rerate gen 18 | elo 47.6 vs 17:0.45 0:0.65 ref1:0.65 76.0s
+rerate gen 19 | elo 52.2 vs 18:0.50 0:0.65 ref1:0.65 77.3s
+rerate gen 20 | elo 38.0 vs 19:0.70 0:0.45 ref1:0.65 91.5s
+rerate gen 21 | elo 98.6 vs 20:0.55 0:0.65 ref1:0.80 92.2s
+rerate gen 22 | elo -16.4 vs 21:0.40 0:0.50 ref1:0.55 87.8s
+rerate gen 23 | elo 48.2 vs 22:0.65 0:0.50 ref1:0.75 85.7s
+rerate gen 24 | elo 36.2 vs 23:0.50 0:0.45 ref1:0.80 88.0s
+rerate gen 25 | elo 74.2 vs 24:0.40 0:0.85 ref1:0.85 promoted 377.6s
+rerate gen 26 | elo 51.1 vs 25:0.35 ref1:0.70 0:0.70 171.2s
+rerate gen 27 | elo 87.1 vs 26:0.55 25:0.50 ref1:0.75 0:0.65 222.4s
+rerate gen 28 | elo 71.2 vs 27:0.45 25:0.45 ref1:0.80 0:0.60 141.4s
+rerate gen 29 | elo 107.6 vs 28:0.65 25:0.45 ref1:0.85 0:0.60 122.0s
+rerate gen 30 | elo 112.2 vs 29:0.30 25:0.60 0:0.75 ref1:0.80 115.5s
+rerate gen 31 | elo 93.0 vs 30:0.55 25:0.45 0:0.65 ref1:0.75 110.9s
+rerate gen 32 | elo 85.5 vs 31:0.45 25:0.45 ref1:0.70 0:0.75 174.9s
+rerate gen 33 | elo 134.5 vs 32:0.60 25:0.55 ref1:0.90 0:0.60 186.8s
+rerate gen 34 | elo 146.2 vs 33:0.55 25:0.70 0:0.65 ref1:0.75 190.8s
+rerate gen 35 | elo 86.8 vs 34:0.50 25:0.35 0:0.85 ref1:0.60 133.9s
+rerate gen 36 | elo 66.0 vs 35:0.40 25:0.55 ref1:0.75 0:0.55 109.8s
+rerate gen 37 | elo 110.2 vs 36:0.65 25:0.35 ref1:0.90 0:0.65 106.4s
+rerate gen 38 | elo 75.4 vs 37:0.55 25:0.50 0:0.60 ref1:0.65 119.7s
+rerate gen 39 | elo 62.2 vs 38:0.50 25:0.35 ref1:0.75 0:0.65 175.2s
+rerate gen 40 | elo 75.4 vs 39:0.50 25:0.65 ref1:0.65 0:0.55 189.1s
+rerate gen 41 | elo 144.4 vs 40:0.55 25:0.70 ref1:0.75 0:0.70 160.4s
+rerate gen 42 | elo 189.2 vs 41:0.65 25:0.65 0:0.80 ref1:0.75 104.2s
+rerate gen 43 | elo 184.1 vs 42:0.50 25:0.80 0:0.70 ref1:0.75 107.4s
+rerate gen 44 | elo 51.7 vs 43:0.25 25:0.60 0:0.45 ref1:0.75 106.2s
+rerate gen 45 | elo 18.6 vs 44:0.40 25:0.50 ref1:0.60 0:0.55 153.9s
+rerate gen 46 | elo 77.8 vs 45:0.55 25:0.60 ref1:0.75 0:0.55 176.5s
+rerate gen 47 | elo 123.5 vs 46:0.50 25:0.65 ref1:0.65 0:0.80 191.3s
+rerate gen 48 | elo 155.7 vs 47:0.45 25:0.80 0:0.70 ref1:0.75 158.9s
+rerate gen 49 | elo 117.8 vs 48:0.55 25:0.50 0:0.60 ref1:0.85 105.6s
+rerate gen 50 | elo 47.2 vs 49:0.70 25:0.35 0:0.55 ref1:0.60 106.7s
+done: re-rated generations 1-50 of runs/9x9-budget-g200-s400

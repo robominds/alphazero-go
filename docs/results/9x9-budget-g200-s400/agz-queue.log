@@ -1,0 +1,13 @@
+temp7 start Sun Oct  4 22:23:04 PDT 2026
+temp7 train exit 0 Mon Oct  5 10:19:41 PDT 2026
+temp7 g25-vs-control-g25: A runs/9x9-temp7/checkpoints/gen_0025.azn vs B runs/9x9-sims200/checkpoints/gen_0025.azn: A scored 220/400 = 0.550 (95% CI 0.501-0.598), distinct games 381
+temp7 g50-vs-control-g50: A runs/9x9-temp7/checkpoints/gen_0050.azn vs B runs/9x9-sims200/checkpoints/gen_0050.azn: A scored 242/400 = 0.605 (95% CI 0.556-0.652), distinct games 377
+temp7 g50-vs-start: A runs/9x9-temp7/checkpoints/gen_0050.azn vs B runs/9x9-wide96/checkpoints/gen_0050.azn: A scored 253/400 = 0.632 (95% CI 0.584-0.678), distinct games 387
+temp7 all done Mon Oct  5 11:59:50 PDT 2026
+budget-g200-s400 start Mon Oct  5 11:59:50 PDT 2026
+budget-g200-s400 train exit 0 Tue Oct  6 00:56:48 PDT 2026
+budget-g200-s400 g25-vs-control-g25: A runs/9x9-budget-g200-s400/checkpoints/gen_0025.azn vs B runs/9x9-sims200/checkpoints/gen_0025.azn: A scored 256/400 = 0.640 (95% CI 0.592-0.686), distinct games 358
+budget-g200-s400 g50-vs-control-g50: A runs/9x9-budget-g200-s400/checkpoints/gen_0050.azn vs B runs/9x9-sims200/checkpoints/gen_0050.azn: A scored 237/400 = 0.593 (95% CI 0.544-0.640), distinct games 363
+budget-g200-s400 g50-vs-start: A runs/9x9-budget-g200-s400/checkpoints/gen_0050.azn vs B runs/9x9-wide96/checkpoints/gen_0050.azn: A scored 264/400 = 0.660 (95% CI 0.612-0.705), distinct games 378
+budget-g200-s400 all done Tue Oct  6 01:38:13 PDT 2026
+queue done Tue Oct  6 01:38:13 PDT 2026

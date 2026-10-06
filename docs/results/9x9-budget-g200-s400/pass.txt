@@ -1,0 +1,4 @@
+runs/9x9-budget-g200-s400/state.bin games 2295 black win 0.229
+first passer wins 0.843 of 2295 games; games w/o pass 0
+mean plies after first pass 31.3
+non-final passes by eventual winner 16884, by loser 766
