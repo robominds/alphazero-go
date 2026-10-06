@@ -1,0 +1,4 @@
+init_from = runs/9x9-wide96/checkpoints/gen_0050.azn
+buffer_from = runs/9x9-wide96
+buffer_positions = 199972
+buffer_games = 2272

@@ -1,0 +1,6 @@
+sym start Mon Oct  5 02:34:29 PDT 2026
+sym train exit 0 Mon Oct  5 15:27:19 PDT 2026
+sym g25-vs-control-g25: A runs/9x9-sym/checkpoints/gen_0025.azn vs B runs/9x9-sims200/checkpoints/gen_0025.azn: A scored 222/400 = 0.555 (95% CI 0.506-0.603), distinct games 380
+sym g50-vs-control-g50: A runs/9x9-sym/checkpoints/gen_0050.azn vs B runs/9x9-sims200/checkpoints/gen_0050.azn: A scored 198/400 = 0.495 (95% CI 0.446-0.544), distinct games 376
+sym g50-vs-start: A runs/9x9-sym/checkpoints/gen_0050.azn vs B runs/9x9-wide96/checkpoints/gen_0050.azn: A scored 258/400 = 0.645 (95% CI 0.597-0.690), distinct games 388
+sym all done Mon Oct  5 16:44:27 PDT 2026
