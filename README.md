@@ -339,6 +339,12 @@ independent of the worker count. Both keys are tunable: `--resume` and
 reproduces its `results.csv`. Every preset leaves both off; `configs/9x9.cfg`
 lists them commented out.
 
+In the 9×9 measurements, the symmetries made the search stronger at
+play time (about +40 Elo at 200 simulations, +60 at 800), but a
+training arm with `mcts_random_symmetry = true` trained no measurably
+stronger network than its control over 50 generations; see
+[Random symmetry in self-play](docs/results/README.md#random-symmetry-in-self-play).
+
 To measure what the symmetries are worth before turning a key on, play a
 checkpoint against itself with them on one side only. Both sides have the
 same network and the same budget, so A's score away from 0.5 is the
@@ -709,8 +715,7 @@ From `docs/results/README.md`, which has the details and the sources.
   against itself, 400 games, one setting changed on one side. Random
   symmetry in search scored 0.557 at 200 simulations (interval
   0.509–0.605, about +40 Elo) and 0.585 at 800 (+60): stronger play,
-  not yet shown to train better (a self-play run has finished; its
-  write-up waits for its re-rate).
+  but not a better-trained network (see the symmetry arm below).
   `c_puct` 0.75 to 1.25 was within noise of the preset 1.5, while 2.0
   and 3.0 were clearly worse; a batch of 1 against 8 was +30 Elo, not
   significant, so the presets' `c_puct` and batch stay (see
@@ -735,6 +740,17 @@ From `docs/results/README.md`, which has the details and the sources.
   at 232/400 (+56 Elo), against +100 and +94 for the two arms; the
   re-rate against gen 200 agrees in direction, within its ±40 noise (see
   [the section](docs/results/README.md#seven-opening-moves-at-temperature-temperature_moves--7)).
+- **9×9, random symmetry in self-play.** The `sims200` control's settings
+  plus `mcts_random_symmetry = true` trained no measurably stronger
+  network: 198/400 against the control at generation 50 (0.495,
+  interval 0.446–0.544) and level with it on the re-rate against gen
+  200, with almost the same data (target entropy 1.969 nats against
+  1.948). Its other single-checkpoint matches, 222/400 at generation 25
+  and 258/400 against the start (+104, against the control's +56),
+  show how much one checkpoint can vary. The setting costs nothing, but
+  its play-time gain did not become a training gain; for play strength,
+  use the symmetries at evaluation (see
+  [the section](docs/results/README.md#random-symmetry-in-self-play)).
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is
