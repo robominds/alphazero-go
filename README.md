@@ -704,8 +704,10 @@ From `docs/results/README.md`, which has the details and the sources.
   56/100 at 50, interval 0.462–0.653), not clearly real, for 1.59× the time.
   The run kept 200 training steps per generation, so its replay ratio fell
   from 5.8 to 2.9: it tested fresher data, not more learning, and does not
-  show that data quantity is not the bottleneck. A run with 200 games and
-  400 steps is running (see [the section](docs/results/README.md#more-self-play-games-per-generation-200-vs-100)).
+  show that data quantity is not the bottleneck (see
+  [the section](docs/results/README.md#more-self-play-games-per-generation-200-vs-100)).
+  A run with 200 games and 400 steps, which keeps the ratio, did gain;
+  see the learning-budget bullet below.
 - **9×9, learning-rate restart.** Restarting the learning rate at 0.02 and
   stepping it down to 0.006 and 0.002, instead of a flat 0.002, put the run
   behind the control at generation 25 (36/100, interval 0.273–0.458) and
@@ -751,6 +753,20 @@ From `docs/results/README.md`, which has the details and the sources.
   its play-time gain did not become a training gain; for play strength,
   use the symmetries at evaluation (see
   [the section](docs/results/README.md#random-symmetry-in-self-play)).
+- **9×9, the learning budget.** The `sims200` control's settings with
+  twice the games and twice the SGD steps per generation (200 games and
+  400 steps, so the replay ratio stays at the control's 5.8) beat the
+  control 256/400 at generation 25 (0.640, interval 0.592–0.686, about
+  +100 Elo) and 237/400 at 50 (0.593, interval 0.544–0.640, +65), and
+  gained the most over the start of the post-250 arms (264/400, +115,
+  against the control's +56). The games run, which differs from it only
+  in taking 200 steps, showed no clear gain, so this points at the SGD
+  steps as the binding constraint. It is not a free win: it costs twice
+  the compute per generation, and at equal compute the re-rate against
+  gen 200 puts it level with the control. A steps-only arm (100 games,
+  400 steps) and a combined arm (`temperature_moves = 7`, resignation,
+  200 games, 400 steps, 100 generations) are running, with no results
+  yet (see [the section](docs/results/README.md#the-learning-budget-200-games-and-400-steps-per-generation)).
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is
