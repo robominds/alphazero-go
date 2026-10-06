@@ -454,8 +454,11 @@ How it works:
   reason, `--buffer-from` refuses to seed a run with the ownership head
   from a buffer that holds resigned games.
 
-No reference run used resignation, so nothing here measures what it
-saves.
+One 9×9 training arm used it: at the defaults, 98% of the games with
+resignation enabled were resigned, at a false-positive rate of about
+4%, and the games were 53% shorter (41.4 plies against 88.3). See
+[Resignation in self-play](docs/results/README.md#resignation-in-self-play)
+for what that did to strength, and why the result is confounded.
 
 ### The validation loss
 
@@ -696,7 +699,7 @@ From `docs/results/README.md`, which has the details and the sources.
   The run kept 200 training steps per generation, so its replay ratio fell
   from 5.8 to 2.9: it tested fresher data, not more learning, and does not
   show that data quantity is not the bottleneck. A run with 200 games and
-  400 steps is queued (see [the section](docs/results/README.md#more-self-play-games-per-generation-200-vs-100)).
+  400 steps is running (see [the section](docs/results/README.md#more-self-play-games-per-generation-200-vs-100)).
 - **9×9, learning-rate restart.** Restarting the learning rate at 0.02 and
   stepping it down to 0.006 and 0.002, instead of a flat 0.002, put the run
   behind the control at generation 25 (36/100, interval 0.273–0.458) and
@@ -706,11 +709,32 @@ From `docs/results/README.md`, which has the details and the sources.
   against itself, 400 games, one setting changed on one side. Random
   symmetry in search scored 0.557 at 200 simulations (interval
   0.509–0.605, about +40 Elo) and 0.585 at 800 (+60): stronger play,
-  not yet shown to train better (a self-play run is in progress).
+  not yet shown to train better (a self-play run has finished; its
+  write-up waits for its re-rate).
   `c_puct` 0.75 to 1.25 was within noise of the preset 1.5, while 2.0
   and 3.0 were clearly worse; a batch of 1 against 8 was +30 Elo, not
   significant, so the presets' `c_puct` and batch stay (see
   [the section](docs/results/README.md#arena-screens-of-alphago-zero-search-settings)).
+- **9×9, resignation (AlphaGo Zero's).** The `sims200` control's
+  settings plus `resignation = true` beat the control 238/400 at generation 50
+  (0.595, interval 0.546–0.642, about +67 Elo) and 227/400 at 25, with
+  self-play games 53% shorter (41.4 plies against 88.3) and a
+  false-positive rate of 0.041. The gain cannot be put down to
+  resignation alone: with the same 200 training steps per generation on
+  half the positions, the replay ratio rose from 5.8 to 12.5 and the
+  buffer spanned about 48 generations instead of 23, and most
+  after-pass positions were gone (see
+  [the section](docs/results/README.md#resignation-in-self-play)).
+- **9×9, `temperature_moves = 7`.** Sampling the first 7 self-play moves
+  instead of 20 (AlphaGo Zero's 30 of 361 points scaled to 81) beat the
+  control 242/400 at generation 50 (0.605, interval 0.556–0.652, about
+  +74 Elo) and 220/400 at 25, with nothing else changed, the same data
+  volume and the same replay ratio: the cleanest single-change result of
+  the post-250 runs, and a candidate for the 9×9 presets, which are
+  unchanged. A 400-game match puts the control's own gain over the start
+  at 232/400 (+56 Elo), against +100 and +94 for the two arms; the
+  re-rate against gen 200 agrees in direction, within its ±40 noise (see
+  [the section](docs/results/README.md#seven-opening-moves-at-temperature-temperature_moves--7)).
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is

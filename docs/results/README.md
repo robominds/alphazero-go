@@ -417,7 +417,7 @@ three have since been tested; each says where.
   edge, not clearly real, at 1.6× the time; see
   [the section](#more-self-play-games-per-generation-200-vs-100). That run
   kept 200 training steps, halving the replay ratio to 2.9, so it tested
-  fresher data, not more learning; 200 games with 400 steps is queued.
+  fresher data, not more learning; 200 games with 400 steps is running.
 - A targeted analysis of why the eye shape is rare in self-play: if the
   network never reaches such positions, no amount of capacity adds the
   training signal.
@@ -545,6 +545,12 @@ alternating; 95% Wilson intervals as `arena` prints them; Elo is
 | 400 vs 200, gen 25 (`s400g25-vs-s200g25.txt`) | 61/100 | 0.512-0.700 | +78 (+8 to +147) |
 | 400 gen 50 vs start (`s400g50-vs-start.txt`) | 61/100 | 0.512-0.700 | +78 (+8 to +147) |
 | 200 gen 50 vs start (`s200g50-vs-start.txt`) | 64/100 | 0.542-0.727 | +100 (+29 to +170) |
+
+A later 400-game match of the 200 arm's generation 50 against the start
+scored 232/400 = 0.580 (0.531-0.627, +56 Elo;
+`s200g50-vs-start-400.txt`), which replaces the 64/100 as the control's
+gain over the start; see
+[AlphaGo Zero training arms](#alphago-zero-training-arms-setup-and-the-control-at-400-games).
 
 **Eye check** (the 14-move position of the earlier eye checks, generation
 50 of each arm, `eye-*.txt`). Still failing in all four analyses: B1 is
@@ -805,18 +811,21 @@ log. Paths in the copied script, log and CSVs were made repo-relative.
 | ownership | +85 | +105 | +140 | 0.26 of 80 games |
 | games200 (200 games per generation; added later) | +101 | +49 | +88 | 0.26 of 80 games |
 | lr-restart (learning rate 0.02 → 0.006 → 0.002; added later) | +105 | +182 | +126 | 0.26 of 80 games |
+| resign (`resignation = true`; added later) | +144 | +146 | +201 | 0.26 of 80 games |
+| temp7 (`temperature_moves = 7`; added later) | +105 | +151 | +175 | 0.26 of 80 games |
 
 (`ref1` scored 29/80 against gen 0 of wide96 and grow10 and 21/80 against
 the other runs, which share a start; the table is `elo.csv` minus
 `references.csv` in each run's folder: `9x9-ref200/<run>/` for the first
-five rows, `9x9-games200/rerate/` and `9x9-lr-restart/rerate/` for the
-rows added later, which were re-rated the same way after their runs.)
+five rows, `9x9-games200/rerate/`, `9x9-lr-restart/rerate/`,
+`9x9-resign/rerate/` and `9x9-temp7/rerate/` for the rows added later,
+which were re-rated the same way after their runs.)
 
 Reading it, honestly:
 
 - **The noise is about ±40 Elo.** The same network (wide96 gen 50) is
-  +131 as the last generation of the wide96 run but +85 to +105 as the
-  start of the sims200, sims400 and ownership runs. Differences between
+  +131 as the last generation of the wide96 run but +85 to +144 as the
+  start of the runs from it (+144 in the resign run, +104 in sims200). Differences between
   runs under about 50 Elo are not meaningful.
 - **The scale is compressed.** Gen 250, the start of wide96 and grow10,
   shows only about +50 to +60 over gen 200 here, but it beat gen 200
@@ -828,6 +837,12 @@ Reading it, honestly:
 - **Conclusion.** Every post-250 experiment gained a similar, modest
   amount in 50 generations, and none stands clear of the noise. That
   agrees with the direct 100-game matches reported in the sections above.
+  The two AlphaGo Zero arms added later (resign, temp7) are the highest
+  at generation 50, +201 and +175 against the control's +132, and their
+  400-game matches against the control exclude 0.5 (about +70 Elo each;
+  see their sections). Even so, every post-250 run's gain is modest
+  next to this table's noise, and resign's lead is partly the noise in
+  its start (+144).
 - **They all had the same learning budget.** Every run in the table
   took 200 SGD steps of 256 positions per generation, 10,000 steps in
   50 generations, at a learning rate of 0.002 (the lr-restart run took
@@ -854,7 +869,7 @@ often. What the run tested is fresher data at half the replay ratio, not
 more data with more learning, so it does **not** show that data quantity
 is not the bottleneck; an earlier version of this section said it did.
 The test that keeps the replay ratio constant, 200 games and 400
-training steps per generation (`runs/9x9-budget-g200-s400`), is queued
+training steps per generation (`runs/9x9-budget-g200-s400`), is running
 and has no result yet (item 4 in [Next experiments](#next-experiments)).
 
 - *Setup.* The control is `9x9-sims/sims200/` (generation 50 of
@@ -1075,9 +1090,10 @@ Reading it, honestly:
   simulations (+60) is larger than at 200 (+40), but the intervals
   overlap, so this does not show that it grows with the budget. This is
   search strength at play time; it is **not yet evidence that it helps
-  training**. That is the self-play arm, running as `runs/9x9-sym`: the
-  `sims200` control's start, seed and settings plus
-  `mcts_random_symmetry = true`, evaluated with 400-game matches.
+  training**. That is the self-play arm `runs/9x9-sym`: the `sims200`
+  control's start, seed and settings plus `mcts_random_symmetry = true`,
+  evaluated with 400-game matches. Its training and matches are done;
+  the write-up waits for its re-rate.
 - **`c_puct`: flat from 0.75 to 1.5, worse above.** 0.75, 1.0 and 1.25
   are all within about 20 Elo of the preset, and every interval includes
   0.5; 2.0 (−45) and 3.0 (−102) are clearly worse. The preset 1.5 is at
@@ -1098,6 +1114,276 @@ smaller effect than about ±35 Elo would not show at 400 games. Six
 tuning matches were run, so one interval excluding 0.5 by chance would
 not be surprising; the two that do (2.0 and 3.0) agree with each other
 in direction and size.
+
+### AlphaGo Zero training arms: setup and the control at 400 games
+
+Two training arms from the [Next experiments](#next-experiments) list
+(items 1 and 3), each the `sims200` control plus one AlphaGo Zero
+setting: resignation, and fewer opening moves at temperature. Both
+beat the control at generation 50 by about +70 Elo, with intervals that
+exclude 0.5. The resignation result is confounded by how much less data
+it makes; the temperature result is the cleaner one. Details in the two
+sections below.
+
+- *Setup, common to both arms.* The control is `9x9-sims/sims200/`
+  (start: the 6×96 generation 50 of `9x9-wide96` and its buffer of
+  199,972 positions from 2,272 games; 200 simulations, 100 games and 200
+  training steps of 256 positions per generation, learning rate 0.002,
+  seed 1, the 100-simulation bot in the training arena, 50 generations).
+  Each arm is the same command plus one `--set`
+  (`agz-experiment.sh`, `agz-experiment2.sh`; the second differs only in
+  taking the binary directory from `B`). Each arm's `config.cfg` differs
+  from the control's only in that setting (for resignation, with its
+  other `resign_*` keys at their defaults), apart from keys added to the
+  code since the control ran, at their defaults (`ownership`,
+  `ownership_weight`, `reference_networks`, and for the resignation arm
+  `mcts_random_symmetry` and `arena_random_symmetry`). Like the control,
+  neither binary had `validation_loss` yet.
+- *Matches.* 400 games per match (the earlier sections used 100), 200
+  simulations for both sides, komi 7.5, colors alternating, arena's
+  default opening temperature (4 plies), made by the script after
+  training: generation 25 against the control's generation 25,
+  generation 50 against the control's generation 50, and generation 50
+  against the start. At 400 games an even match's interval is about ±35
+  Elo. Opening temperature keeps the games apart, but not entirely: 347
+  to 387 of each 400 were distinct.
+- *Re-rate.* Both arms were then re-rated against generation 200 of
+  `9x9-main` exactly like the other post-250 runs (`rerate-arms.sh` and
+  its log; `rerate/` in each folder). See the rows added to
+  [the all-runs table](#all-post-250-runs-against-one-reference-gen-200).
+- *Cost.* Wall times in these runs' `log.csv` are not comparable with the
+  control's or with each other: the two arms ran at the same time, with
+  the random-symmetry self-play arm (`runs/9x9-sym`) and the arena screens
+  above, so three or four jobs shared the CPU (the control's training
+  took 94.4 s per generation; the resignation arm's 274.3 s and the
+  temperature arm's 244.8 s, for the same 200 steps). Plies per game
+  are used below instead.
+- *Sources.* `docs/results/9x9-resign/` and `docs/results/9x9-temp7/`:
+  `log.csv`, `elo.csv`, `results.csv`, `references.csv`, `config.cfg`,
+  `init.txt`, `progress.txt`, the three match files, the scripts and
+  their logs, `rerate/`, and `buf.txt`, `pass.txt` and `side.txt`, the
+  output of `tools/buf.py`, `tools/pass.py` and `tools/side.py` on each
+  finished run's `state.bin` (the buffer at generation 50; the same for
+  the control in `9x9-sims/sims200/`). Absolute paths are made
+  repo-relative. One seed per arm.
+
+**The control against its start, at 400 games.** The control's
+generation 50 against the start scored **232/400 = 0.580** (95% interval
+0.531-0.627, +56 Elo, +22 to +90; `9x9-sims/s200g50-vs-start-400.txt`,
+made after the arms finished; the command was not saved, and the
+file is `arena`'s output). This replaces the 64/100 (0.542-0.727, +100)
+quoted against the start in the sections above; the two agree within
+their intervals. It puts the three runs on one scale against the start:
+
+| generation 50 against the start | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| control (`9x9-sims/s200g50-vs-start-400.txt`) | 232/400 = 0.580 | 0.531-0.627 | +56 (+22 to +90) |
+| resignation (`9x9-resign/g50-vs-start.txt`) | 256/400 = 0.640 | 0.592-0.686 | +100 (+65 to +136) |
+| `temperature_moves = 7` (`9x9-temp7/g50-vs-start.txt`) | 253/400 = 0.632 | 0.584-0.678 | +94 (+59 to +129) |
+
+The scale is not exactly transitive: the control's +56 plus each arm's
+margin over the control at generation 50 (+67, +74; below) predicts +123
+and +130 against the start, where the direct matches give +100 and +94.
+The gaps, about 25 to 35 Elo, are within the intervals. A single
+checkpoint also carries variance from one generation to the next that a
+binomial interval does not include: the random-symmetry arm's generation
+50 (not written up yet; see Next experiments) scored 0.645 against the
+start but 0.495 against the control's generation 50, about 50 Elo off
+what the control's +56 would predict. The re-rate's curve over many
+generations is the check on that.
+
+### Resignation in self-play
+
+Hypothesis, from finding 2 of [Next experiments](#next-experiments):
+35% of buffer positions come at or after the first pass, mostly the
+loser playing on in a lost game. AlphaGo Zero resigned such games (Silver
+et al. 2017, Methods, "Self-play"; see "Resignation" in the main
+README): v_resign is calibrated so that at most 5% of the games played
+out with resignation disabled (10% of games) would have been resigned by
+their eventual winner. That saves self-play work and drops positions
+whose targets say little. The result: the arm beat the control
+(59.5% at generation 50) and roughly halved the plies per game, but it
+also changed how much the network trains on each position, so the gain
+cannot be put down to resignation alone.
+
+- *Setup.* `9x9-resign/`: the control plus `resignation = true`, with
+  the defaults `resign_threshold_initial = -0.9`,
+  `resign_disabled_fraction = 0.1`, `resign_false_positive = 0.05`,
+  `resign_window = 500`, `resign_min_games = 20` (`resign-arm.sh`,
+  binary `runs/bin-resign`).
+- *Resignation behaviour* (`log.csv`, generations 1–50). v_resign was
+  the initial −0.90 for generations 1–2 and −0.88 from then on (once
+  −0.87). The false-positive rate over the window was 0.041 on average
+  (at most 0.050, within the 5% target). Of the games with resignation
+  enabled, 98.0% were resigned (93.9% to 100% per generation): almost
+  every game the loser could resign, it did. Black resigned 3,498 of the
+  4,267 resigned games in the final buffer (`pass.txt`).
+- *Game length.* A mean of **41.4 plies** per game (32.6 to 49.7 per
+  generation) against the control's 88.3, counting the 10% played out
+  to the end: 47% of the control's positions, and so of its network
+  evaluations, per game. In the final buffer the resigned games average
+  36.5 plies (`buf.txt`: 4,267 games, 155,611 positions). The review's
+  estimate before the run was a saving of about 30%; the measured saving
+  in plies is 53%.
+- *What the buffer holds* (`buf.txt` and `pass.txt` against the
+  control's, both at generation 50):
+
+  | | control | resignation |
+  |---|---|---|
+  | games in the 200,000-position buffer | 2,261 | 4,843 |
+  | positions at or after the first pass | 36.3% | 12.2% |
+  | the same, played-out games only | 36.3% | 35.9% |
+  | opening positions (plies 0–19) | 22% | 43% |
+  | middle game (ply 20 to the first pass) | 42% | 45% |
+  | mean target entropy (nats) | 1.948 | 1.900 |
+
+  Resignation removed most of the after-pass positions of finding 2,
+  as intended, and in their place the buffer holds about twice as many
+  openings.
+
+**The confound: the replay ratio and the buffer's span.** The arm kept
+`train_steps = 200`, as the control did, but each generation added only
+about 4,141 positions instead of 8,833. So the replay ratio
+(`train_steps × batch_size / (games × average plies)`, the
+`replay_ratio` column of `log.csv`, as in the games section) was a mean
+of **12.49** against the control's **5.80**: each position was drawn
+about 2.2 times as often. And the 200,000-position buffer spans about
+48 generations of this run's games instead of about 23. The start's
+buffer was flushed only at generation 49 (the control's by generation
+23): at generation 25 about 45% of what the arm trained on was still
+the start's full-length games. So this arm changed three things at once
+compared with the control: resignation itself, the absence of most
+after-pass positions, and 2.2 times the replay ratio over a buffer twice
+as old. The games run halved the replay ratio and showed no clear
+effect, which does not settle what doubling it does. A run that isolates
+resignation would keep the replay ratio constant, for example
+`train_steps` scaled to the positions per generation (about 94 steps
+here); none was run.
+
+- *Training curves.* Mean policy loss 2.372 against 2.390; value loss
+  0.444 against 0.362, rising through the run (0.363 at generation 1,
+  0.509 at 50) as openings made up more of the buffer. Black's
+  self-play win rate was 0.184 against 0.265 (`log.csv` means). These are on different
+  data and are not a strength measure.
+
+**Matches** (400 games; see the common setup above; files in
+`9x9-resign/`):
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| resignation vs control, gen 25 (`g25-vs-control-g25.txt`) | 227/400 = 0.568 | 0.519-0.615 | +47 (+13 to +81) |
+| resignation vs control, gen 50 (`g50-vs-control-g50.txt`) | 238/400 = 0.595 | 0.546-0.642 | +67 (+32 to +101) |
+| resignation gen 50 vs start (`g50-vs-start.txt`) | 256/400 = 0.640 | 0.592-0.686 | +100 (+65 to +136) |
+
+**Against gen 200.** Re-rated like the other runs (`rerate/`), Elo minus
+`ref1`'s Elo (−143.6 in `rerate/references.csv`) is +144 at the start,
++146 at generation 25 and +201 at generation 50 (the control: +104,
++152, +132). The start is the same network as the control's, so its
++144 against +104 is the re-rate's noise, about ±40 Elo as in the
+all-runs table. Means over stretches of the run (neighbouring ratings,
+not independent; a description of the curve, not a test):
+
+| generations | resignation | temp7 | control |
+|---|---|---|---|
+| start (gen 0) | +144 | +105 | +104 |
+| 1–10 | +126 | +145 | +128 |
+| 11–25 | +178 | +150 | +133 |
+| 26–50 | +191 | +166 | +152 |
+
+On the gen-200 scale the arm is ahead of the control from generation 11
+on, by about 40 to 45 Elo; measured from each run's own start it is
+level with the control over generations 26–50 (+47 and +48). The
+re-rate agrees with the matches in direction and cannot tell more.
+
+**Verdict.** At equal generations the resignation arm **beat the
+control**: 0.568 at generation 25 and 0.595 at generation 50 (about +67
+Elo, interval +32 to +101), and it gained +100 over the start against
+the control's +56. Its self-play games were 53% shorter, which is the
+saving AlphaGo Zero used it for, at a false-positive rate within the 5%
+target. What the run does **not** show is that resignation caused the
+gain: the arm also trained at 2.2 times the control's replay ratio over
+a buffer spanning twice as many generations, and its data lost most of
+the after-pass positions. Any of those could account for some or all
+of the +67. Either way it is AlphaGo Zero's method, and on this
+evidence it costs no strength while saving about half the self-play
+positions per game. One seed; no claim beyond that.
+
+### Seven opening moves at temperature (`temperature_moves = 7`)
+
+Hypothesis: AlphaGo Zero sampled its self-play moves in proportion to
+visit counts (temperature 1) for the first 30 moves and played the
+most-visited move after that (Silver et al. 2017, Methods,
+"Self-play"). 30 moves of 361 points is about 8%, about 7 moves on 9×9;
+the 9×9 preset samples for 20. Sampling fewer moves keeps more of each
+game at the search's best move, which should give the value head
+outcomes that follow from better play. The result: the arm beat the
+control at generation 50 by about the same margin as resignation, with
+nothing else changed.
+
+- *Setup.* `9x9-temp7/`: the control plus `temperature_moves = 7`
+  (`agz-queue.sh`, which then started the `budget-g200-s400` run;
+  binary `runs/bin-agz`). Root Dirichlet noise is unchanged. The
+  setting changes only which moves self-play plays, not how much data
+  it makes: a mean of 91.1 plies per game against 88.3, a replay ratio
+  of 5.62 against 5.80, and the same 10,000 SGD steps.
+- *What the buffer holds* (`buf.txt`, `pass.txt`, `side.txt` against
+  the control's, at generation 50). Black's self-play win rate rose
+  from 0.255 to 0.363 (games in the buffer). Fewer positions come at or
+  after the first pass (30.2% against 36.3%; the loser plays on for 27.5
+  plies after the first pass against 32.1), and more are middle game
+  (48% against 42%). The mean policy-target entropy fell from 1.948 to
+  1.873 nats, and in the middle game from 1.927 to 1.787 (finding 1's
+  table, plies 20 to the first pass, `side.txt`):
+
+  | side to move | entropy, temp7 | control | moves visited, temp7 | control |
+  |---|---|---|---|---|
+  | eventual loser, Black | 2.375 | 2.700 | 40.4 | 42.4 |
+  | eventual loser, White | 1.969 | 2.092 | 28.9 | 29.7 |
+  | eventual winner, Black | 1.502 | 1.511 | 26.1 | 22.8 |
+  | eventual winner, White | 1.249 | 1.242 | 14.7 | 10.4 |
+
+  The losing side's targets, Black's above all, are less spread; the
+  winners' are unchanged. The opening positions (plies 0–19) have
+  slightly more spread targets (2.137 against 2.002 nats).
+- *Training curves.* Mean policy loss 2.348 against 2.390 (the targets'
+  entropy, the floor for that loss, also fell); value loss 0.493 against
+  0.362, rising from 0.37 at generation 1 to 0.51–0.52 from generation
+  11 on. More balanced games (Black winning 36% rather than 26%) make
+  the result harder to predict, which fits a higher value loss, but that
+  was not tested. These are on different data and are not a strength
+  measure.
+
+**Matches** (400 games; see the common setup above; files in
+`9x9-temp7/`):
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| temp7 vs control, gen 25 (`g25-vs-control-g25.txt`) | 220/400 = 0.550 | 0.501-0.598 | +35 (+1 to +69) |
+| temp7 vs control, gen 50 (`g50-vs-control-g50.txt`) | 242/400 = 0.605 | 0.556-0.652 | +74 (+39 to +109) |
+| temp7 gen 50 vs start (`g50-vs-start.txt`) | 253/400 = 0.632 | 0.584-0.678 | +94 (+59 to +129) |
+
+**Against gen 200.** Re-rated like the other runs (`rerate/`), Elo minus
+`ref1`'s Elo (−104.6 in `rerate/references.csv`) is +105 at the start,
++151 at generation 25 and +175 at generation 50 (the control: +104,
++152, +132). The stretch means are in the resignation section's table:
+about 15 Elo above the control over generations 1–50 (+61 over its own
+start in 26–50, the control +48), within the ±40 noise but in the same
+direction as the matches.
+
+**Verdict.** `temperature_moves = 7` **beat the control** at generation
+50, 0.605 (about +74 Elo, interval +39 to +109), was barely ahead at
+generation 25 (0.550, lower bound 0.501), and gained +94 over the start
+against the control's +56. It is the cleanest single-change result of
+the post-250 runs: one config key, the same data volume, the same
+replay ratio and the same number of SGD steps. It also brings the
+setting closer to AlphaGo Zero's proportion of 30 of 361 points.
+`temperature_moves` around 7 is therefore a candidate for the 9×9
+presets; the presets are unchanged here (that decision is Mark's). What
+it does not show: one seed, 50 generations from one start, one value
+(7 against 20, nothing between). Earlier 100-game matches showed gains
+of this size at generation 25 that were gone by generation 50 (sims400,
+games200); here the margin is larger at 50 than at 25, and the 400-game
+interval excludes 0.5.
 
 ### 19×19: criterion met (it runs)
 
@@ -1152,7 +1438,9 @@ scripts `tools/side.py`, `tools/pass.py` and `tools/buf.py`, for example
    and the loser 570 (`tools/pass.py`). The loser plays on for a mean
    31.3 plies rather than pass into a counted loss, and those positions'
    targets still have 1.97 nats of entropy. `sims200`, `games200` and
-   `lr-restart` show the same pattern (36% after the first pass).
+   `lr-restart` show the same pattern (36% after the first pass). With
+   resignation on, 12% of the buffer is (`9x9-resign/buf.txt`); see
+   [Resignation in self-play](#resignation-in-self-play).
 3. **The games200 experiment is confounded.** It halved the replay ratio
    (5.8 to 2.9), so it tested fresher data, not more learning; see the
    correction in
@@ -1162,7 +1450,8 @@ scripts `tools/side.py`, `tools/pass.py` and `tools/buf.py`, for example
    about the same".
 4. **The measurements are coarse for the effects tested.** A 100-game
    match resolves about ±70 Elo and the re-rate's noise is about ±40,
-   while the effects tested so far are 30–80 Elo. And the policy loss
+   while the effects tested so far are 30–80 Elo. The AlphaGo Zero
+   arms are evaluated with 400-game matches (about ±35 Elo). And the policy loss
    is about 2.40 (2.403 at generation 250 of `9x9-main`) against a mean
    target entropy of 1.99 nats (`tools/buf.py`), the floor for that
    cross-entropy, so only about 0.4 nats can still be learned.
@@ -1181,10 +1470,10 @@ matches (`runs/agz-experiment.sh`, not in the repository).
 
 | # | experiment (AlphaGo Zero) | why | status |
 |---|---|---|---|
-| 1 | Resignation: `v_resign` set so that wrong resignations stay under 5%, with 10% of games played out with resignation off | finding 2; the review estimates it saves about 30% of self-play time | merged (`resignation`; state.bin version 5); running as `runs/9x9-resign`: the `sims200` control's start and settings plus `resignation = true`, 400-game evaluations |
-| 2 | A random symmetry for each network evaluation in search | AGZ's search; screen with arena games only | merged (`mcts_random_symmetry`, `arena_random_symmetry`, and arena's one-sided `--a-random-symmetry` / `--b-random-symmetry`; see "Random symmetry in search" in the main README); screened: generation 250 against itself with symmetry on side A only, 400 games, scored 0.557 at 200 simulations and 0.585 at 800 (about +40 and +60 Elo, both intervals exclude 0.5) at play time; see [Arena screens](#arena-screens-of-alphago-zero-search-settings). Self-play arm running as `runs/9x9-sym` (the `sims200` control plus `mcts_random_symmetry = true`) |
-| 3 | `temperature_moves = 7`: AGZ's 30 moves of 361 points is about 8%, about 7 moves on 9×9 (the preset uses 20) | config only | running (`runs/9x9-temp7`) |
-| 4 | Learning budget: more `train_steps`, or steps scaled with games so the replay ratio stays constant | finding 3 | 200 games and 400 steps per generation (`runs/9x9-budget-g200-s400`) queued after `temp7` |
+| 1 | Resignation: `v_resign` set so that wrong resignations stay under 5%, with 10% of games played out with resignation off | finding 2; the review estimates it saves about 30% of self-play time | done (`resignation`; state.bin version 5): beat the control 0.595 at generation 50 (+67 Elo, interval excludes 0.5) with games 53% shorter (41.4 plies against 88.3) at a false-positive rate of 0.041; confounded by a replay ratio of 12.5 against 5.8 and a buffer spanning about 48 generations against 23; see [Resignation in self-play](#resignation-in-self-play) |
+| 2 | A random symmetry for each network evaluation in search | AGZ's search; screen with arena games only | merged (`mcts_random_symmetry`, `arena_random_symmetry`, and arena's one-sided `--a-random-symmetry` / `--b-random-symmetry`; see "Random symmetry in search" in the main README); screened: generation 250 against itself with symmetry on side A only, 400 games, scored 0.557 at 200 simulations and 0.585 at 800 (about +40 and +60 Elo, both intervals exclude 0.5) at play time; see [Arena screens](#arena-screens-of-alphago-zero-search-settings). Self-play arm `runs/9x9-sym` (the `sims200` control plus `mcts_random_symmetry = true`): training and 400-game matches done, write-up waits for its re-rate |
+| 3 | `temperature_moves = 7`: AGZ's 30 moves of 361 points is about 8%, about 7 moves on 9×9 (the preset uses 20) | config only | done: beat the control 0.605 at generation 50 (+74 Elo, interval excludes 0.5) with the same data volume and replay ratio; a candidate for the 9×9 presets, which are unchanged; see [Seven opening moves at temperature](#seven-opening-moves-at-temperature-temperature_moves--7) |
+| 4 | Learning budget: more `train_steps`, or steps scaled with games so the replay ratio stays constant | finding 3 | 200 games and 400 steps per generation (`runs/9x9-budget-g200-s400`) running |
 | 5 | More simulations (AGZ used 1,600) | only after the evaluation additions below, since the gain will be small for its cost | not started |
 | 6 | Arena-only tuning of `c_puct`, and `mcts_batch` 1 against 8 (AGZ evaluated leaves in batches of 8): generation 250 against itself, 400 games per setting | cheap: arena games only, no training | done, no change: `c_puct` 0.75 to 1.25 within noise of the preset 1.5, 2.0 and 3.0 clearly worse (−45, −102 Elo); batch 1 +30 Elo, not significant; see [Arena screens](#arena-screens-of-alphago-zero-search-settings) |
 | 7 | AGZ gating (`gating = true`, 55% over 400 games) | expensive; only if regressions appear | not started |
@@ -1279,7 +1568,9 @@ matches at temperature 0 (AGZ's evaluation size).
   (each with `log.csv`, `elo.csv`, `results.csv`, `references.csv`,
   `init.txt`, `progress.txt`), the four matches `s*-vs-*.txt`, the eye
   analyses `eye-sims{200,400}-s{200,800}.txt`, and the commands
-  `sims-experiment.sh` and `sims-experiment-resume.sh`.
+  `sims-experiment.sh` and `sims-experiment-resume.sh`; added later, the
+  400-game control match `s200g50-vs-start-400.txt` and the 200 arm's
+  buffer statistics `sims200/{buf,pass,side}.txt`.
 - `9x9-ownership/`: the ownership-head run: `log.csv` (with the
   `ownership_loss` column), `elo.csv`, `results.csv`, `references.csv`,
   `init.txt` (paths made repo-relative), `progress.txt`; the commands
@@ -1303,6 +1594,16 @@ matches at temperature 0 (AGZ's evaluation size).
   `games200.log`, and `rerate/` (the re-rate against generation 200).
 - `9x9-lr-restart/`: the learning-rate restart run, with the same files
   as `9x9-games200/` (commands `lr-restart.sh`, output `lr-restart.log`).
+- `9x9-resign/` and `9x9-temp7/`: the two AlphaGo Zero training arms:
+  `log.csv` (the resignation arm's with the `resign_*` columns),
+  `elo.csv`, `results.csv`, `references.csv`, `config.cfg`, `init.txt`,
+  `progress.txt`, the 400-game matches `g25-vs-control-g25.txt`,
+  `g50-vs-control-g50.txt`, `g50-vs-start.txt`, the buffer statistics
+  `buf.txt`, `pass.txt` and `side.txt` (from `tools/`), `rerate/` (the
+  re-rate against generation 200) and the commands with their logs:
+  `resign-arm.sh`, `agz-experiment2.sh` and `resign-arm.log`, or
+  `agz-queue.sh`, `agz-experiment.sh` and `agz-queue.log`, and in both
+  `rerate-arms.sh` and `rerate-arms.log`.
 - `5x5/rerate-opp4/`: `elo.csv`, `references.csv` and `log.csv` of a
   re-rate of 5×5 seed 1 with `--set arena_opponents=4`, made on a copy of
   the run, for the scale caveat above.
