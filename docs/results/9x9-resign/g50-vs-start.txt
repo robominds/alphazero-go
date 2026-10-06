@@ -1,0 +1,2 @@
+A runs/9x9-resign/checkpoints/gen_0050.azn vs B runs/9x9-wide96/checkpoints/gen_0050.azn: A scored 256/400 = 0.640 (95% CI 0.592-0.686), distinct games 356
+A wins 256, B wins 144, draws 0

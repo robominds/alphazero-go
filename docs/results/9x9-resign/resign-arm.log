@@ -1,0 +1,6 @@
+resign start Sun Oct  4 23:36:41 PDT 2026
+resign train exit 0 Mon Oct  5 08:56:00 PDT 2026
+resign g25-vs-control-g25: A runs/9x9-resign/checkpoints/gen_0025.azn vs B runs/9x9-sims200/checkpoints/gen_0025.azn: A scored 227/400 = 0.568 (95% CI 0.519-0.615), distinct games 378
+resign g50-vs-control-g50: A runs/9x9-resign/checkpoints/gen_0050.azn vs B runs/9x9-sims200/checkpoints/gen_0050.azn: A scored 238/400 = 0.595 (95% CI 0.546-0.642), distinct games 347
+resign g50-vs-start: A runs/9x9-resign/checkpoints/gen_0050.azn vs B runs/9x9-wide96/checkpoints/gen_0050.azn: A scored 256/400 = 0.640 (95% CI 0.592-0.686), distinct games 356
+resign all done Mon Oct  5 10:34:42 PDT 2026

@@ -1,0 +1,4 @@
+runs/9x9-temp7/state.bin games 2193 black win 0.363
+first passer wins 0.836 of 2193 games; games w/o pass 0
+mean plies after first pass 27.5
+non-final passes by eventual winner 15740, by loser 831

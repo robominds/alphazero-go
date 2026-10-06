@@ -1,0 +1,53 @@
+generations = 50
+calibration_games = 80
+gen 1 | selfplay 100 games avg 44.0 plies resign -0.90 rate 0.99 fp 0.000 262.1s | train loss p 2.41 v 0.36 lr 0.002 324.6s | arena elo -131.6 vs 0:0.35 bot100:0.95 (distinct 20/20) 74.3s
+gen 2 | selfplay 100 games avg 47.4 plies resign -0.90 rate 0.95 fp 0.050 246.7s | train loss p 2.41 v 0.37 lr 0.002 375.6s | arena elo -98.7 vs 1:0.45 0:0.40 bot100:1.00 (distinct 20/20) 160.7s
+gen 3 | selfplay 100 games avg 39.5 plies resign -0.88 rate 0.94 fp 0.033 193.3s | train loss p 2.40 v 0.37 lr 0.002 265.6s | arena elo -64.5 vs 2:0.45 0:0.50 bot100:0.95 (distinct 20/20) 165.0s
+gen 4 | selfplay 100 games avg 46.9 plies resign -0.88 rate 0.97 fp 0.027 319.5s | train loss p 2.40 v 0.37 lr 0.002 182.8s | arena elo -53.9 vs 3:0.60 0:0.40 bot100:0.95 (distinct 20/20) 147.8s
+gen 5 | selfplay 100 games avg 43.2 plies resign -0.88 rate 0.98 fp 0.047 297.4s | train loss p 2.40 v 0.37 lr 0.002 285.3s | arena elo 32.6 vs 4:0.55 0:0.60 bot100:1.00 (distinct 20/20) 110.5s
+gen 6 | selfplay 100 games avg 48.2 plies resign -0.88 rate 0.98 fp 0.037 286.6s | train loss p 2.40 v 0.38 lr 0.002 360.9s | arena elo -11.1 vs 5:0.40 0:0.50 bot100:1.00 (distinct 20/20) 129.4s
+gen 7 | selfplay 100 games avg 38.9 plies resign -0.88 rate 0.98 fp 0.031 194.5s | train loss p 2.40 v 0.39 lr 0.002 305.6s | arena elo 145.4 vs 6:0.60 0:0.80 bot100:1.00 (distinct 20/20) 173.5s
+gen 8 | selfplay 100 games avg 43.9 plies resign -0.88 rate 0.98 fp 0.038 257.5s | train loss p 2.39 v 0.40 lr 0.002 218.5s | arena elo 70.5 vs 7:0.65 0:0.45 bot100:1.00 (distinct 20/20) 163.1s
+gen 9 | selfplay 100 games avg 49.7 plies resign -0.88 rate 0.95 fp 0.044 348.4s | train loss p 2.38 v 0.39 lr 0.002 203.3s | arena elo -16.6 vs 8:0.40 0:0.45 bot100:1.00 (distinct 20/20) 136.6s
+gen 10 | selfplay 100 games avg 41.5 plies resign -0.88 rate 0.97 fp 0.041 286.2s | train loss p 2.39 v 0.40 lr 0.002 313.0s | arena elo 59.0 vs 9:0.60 0:0.60 bot100:1.00 (distinct 20/20) 119.4s
+gen 11 | selfplay 100 games avg 49.7 plies resign -0.88 rate 0.98 fp 0.037 255.8s | train loss p 2.40 v 0.40 lr 0.002 350.6s | arena elo 143.2 vs 10:0.65 0:0.70 bot100:1.00 (distinct 20/20) 146.0s
+gen 12 | selfplay 100 games avg 46.0 plies resign -0.88 rate 0.98 fp 0.033 220.3s | train loss p 2.39 v 0.41 lr 0.002 267.8s | arena elo -31.4 vs 11:0.40 0:0.35 bot100:1.00 (distinct 20/20) 167.7s
+gen 13 | selfplay 100 games avg 41.9 plies resign -0.88 rate 0.99 fp 0.032 281.6s | train loss p 2.39 v 0.40 lr 0.002 186.4s | arena elo 16.0 vs 12:0.60 0:0.55 bot100:0.95 (distinct 20/20) 154.7s
+gen 14 | selfplay 100 games avg 40.9 plies resign -0.88 rate 0.99 fp 0.030 294.6s | train loss p 2.39 v 0.41 lr 0.002 253.7s | arena elo 93.5 vs 13:0.60 0:0.70 bot100:0.95 (distinct 20/20) 116.3s
+gen 15 | selfplay 100 games avg 42.3 plies resign -0.88 rate 1.00 fp 0.042 258.2s | train loss p 2.39 v 0.42 lr 0.002 325.0s | arena elo 122.6 vs 14:0.60 0:0.65 bot100:1.00 (distinct 20/20) 150.7s
+gen 16 | selfplay 100 games avg 44.5 plies resign -0.88 rate 0.94 fp 0.037 210.9s | train loss p 2.39 v 0.41 lr 0.002 399.0s | arena elo 92.2 vs 15:0.60 0:0.55 bot100:1.00 (distinct 20/20) 246.8s
+gen 17 | selfplay 100 games avg 44.9 plies resign -0.88 rate 0.97 fp 0.040 325.5s | train loss p 2.39 v 0.41 lr 0.002 279.0s | arena elo -71.5 vs 16:0.45 0:0.25 bot100:1.00 (distinct 20/20) 242.3s
+gen 18 | selfplay 100 games avg 45.6 plies resign -0.88 rate 0.96 fp 0.039 439.9s | train loss p 2.38 v 0.42 lr 0.002 251.5s | arena elo -60.6 vs 17:0.50 0:0.40 bot100:1.00 (distinct 20/20) 166.9s
+gen 19 | selfplay 100 games avg 39.9 plies resign -0.88 rate 0.99 fp 0.043 386.0s | train loss p 2.39 v 0.42 lr 0.002 440.2s | arena elo 38.1 vs 18:0.50 0:0.65 bot100:1.00 (distinct 20/20) 87.1s
+gen 20 | selfplay 100 games avg 43.5 plies resign -0.88 rate 0.96 fp 0.046 247.5s | train loss p 2.38 v 0.43 lr 0.002 372.9s | arena elo 22.9 vs 19:0.60 0:0.50 bot100:0.95 (distinct 20/20) 115.2s
+gen 21 | selfplay 100 games avg 39.5 plies resign -0.88 rate 0.99 fp 0.044 164.8s | train loss p 2.37 v 0.43 lr 0.002 346.8s | arena elo 18.7 vs 20:0.45 0:0.55 bot100:1.00 (distinct 20/20) 197.0s
+gen 22 | selfplay 100 games avg 45.9 plies resign -0.88 rate 0.99 fp 0.046 218.7s | train loss p 2.37 v 0.43 lr 0.002 170.1s | arena elo 13.4 vs 21:0.35 0:0.65 bot100:0.95 (distinct 20/20) 178.7s
+gen 23 | selfplay 100 games avg 42.7 plies resign -0.88 rate 0.96 fp 0.044 334.7s | train loss p 2.38 v 0.44 lr 0.002 199.0s | arena elo 112.8 vs 22:0.60 0:0.70 bot100:1.00 (distinct 20/20) 124.7s
+gen 24 | selfplay 100 games avg 43.8 plies resign -0.88 rate 0.96 fp 0.043 323.6s | train loss p 2.38 v 0.45 lr 0.002 285.2s | arena elo 13.1 vs 23:0.45 0:0.45 bot100:1.00 (distinct 20/20) 80.7s
+gen 25 | selfplay 100 games avg 38.6 plies resign -0.88 rate 0.98 fp 0.045 209.3s | train loss p 2.38 v 0.44 lr 0.002 376.7s | arena elo -21.9 vs 24:0.45 0:0.45 bot100:1.00 (distinct 20/20) 128.9s
+gen 26 | selfplay 100 games avg 39.5 plies resign -0.88 rate 0.99 fp 0.044 156.1s | train loss p 2.37 v 0.45 lr 0.002 274.3s | arena elo -27.8 vs 25:0.40 0:0.50 bot100:1.00 (distinct 20/20) 188.5s
+gen 27 | selfplay 100 games avg 40.0 plies resign -0.88 rate 0.99 fp 0.046 242.1s | train loss p 2.37 v 0.45 lr 0.002 166.6s | arena elo 30.2 vs 26:0.65 0:0.50 bot100:1.00 (distinct 20/20) 162.6s
+gen 28 | selfplay 100 games avg 44.7 plies resign -0.88 rate 0.99 fp 0.049 336.3s | train loss p 2.37 v 0.46 lr 0.002 204.6s | arena elo 0.6 vs 27:0.60 0:0.40 bot100:1.00 (distinct 20/20) 112.0s
+gen 29 | selfplay 100 games avg 36.9 plies resign -0.88 rate 1.00 fp 0.047 233.5s | train loss p 2.37 v 0.46 lr 0.002 320.1s | arena elo 12.5 vs 28:0.30 0:0.65 bot100:1.00 (distinct 20/20) 125.0s
+gen 30 | selfplay 100 games avg 44.1 plies resign -0.88 rate 0.99 fp 0.045 191.4s | train loss p 2.37 v 0.46 lr 0.002 310.2s | arena elo 53.4 vs 29:0.45 0:0.65 bot100:1.00 (distinct 20/20) 151.3s
+gen 31 | selfplay 100 games avg 42.8 plies resign -0.88 rate 0.99 fp 0.044 210.0s | train loss p 2.36 v 0.47 lr 0.002 191.4s | arena elo -37.9 vs 30:0.25 0:0.50 bot100:1.00 (distinct 20/20) 167.6s
+gen 32 | selfplay 100 games avg 38.2 plies resign -0.88 rate 0.98 fp 0.045 294.7s | train loss p 2.36 v 0.47 lr 0.002 164.2s | arena elo 34.9 vs 31:0.45 0:0.65 bot100:1.00 (distinct 20/20) 105.1s
+gen 33 | selfplay 100 games avg 39.0 plies resign -0.88 rate 0.98 fp 0.047 260.3s | train loss p 2.36 v 0.46 lr 0.002 322.8s | arena elo -26.8 vs 32:0.40 0:0.45 bot100:1.00 (distinct 20/20) 98.9s
+gen 34 | selfplay 100 games avg 49.0 plies resign -0.88 rate 1.00 fp 0.045 226.0s | train loss p 2.36 v 0.48 lr 0.002 353.7s | arena elo 4.0 vs 33:0.70 0:0.40 bot100:1.00 (distinct 20/20) 123.5s
+gen 35 | selfplay 100 games avg 39.5 plies resign -0.88 rate 1.00 fp 0.044 172.6s | train loss p 2.36 v 0.47 lr 0.002 247.1s | arena elo 36.6 vs 34:0.55 0:0.60 bot100:0.95 (distinct 20/20) 179.4s
+gen 36 | selfplay 100 games avg 42.0 plies resign -0.88 rate 1.00 fp 0.042 272.7s | train loss p 2.35 v 0.48 lr 0.002 207.4s | arena elo 120.4 vs 35:0.75 0:0.60 bot100:1.00 (distinct 20/20) 149.7s
+gen 37 | selfplay 100 games avg 35.2 plies resign -0.88 rate 0.99 fp 0.044 273.1s | train loss p 2.35 v 0.48 lr 0.002 281.6s | arena elo 154.7 vs 36:0.60 0:0.70 bot100:1.00 (distinct 20/20) 79.8s
+gen 38 | selfplay 100 games avg 37.1 plies resign -0.88 rate 0.98 fp 0.043 204.3s | train loss p 2.36 v 0.48 lr 0.002 491.3s | arena elo 7.7 vs 37:0.45 0:0.45 bot100:0.95 (distinct 20/20) 127.7s
+gen 39 | selfplay 100 games avg 32.6 plies resign -0.88 rate 0.99 fp 0.043 117.6s | train loss p 2.35 v 0.49 lr 0.002 387.7s | arena elo -52.0 vs 38:0.25 0:0.55 bot100:0.95 (distinct 20/20) 195.4s
+gen 40 | selfplay 100 games avg 35.3 plies resign -0.88 rate 0.95 fp 0.042 205.3s | train loss p 2.36 v 0.49 lr 0.002 215.0s | arena elo 55.8 vs 39:0.55 0:0.70 bot100:0.95 (distinct 20/20) 167.1s
+gen 41 | selfplay 100 games avg 37.6 plies resign -0.88 rate 0.99 fp 0.043 292.8s | train loss p 2.36 v 0.49 lr 0.002 195.2s | arena elo 37.7 vs 40:0.55 0:0.55 bot100:0.95 (distinct 20/20) 122.7s
+gen 42 | selfplay 100 games avg 37.3 plies resign -0.88 rate 0.99 fp 0.042 213.0s | train loss p 2.35 v 0.50 lr 0.002 277.7s | arena elo 49.9 vs 41:0.55 0:0.55 bot100:1.00 (distinct 20/20) 123.5s
+gen 43 | selfplay 100 games avg 36.0 plies resign -0.88 rate 0.99 fp 0.041 204.5s | train loss p 2.35 v 0.49 lr 0.002 221.2s | arena elo 9.4 vs 42:0.60 0:0.40 bot100:1.00 (distinct 20/20) 165.9s
+gen 44 | selfplay 100 games avg 34.4 plies resign -0.88 rate 0.99 fp 0.040 188.2s | train loss p 2.34 v 0.49 lr 0.002 208.0s | arena elo 100.2 vs 43:0.40 0:0.80 bot100:1.00 (distinct 20/20) 132.0s
+gen 45 | selfplay 100 games avg 37.0 plies resign -0.87 rate 0.99 fp 0.050 236.0s | train loss p 2.34 v 0.50 lr 0.002 222.6s | arena elo 48.2 vs 44:0.45 0:0.55 bot100:1.00 (distinct 20/20) 151.6s
+gen 46 | selfplay 100 games avg 41.2 plies resign -0.88 rate 0.99 fp 0.040 218.8s | train loss p 2.34 v 0.50 lr 0.002 230.7s | arena elo 4.3 vs 45:0.50 0:0.50 bot100:0.95 (distinct 19/20) 121.9s
+gen 47 | selfplay 100 games avg 38.4 plies resign -0.88 rate 1.00 fp 0.046 222.2s | train loss p 2.34 v 0.51 lr 0.002 231.2s | arena elo 96.6 vs 46:0.55 0:0.70 bot100:1.00 (distinct 20/20) 158.5s
+gen 48 | selfplay 100 games avg 44.8 plies resign -0.88 rate 1.00 fp 0.044 244.3s | train loss p 2.34 v 0.52 lr 0.002 254.9s | arena elo 127.9 vs 47:0.45 0:0.75 bot100:1.00 (distinct 20/20) 130.1s
+gen 49 | selfplay 100 games avg 38.5 plies resign -0.88 rate 0.96 fp 0.043 219.2s | train loss p 2.33 v 0.51 lr 0.002 196.6s | arena elo 103.1 vs 48:0.55 0:0.60 bot100:1.00 (distinct 20/20) 163.0s
+gen 50 | selfplay 100 games avg 36.6 plies resign -0.88 rate 1.00 fp 0.044 250.6s | train loss p 2.33 v 0.51 lr 0.002 198.2s | arena elo 106.6 vs 49:0.60 0:0.60 bot100:1.00 (distinct 20/20) 127.6s
+done: generation 50 in runs/9x9-resign
