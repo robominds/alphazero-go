@@ -679,7 +679,7 @@ From `docs/results/README.md`, which has the details and the sources.
   network beats the old generation 250 59/100 (0.492–0.681) and 61/100
   at generation 25, about +60 to +80 Elo, and still fails the eye check:
   capacity alone is not the bottleneck at this budget. See
-  [the section](docs/results/README.md#9x9-continued-to-250-and-grown-to-10-blocks).
+  [the section](docs/results/README.md#99-continued-to-250-and-grown-to-10-blocks).
   A 6×96 widening of the same network scored 70/100 against the old 250
   (+147 Elo) but only 52/100 against the 10-block net, so width and depth
   are not separated (see
