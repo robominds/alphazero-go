@@ -645,12 +645,14 @@ settings with four AlphaGo Zero-style changes adopted together,
 `temperature_moves` 20 → 7 (AlphaGo Zero's 30 of 361 points scaled to
 81) and `resignation = true`. Continued from the 6×96 generation-50
 network, the `9x9-recipe` arm beat the control 0.787 at generation 50
-over 400 games (about +227 Elo) and the 200-games/400-steps arm 0.725,
+over 400 games (315/400, about +228 Elo) and the 200-games/400-steps arm 0.725,
 and scored 0.848 against its start at generation 100 (see
-`docs/results/README.md`). Resigned games average about 50 plies
-against 89, so its 200 games cost about the self-play of 100 played-out
-games; the 400 steps double the training time. It has been validated
-only by continuing from a trained network, not yet from scratch.
+`docs/results/README.md`). Its games average about 51 plies (most are
+resigned) against 88, so its 200 games cost about the self-play of 115 played-out
+games (1.23 times the control's self-play time); the 400 steps double
+the training time. It has been validated
+only by continuing from a trained network, not yet from scratch; a
+from-scratch run with it is under way.
 Earlier 9×9 runs, the reference runs in `docs/results/` among them,
 used 100 games, 200 steps, 20 opening moves at temperature and no
 resignation (each experiment arm changed only the settings it tested). Each
@@ -785,13 +787,42 @@ From `docs/results/README.md`, which has the details and the sources.
   +100 Elo) and 237/400 at 50 (0.593, interval 0.544–0.640, +65), and
   gained the most over the start of the post-250 arms (264/400, +115,
   against the control's +56). The games run, which differs from it only
-  in taking 200 steps, showed no clear gain, so this points at the SGD
-  steps as the binding constraint. It is not a free win: it costs twice
-  the compute per generation, and at equal compute the re-rate against
-  gen 200 puts it level with the control. A steps-only arm (100 games,
-  400 steps) and a combined arm (`temperature_moves = 7`, resignation,
-  200 games, 400 steps, 100 generations) are running, with no results
-  yet (see [the section](docs/results/README.md#the-learning-budget-200-games-and-400-steps-per-generation)).
+  in taking 200 steps, showed no clear gain, and a steps-only arm (below)
+  showed none either, so it is the steps together with fresh data that
+  helped. It is not a free win: it costs twice the compute per
+  generation, and at equal compute the re-rate against gen 200 puts it
+  level with the control (see [the section](docs/results/README.md#the-learning-budget-200-games-and-400-steps-per-generation)).
+- **9×9, steps only.** The `sims200` control's settings with 400 SGD
+  steps per generation instead of 200, on the same 100 games (a replay
+  ratio of 11.7 against 5.8), trained no stronger network: +5 Elo over
+  the control pooled over generations 46–50, although its generation 50
+  alone beat the control's 229/400 (0.573), the clearest case here of
+  one checkpoint misleading (see
+  [the section](docs/results/README.md#steps-only-100-games-and-400-steps-per-generation)).
+- **9×9, the recipe.** The `sims200` control's settings with
+  `temperature_moves = 7`, resignation, 200 games and 400 steps per
+  generation, for 100 generations, gained by far the most of any 9×9
+  experiment: 315/400 against the control at generation 50 (0.787,
+  interval 0.745–0.825, about +228 Elo), 290/400 against the
+  learning-budget arm, +170 over the control pooled over generations
+  46–50, and still improving at generation 100 (268/400 against its own
+  generation 50; 339/400 against the start). Its games average about 51
+  plies (most are resigned) against 88, so the 200 games cost about 1.2 times the
+  control's self-play and the 400 steps twice its training; it is ahead
+  at equal compute too. Its parts alone gained +22 to +44 on the same pooled
+  measure. It is now the 9×9 preset (see [Presets](#presets)); it is
+  being continued to generation 200, and a from-scratch run with the
+  preset is under way, both with no results yet (see
+  [the section](docs/results/README.md#the-recipe-four-changes-together-100-generations)).
+- **9×9, final strength of the post-250 runs, pooled.** Each run's
+  generations 46–50 against the shared start, 200 games each (1,000 per
+  run, about ±31 to ±35 Elo for a difference between runs), because
+  single checkpoints varied by about 50 Elo. Against the control: the
+  recipe +170; the learning budget +44 and `temperature_moves = 7` +37,
+  both confirmed; resignation and random symmetry +22 each, inside the
+  noise; more games +13, the learning-rate restart +13, steps only +5,
+  and 400 simulations −18, no gain (see
+  [the section](docs/results/README.md#final-strength-of-the-post-250-runs-pooled-generations-46-to-50)).
 - **19×19: criterion met (it runs).** Two generations complete with finite
   losses in 58.2 and 129.7 minutes, and both checkpoints load in
   `analyze`. Two generations say nothing about strength, and none is

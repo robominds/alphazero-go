@@ -1481,8 +1481,13 @@ with the ownership head (chapter
 06): a resigned game has no final board to take ownership targets from.
 The replay buffer marks resigned games, so `--buffer-from` refuses to
 seed an ownership run with them.
-No reference run used it, so this repository has no measurement of what
-it saves.
+The reference runs did not use it; two 9×9 experiment arms did
+(`docs/results/README.md`, "Resignation in self-play" and "The
+recipe"). It made self-play games about half as long, 41 plies on
+average against 88 played out, and about 51 in the recipe with
+`temperature_moves = 7`, with the false-positive rate near the 5%
+target (0.041 and 0.048 on average). Combined with 200 games and 400
+steps per generation, it is part of the recipe that the 9×9 preset now uses.
 
 ---
 
