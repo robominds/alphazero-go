@@ -266,9 +266,13 @@ old: 9x9, history 8, 6 blocks, 96 filters, value_hidden 64, 1032349 parameters
 new: 9x9, history 8, 6 blocks, 96 filters, value_hidden 64, ownership head, 1032447 parameters
 verified on 8 random positions (max difference 0); wrote runs/grown/wide96-g50-own.azn
 $ ./build-blas/train --config configs/9x9.cfg --run runs/9x9-ownership --set filters=96 \
-      --set ownership=true --set lr_schedule=0:0.002 --init-from runs/grown/wide96-g50-own.azn \
-      --buffer-from runs/9x9-wide96
+      --set ownership=true --set resignation=false --set lr_schedule=0:0.002 \
+      --init-from runs/grown/wide96-g50-own.azn --buffer-from runs/9x9-wide96
 ```
+
+The head cannot be combined with resignation, which the 9×9 preset turns
+on (see [Resignation](#resignation)), hence `--set resignation=false`;
+the `9x9-ownership` run predates that and needed no such override.
 
 `--init-from` refuses a checkpoint whose head does not match the config,
 and says how to fix it (`grow --ownership`, or `--set ownership=true`).
@@ -404,8 +408,9 @@ AlphaGo Zero resigned clearly lost self-play games to save computation
 both its root value and its best child's value are below a threshold
 v_resign, chosen automatically so that at most 5% of the games played
 out with resignation disabled would have been resigned by their eventual
-winner. It is off in every preset (`configs/9x9.cfg` lists the keys
-commented out). Six tunable config keys control it:
+winner. It is on in the 9×9 preset, as part of its recipe (see
+[Presets](#presets)), with the other keys at their defaults, and off in
+the 5×5 and 19×19 presets. Six tunable config keys control it:
 
 - `resignation` (default `false`): self-play only; arena rounds,
   `--rerate` and the tools never resign.
@@ -456,7 +461,8 @@ How it works:
   without resignation, and an older run's `log.csv` gets them, empty, on
   resume. The progress line adds, for example, `resign -0.87 rate 0.62 fp 0.031`.
 - `ownership = true` with `resignation = true` is refused: a resigned game
-  has no final position to take the ownership target from. For the same
+  has no final position to take the ownership target from, so a 9×9 run
+  with the head needs `--set resignation=false`. For the same
   reason, `--buffer-from` refuses to seed a run with the ownership head
   from a buffer that holds resigned games.
 
@@ -630,8 +636,27 @@ is self-play + training + arena from the runs' `log.csv`
 | board | komi | blocks × filters | simulations | games per generation | measured time per generation |
 |---|---|---|---|---|---|
 | 5×5 | 24.5 | 3 × 32 | 200 | 200 | 11.3 s on average; 60 generations in 11.4 min wall time |
-| 9×9 | 7.5 | 6 × 64 | 200 | 100 | 4.1 min on average (2.7 to 4.8); 150 generations in 10 h 10 min |
+| 9×9 | 7.5 | 6 × 64 | 200 | 200 | 4.1 min on average (2.7 to 4.8); 150 generations in 10 h 10 min, with the earlier 100 games and 200 steps |
 | 19×19 | 7.5 | 10 × 128 | 400 | 20 | 58.2 min for generation 1, 129.7 min for generation 2 |
+
+The 9×9 preset is the experiments' "recipe": the `sims200` control's
+settings with four AlphaGo Zero-style changes adopted together,
+`games_per_generation` 100 → 200, `train_steps` 200 → 400,
+`temperature_moves` 20 → 7 (AlphaGo Zero's 30 of 361 points scaled to
+81) and `resignation = true`. Continued from the 6×96 generation-50
+network, the `9x9-recipe` arm beat the control 0.787 at generation 50
+over 400 games (about +227 Elo) and the 200-games/400-steps arm 0.725,
+and scored 0.848 against its start at generation 100 (see
+`docs/results/README.md`). Resigned games average about 50 plies
+against 89, so its 200 games cost about the self-play of 100 played-out
+games; the 400 steps double the training time. It has been validated
+only by continuing from a trained network, not yet from scratch.
+Earlier 9×9 runs, the reference runs in `docs/results/` among them,
+used 100 games, 200 steps, 20 opening moves at temperature and no
+resignation (each experiment arm changed only the settings it tested). Each
+run's `config.cfg` records the values it used, and `--resume` keeps the
+run's own `config.cfg`, so resuming an older run does not pick up the
+new preset.
 
 No preset has a bot or a reference network (see Reference networks
 above); the reference runs in `docs/results/` were made with one
@@ -737,8 +762,8 @@ From `docs/results/README.md`, which has the details and the sources.
   control 242/400 at generation 50 (0.605, interval 0.556–0.652, about
   +74 Elo) and 220/400 at 25, with nothing else changed, the same data
   volume and the same replay ratio: the cleanest single-change result of
-  the post-250 runs, and a candidate for the 9×9 presets, which are
-  unchanged. A 400-game match puts the control's own gain over the start
+  the post-250 runs, and since adopted in the 9×9 preset as part of
+  its recipe (see [Presets](#presets)). A 400-game match puts the control's own gain over the start
   at 232/400 (+56 Elo), against +100 and +94 for the two arms; the
   re-rate against gen 200 agrees in direction, within its ±40 noise (see
   [the section](docs/results/README.md#seven-opening-moves-at-temperature-temperature_moves--7)).

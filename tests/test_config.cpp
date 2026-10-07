@@ -77,7 +77,11 @@ static void test_presets_load() {
 
     Config c9 = loadConfigFile(preset("9x9.cfg"));
     assert(c9.boardSize == 9 && c9.blocks == 6 && c9.filters == 64 && c9.valueHidden == 64);
-    assert(c9.lrSchedule == "0:0.02,90:0.002" && c9.temperatureMoves == 20);
+    assert(c9.lrSchedule == "0:0.02,90:0.002" && c9.simulations == 200);
+    // The 9x9 recipe: twice the games and steps of the earlier preset,
+    // AlphaGo Zero's opening temperature scaled to 81 points, resignation on.
+    assert(c9.gamesPerGeneration == 200 && c9.trainSteps == 400);
+    assert(c9.temperatureMoves == 7 && c9.resignation);
 
     Config c19 = loadConfigFile(preset("19x19.cfg"));
     assert(c19.boardSize == 19 && c19.blocks == 10 && c19.filters == 128);
@@ -433,19 +437,34 @@ static void test_resignation_keys() {
     assert(consistencyErrorOf(unmeasured).empty());   // only with resignation on
 
     // A config.cfg written before these keys existed leaves resignation off,
-    // as do the presets; the 9x9 preset names the keys in comments.
+    // as do the 5x5 and 19x19 presets. The 9x9 preset turns it on and writes
+    // the other keys out at their defaults.
     assert(!parseConfigText("filters = 96\n", "old.cfg").resignation);
-    for (const char* name : {"5x5.cfg", "9x9.cfg", "19x19.cfg"}) {
+    for (const char* name : {"5x5.cfg", "19x19.cfg"}) {
         const Config p = loadConfigFile(preset(name));
         assert(!p.resignation);
         assert(consistencyErrorOf(p).empty());
     }
+    Config p9 = loadConfigFile(preset("9x9.cfg"));
+    assert(p9.resignation && consistencyErrorOf(p9).empty());
+    const Config defaults;
+    assert(p9.resignThresholdInitial == defaults.resignThresholdInitial);
+    assert(p9.resignDisabledFraction == defaults.resignDisabledFraction);
+    assert(p9.resignFalsePositive == defaults.resignFalsePositive);
+    assert(p9.resignWindow == defaults.resignWindow && p9.resignMinGames == defaults.resignMinGames);
     std::ifstream in(preset("9x9.cfg"));
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    for (const char* line : {"\n# resignation = false\n", "\n# resign_threshold_initial = -0.9\n",
-                             "\n# resign_disabled_fraction = 0.1\n", "\n# resign_false_positive = 0.05\n",
-                             "\n# resign_window = 500\n", "\n# resign_min_games = 20\n"})
+    for (const char* line : {"\nresignation = true\n", "\nresign_threshold_initial = -0.9\n",
+                             "\nresign_disabled_fraction = 0.1\n", "\nresign_false_positive = 0.05\n",
+                             "\nresign_window = 500\n", "\nresign_min_games = 20\n"})
         assert(contains(text, line));
+    // The ownership head on top of the 9x9 preset is refused until
+    // resignation is turned off, as the README's example does.
+    p9.ownership = true;
+    const std::string ownMsg = consistencyErrorOf(p9);
+    assert(contains(ownMsg, "resignation") && contains(ownMsg, "ownership"));
+    p9.resignation = false;
+    assert(consistencyErrorOf(p9).empty());
 }
 
 static void test_errors_name_key_and_line() {

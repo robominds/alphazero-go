@@ -35,10 +35,11 @@ the reasons. All three presets use:
 | komi | 24.5 | 7.5 | 7.5 |
 | blocks × filters (value_hidden) | 3 × 32 (32) | 6 × 64 (64) | 10 × 128 (256) |
 | generations | 60 | 150 | 20 (run for 2) |
-| games_per_generation × simulations | 200 × 200 | 100 × 200 | 20 × 400 |
-| temperature_moves | 8 | 20 | 30 |
+| games_per_generation × simulations | 200 × 200 | 200 × 200 | 20 × 400 |
+| temperature_moves | 8 | 7 | 30 |
+| resignation | off | on | off |
 | buffer_positions | 100,000 | 200,000 | 500,000 |
-| train_steps × batch_size | 200 × 128 | 200 × 256 | 80 × 256 |
+| train_steps × batch_size | 200 × 128 | 400 × 256 | 80 × 256 |
 | lr_schedule | 0:0.02,40:0.002 | 0:0.02,90:0.002 | 0:0.02 |
 | arena_games × arena_opponents (+ gen 0) | 20 × 4 | 20 × 4 | 10 × 2 |
 | arena_temperature_moves | 2 | 4 | 4 |
@@ -50,6 +51,16 @@ rating (`arena_opponents = 2`, `bot_simulations = 100`,
 results below use those values. (The presets have since dropped the bot,
 `bot_simulations =`, in favour of optional reference networks; see the
 main README. The results here were measured with it.)
+
+The 9×9 preset has since adopted the experiments' "recipe":
+`games_per_generation` 100 → 200, `train_steps` 200 → 400,
+`temperature_moves` 20 → 7 and `resignation = true` (validated by
+continuing from a trained 6×96 network, not yet from scratch; see the
+main README's Presets section). Every 9×9 run in this directory
+started from the earlier values (100 games, 200 steps,
+`temperature_moves = 20`, no resignation) and changed only the settings
+it tested; each run's `config.cfg` records
+what it used, and `--resume` keeps it.
 
 ## Results by board size
 
@@ -359,8 +370,8 @@ over generations 1–250 (`9x9/rerate-250/`: `elo.csv`, `references.csv`,
       --set blocks=10 --set lr_schedule=0:0.002 --generations 50
   ```
 
-  Everything else is the 9×9 preset (100 games of 200 simulations per
-  generation, `arena_opponents = 2`, gating off). `init.txt` is the
+  Everything else is the 9×9 preset of the time (100 games of 200
+  simulations per generation, `arena_opponents = 2`, gating off). `init.txt` is the
   run's file with the absolute paths made repo-relative. Generation 0 of
   this run is exactly the old generation 250, since growing preserves
   the function.
@@ -1352,7 +1363,7 @@ Hypothesis: AlphaGo Zero sampled its self-play moves in proportion to
 visit counts (temperature 1) for the first 30 moves and played the
 most-visited move after that (Silver et al. 2017, Methods,
 "Self-play"). 30 moves of 361 points is about 8%, about 7 moves on 9×9;
-the 9×9 preset samples for 20. Sampling fewer moves keeps more of each
+the 9×9 preset then sampled for 20. Sampling fewer moves keeps more of each
 game at the search's best move, which should give the value head
 outcomes that follow from better play. The result: the arm beat the
 control at generation 50 by about the same margin as resignation, with
@@ -1416,7 +1427,8 @@ the post-250 runs: one config key, the same data volume, the same
 replay ratio and the same number of SGD steps. It also brings the
 setting closer to AlphaGo Zero's proportion of 30 of 361 points.
 `temperature_moves` around 7 is therefore a candidate for the 9×9
-presets; the presets are unchanged here (that decision is Mark's). What
+presets; the presets were unchanged here (that decision was Mark's; the
+9×9 preset later adopted it as part of the recipe). What
 it does not show: one seed, 50 generations from one start, one value
 (7 against 20, nothing between). Earlier 100-game matches showed gains
 of this size at generation 25 that were gone by generation 50 (sims400,
@@ -1721,7 +1733,7 @@ matches (`runs/agz-experiment.sh`, not in the repository).
 |---|---|---|---|
 | 1 | Resignation: `v_resign` set so that wrong resignations stay under 5%, with 10% of games played out with resignation off | finding 2; the review estimates it saves about 30% of self-play time | done (`resignation`; state.bin version 5): beat the control 0.595 at generation 50 (+67 Elo, interval excludes 0.5) with games 53% shorter (41.4 plies against 88.3) at a false-positive rate of 0.041; confounded by a replay ratio of 12.5 against 5.8 and a buffer spanning about 48 generations against 23; see [Resignation in self-play](#resignation-in-self-play) |
 | 2 | A random symmetry for each network evaluation in search | AGZ's search; screen with arena games only | merged (`mcts_random_symmetry`, `arena_random_symmetry`, and arena's one-sided `--a-random-symmetry` / `--b-random-symmetry`; see "Random symmetry in search" in the main README); screened: generation 250 against itself with symmetry on side A only, 400 games, scored 0.557 at 200 simulations and 0.585 at 800 (about +40 and +60 Elo, both intervals exclude 0.5) at play time; see [Arena screens](#arena-screens-of-alphago-zero-search-settings). Self-play arm done (`9x9-sym`, the `sims200` control plus `mcts_random_symmetry = true`): no measurable training gain, level with the control at generation 50 (0.495, interval 0.446–0.544) and on the re-rate against gen 200; it costs nothing, but the play-time gain did not become a stronger network; see [Random symmetry in self-play](#random-symmetry-in-self-play) |
-| 3 | `temperature_moves = 7`: AGZ's 30 moves of 361 points is about 8%, about 7 moves on 9×9 (the preset uses 20) | config only | done: beat the control 0.605 at generation 50 (+74 Elo, interval excludes 0.5) with the same data volume and replay ratio; a candidate for the 9×9 presets, which are unchanged; see [Seven opening moves at temperature](#seven-opening-moves-at-temperature-temperature_moves--7) |
+| 3 | `temperature_moves = 7`: AGZ's 30 moves of 361 points is about 8%, about 7 moves on 9×9 (the preset then used 20) | config only | done: beat the control 0.605 at generation 50 (+74 Elo, interval excludes 0.5) with the same data volume and replay ratio; since adopted in the 9×9 preset as part of the recipe; see [Seven opening moves at temperature](#seven-opening-moves-at-temperature-temperature_moves--7) |
 | 4 | Learning budget: more `train_steps`, or steps scaled with games so the replay ratio stays constant | finding 3 | done for steps scaled with games (`9x9-budget-g200-s400`: 200 games and 400 steps per generation, replay ratio 5.8 as in the control): beat the control 0.640 at generation 25 and 0.593 at 50 (+100 and +65 Elo, both intervals exclude 0.5) and gained +115 over the start against the control's +56, the most of the arms, and the most over its own start on the re-rate (+93 against +48). With the games run (the same but 200 steps: no clear gain) it points at the SGD steps as the binding constraint, but it costs twice the compute per generation and is about level with the control at equal compute; see [The learning budget](#the-learning-budget-200-games-and-400-steps-per-generation). Running, no results yet (launched with GNU Parallel, one on each of two Mac minis; `runs/next-arm.sh`, not in the repository): steps only, 100 games and 400 steps (`runs/9x9-steps400`, replay ratio about 11.6), and a combined recipe, `temperature_moves = 7`, resignation, 200 games and 400 steps for 100 generations (`runs/9x9-recipe`) |
 | 5 | More simulations (AGZ used 1,600) | only after the evaluation additions below, since the gain will be small for its cost | not started |
 | 6 | Arena-only tuning of `c_puct`, and `mcts_batch` 1 against 8 (AGZ evaluated leaves in batches of 8): generation 250 against itself, 400 games per setting | cheap: arena games only, no training | done, no change: `c_puct` 0.75 to 1.25 within noise of the preset 1.5, 2.0 and 3.0 clearly worse (−45, −102 Elo); batch 1 +30 Elo, not significant; see [Arena screens](#arena-screens-of-alphago-zero-search-settings) |

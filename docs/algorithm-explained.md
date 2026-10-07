@@ -1325,11 +1325,14 @@ GameRecord playSelfPlayGame(Evaluator& evaluator, const SelfPlayConfig& cfg, Rng
 ```
 *src/selfplay.cpp:50 — `playSelfPlayGame` (abridged)*
 
-The presets sample 8 plies on 5×5, 20 on 9×9 and 30 on 19×19 (AlphaGo
-Zero's value), roughly the first fifth of a typical game on each board
-(5×5 games average 30 to 44 plies, `docs/results/5x5/log.csv`; 9×9
-games 87 to 116, `docs/results/9x9/log.csv`; the two 19×19 generations
-145 and 365, `docs/results/19x19/log.csv`).
+The presets sample 8 plies on 5×5 and 30 on 19×19 (AlphaGo Zero's
+value), roughly the first fifth of a typical game on each board (5×5
+games average 30 to 44 plies, `docs/results/5x5/log.csv`; the two 19×19
+generations 145 and 365, `docs/results/19x19/log.csv`). The 9×9 preset
+sampled 20 at first, the same fifth of its 87-to-116-ply games
+(`docs/results/9x9/log.csv`). It now samples 7, AlphaGo Zero's 30 of
+361 points (about 8%) scaled to 81, after a training arm with 7 beat
+one with 20 (`docs/results/README.md`).
 Tic-tac-toe taught the lesson this number encodes: its default used to
 be 2, and training plateaued because self-play kept replaying the same
 few games — the network can only learn positions self-play reaches. In
@@ -1472,8 +1475,9 @@ reproducible from its seed and independent of the worker count;
 `resign_disabled_fraction = 0` is refused with resignation on, since
 there would be nothing to measure.
 `log.csv` records the threshold, the share of resignation-enabled games
-that resigned and the false-positive rate. Resignation is off in every
-preset, and it is refused together with the ownership head (chapter
+that resigned and the false-positive rate. Resignation is on in the 9×9
+preset and off in the 5×5 and 19×19 ones, and it is refused together
+with the ownership head (chapter
 06): a resigned game has no final board to take ownership targets from.
 The replay buffer marks resigned games, so `--buffer-from` refuses to
 seed an ownership run with them.
@@ -1714,7 +1718,8 @@ in the window (so long games contribute more samples, in proportion to
 their length) and gives each its own random symmetry. The windows are
 sized in generations of play: 100,000 positions on 5×5 is about twelve
 generations of 200 games of ~40 plies; 200,000 on 9×9 about 25
-generations of 100 games of ~80 plies.
+generations of 100 games of ~80 plies, or about 20 of the current
+preset's 200 games, most of them resigned at ~50 plies.
 
 **Symmetry augmentation.** Go's rules, and komi, are unchanged if the
 board is rotated or mirrored, so each position has up to 8 equivalent
@@ -1767,7 +1772,11 @@ it: 2.9 to 4.3 on 5×5 (200 × 128 samples over 200 games of 30–44 plies,
 `docs/results/5x5/log.csv`), 4.4 to 5.9 on 9×9 (`docs/results/9x9/log.csv`)
 and 8.49 in the 19×19 pilot (`docs/results/pilots/`). The 19×19 preset's `train_steps`
 went from 100 to 80 because of that last number (see the note in
-`configs/19x19.cfg`).
+`configs/19x19.cfg`). The 9×9 preset now takes 400 steps over 200
+mostly resigned games, a replay ratio of about 10 (7.7 to 13.0 in the
+`9x9-recipe` run's `log.csv`), against 5.8 for the earlier 100 games
+and 200 steps. With the recipe's other two changes it beat the control
+0.787 at generation 50, from a trained start (`docs/results/README.md`).
 
 **SGD with momentum and weight decay.** The optimizer is AlphaGo Zero's:
 momentum 0.9, L2 weight decay 1e-4.
@@ -2562,6 +2571,11 @@ gating is off.
 | 5×5 | 3×32, 200 games × 200 sims | 11.3 s (self-play 7.1, train 2.5, arena 1.8); 60 generations in 11.3 min | `docs/results/5x5/log.csv` |
 | 9×9 | 6×64, 100 games × 200 sims | 2.6 min in the 2-generation pilot (152–155 s); in the overnight run 4.1 min on average (self-play 2.0, train 1.0, arena 1.0; 2.7 to 4.8 min), 150 generations in 10.2 hours | `docs/results/pilots/9x9.csv`, `docs/results/9x9/log.csv` |
 | 19×19 | 10×128, 20 games × 400 sims | 62.4 min in the 1-generation pilot (self-play 49.5, train 7.9, arena 5.0); in the check run 58.2 min for generation 1 and 129.7 min for generation 2 (self-play 110.5 min: the games grew from 145 to 365 plies) | `docs/results/pilots/19x19.csv`, `docs/results/19x19/` |
+
+The 9×9 row is the earlier preset of 100 games and 200 steps. The
+current one plays 200 games, most of them resigned at about 50 plies,
+which costs about the self-play of 100 played-out games, and its 400
+steps double the training time.
 
 Self-play dominates everywhere — search needs hundreds of network
 evaluations per move, training needs one forward and backward pass per
