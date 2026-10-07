@@ -1,0 +1,2 @@
+A runs/9x9-recipe/checkpoints/gen_0025.azn vs B runs/9x9-sims200/checkpoints/gen_0025.azn: A scored 265/400 = 0.662 (95% CI 0.615-0.707), distinct games 387
+A wins 265, B wins 135, draws 0

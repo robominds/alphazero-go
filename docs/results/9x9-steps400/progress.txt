@@ -1,0 +1,53 @@
+generations = 50
+calibration_games = 80
+gen 1 | selfplay 100 games avg 89.2 plies 230.6s | train loss p 2.42 v 0.35 lr 0.002 val p 2.39 v 0.38 seen p 2.37 v 0.37 196.5s | arena elo -33.9 vs 0:0.50 bot100:0.95 (distinct 20/20) 38.6s
+gen 2 | selfplay 100 games avg 85.6 plies 218.3s | train loss p 2.41 v 0.35 lr 0.002 val p 2.37 v 0.44 seen p 2.37 v 0.35 195.2s | arena elo -65.8 vs 1:0.55 0:0.35 bot100:1.00 (distinct 20/20) 59.1s
+gen 3 | selfplay 100 games avg 88.3 plies 233.1s | train loss p 2.41 v 0.35 lr 0.002 val p 2.38 v 0.37 seen p 2.36 v 0.36 198.4s | arena elo -68.4 vs 2:0.55 0:0.40 bot100:0.95 (distinct 20/20) 62.9s
+gen 4 | selfplay 100 games avg 88.0 plies 226.8s | train loss p 2.41 v 0.36 lr 0.002 val p 2.40 v 0.37 seen p 2.36 v 0.35 197.1s | arena elo -83.8 vs 3:0.40 0:0.45 bot100:0.95 (distinct 20/20) 64.3s
+gen 5 | selfplay 100 games avg 84.8 plies 211.4s | train loss p 2.41 v 0.35 lr 0.002 val p 2.38 v 0.32 seen p 2.37 v 0.39 193.1s | arena elo 22.0 vs 4:0.55 0:0.60 bot100:1.00 (distinct 20/20) 57.1s
+gen 6 | selfplay 100 games avg 91.7 plies 217.0s | train loss p 2.41 v 0.35 lr 0.002 val p 2.34 v 0.36 seen p 2.38 v 0.37 193.7s | arena elo -29.1 vs 5:0.50 0:0.40 bot100:1.00 (distinct 20/20) 58.5s
+gen 7 | selfplay 100 games avg 87.2 plies 205.1s | train loss p 2.41 v 0.35 lr 0.002 val p 2.37 v 0.44 seen p 2.37 v 0.34 194.3s | arena elo -4.7 vs 6:0.60 0:0.45 bot100:1.00 (distinct 20/20) 58.4s
+gen 8 | selfplay 100 games avg 88.7 plies 207.5s | train loss p 2.41 v 0.34 lr 0.002 val p 2.36 v 0.30 seen p 2.37 v 0.36 194.2s | arena elo 4.0 vs 7:0.60 0:0.45 bot100:1.00 (distinct 20/20) 57.4s
+gen 9 | selfplay 100 games avg 86.5 plies 200.6s | train loss p 2.41 v 0.35 lr 0.002 val p 2.34 v 0.47 seen p 2.37 v 0.33 193.3s | arena elo -53.7 vs 8:0.35 0:0.45 bot100:1.00 (distinct 20/20) 59.0s
+gen 10 | selfplay 100 games avg 86.7 plies 205.9s | train loss p 2.41 v 0.34 lr 0.002 val p 2.37 v 0.35 seen p 2.38 v 0.33 193.9s | arena elo 0.2 vs 9:0.50 0:0.55 bot100:1.00 (distinct 20/20) 56.0s
+gen 11 | selfplay 100 games avg 87.3 plies 191.5s | train loss p 2.41 v 0.35 lr 0.002 val p 2.36 v 0.33 seen p 2.37 v 0.35 193.3s | arena elo 25.0 vs 10:0.60 0:0.50 bot100:1.00 (distinct 20/20) 54.0s
+gen 12 | selfplay 100 games avg 87.1 plies 192.3s | train loss p 2.40 v 0.34 lr 0.002 val p 2.35 v 0.35 seen p 2.39 v 0.36 192.9s | arena elo 175.0 vs 11:0.80 0:0.70 bot100:1.00 (distinct 20/20) 54.0s
+gen 13 | selfplay 100 games avg 87.1 plies 192.6s | train loss p 2.40 v 0.34 lr 0.002 val p 2.33 v 0.37 seen p 2.36 v 0.34 193.2s | arena elo 48.1 vs 12:0.60 0:0.45 bot100:0.95 (distinct 20/20) 52.5s
+gen 14 | selfplay 100 games avg 90.4 plies 198.7s | train loss p 2.40 v 0.35 lr 0.002 val p 2.35 v 0.42 seen p 2.36 v 0.33 193.5s | arena elo 32.6 vs 13:0.55 0:0.55 bot100:0.95 (distinct 20/20) 53.8s
+gen 15 | selfplay 100 games avg 87.3 plies 190.5s | train loss p 2.40 v 0.34 lr 0.002 val p 2.38 v 0.35 seen p 2.38 v 0.34 193.1s | arena elo 28.7 vs 14:0.40 0:0.60 bot100:1.00 (distinct 20/20) 53.0s
+gen 16 | selfplay 100 games avg 92.0 plies 202.6s | train loss p 2.40 v 0.34 lr 0.002 val p 2.34 v 0.41 seen p 2.36 v 0.32 193.4s | arena elo 41.9 vs 15:0.30 0:0.70 bot100:1.00 (distinct 20/20) 54.0s
+gen 17 | selfplay 100 games avg 85.8 plies 190.4s | train loss p 2.40 v 0.34 lr 0.002 val p 2.38 v 0.36 seen p 2.37 v 0.34 192.9s | arena elo 84.2 vs 16:0.45 0:0.70 bot100:1.00 (distinct 20/20) 52.3s
+gen 18 | selfplay 100 games avg 82.7 plies 182.3s | train loss p 2.40 v 0.34 lr 0.002 val p 2.35 v 0.41 seen p 2.37 v 0.34 192.7s | arena elo 57.7 vs 17:0.60 0:0.50 bot100:1.00 (distinct 20/20) 54.5s
+gen 19 | selfplay 100 games avg 91.2 plies 200.1s | train loss p 2.40 v 0.34 lr 0.002 val p 2.33 v 0.39 seen p 2.37 v 0.35 193.4s | arena elo 53.1 vs 18:0.30 0:0.70 bot100:1.00 (distinct 20/20) 53.0s
+gen 20 | selfplay 100 games avg 88.6 plies 196.9s | train loss p 2.40 v 0.33 lr 0.002 val p 2.33 v 0.41 seen p 2.38 v 0.34 193.1s | arena elo 65.2 vs 19:0.75 0:0.50 bot100:0.95 (distinct 20/20) 54.7s
+gen 21 | selfplay 100 games avg 85.2 plies 189.7s | train loss p 2.40 v 0.33 lr 0.002 val p 2.32 v 0.35 seen p 2.37 v 0.33 192.8s | arena elo -28.2 vs 20:0.35 0:0.45 bot100:1.00 (distinct 20/20) 51.9s
+gen 22 | selfplay 100 games avg 86.5 plies 189.2s | train loss p 2.40 v 0.33 lr 0.002 val p 2.34 v 0.49 seen p 2.38 v 0.33 196.0s | arena elo -78.6 vs 21:0.35 0:0.45 bot100:0.95 (distinct 20/20) 54.6s
+gen 23 | selfplay 100 games avg 85.7 plies 190.2s | train loss p 2.39 v 0.33 lr 0.002 val p 2.35 v 0.33 seen p 2.35 v 0.32 193.0s | arena elo -29.4 vs 22:0.40 0:0.55 bot100:1.00 (distinct 20/20) 55.3s
+gen 24 | selfplay 100 games avg 83.6 plies 184.6s | train loss p 2.40 v 0.33 lr 0.002 val p 2.40 v 0.29 seen p 2.35 v 0.33 192.7s | arena elo -6.8 vs 23:0.50 0:0.50 bot100:1.00 (distinct 20/20) 53.8s
+gen 25 | selfplay 100 games avg 88.6 plies 195.3s | train loss p 2.39 v 0.33 lr 0.002 val p 2.39 v 0.35 seen p 2.37 v 0.33 193.2s | arena elo 25.4 vs 24:0.60 0:0.50 bot100:1.00 (distinct 20/20) 52.1s
+gen 26 | selfplay 100 games avg 87.4 plies 192.3s | train loss p 2.40 v 0.32 lr 0.002 val p 2.38 v 0.35 seen p 2.36 v 0.33 193.3s | arena elo 98.3 vs 25:0.45 0:0.75 bot100:1.00 (distinct 20/20) 55.3s
+gen 27 | selfplay 100 games avg 87.5 plies 196.3s | train loss p 2.40 v 0.32 lr 0.002 val p 2.40 v 0.32 seen p 2.36 v 0.31 193.2s | arena elo -68.9 vs 26:0.45 0:0.25 bot100:1.00 (distinct 20/20) 57.3s
+gen 28 | selfplay 100 games avg 90.0 plies 197.8s | train loss p 2.39 v 0.32 lr 0.002 val p 2.34 v 0.37 seen p 2.37 v 0.31 193.4s | arena elo 41.4 vs 27:0.60 0:0.60 bot100:1.00 (distinct 20/20) 54.7s
+gen 29 | selfplay 100 games avg 88.0 plies 191.8s | train loss p 2.40 v 0.32 lr 0.002 val p 2.33 v 0.40 seen p 2.39 v 0.32 192.9s | arena elo 19.2 vs 28:0.50 0:0.55 bot100:0.95 (distinct 20/20) 51.3s
+gen 30 | selfplay 100 games avg 87.8 plies 193.9s | train loss p 2.40 v 0.31 lr 0.002 val p 2.38 v 0.26 seen p 2.37 v 0.30 193.1s | arena elo 36.9 vs 29:0.45 0:0.60 bot100:1.00 (distinct 20/20) 53.6s
+gen 31 | selfplay 100 games avg 87.1 plies 192.1s | train loss p 2.40 v 0.31 lr 0.002 val p 2.37 v 0.37 seen p 2.37 v 0.31 193.0s | arena elo -11.9 vs 30:0.30 0:0.55 bot100:1.00 (distinct 20/20) 53.4s
+gen 32 | selfplay 100 games avg 86.4 plies 190.3s | train loss p 2.40 v 0.31 lr 0.002 val p 2.37 v 0.41 seen p 2.38 v 0.30 192.8s | arena elo -19.2 vs 31:0.50 0:0.45 bot100:1.00 (distinct 20/20) 55.9s
+gen 33 | selfplay 100 games avg 89.1 plies 196.1s | train loss p 2.40 v 0.31 lr 0.002 val p 2.34 v 0.38 seen p 2.35 v 0.32 201.0s | arena elo 61.1 vs 32:0.45 0:0.70 bot100:1.00 (distinct 20/20) 51.9s
+gen 34 | selfplay 100 games avg 89.2 plies 194.6s | train loss p 2.40 v 0.31 lr 0.002 val p 2.32 v 0.33 seen p 2.36 v 0.30 193.5s | arena elo 72.0 vs 33:0.45 0:0.65 bot100:1.00 (distinct 20/20) 55.2s
+gen 35 | selfplay 100 games avg 90.8 plies 199.5s | train loss p 2.40 v 0.31 lr 0.002 val p 2.32 v 0.35 seen p 2.36 v 0.31 193.7s | arena elo 164.5 vs 34:0.70 0:0.75 bot100:0.95 (distinct 20/20) 53.3s
+gen 36 | selfplay 100 games avg 83.3 plies 183.9s | train loss p 2.39 v 0.31 lr 0.002 val p 2.35 v 0.37 seen p 2.35 v 0.30 192.9s | arena elo 50.2 vs 35:0.45 0:0.50 bot100:1.00 (distinct 20/20) 56.2s
+gen 37 | selfplay 100 games avg 82.8 plies 182.4s | train loss p 2.39 v 0.31 lr 0.002 val p 2.34 v 0.43 seen p 2.35 v 0.31 194.8s | arena elo 106.3 vs 36:0.60 0:0.65 bot100:1.00 (distinct 20/20) 63.2s
+gen 38 | selfplay 100 games avg 86.2 plies 226.4s | train loss p 2.39 v 0.31 lr 0.002 val p 2.35 v 0.33 seen p 2.34 v 0.30 201.8s | arena elo 37.6 vs 37:0.40 0:0.55 bot100:1.00 (distinct 20/20) 61.5s
+gen 39 | selfplay 100 games avg 83.2 plies 218.7s | train loss p 2.39 v 0.31 lr 0.002 val p 2.37 v 0.45 seen p 2.35 v 0.30 195.5s | arena elo -29.1 vs 38:0.30 0:0.55 bot100:0.95 (distinct 20/20) 63.1s
+gen 40 | selfplay 100 games avg 85.8 plies 220.0s | train loss p 2.39 v 0.31 lr 0.002 val p 2.37 v 0.36 seen p 2.35 v 0.31 193.4s | arena elo 18.3 vs 39:0.60 0:0.50 bot100:1.00 (distinct 20/20) 56.5s
+gen 41 | selfplay 100 games avg 88.3 plies 196.6s | train loss p 2.39 v 0.32 lr 0.002 val p 2.33 v 0.44 seen p 2.34 v 0.32 193.4s | arena elo -73.4 vs 40:0.30 0:0.45 bot100:0.95 (distinct 20/20) 52.3s
+gen 42 | selfplay 100 games avg 84.4 plies 186.0s | train loss p 2.40 v 0.32 lr 0.002 val p 2.35 v 0.39 seen p 2.36 v 0.30 192.8s | arena elo -109.7 vs 41:0.60 0:0.20 bot100:1.00 (distinct 20/20) 53.0s
+gen 43 | selfplay 100 games avg 87.5 plies 192.9s | train loss p 2.40 v 0.32 lr 0.002 val p 2.37 v 0.31 seen p 2.37 v 0.31 193.5s | arena elo -51.9 vs 42:0.35 0:0.55 bot100:1.00 (distinct 20/20) 53.7s
+gen 44 | selfplay 100 games avg 85.5 plies 189.3s | train loss p 2.40 v 0.31 lr 0.002 val p 2.35 v 0.34 seen p 2.35 v 0.30 193.3s | arena elo 49.2 vs 43:0.45 0:0.70 bot100:1.00 (distinct 20/20) 54.5s
+gen 45 | selfplay 100 games avg 86.0 plies 188.9s | train loss p 2.39 v 0.31 lr 0.002 val p 2.35 v 0.40 seen p 2.36 v 0.31 193.2s | arena elo 63.1 vs 44:0.35 0:0.70 bot100:1.00 (distinct 20/20) 55.6s
+gen 46 | selfplay 100 games avg 88.6 plies 220.6s | train loss p 2.40 v 0.31 lr 0.002 val p 2.37 v 0.24 seen p 2.35 v 0.30 196.7s | arena elo 76.9 vs 45:0.70 0:0.55 bot100:0.95 (distinct 19/20) 61.5s
+gen 47 | selfplay 100 games avg 89.3 plies 248.3s | train loss p 2.39 v 0.31 lr 0.002 val p 2.33 v 0.33 seen p 2.36 v 0.30 198.1s | arena elo 116.9 vs 46:0.60 0:0.65 bot100:1.00 (distinct 20/20) 65.9s
+gen 48 | selfplay 100 games avg 88.2 plies 227.2s | train loss p 2.39 v 0.31 lr 0.002 val p 2.34 v 0.40 seen p 2.37 v 0.32 198.1s | arena elo 47.1 vs 47:0.50 0:0.55 bot100:0.95 (distinct 20/20) 58.4s
+gen 49 | selfplay 100 games avg 87.0 plies 206.6s | train loss p 2.39 v 0.31 lr 0.002 val p 2.38 v 0.31 seen p 2.34 v 0.30 194.9s | arena elo 39.2 vs 48:0.65 0:0.45 bot100:1.00 (distinct 20/20) 62.5s
+gen 50 | selfplay 100 games avg 87.4 plies 208.9s | train loss p 2.39 v 0.31 lr 0.002 val p 2.37 v 0.30 seen p 2.36 v 0.30 194.2s | arena elo -98.4 vs 49:0.25 0:0.35 bot100:1.00 (distinct 20/20) 52.8s
+done: generation 50 in runs/9x9-steps400

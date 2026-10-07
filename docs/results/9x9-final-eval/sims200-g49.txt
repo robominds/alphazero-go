@@ -1,0 +1,2 @@
+A runs/9x9-sims200/checkpoints/gen_0049.azn vs B runs/9x9-wide96/checkpoints/gen_0050.azn: A scored 102/200 = 0.510 (95% CI 0.441-0.578), distinct games 192
+A wins 102, B wins 98, draws 0

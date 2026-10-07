@@ -1,0 +1,2 @@
+A runs/9x9-budget-g200-s400/checkpoints/gen_0046.azn vs B runs/9x9-wide96/checkpoints/gen_0050.azn: A scored 133/200 = 0.665 (95% CI 0.597-0.727), distinct games 193
+A wins 133, B wins 67, draws 0

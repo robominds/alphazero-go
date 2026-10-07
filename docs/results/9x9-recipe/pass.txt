@@ -1,0 +1,7 @@
+runs/9x9-recipe/state.bin games 4030 black win 0.316
+played-out games 491 (pass statistics below); resigned games 3539
+first passer wins 0.772 of 491 games; games w/o pass 0
+mean plies after first pass 25.2
+non-final passes by eventual winner 3144, by loser 251
+resigned: by Black 2424, by White 1115; with a pass before resigning 562, first passer wins 0.632
+resigned: passes by eventual winner 2010, by loser 683

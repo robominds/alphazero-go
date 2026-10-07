@@ -1,0 +1,2 @@
+A runs/9x9-recipe/checkpoints/gen_0048.azn vs B runs/9x9-wide96/checkpoints/gen_0050.azn: A scored 161/200 = 0.805 (95% CI 0.745-0.854), distinct games 191
+A wins 161, B wins 39, draws 0
