@@ -1778,10 +1778,12 @@ it: 2.9 to 4.3 on 5×5 (200 × 128 samples over 200 games of 30–44 plies,
 and 8.49 in the 19×19 pilot (`docs/results/pilots/`). The 19×19 preset's `train_steps`
 went from 100 to 80 because of that last number (see the note in
 `configs/19x19.cfg`). The 9×9 preset now takes 400 steps over 200
-mostly resigned games, a replay ratio of about 10 (7.7 to 13.0 in the
-`9x9-recipe` run's `log.csv`), against 5.8 for the earlier 100 games
-and 200 steps. With the recipe's other two changes it beat the control
-0.787 at generation 50, from a trained start (`docs/results/README.md`).
+mostly resigned games, a replay ratio of about 10 (7.7 to 13.0 over
+the first 100 generations of the `9x9-recipe` run's `log.csv`), against
+5.8 for the earlier 100 games and 200 steps. With the recipe's other two
+changes it beat the control 0.787 at generation 50, from a trained
+start, and from scratch the preset's generation 150 beat the earlier
+preset's generation 250 0.853 (`docs/results/README.md`).
 
 **SGD with momentum and weight decay.** The optimizer is AlphaGo Zero's:
 momentum 0.9, L2 weight decay 1e-4.
