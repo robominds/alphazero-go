@@ -1,0 +1,4 @@
+loser/B    n= 30583 entropy 2.684  moves-visited 41.9  top-share 0.302
+loser/W    n= 12747 entropy 1.988  moves-visited 26.3  top-share 0.419
+winner/B   n= 12886 entropy 1.662  moves-visited 25.9  top-share 0.518
+winner/W   n= 29081 entropy 1.297  moves-visited 10.4  top-share 0.540

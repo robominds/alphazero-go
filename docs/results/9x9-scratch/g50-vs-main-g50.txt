@@ -1,0 +1,2 @@
+A runs/9x9-scratch/checkpoints/gen_0050.azn vs B runs/9x9-main/checkpoints/gen_0050.azn: A scored 358/400 = 0.895 (95% CI 0.861-0.921), distinct games 398
+A wins 358, B wins 42, draws 0

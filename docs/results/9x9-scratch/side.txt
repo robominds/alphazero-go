@@ -1,0 +1,5 @@
+resigned games 3649 of 4112
+loser/B    n= 32752 entropy 2.119  moves-visited 41.0  top-share 0.437
+loser/W    n= 23068 entropy 1.736  moves-visited 28.9  top-share 0.499
+winner/B   n= 24055 entropy 1.453  moves-visited 29.1  top-share 0.596
+winner/W   n= 32222 entropy 1.188  moves-visited 16.4  top-share 0.621

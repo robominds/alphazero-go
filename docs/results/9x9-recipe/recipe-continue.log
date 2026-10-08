@@ -1,0 +1,7 @@
+continue start Wed Oct  7 06:32:38 PDT 2026 on [this Mac]
+train exit 0 Wed Oct  7 20:31:47 PDT 2026
+g150-vs-g100: A runs/9x9-recipe/checkpoints/gen_0150.azn vs B runs/9x9-recipe/checkpoints/gen_0100.azn: A scored 258/400 = 0.645 (95% CI 0.597-0.690), distinct games 320
+g200-vs-g100: A runs/9x9-recipe/checkpoints/gen_0200.azn vs B runs/9x9-recipe/checkpoints/gen_0100.azn: A scored 299/400 = 0.748 (95% CI 0.703-0.788), distinct games 319
+g200-vs-start: A runs/9x9-recipe/checkpoints/gen_0200.azn vs B runs/9x9-wide96/checkpoints/gen_0050.azn: A scored 361/400 = 0.902 (95% CI 0.869-0.928), distinct games 380
+rerate exit 0 Thu Oct  8 01:59:50 PDT 2026
+all done Thu Oct  8 01:59:50 PDT 2026

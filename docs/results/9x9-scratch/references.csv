@@ -1,0 +1,12 @@
+player,kind,simulations,promoted_at,elo
+-1,bot,100,0,355.6
+0,checkpoint,,0,0.0
+11,checkpoint,,11,588.3
+14,checkpoint,,14,768.1
+21,checkpoint,,21,1033.2
+25,checkpoint,,25,1200.3
+32,checkpoint,,32,1433.3
+43,checkpoint,,43,1595.6
+67,checkpoint,,67,1764.4
+102,checkpoint,,102,1949.4
+129,checkpoint,,129,2056.1

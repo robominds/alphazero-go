@@ -1,0 +1,8 @@
+start Wed Oct  7 21:35:50 PDT 2026
+g50-vs-main-g50: A runs/9x9-scratch/checkpoints/gen_0050.azn vs B runs/9x9-main/checkpoints/gen_0050.azn: A scored 358/400 = 0.895 (95% CI 0.861-0.921), distinct games 398
+g100-vs-main-g100: A runs/9x9-scratch/checkpoints/gen_0100.azn vs B runs/9x9-main/checkpoints/gen_0100.azn: A scored 358/400 = 0.895 (95% CI 0.861-0.921), distinct games 387
+g150-vs-main-g150: A runs/9x9-scratch/checkpoints/gen_0150.azn vs B runs/9x9-main/checkpoints/gen_0150.azn: A scored 363/400 = 0.907 (95% CI 0.875-0.932), distinct games 384
+g75-vs-main-g150-equal-steps: A runs/9x9-scratch/checkpoints/gen_0075.azn vs B runs/9x9-main/checkpoints/gen_0150.azn: A scored 238/400 = 0.595 (95% CI 0.546-0.642), distinct games 388
+g125-vs-main-g250-equal-steps: A runs/9x9-scratch/checkpoints/gen_0125.azn vs B runs/9x9-main/checkpoints/gen_0250.azn: A scored 318/400 = 0.795 (95% CI 0.753-0.832), distinct games 389
+g150-vs-main-g250: A runs/9x9-scratch/checkpoints/gen_0150.azn vs B runs/9x9-main/checkpoints/gen_0250.azn: A scored 341/400 = 0.853 (95% CI 0.814-0.884), distinct games 393
+all done Wed Oct  7 22:21:48 PDT 2026

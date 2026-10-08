@@ -1,0 +1,13 @@
+version 5 gen 150 games 4112
+positions 199990
+mean pi entropy 1.768 nats
+mean root visits 393.9, median 365
+mean #moves with visits 32.4
+mean top-move share 0.500
+frac positions at/after first pass 0.078
+frac positions where pass is top visit 0.029
+resigned games 3649 of 4112, 161719 positions (0.809)
+played-out games only: frac positions at/after first pass 0.266
+ phase open<20 n=72513 frac=0.36 H=1.988
+ phase mid n=112097 frac=0.56 H=1.630
+ phase after1stpass n=15380 frac=0.08 H=1.742
