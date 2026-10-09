@@ -35,18 +35,21 @@ bool metalAvailable(std::string* why = nullptr);
 std::string metalDescription();
 
 #ifdef AZ_USE_METAL
-// The GPU behind an InferenceHub: net's weights uploaded once, two slots
-// (kInferenceSlots) of up to maxBatch positions each, a forward pass per
-// batch in one command buffer, completed asynchronously. Throws
-// std::runtime_error ("metal: inference needs N MB ...; lower
-// inference_batch") when the slots would not fit the GPU's recommended
-// working set, before allocating them.
-std::unique_ptr<BatchRunner> makeMetalRunner(const Network& net, int maxBatch);
+// The GPU behind an InferenceHub: net's weights uploaded once, `slots`
+// (1..kInferenceSlots) passes of up to maxBatch positions each that may be in
+// flight at once, a forward pass per batch in one command buffer, completed
+// asynchronously. Two slots let one pass compute while the next fills, which
+// a hub alone on the GPU needs; when several hubs share it (an arena wave)
+// the other hubs' passes keep it busy, and one slot each makes the passes
+// fewer and larger. Throws std::runtime_error ("metal: inference needs N MB
+// ...; lower inference_batch") when the slots would not fit the GPU's
+// recommended working set, before allocating them.
+std::unique_ptr<BatchRunner> makeMetalRunner(const Network& net, int maxBatch, int slots = 2);
 
 // The same memory check up front, for a run before it writes anything:
-// throws that error unless `hubs` hubs (2: an arena match) of a network
-// shaped cfg, at inferenceBatch positions per pass, fit.
-void checkMetalInferenceMemory(const NetConfig& cfg, int inferenceBatch, int hubs);
+// throws that error unless `hubs` hubs of `slotsPerHub` slots each, for a
+// network shaped cfg at inferenceBatch positions per pass, fit.
+void checkMetalInferenceMemory(const NetConfig& cfg, int inferenceBatch, int hubs, int slotsPerHub = 2);
 
 // The whole network's inference forward on the GPU, synchronously: weights
 // uploaded once, one workspace for up to maxBatch positions. For the

@@ -77,12 +77,13 @@ MctsConfig arenaSearchConfig(const ArenaPlayer& player, const ArenaConfig& cfg);
 // also allowed), or an odd or < 2 game count. Bots are capped at 100000
 // simulations here too. Game i uses Rng(deriveSeed(seed, i)). Deterministic
 // for a seed.
-// Each network player's evaluators come from WorkerEvaluators: per worker a
-// backend and LocalEvaluator for naive and blas; with metal one batching hub
-// per network player, whose passes hold at most inferenceBatch positions
-// (each side's MCTS batch must fit, else std::invalid_argument). workers <= 0
-// means resolveWorkers(workers, backendName == "metal"); never more than
-// cfg.games threads. Results do not depend on workers or inferenceBatch.
+// It is playMatches with this one match: one set of evaluators per distinct
+// network (a network playing itself has one), per worker a backend and a
+// workspace shared by its LocalEvaluators for naive and blas; with metal one
+// batching hub per network, whose passes hold at most inferenceBatch
+// positions (each side's MCTS batch must fit, else std::invalid_argument).
+// workers <= 0 means arenaWorkers(0, backendName, cfg.games); never more
+// than cfg.games threads. Results do not depend on workers or inferenceBatch.
 MatchResult playMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& cfg,
                       uint64_t seed, int workers, const std::string& backendName,
                       int inferenceBatch = 256);
@@ -116,8 +117,11 @@ std::vector<MatchResult> playMatches(const std::vector<ArenaMatchSpec>& matches,
                                      int workers, const std::string& backendName,
                                      int inferenceBatch = 256);
 
-// The worker threads for `games` arena games: an explicit count (> 0) as
-// given; otherwise resolveWorkers(0, backend == "metal"). Never more than games.
+// The worker threads for `games` arena games, never more than games: an
+// explicit count (> 0) as given; otherwise, with metal, every game at once
+// (up to kMaxArenaWorkers), and with naive and blas resolveWorkers(0), one
+// per core. Results do not depend on it.
+constexpr int kMaxArenaWorkers = 256;   // the most the workers key allows
 int arenaWorkers(int workers, const std::string& backendName, int games);
 
 namespace arena_probe {

@@ -1,6 +1,7 @@
 #include "azgo/arena.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <memory>
 #include <set>
@@ -56,7 +57,12 @@ GameOutcome playArenaGame(Seat& a, Seat& b, const ArenaConfig& cfg, int n, uint6
 
 // The evaluators of a set of matches: for each distinct network, one per
 // worker. With metal, WorkerEvaluators gives each network its own hub, which
-// every worker's searches with that network share. With naive and blas, each
+// every worker's searches with that network share. A hub alone on the GPU
+// keeps two passes in flight, so one computes while the next fills; when
+// several hubs share it, the others' passes keep it busy, and one pass in
+// flight per hub lets each pass take everything that waits: fewer, larger
+// passes (docs/results/bench.txt). Which positions share a pass changes no
+// result. With naive and blas, each
 // worker has one single-threaded backend and one workspace, sized for the
 // largest request, and a LocalEvaluator per network on that workspace: a
 // worker plays one game at a time and only the side to move searches, so it
@@ -69,9 +75,10 @@ public:
                     const std::string& backend, int workers, int inferenceBatch) {
         if (nets.empty()) return;
         if (backend == "metal") {
+            const int slots = nets.size() > 1 ? 1 : kInferenceSlots;
             for (size_t k = 0; k < nets.size(); ++k)
                 hubs_.push_back(std::make_unique<WorkerEvaluators>(*nets[k], backend, workers, maxRequest[k],
-                                                                   inferenceBatch));
+                                                                   inferenceBatch, slots));
             return;
         }
         const int largest = *std::max_element(maxRequest.begin(), maxRequest.end());
@@ -98,7 +105,7 @@ private:
     std::vector<std::vector<std::unique_ptr<Evaluator>>> local_;   // [network][worker]
 };
 
-bool gOneMatchAtATime = false;   // arena_probe: tests only
+std::atomic<bool> gOneMatchAtATime{false};   // arena_probe: tests only
 
 // Information carried by one game whose expected score is p is proportional
 // to p(1 - p): 0.25 at p = 0.5, 0.21 at 0.7, under 0.01 at 0.99. 0.7 keeps
@@ -189,6 +196,10 @@ struct GameTask {
 } // namespace
 
 int arenaWorkers(int workers, const std::string& backendName, int games) {
+    // With metal, every game of the wave at once: a worker waiting for the
+    // GPU costs no CPU, and an arena game has only one search in flight, so
+    // the games in flight are what fills the passes.
+    if (workers <= 0 && backendName == "metal") workers = kMaxArenaWorkers;
     return std::max(1, std::min(resolveWorkers(workers, backendName == "metal"), games));
 }
 

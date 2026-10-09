@@ -252,17 +252,18 @@ void InferenceHub::dispatcherLoop() {
 // ---------------------------------------------------------------- WorkerEvaluators
 
 WorkerEvaluators::WorkerEvaluators(const Network& net, const std::string& backend, int workers,
-                                   int maxRequest, int inferenceBatch) {
+                                   int maxRequest, int inferenceBatch, int slots) {
     if (workers < 1) throw std::invalid_argument("WorkerEvaluators: workers must be >= 1");
     if (backend == "metal") {
 #ifdef AZ_USE_METAL
         InferenceHubOptions options;
         options.maxBatch = inferenceBatch;
         options.chaosSeed = metal_probe::hubChaosSeed();   // a test hook; 0 in every run
-        hub_ = std::make_unique<InferenceHub>(makeMetalRunner(net, inferenceBatch), net.config(), options);
+        hub_ = std::make_unique<InferenceHub>(makeMetalRunner(net, inferenceBatch, slots), net.config(), options);
         for (int w = 0; w < workers; ++w) evaluators_.push_back(hub_->makeEvaluator(maxRequest));
 #else
         (void)inferenceBatch;
+        (void)slots;
         throw std::invalid_argument(
             "backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON (macOS only)");
 #endif

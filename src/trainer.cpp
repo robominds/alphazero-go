@@ -58,13 +58,17 @@ int arenaHubs(const Config& cfg) {
 #endif
 
 // The backend can run here, and with metal its hubs fit in GPU memory at
-// inference_batch: every hub an arena wave may need at once. Checked before
-// a run writes anything, so a too-large inference_batch fails up front
-// rather than in the first arena.
+// inference_batch: self-play's hub (two slots), or an arena wave's hubs (one
+// slot each when there are several; playMatches). Checked before a run
+// writes anything, so a too-large inference_batch fails up front rather than
+// in the first arena.
 void checkBackend(const Config& cfg) {
     checkBackendAvailable(cfg.backend);
 #ifdef AZ_USE_METAL
-    if (cfg.backend == "metal") checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, arenaHubs(cfg));
+    if (cfg.backend == "metal") {
+        checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, 1, kInferenceSlots);
+        checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, arenaHubs(cfg), 1);
+    }
 #endif
 }
 

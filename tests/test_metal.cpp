@@ -1009,6 +1009,17 @@ void test_metal_runner_memory_check() {
     assert(threw);
     auto ok = makeMetalRunner(net, 8);   // a sane batch fits
     assert(ok->slots() == kInferenceSlots && ok->maxBatch() == 8);
+    // An arena wave's hubs keep one pass each in flight.
+    assert(makeMetalRunner(net, 8, 1)->slots() == 1);
+    for (int bad : {0, kInferenceSlots + 1}) {
+        bool refused = false;
+        try {
+            makeMetalRunner(net, 8, bad);
+        } catch (const std::invalid_argument&) {
+            refused = true;
+        }
+        assert(refused);
+    }
 }
 
 // ---------------------------------------------------------------- backend = metal in a run

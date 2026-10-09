@@ -26,12 +26,12 @@ namespace {
 
 class MetalBatchRunner : public BatchRunner {
 public:
-    MetalBatchRunner(const Network& net, int maxBatch)
+    MetalBatchRunner(const Network& net, int maxBatch, int slots)
         : network_(net.config()),
           weights_(ParamLayout::of(const_cast<Network&>(net))),
           maxBatch_(maxBatch) {
         weights_.upload(net);
-        for (int s = 0; s < kInferenceSlots; ++s)
+        for (int s = 0; s < slots; ++s)
             workspaces_.push_back(std::make_unique<GpuWorkspace>(net.config(), maxBatch,
                                                                  GpuWorkspace::Purpose::Inference));
     }
@@ -41,7 +41,7 @@ public:
         idle_.wait(lock, [&] { return inFlight_ == 0; });
     }
 
-    int slots() const override { return kInferenceSlots; }
+    int slots() const override { return static_cast<int>(workspaces_.size()); }
     int maxBatch() const override { return maxBatch_; }
     float* input(int slot) override { return workspaces_.at(slot)->stage.input.data(); }
     const float* logits(int slot) const override { return workspaces_.at(slot)->logits.data(); }
@@ -90,9 +90,9 @@ private:
 
 namespace {
 
-// GPU memory of one hub: two inference workspaces and the weights.
-double hubBytes(const NetConfig& cfg, size_t weightFloats, int maxBatch) {
-    return static_cast<double>(kInferenceSlots) *
+// GPU memory of one hub: an inference workspace per slot and the weights.
+double hubBytes(const NetConfig& cfg, size_t weightFloats, int maxBatch, int slots) {
+    return static_cast<double>(slots) *
                GpuWorkspace::bytesFor(cfg, maxBatch, GpuWorkspace::Purpose::Inference) +
            static_cast<double>(weightFloats) * sizeof(float);
 }
@@ -116,22 +116,24 @@ void checkFits(double need, int maxBatch, int hubs) {
 
 } // namespace
 
-std::unique_ptr<BatchRunner> makeMetalRunner(const Network& net, int maxBatch) {
+std::unique_ptr<BatchRunner> makeMetalRunner(const Network& net, int maxBatch, int slots) {
     if (maxBatch < 1) throw std::invalid_argument("makeMetalRunner: maxBatch must be >= 1");
+    if (slots < 1 || slots > kInferenceSlots)
+        throw std::invalid_argument("makeMetalRunner: slots must be in [1, " + std::to_string(kInferenceSlots) + "]");
     const ParamLayout layout = ParamLayout::of(const_cast<Network&>(net));
-    // What the process already holds counts too: an arena match builds a
-    // hub for each network.
-    checkFits(hubBytes(net.config(), layout.paramFloats + layout.bufferFloats, maxBatch), maxBatch, 1);
-    return std::make_unique<MetalBatchRunner>(net, maxBatch);
+    // What the process already holds counts too: an arena wave builds a hub
+    // for each network.
+    checkFits(hubBytes(net.config(), layout.paramFloats + layout.bufferFloats, maxBatch, slots), maxBatch, 1);
+    return std::make_unique<MetalBatchRunner>(net, maxBatch, slots);
 }
 
-void checkMetalInferenceMemory(const NetConfig& cfg, int inferenceBatch, int hubs) {
-    if (inferenceBatch < 1 || hubs < 1)
+void checkMetalInferenceMemory(const NetConfig& cfg, int inferenceBatch, int hubs, int slotsPerHub) {
+    if (inferenceBatch < 1 || hubs < 1 || slotsPerHub < 1)
         throw std::invalid_argument("checkMetalInferenceMemory: bad arguments");
     Network shape(cfg, 0);   // only for the tensor sizes
     const ParamLayout layout = ParamLayout::of(shape);
-    checkFits(hubs * hubBytes(cfg, layout.paramFloats + layout.bufferFloats, inferenceBatch), inferenceBatch,
-              hubs);
+    checkFits(hubs * hubBytes(cfg, layout.paramFloats + layout.bufferFloats, inferenceBatch, slotsPerHub),
+              inferenceBatch, hubs);
 }
 
 } // namespace azgo

@@ -677,6 +677,18 @@ static void test_play_matches_rejects_bad_matches() {
     }
 }
 
+// The arena's worker count: an explicit one as given, never more than the
+// games; 0 means a thread per core on the CPU and every game at once with
+// metal (a worker waiting for the GPU costs nothing).
+static void test_arena_workers() {
+    assert(arenaWorkers(5, "naive", 80) == 5 && arenaWorkers(5, "metal", 80) == 5);
+    assert(arenaWorkers(100, "blas", 80) == 80);
+    assert(arenaWorkers(0, "naive", 80) == std::min(resolveWorkers(0), 80));
+    assert(arenaWorkers(0, "metal", 80) == 80);
+    assert(arenaWorkers(0, "metal", 1000) == kMaxArenaWorkers);
+    assert(arenaWorkers(0, "metal", 2) == 2);
+}
+
 int main() {
     test_gate();
     test_worker_evaluators_match_per_worker_loop();
@@ -697,6 +709,7 @@ int main() {
     test_select_opponents();
     test_play_matches_equal_one_at_a_time();
     test_play_matches_rejects_bad_matches();
+    test_arena_workers();
     std::printf("test_arena: all tests passed\n");
     return 0;
 }

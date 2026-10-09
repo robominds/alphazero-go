@@ -156,14 +156,15 @@ private:
 // and blas: a LocalEvaluator per worker with its own single-threaded backend
 // and workspace (each worker evaluates its own batches, as always). For
 // metal: one InferenceHub with the Metal runner, batches of up to
-// inferenceBatch positions, and a BatchingEvaluator per worker. Self-play and
+// inferenceBatch positions, `slots` passes in flight (1..kInferenceSlots;
+// see makeMetalRunner), and a BatchingEvaluator per worker. Self-play and
 // the arena only see Evaluators. Throws std::invalid_argument for an unknown
 // or unavailable backend (metal in a build without Metal: "backend 'metal'
 // not available: rebuild with -DAZ_USE_METAL=ON (macOS only)").
 class WorkerEvaluators {
 public:
     WorkerEvaluators(const Network& net, const std::string& backend, int workers, int maxRequest,
-                     int inferenceBatch);
+                     int inferenceBatch, int slots = kInferenceSlots);
     ~WorkerEvaluators();
     Evaluator& forWorker(int worker);
     int workers() const { return static_cast<int>(evaluators_.size()); }
