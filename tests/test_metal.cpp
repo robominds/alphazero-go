@@ -18,11 +18,13 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include "azgo/backend.hpp"
 #include "azgo/layers.hpp"
 #include "azgo/metal.hpp"
+#include "azgo/network.hpp"
 #include "azgo/rng.hpp"
 
 using namespace azgo;
@@ -654,6 +656,199 @@ void test_layer_kernels_batch_independent() {
     }
 }
 
+// ---------------------------------------------------------------- the network
+
+NetConfig netConfig(int n, int blocks, int filters, bool ownership = false, int valueHidden = 16) {
+    NetConfig c;
+    c.boardSize = n;
+    c.history = 8;
+    c.blocks = blocks;
+    c.filters = filters;
+    c.valueHidden = valueHidden;
+    c.ownership = ownership;
+    return c;
+}
+
+// A network whose batch norms and biases are not the identity at
+// initialization (gamma 1, beta 0, mean 0, variance 1, zero biases), so the
+// GPU must apply every one of them.
+Network randomNetwork(const NetConfig& cfg, uint64_t seed) {
+    Network net(cfg, seed);
+    Rng rng(seed + 17);
+    for (ParamView& p : net.params()) {
+        const std::string& n = p.name;
+        if (n.size() > 6 && n.compare(n.size() - 6, 6, ".gamma") == 0)
+            for (size_t i = 0; i < p.size; ++i) p.value[i] = static_cast<float>(0.5 + rng.uniform());
+        else if (!p.decay)   // beta and Linear biases
+            for (size_t i = 0; i < p.size; ++i) p.value[i] = static_cast<float>(0.4 * rng.uniform() - 0.2);
+    }
+    for (BufferView& b : net.buffers()) {
+        const bool var = b.name.find("runVar") != std::string::npos;
+        for (size_t i = 0; i < b.size; ++i)
+            b.value[i] = static_cast<float>(var ? 0.5 + rng.uniform() : 0.4 * rng.uniform() - 0.2);
+    }
+    return net;
+}
+
+// Encoded positions: random 0/1 planes, [B][planes][area].
+std::vector<float> randomPositions(Rng& rng, const NetConfig& cfg, int B) {
+    std::vector<float> x(static_cast<size_t>(B) * cfg.planes() * cfg.area());
+    for (float& v : x) v = static_cast<float>(rng.below(2));
+    return x;
+}
+
+struct Outputs {
+    std::vector<float> logits, values, ownership;
+};
+
+Outputs gpuInfer(metal_probe::InferNet& net, const NetConfig& cfg, const std::vector<float>& x, int B) {
+    Outputs o;
+    o.logits.resize(static_cast<size_t>(B) * cfg.actions());
+    o.values.resize(B);
+    if (cfg.ownership) o.ownership.resize(static_cast<size_t>(B) * cfg.area());
+    net.infer(x.data(), B, o.logits.data(), o.values.data(), cfg.ownership ? o.ownership.data() : nullptr);
+    return o;
+}
+
+// The whole inference forward against Network::infer with BLAS.
+// Measured on an M5 Max (macOS 27.0.1), 20 seeds: worst maxErr 5.5e-6 (ceiling
+// 1e-5), always in the values: a random network's value sits near 0 for
+// every position (max |v| ~ 0.01 when fc2's bias cancels its product), so an
+// absolute error of a few 1e-8 shows up large. Logits and ownership: <= 4.1e-7.
+void test_infer_vs_cpu() {
+    auto blas = makeBackend("blas");
+    MaxErr err("network forward vs CPU", 1e-5);
+    const NetConfig configs[] = {
+        netConfig(5, 1, 8), netConfig(9, 2, 16), netConfig(9, 6, 32), netConfig(9, 0, 16),
+        netConfig(9, 2, 16, true), netConfig(19, 2, 16),
+    };
+    for (int seed = 0; seed < gSeeds; ++seed) {
+        Rng rng(401 + 1000 * seed);
+        for (const NetConfig& cfg : configs) {
+            const Network net = randomNetwork(cfg, 40 + seed);
+            metal_probe::InferNet gpu(net, 64);
+            for (int B : {1, 7, 64}) {
+                const std::vector<float> x = randomPositions(rng, cfg, B);
+                Workspace ws(cfg, B, *blas);
+                Outputs ref;
+                ref.logits.resize(static_cast<size_t>(B) * cfg.actions());
+                ref.values.resize(B);
+                if (cfg.ownership) ref.ownership.resize(static_cast<size_t>(B) * cfg.area());
+                net.infer(ws, x.data(), B, ref.logits.data(), ref.values.data(),
+                          cfg.ownership ? ref.ownership.data() : nullptr);
+                const Outputs got = gpuInfer(gpu, cfg, x, B);
+                err.add(got.logits.data(), ref.logits.data(), got.logits.size());
+                err.add(got.values.data(), ref.values.data(), got.values.size());
+                if (cfg.ownership)
+                    err.add(got.ownership.data(), ref.ownership.data(), got.ownership.size());
+            }
+        }
+    }
+}
+
+// What the batching evaluator rests on, for the whole network: a position's
+// logits, value and ownership are the same bits alone, in batches of 8, 144
+// and 256, at the first or the last slot, among random companions and with
+// the batch permuted.
+void test_infer_batch_independent() {
+    const NetConfig cfg = netConfig(9, 6, 32, true);
+    const Network net = randomNetwork(cfg, 402);
+    metal_probe::InferNet gpu(net, 256);
+    Rng rng(403);
+    const int full = 256;
+    const size_t planeFloats = static_cast<size_t>(cfg.planes()) * cfg.area();
+    const std::vector<float> pool = randomPositions(rng, cfg, full);
+    // The positions `picks`, in that order, as one batch.
+    auto batchOf = [&](const std::vector<int>& picks) {
+        std::vector<float> x(picks.size() * planeFloats);
+        for (size_t i = 0; i < picks.size(); ++i)
+            std::copy_n(pool.data() + picks[i] * planeFloats, planeFloats, x.data() + i * planeFloats);
+        return x;
+    };
+    auto run = [&](const std::vector<int>& picks) {
+        return gpuInfer(gpu, cfg, batchOf(picks), static_cast<int>(picks.size()));
+    };
+    // Slot `slot` of o equals the outputs alone a.
+    auto sameAt = [&](const Outputs& o, int slot, const Outputs& a) {
+        const size_t L = cfg.actions(), Ar = cfg.area();
+        return bitwiseEqual(o.logits.data() + slot * L, a.logits.data(), L) &&
+               bitwiseEqual(o.values.data() + slot, a.values.data(), 1) &&
+               bitwiseEqual(o.ownership.data() + slot * Ar, a.ownership.data(), Ar);
+    };
+    std::vector<int> all(full);
+    for (int i = 0; i < full; ++i) all[i] = i;
+    const Outputs whole = run(all);
+    std::vector<int> permuted = all;
+    for (int i = full - 1; i > 0; --i) std::swap(permuted[i], permuted[rng.below(i + 1)]);
+    const Outputs shuffled = run(permuted);
+    for (int s : {0, 1, 7, 100, 255}) {
+        const Outputs alone = run({s});
+        assert(sameAt(whole, s, alone));
+        const auto it = std::find(permuted.begin(), permuted.end(), s);
+        const int where = static_cast<int>(it - permuted.begin());
+        assert(sameAt(shuffled, where, alone));
+        for (int size : {8, 144, 256}) {
+            for (int slot : {0, size - 1}) {
+                std::vector<int> picks(size);
+                for (int& p : picks) p = rng.below(full);   // random companions
+                picks[slot] = s;
+                assert(sameAt(run(picks), slot, alone));
+            }
+        }
+    }
+}
+
+void test_infer_repeat_bitwise() {
+    const NetConfig cfg = netConfig(9, 2, 16, true);
+    const Network net = randomNetwork(cfg, 404);
+    metal_probe::InferNet gpu(net, 32);
+    Rng rng(405);
+    const std::vector<float> x = randomPositions(rng, cfg, 32);
+    const Outputs first = gpuInfer(gpu, cfg, x, 32);
+    for (int r = 0; r < 20; ++r) {
+        const Outputs again = gpuInfer(gpu, cfg, x, 32);
+        assert(same(again.logits, first.logits) && same(again.values, first.values) &&
+               same(again.ownership, first.ownership));
+    }
+}
+
+// Two separately uploaded networks (own weights and workspace) agree bitwise.
+void test_two_networks_bitwise() {
+    const NetConfig cfg = netConfig(9, 2, 16, true);
+    const Network net = randomNetwork(cfg, 406);
+    metal_probe::InferNet a(net, 16), b(net, 64);
+    Rng rng(407);
+    const std::vector<float> x = randomPositions(rng, cfg, 16);
+    const Outputs oa = gpuInfer(a, cfg, x, 16), ob = gpuInfer(b, cfg, x, 16);
+    assert(same(oa.logits, ob.logits) && same(oa.values, ob.values) && same(oa.ownership, ob.ownership));
+}
+
+// A layer added to the CPU network without a GPU port must be refused, not
+// silently evaluated wrong: a layout without the ownership head refuses a
+// network that has one, naming the tensor.
+void test_unknown_tensor_refused() {
+    const Network plain(netConfig(9, 1, 8), 1), withHead(netConfig(9, 1, 8, true), 1);
+    metal_probe::checkUpload(plain, plain);   // the same shape uploads
+    bool threw = false;
+    try {
+        metal_probe::checkUpload(plain, withHead);
+    } catch (const std::logic_error& e) {
+        threw = std::string(e.what()).find("ownership.conv.w") != std::string::npos;
+    }
+    assert(threw);
+}
+
+// The inference workspace of the 9x9 6x96 network at batch 256 is ~100 MB
+// (the spec's estimate), most of it the shared im2col buffer.
+void test_inference_workspace_size() {
+    const NetConfig cfg = netConfig(9, 6, 96, false, 64);
+    const Network net(cfg, 1);
+    metal_probe::InferNet gpu(net, 256);
+    const double mb = static_cast<double>(gpu.bytes()) / 1e6;
+    std::printf("test_metal: 9x9 6x96 inference workspace at batch 256: %.1f MB\n", mb);
+    assert(mb > 85.0 && mb < 115.0);
+}
+
 } // namespace
 
 #endif // AZ_USE_METAL
@@ -688,6 +883,12 @@ int main() {
     test_tanh_vs_cpu();
     test_linear_forward_vs_cpu();
     test_layer_kernels_batch_independent();
+    test_infer_vs_cpu();
+    test_infer_batch_independent();
+    test_infer_repeat_bitwise();
+    test_two_networks_bitwise();
+    test_unknown_tensor_refused();
+    test_inference_workspace_size();
 #endif
     std::printf("test_metal: all tests passed\n");
     return 0;

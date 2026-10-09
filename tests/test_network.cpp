@@ -11,6 +11,7 @@
 #include "azgo/backend.hpp"
 #include "azgo/network.hpp"
 #include "azgo/optimizer.hpp"
+#include "azgo/param_layout.hpp"
 #include "azgo/parallel.hpp"
 #include "azgo/rng.hpp"
 
@@ -604,6 +605,46 @@ static void test_thread_pool_gives_identical_bits() {
     }
 }
 
+// ParamLayout lists params() and buffers() in order, with their sizes and
+// decay flags, at offsets aligned to 64 floats that never overlap.
+static void test_param_layout_matches_params() {
+    for (int variant = 0; variant < 3; ++variant) {
+        NetConfig cfg = makeConfig(9, 2, variant == 2 ? 0 : 2, 16, 8);
+        cfg.ownership = variant == 1;
+        Network net(cfg, 5);
+        const ParamLayout layout = ParamLayout::of(net);
+        const std::vector<ParamView> params = net.params();
+        const std::vector<BufferView> buffers = net.buffers();
+        assert(layout.params.size() == params.size());
+        assert(layout.buffers.size() == buffers.size());
+        auto check = [](const std::vector<ParamLayout::Entry>& entries, size_t total) {
+            size_t end = 0;
+            for (const ParamLayout::Entry& e : entries) {
+                assert(e.offset % ParamLayout::kAlignFloats == 0);
+                assert(e.offset >= end);              // after the previous tensor: no overlap
+                end = e.offset + e.size;
+            }
+            assert(end <= total);
+            assert(total % ParamLayout::kAlignFloats == 0);
+        };
+        for (size_t i = 0; i < params.size(); ++i) {
+            assert(layout.params[i].name == params[i].name);
+            assert(layout.params[i].size == params[i].size);
+            assert(layout.params[i].decay == params[i].decay);
+        }
+        for (size_t i = 0; i < buffers.size(); ++i) {
+            assert(layout.buffers[i].name == buffers[i].name);
+            assert(layout.buffers[i].size == buffers[i].size);
+            assert(!layout.buffers[i].decay);
+        }
+        check(layout.params, layout.paramFloats);
+        check(layout.buffers, layout.bufferFloats);
+        assert(layout.find(params.back().name) == &layout.params.back());
+        assert(layout.find(buffers.front().name) == &layout.buffers.front());
+        assert(layout.find("no.such.tensor") == nullptr);
+    }
+}
+
 int main() {
     test_whole_network_gradient_check();
     test_param_names_order_and_decay();
@@ -619,6 +660,7 @@ int main() {
     test_sgd_reduces_ownership_loss();
     test_infer_loss_matches_infer_outputs();
     test_thread_pool_gives_identical_bits();
+    test_param_layout_matches_params();
     std::printf("test_network: all tests passed\n");
     return 0;
 }

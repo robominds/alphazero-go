@@ -9,6 +9,7 @@
 // in this header, which is plain C++17.
 #pragma once
 #include <cstddef>
+#include <memory>
 #include <string>
 
 namespace azgo {
@@ -16,6 +17,7 @@ namespace azgo {
 struct BatchNorm2d;   // azgo/layers.hpp
 struct Conv2d;
 struct Linear;
+class Network;        // azgo/network.hpp
 
 // True when this binary was built with -DAZ_USE_METAL=ON.
 bool metalBuilt();
@@ -65,6 +67,26 @@ void addInto(float* dst, const float* src, size_t count);              // dst +=
 void policyFlatten(const float* act, int B, int A, float* flat);       // [2][B][A] -> [B][2A]
 void linearForward(const Linear& fc, const float* x, int B, float* y);  // Linear::forward
 void tanhInPlace(float* x, size_t count);                               // x = tanh(x)
+
+// The whole network's inference forward on the GPU (GpuNetwork): weights
+// uploaded once, one workspace for up to maxBatch positions. infer has
+// Network::infer's arguments; ownership needs a network with the head.
+class InferNet {
+public:
+    InferNet(const Network& net, int maxBatch);
+    ~InferNet();
+    InferNet(const InferNet&) = delete;
+    InferNet& operator=(const InferNet&) = delete;
+    void infer(const float* input, int B, float* logits, float* values, float* ownership = nullptr);
+    size_t bytes() const;   // the GPU memory of the activations
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+// Uploads net into weights laid out for layoutNet (ParamLayout::of): throws
+// std::logic_error naming the first tensor the layout does not know.
+void checkUpload(const Network& layoutNet, const Network& net);
 
 } // namespace metal_probe
 #endif

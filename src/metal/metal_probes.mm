@@ -10,7 +10,10 @@
 
 #include "azgo/layers.hpp"
 #include "azgo/metal.hpp"
+#include "azgo/network.hpp"
+#include "azgo/param_layout.hpp"
 #include "gpu_layers.hpp"
+#include "gpu_network.hpp"
 #include "metal_context.hpp"
 #include "shader_types.h"
 
@@ -164,6 +167,45 @@ void tanhInPlace(float* x, size_t count) {
         encodeTanh(batch, b, count);
         batch.commitAndWait();
         download(b, x, count);
+    }
+}
+
+// ---------------------------------------------------------------- InferNet
+
+struct InferNet::Impl {
+    GpuNetwork network;
+    GpuWeights weights;
+    GpuWorkspace workspace;
+    Impl(const Network& net, int maxBatch)
+        : network(net.config()),
+          weights(ParamLayout::of(const_cast<Network&>(net))),
+          workspace(net.config(), maxBatch, GpuWorkspace::Purpose::Inference) {
+        weights.upload(net);
+    }
+};
+
+InferNet::InferNet(const Network& net, int maxBatch) {
+    @autoreleasepool {
+        impl_ = std::make_unique<Impl>(net, maxBatch);
+    }
+}
+
+InferNet::~InferNet() {
+    @autoreleasepool {
+        impl_.reset();
+    }
+}
+
+void InferNet::infer(const float* input, int B, float* logits, float* values, float* ownership) {
+    impl_->network.infer(impl_->workspace, impl_->weights, input, B, logits, values, ownership);
+}
+
+size_t InferNet::bytes() const { return impl_->workspace.bytes(); }
+
+void checkUpload(const Network& layoutNet, const Network& net) {
+    @autoreleasepool {
+        GpuWeights weights(ParamLayout::of(const_cast<Network&>(layoutNet)));
+        weights.upload(net);
     }
 }
 
