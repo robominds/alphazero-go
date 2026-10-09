@@ -48,7 +48,7 @@ test -s "$CK/gen_0003.azn" || fail "gen_0003.azn missing after resume"
 grep -Eq '^gen 3 \|.* val p [0-9.]+ v [0-9.]+ seen p [0-9.]+ v [0-9.]+ ' "$W/resume.out" \
     || fail "the progress line does not report the validation loss"
 for c in val_policy_loss val_value_loss seen_policy_loss seen_value_loss; do
-    col "$RUN/log.csv" $c | grep -Eq '^[0-9]+\.[0-9]{5}$' || fail "log.csv has no $c"
+    grep -Eq '^[0-9]+\.[0-9]{5}$' <<<"$(col "$RUN/log.csv" $c)" || fail "log.csv has no $c"
 done
 
 echo "== train: re-rate the finished run =="
@@ -62,12 +62,12 @@ cmp "$RUN/references.csv" "$RUN/rerate/references.csv" || fail "rerate/reference
 status=0
 out="$("$BUILD/train" --run "$RUN" --rerate --resume 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "--rerate --resume exited $status, expected 1"
-echo "$out" | grep -q -- "--rerate cannot be combined" || fail "unexpected refusal message: $out"
+grep -q -- "--rerate cannot be combined" <<<"$out" || fail "unexpected refusal message: $out"
 
 echo "== train: re-rate against a reference network instead of the bot =="
 out="$("$BUILD/train" --run "$RUN" --rerate --set bot_simulations= --set "reference_networks=$CK/gen_0001.azn")"
 echo "$out"
-echo "$out" | grep -q '^rerate calibration | ref1 vs 0: ' || fail "no calibration line for ref1"
+grep -q '^rerate calibration | ref1 vs 0: ' <<<"$out" || fail "no calibration line for ref1"
 grep -q '^-1,network,,0,' "$RUN/rerate/references.csv" || fail "rerate/references.csv does not list ref1"
 grep -qx -- "-1,ref1,$CK/gen_0001.azn" "$RUN/rerate/reference-networks.csv" || fail "reference-networks.csv does not map -1 to its file"
 [ "$(cksum < "$RUN/state.bin")" = "$state_before" ] || fail "--rerate changed state.bin"
@@ -75,63 +75,63 @@ grep -qx -- "-1,ref1,$CK/gen_0001.azn" "$RUN/rerate/reference-networks.csv" || f
 echo "== arena =="
 out="$("$BUILD/arena" --a "$CK/gen_0000.azn" --b "$CK/gen_0003.azn" --games 4 --simulations 4 --workers 2)"
 echo "$out"
-echo "$out" | grep -Eq '^A .* scored' || fail "arena did not print a score line"
+grep -Eq '^A .* scored' <<<"$out" || fail "arena did not print a score line"
 
 echo "== arena: against the uniform bot =="
 out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --games 4 --simulations 4 --workers 2)"
 echo "$out"
-echo "$out" | grep -q 'vs B bot(8 simulations): A scored' || fail "arena --b-bot printed no score line"
+grep -q 'vs B bot(8 simulations): A scored' <<<"$out" || fail "arena --b-bot printed no score line"
 
 echo "== arena: per-player simulations =="
 out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --a-simulations 2 --b-simulations 16 --games 4 --simulations 4 --workers 2)"
 echo "$out"
-echo "$out" | grep -q '(2 simulations) vs B .*(16 simulations): A scored' || fail "arena --a/--b-simulations did not name both counts"
+grep -q '(2 simulations) vs B .*(16 simulations): A scored' <<<"$out" || fail "arena --a/--b-simulations did not name both counts"
 
 echo "== arena: random symmetry =="
 out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --random-symmetry --games 4 --simulations 4 --workers 2)"
 echo "$out"
-echo "$out" | grep -Eq '^A .* scored' || fail "arena --random-symmetry did not print a score line"
-echo "$out" | grep -q '^Search: random symmetry' || fail "arena --random-symmetry did not say so"
+grep -Eq '^A .* scored' <<<"$out" || fail "arena --random-symmetry did not print a score line"
+grep -q '^Search: random symmetry' <<<"$out" || fail "arena --random-symmetry did not say so"
 
 echo "== arena: random symmetry for one side =="
 out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0003.azn" --a-random-symmetry --games 4 --simulations 4 --workers 2)"
 echo "$out"
-echo "$out" | grep -Eq '^A .* scored' || fail "arena --a-random-symmetry did not print a score line"
-echo "$out" | grep -qx 'Search: random symmetry per network evaluation, A only' || fail "arena --a-random-symmetry did not say A only"
+grep -Eq '^A .* scored' <<<"$out" || fail "arena --a-random-symmetry did not print a score line"
+grep -qx 'Search: random symmetry per network evaluation, A only' <<<"$out" || fail "arena --a-random-symmetry did not say A only"
 out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --b-random-symmetry --games 4 --simulations 4 --workers 2)"
-echo "$out" | grep -qx 'Search: random symmetry per network evaluation, B only' || fail "arena --b-random-symmetry did not say B only"
+grep -qx 'Search: random symmetry per network evaluation, B only' <<<"$out" || fail "arena --b-random-symmetry did not say B only"
 # Both one-sided flags are --random-symmetry: the same games, the same lines.
 both="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --a-random-symmetry --b-random-symmetry --games 4 --simulations 4 --workers 2)"
 all="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --random-symmetry --games 4 --simulations 4 --workers 1)"
 [ "$both" = "$all" ] || fail "arena --a- plus --b-random-symmetry differs from --random-symmetry: '$both' vs '$all'"
-echo "$both" | grep -qx 'Search: random symmetry per network evaluation' || fail "arena with both one-sided flags did not say both"
+grep -qx 'Search: random symmetry per network evaluation' <<<"$both" || fail "arena with both one-sided flags did not say both"
 # Against a bot only A has a network, so --random-symmetry is A's alone.
 bot="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --a-random-symmetry --games 4 --simulations 4 --workers 2)"
 [ "$bot" = "$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --random-symmetry --games 4 --simulations 4 --workers 2)" ] \
     || fail "arena --a-random-symmetry against a bot differs from --random-symmetry"
-echo "$bot" | grep -qx 'Search: random symmetry per network evaluation, A only' || fail "arena against a bot did not say A only"
+grep -qx 'Search: random symmetry per network evaluation, A only' <<<"$bot" || fail "arena against a bot did not say A only"
 
 echo "== arena: c_puct and MCTS batch, for both sides or one =="
 plain="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0003.azn" --games 4 --simulations 4 --workers 2)"
-if echo "$plain" | grep -q '^Search: c_puct'; then fail "arena with the default search settings printed a settings line"; fi
+if grep -q '^Search: c_puct' <<<"$plain"; then fail "arena with the default search settings printed a settings line"; fi
 # The defaults spelled out are the default match, line for line.
 same="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0003.azn" --c-puct 1.5 --mcts-batch 8 \
     --a-c-puct 1.5 --b-mcts-batch 8 --games 4 --simulations 4 --workers 1)"
 [ "$same" = "$plain" ] || fail "arena with the default search settings spelled out differs: '$same' vs '$plain'"
 out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0003.azn" --a-c-puct 3 --b-mcts-batch 1 --games 4 --simulations 4 --workers 2)"
 echo "$out"
-echo "$out" | grep -q '^A .*(c_puct 3) vs B .*(mcts batch 1): A scored' || fail "arena did not name the one-sided settings"
-echo "$out" | grep -qx 'Search: c_puct A 3, B 1.5; mcts batch A 8, B 1' || fail "arena did not print the per-side settings"
+grep -q '^A .*(c_puct 3) vs B .*(mcts batch 1): A scored' <<<"$out" || fail "arena did not name the one-sided settings"
+grep -qx 'Search: c_puct A 3, B 1.5; mcts batch A 8, B 1' <<<"$out" || fail "arena did not print the per-side settings"
 out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0000.azn" --c-puct 2 --mcts-batch 1 --games 4 --simulations 4 --workers 2)"
-echo "$out" | grep -qx 'Search: c_puct 2; mcts batch 1' || fail "arena did not print the shared settings"
-echo "$out" | grep -q '^A [^(]* vs B [^(]*: A scored' || fail "arena labelled a side for settings both share"
+grep -qx 'Search: c_puct 2; mcts batch 1' <<<"$out" || fail "arena did not print the shared settings"
+grep -q '^A [^(]* vs B [^(]*: A scored' <<<"$out" || fail "arena labelled a side for settings both share"
 # A bot searches with c_puct and a batch too, so B's settings reach it.
 out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --b-c-puct 3 --b-mcts-batch 1 --games 4 --simulations 4 --workers 2)"
-echo "$out" | grep -q 'vs B bot(8 simulations) (c_puct 3, mcts batch 1): A scored' || fail "arena did not name the bot's settings"
+grep -q 'vs B bot(8 simulations) (c_puct 3, mcts batch 1): A scored' <<<"$out" || fail "arena did not name the bot's settings"
 # Random symmetry and the other settings share one Search: line, the first
 # line of the output (printed before the match starts).
 out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b "$CK/gen_0003.azn" --a-random-symmetry --b-c-puct 2 --games 4 --simulations 4 --workers 2)"
-[ "$(echo "$out" | grep -c '^Search:')" -eq 1 ] || fail "arena printed more than one Search: line: '$out'"
+[ "$(grep -c '^Search:' <<<"$out")" -eq 1 ] || fail "arena printed more than one Search: line: '$out'"
 [ "$(echo "$out" | head -n 1)" = 'Search: random symmetry per network evaluation, A only; c_puct A 1.5, B 2; mcts batch 8' ] \
     || fail "arena did not start with the combined Search: line: '$out'"
 
@@ -141,7 +141,7 @@ expect_arena_error() {
     local status=0 out
     out="$("$BUILD/arena" --a "$CK/gen_0003.azn" "$@" 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "arena $* exited $status, expected 1; output: $out"
-    echo "$out" | grep -qF -- "$want" || fail "arena $* printed '$out', expected '$want'"
+    grep -qF -- "$want" <<<"$out" || fail "arena $* printed '$out', expected '$want'"
     echo "  ok: $want"
 }
 expect_arena_error "give exactly one of --b CKPT and --b-bot SIMS" --b "$CK/gen_0000.azn" --b-bot 8
@@ -163,11 +163,11 @@ expect_arena_error "--b-mcts-batch must be in [1, 256]" --b "$CK/gen_0000.azn" -
 echo "== analyze: a legal position =="
 out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --simulations 16)"
 echo "$out"
-echo "$out" | grep -q "MCTS value" || fail "analyze printed no MCTS value"
+grep -q "MCTS value" <<<"$out" || fail "analyze printed no MCTS value"
 
 echo "== analyze: random symmetry =="
 out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --simulations 16 --random-symmetry)"
-echo "$out" | grep -q "MCTS value .* with random symmetry" || fail "analyze --random-symmetry did not say so"
+grep -q "MCTS value .* with random symmetry" <<<"$out" || fail "analyze --random-symmetry did not say so"
 
 echo "== analyze: SGF input =="
 printf '(;GM[1]FF[4]SZ[5]KM[7.5];B[cc];W[dd])\n' > "$W/ok.sgf"
@@ -181,7 +181,7 @@ expect_error() {
     local status=0 out
     out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --simulations 4 "$@" 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "analyze $* exited $status, expected 1; output: $out"
-    echo "$out" | grep -qF -- "$want" || fail "analyze $* printed '$out', expected '$want'"
+    grep -qF -- "$want" <<<"$out" || fail "analyze $* printed '$out', expected '$want'"
     echo "  ok: $want"
 }
 
@@ -241,24 +241,24 @@ echo "== bench =="
 echo "== grow: deepen the tiny network, then use the grown checkpoint =="
 out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --blocks 3 --out "$W/grown.azn")"
 echo "$out"
-echo "$out" | grep -q "new: 5x5, history 2, 3 blocks" || fail "grow did not report the new shape: $out"
-"$BUILD/analyze" --checkpoint "$W/grown.azn" --moves "C3 D4" --simulations 8 | grep -q "MCTS value" \
+grep -q "new: 5x5, history 2, 3 blocks" <<<"$out" || fail "grow did not report the new shape: $out"
+grep -q "MCTS value" <<<"$("$BUILD/analyze" --checkpoint "$W/grown.azn" --moves "C3 D4" --simulations 8)" \
     || fail "analyze rejected the grown checkpoint"
 
 echo "== grow: widen the tiny network (alone and with deepening), then analyze it =="
 out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --filters 12 --out "$W/wide.azn")"
 echo "$out"
-echo "$out" | grep -q "new: 5x5, history 2, 1 blocks, 12 filters" || fail "grow --filters did not report the new shape: $out"
-"$BUILD/analyze" --checkpoint "$W/wide.azn" --moves "C3 D4" --simulations 8 | grep -q "MCTS value" \
+grep -q "new: 5x5, history 2, 1 blocks, 12 filters" <<<"$out" || fail "grow --filters did not report the new shape: $out"
+grep -q "MCTS value" <<<"$("$BUILD/analyze" --checkpoint "$W/wide.azn" --moves "C3 D4" --simulations 8)" \
     || fail "analyze rejected the widened checkpoint"
 out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --filters 12 --blocks 2 --out "$W/wide_deep.azn")"
-echo "$out" | grep -q "new: 5x5, history 2, 2 blocks, 12 filters" || fail "grow --filters --blocks: $out"
+grep -q "new: 5x5, history 2, 2 blocks, 12 filters" <<<"$out" || fail "grow --filters --blocks: $out"
 out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --out "$W/copy.azn")"
-echo "$out" | grep -q "plain copy" || fail "a no-op grow did not say so: $out"
+grep -q "plain copy" <<<"$out" || fail "a no-op grow did not say so: $out"
 status=0
 out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --filters 513 --out "$W/too_wide.azn" 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "grow beyond the filter limit exited $status, expected 1"
-echo "$out" | grep -q "^error: .*maximum" || fail "grow filter limit refusal unexpected: $out"
+grep -q "^error: .*maximum" <<<"$out" || fail "grow filter limit refusal unexpected: $out"
 test ! -e "$W/too_wide.azn" || fail "a refused widen still wrote a checkpoint"
 status=0
 out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --filters 4 --out "$W/narrow.azn" 2>&1)" || status=$?
@@ -278,47 +278,47 @@ out="$("$BUILD/train" --run "$W/grown_run" --resume --init-from "$W/grown.azn" 2
 status=0
 out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --blocks 0 --out "$W/shrunk.azn" 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "grow to fewer blocks exited $status, expected 1"
-echo "$out" | grep -q "^error: " || fail "grow refusal is not an error line: $out"
+grep -q "^error: " <<<"$out" || fail "grow refusal is not an error line: $out"
 test ! -e "$W/shrunk.azn" || fail "a refused grow still wrote a checkpoint"
 status=0
 out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --blocks 41 --out "$W/huge.azn" 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "grow beyond the block limit exited $status, expected 1"
-echo "$out" | grep -q "^error: .*maximum" || fail "grow limit refusal unexpected: $out"
+grep -q "^error: .*maximum" <<<"$out" || fail "grow limit refusal unexpected: $out"
 
 echo "== train: resume must refuse an architecture change =="
 status=0
 out="$("$BUILD/train" --run "$RUN" --resume --set filters=16 --generations 4 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "resume with filters=16 exited $status, expected 1"
-echo "$out" | grep -q "architecture" || fail "resume refusal does not mention architecture: $out"
+grep -q "architecture" <<<"$out" || fail "resume refusal does not mention architecture: $out"
 test ! -e "$CK/gen_0004.azn" || fail "a refused resume still trained"
 
 echo "== train: a run with the ownership head =="
 "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/own_run" "${TINY[@]}" --set ownership=true \
     --generations 1
-head -1 "$W/own_run/log.csv" | grep -q ',distinct_vs_prev,ownership_loss,' || fail "log.csv has no ownership_loss column"
-col "$W/own_run/log.csv" ownership_loss | grep -Eq '^[0-9]+\.[0-9]{5}$' || fail "log.csv row has no ownership loss"
-col "$W/own_run/log.csv" val_ownership_loss | grep -Eq '^[0-9]+\.[0-9]{5}$' || fail "log.csv row has no validation ownership loss"
+grep -q ',distinct_vs_prev,ownership_loss,' <<<"$(head -1 "$W/own_run/log.csv")" || fail "log.csv has no ownership_loss column"
+grep -Eq '^[0-9]+\.[0-9]{5}$' <<<"$(col "$W/own_run/log.csv" ownership_loss)" || fail "log.csv row has no ownership loss"
+grep -Eq '^[0-9]+\.[0-9]{5}$' <<<"$(col "$W/own_run/log.csv" val_ownership_loss)" || fail "log.csv row has no validation ownership loss"
 [ -z "$(col "$RUN/log.csv" ownership_loss)$(col "$RUN/log.csv" resign_threshold)$(col "$RUN/log.csv" val_ownership_loss)" ] \
     || fail "a run without the head or resignation should leave those columns empty"
 status=0
 out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/own_bad" "${TINY[@]}" --set ownership=true \
     --init-from "$CK/gen_0003.azn" --generations 1 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "--init-from a checkpoint without the head exited $status, expected 1"
-echo "$out" | grep -q -- "--ownership --out" || fail "the refusal does not suggest grow --ownership: $out"
+grep -q -- "--ownership --out" <<<"$out" || fail "the refusal does not suggest grow --ownership: $out"
 test ! -e "$W/own_bad/state.bin" || fail "a refused start left a run behind"
 
 echo "== grow: add an ownership head, then train from it =="
 out="$("$BUILD/grow" --from "$CK/gen_0003.azn" --ownership --out "$W/owner.azn")"
 echo "$out"
-echo "$out" | grep -q "new: 5x5, history 2, 1 blocks, 8 filters, value_hidden 8, ownership head" \
+grep -q "new: 5x5, history 2, 1 blocks, 8 filters, value_hidden 8, ownership head" <<<"$out" \
     || fail "grow --ownership did not report the head: $out"
 out="$("$BUILD/grow" --from "$W/owner.azn" --filters 12 --blocks 2 --out "$W/owner_big.azn")"
-echo "$out" | grep -q "new: 5x5, history 2, 2 blocks, 12 filters, value_hidden 8, ownership head" \
+grep -q "new: 5x5, history 2, 2 blocks, 12 filters, value_hidden 8, ownership head" <<<"$out" \
     || fail "widening and deepening did not keep the head: $out"
 status=0
 out="$("$BUILD/grow" --from "$W/owner.azn" --ownership --out "$W/owner2.azn" 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "a second --ownership exited $status, expected 1"
-echo "$out" | grep -q "already has an ownership head" || fail "unexpected refusal: $out"
+grep -q "already has an ownership head" <<<"$out" || fail "unexpected refusal: $out"
 test ! -e "$W/owner2.azn" || fail "a refused grow still wrote a checkpoint"
 "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/owner_run" "${TINY[@]}" --set ownership=true \
     --init-from "$W/owner.azn" --buffer-from "$RUN" --generations 1
@@ -328,13 +328,13 @@ test -s "$W/owner_run/checkpoints/gen_0001.azn" || fail "the run from the grown 
 echo "== analyze: the ownership map, only for a checkpoint with the head =="
 out="$("$BUILD/analyze" --checkpoint "$W/owner_run/checkpoints/gen_0001.azn" --moves "C3 D4" --simulations 8)"
 echo "$out"
-echo "$out" | grep -q '^Ownership, Black + / White - ' || fail "analyze printed no ownership map"
+grep -q '^Ownership, Black + / White - ' <<<"$out" || fail "analyze printed no ownership map"
 # Five rows of five cells after the column letters, each " +9" .. " -9" or "  .".
 rows="$(echo "$out" | sed -n '/^Ownership/,/^$/p' | grep -Ec '^ [1-5] ( [+-][1-9]|  \.){5}$')"
 [ "$rows" = "5" ] || fail "the ownership map should have 5 rows of 5 cells, found $rows"
-[ "$(echo "$out" | grep -n '^Value' | cut -d: -f1)" -lt "$(echo "$out" | grep -n '^Ownership' | cut -d: -f1)" ] \
+[ "$(grep -n '^Value' <<<"$out" | cut -d: -f1)" -lt "$(grep -n '^Ownership' <<<"$out" | cut -d: -f1)" ] \
     || fail "the ownership map should follow the value line"
-"$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --simulations 8 | grep -q '^Ownership' \
+grep -q '^Ownership' <<<"$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --simulations 8)" \
     && fail "analyze printed an ownership map for a checkpoint without the head"
 
 echo "== train: a run with resignation =="
@@ -344,15 +344,15 @@ echo "== train: a run with resignation =="
     --set sgf_per_generation=8 --generations 2 | tee "$W/resign.out"
 grep -Eq '^gen 1 \| selfplay 8 games avg [0-9.]+ plies resign 0\.00 rate ' "$W/resign.out" \
     || fail "the progress line does not report resignation"
-head -1 "$W/resign_run/log.csv" | grep -q ',ownership_loss,resign_threshold,resign_rate,resign_false_positive,' \
+grep -q ',ownership_loss,resign_threshold,resign_rate,resign_false_positive,' <<<"$(head -1 "$W/resign_run/log.csv")" \
     || fail "log.csv has no resignation columns"
-col "$W/resign_run/log.csv" resign_threshold | grep -Eq '^-?[01]\.[0-9]{2}$' || fail "log.csv row has no resign_threshold"
+grep -Eq '^-?[01]\.[0-9]{2}$' <<<"$(col "$W/resign_run/log.csv" resign_threshold)" || fail "log.csv row has no resign_threshold"
 grep -lq 'RE\[[BW]+R\]' "$W"/resign_run/sgf/*.sgf || fail "no self-play SGF records a resignation"
 status=0
 out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/resign_own" "${TINY[@]}" --set ownership=true \
     --set resignation=true --generations 1 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "resignation with the ownership head exited $status, expected 1"
-echo "$out" | grep -q "cannot be combined with ownership" || fail "unexpected refusal: $out"
+grep -q "cannot be combined with ownership" <<<"$out" || fail "unexpected refusal: $out"
 test ! -e "$W/resign_own/state.bin" || fail "a refused start left a run behind"
 
 echo "== gtp: a scripted session =="
@@ -366,75 +366,75 @@ echo "$out"
 [ "$(grep -c '^[=?]' "$W/gtp.out")" = "9" ] || fail "gtp did not answer exactly the nine commands before quit"
 [ "$(grep -c '^$' "$W/gtp.out")" = "9" ] && [ "$(wc -l < "$W/gtp.out" | tr -d ' ')" = "18" ] \
     || fail "gtp responses are not each followed by one blank line"
-echo "$out" | grep -qx '=1 2' || fail "gtp protocol_version"
-echo "$out" | grep -qx '? unacceptable size' || fail "gtp accepted a board size the checkpoint cannot play"
-echo "$out" | grep -qx '? illegal move' || fail "gtp accepted a move on an occupied point"
-echo "$out" | grep -Eqx '=2 ([A-E][1-5]|pass)' || fail "gtp genmove did not answer a vertex"
-echo "$out" | grep -Eqx '= (B\+|W\+)[0-9.]+|= 0' || fail "gtp final_score is not in B+3.5 form"
+grep -qx '=1 2' <<<"$out" || fail "gtp protocol_version"
+grep -qx '? unacceptable size' <<<"$out" || fail "gtp accepted a board size the checkpoint cannot play"
+grep -qx '? illegal move' <<<"$out" || fail "gtp accepted a move on an occupied point"
+grep -Eqx '=2 ([A-E][1-5]|pass)' <<<"$out" || fail "gtp genmove did not answer a vertex"
+grep -Eqx '= (B\+|W\+)[0-9.]+|= 0' <<<"$out" || fail "gtp final_score is not in B+3.5 form"
 grep -q '^genmove W: ' "$W/gtp.err" || fail "gtp logged no genmove line on stderr"
 status=0
 out="$("$BUILD/gtp" --checkpoint "$W/missing.azn" < /dev/null 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "gtp with a missing checkpoint exited $status, expected 1"
-echo "$out" | grep -q '^error: ' || fail "gtp did not report the missing checkpoint: $out"
+grep -q '^error: ' <<<"$out" || fail "gtp did not report the missing checkpoint: $out"
 
 echo "== gtp: a two-game match between two instances, with tools/gtp_match.py =="
 ENGINE="$BUILD/gtp --checkpoint $CK/gen_0003.azn --simulations 4"
 out="$(python3 "$SRC/tools/gtp_match.py" --a "$ENGINE" --b "$ENGINE --random-symmetry --seed 2" \
     --games 2 --size 5 --komi 7.5 --out "$W/match")"
 echo "$out"
-echo "$out" | grep -Eq '^A alphazero-go gen_0003\.azn, 4 simulations vs B .*: A scored [0-9.]+/2 = ' \
+grep -Eq '^A alphazero-go gen_0003\.azn, 4 simulations vs B .*: A scored [0-9.]+/2 = ' <<<"$out" \
     || fail "gtp_match printed no score line"
-echo "$out" | grep -q '^Elo A - B: ' || fail "gtp_match printed no Elo line"
+grep -q '^Elo A - B: ' <<<"$out" || fail "gtp_match printed no Elo line"
 [ "$(wc -l < "$W/match/results.csv" | tr -d ' ')" = "3" ] || fail "results.csv should have a header and 2 rows"
 for g in 1 2; do
     grep -Eq 'RE\[([BW]\+[0-9.]+|0)\]' "$W/match/game_000$g.sgf" || fail "game_000$g.sgf has no scored result"
 done
 # The SGF is readable by the project's own parser, and ends where the match did.
 out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --sgf "$W/match/game_0001.sgf" --simulations 4 2>&1)" || true
-echo "$out" | grep -q 'nothing to analyze' || fail "analyze did not read the match SGF as a finished game: $out"
+grep -q 'nothing to analyze' <<<"$out" || fail "analyze did not read the match SGF as a finished game: $out"
 status=0
 out="$(python3 "$SRC/tools/gtp_match.py" --a "$ENGINE" --b "$ENGINE" --size 9 --out "$W/match9" 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "gtp_match on a size the engine refuses exited $status, expected 1"
-echo "$out" | grep -q "refused 'boardsize 9': unacceptable size" || fail "unexpected gtp_match error: $out"
+grep -q "refused 'boardsize 9': unacceptable size" <<<"$out" || fail "unexpected gtp_match error: $out"
 
 if [ "$METAL" = "metal=ON" ]; then
     echo "== metal: a run on the GPU, resumed and re-rated =="
     MRUN="$W/metal"
     GPU_LINE='^gpu: .+, macOS [0-9.]+, shaders [0-9a-f]{8} \(inference: self-play, arena, validation\)$'
     out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$MRUN" "${TINY[@]}" --set backend=metal --generations 2)"
-    echo "$out" | grep -Eq "$GPU_LINE" || fail "train --set backend=metal printed no device line"
+    grep -Eq "$GPU_LINE" <<<"$out" || fail "train --set backend=metal printed no device line"
     test -s "$MRUN/checkpoints/gen_0002.azn" || fail "metal run wrote no gen_0002.azn"
     grep -q '^backend = metal$' "$MRUN/config.cfg" || fail "config.cfg does not record backend = metal"
     out="$("$BUILD/train" --run "$MRUN" --resume --generations 3)"
-    echo "$out" | grep -Eq "$GPU_LINE" || fail "the resumed metal run printed no device line"
+    grep -Eq "$GPU_LINE" <<<"$out" || fail "the resumed metal run printed no device line"
     test -s "$MRUN/checkpoints/gen_0003.azn" || fail "resumed metal run wrote no gen_0003.azn"
     out="$("$BUILD/train" --run "$MRUN" --rerate)"
-    echo "$out" | grep -Eq "$GPU_LINE" || fail "the metal re-rate printed no device line"
+    grep -Eq "$GPU_LINE" <<<"$out" || fail "the metal re-rate printed no device line"
     # Gating is off, so the replay plays exactly the live arena games, on the GPU too.
     cmp -s "$MRUN/rerate/results.csv" "$MRUN/results.csv" || fail "metal re-rate differs from the live results"
 
     echo "== metal: arena on the GPU =="
     MCK="$MRUN/checkpoints"
     out="$("$BUILD/arena" --a "$MCK/gen_0000.azn" --b "$MCK/gen_0003.azn" --games 4 --simulations 4 --workers 3 --backend metal)"
-    echo "$out" | grep -Eq '^A .* scored' || fail "arena --backend metal printed no score line"
+    grep -Eq '^A .* scored' <<<"$out" || fail "arena --backend metal printed no score line"
     one="$("$BUILD/arena" --a "$MCK/gen_0000.azn" --b "$MCK/gen_0003.azn" --games 4 --simulations 4 --workers 1 --backend metal --inference-batch 8)"
     [ "$out" = "$one" ] || fail "arena --backend metal depends on --workers or --inference-batch: '$out' vs '$one'"
     out="$("$BUILD/arena" --a "$MCK/gen_0003.azn" --b-bot 8 --games 4 --simulations 4 --workers 2 --backend metal)"
-    echo "$out" | grep -q 'vs B bot(8 simulations): A scored' || fail "arena --backend metal against a bot printed no score line"
+    grep -q 'vs B bot(8 simulations): A scored' <<<"$out" || fail "arena --backend metal against a bot printed no score line"
     status=0
     out="$("$BUILD/arena" --a "$MCK/gen_0003.azn" --b-bot 8 --mcts-batch 8 --inference-batch 4 --backend metal 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "arena with --inference-batch below the mcts batch exited $status, expected 1"
-    echo "$out" | grep -q 'inference-batch 4 is below the mcts batch 8' || fail "unexpected arena error: $out"
+    grep -q 'inference-batch 4 is below the mcts batch 8' <<<"$out" || fail "unexpected arena error: $out"
 
     echo "== metal: analyze and gtp on the GPU =="
     out="$("$BUILD/analyze" --checkpoint "$MCK/gen_0003.azn" --moves "C3 D4 B2 C4 D3 B4" --simulations 16 --backend metal)"
-    echo "$out" | grep -q '^Value (side to move): ' || fail "analyze --backend metal printed no value"
-    echo "$out" | grep -q '^Policy prior' || fail "analyze --backend metal printed no policy"
-    echo "$out" | grep -q '^MCTS value' || fail "analyze --backend metal printed no search"
+    grep -q '^Value (side to move): ' <<<"$out" || fail "analyze --backend metal printed no value"
+    grep -q '^Policy prior' <<<"$out" || fail "analyze --backend metal printed no policy"
+    grep -q '^MCTS value' <<<"$out" || fail "analyze --backend metal printed no search"
     # The training run has an ownership head here only if TINY gave it one;
     # the ownership run from above does.
     out="$("$BUILD/analyze" --checkpoint "$W/owner_run/checkpoints/gen_0001.azn" --moves "C3 D4" --simulations 8 --backend metal)"
-    echo "$out" | grep -q '^Ownership, Black + / White - ' || fail "analyze --backend metal printed no ownership map"
+    grep -q '^Ownership, Black + / White - ' <<<"$out" || fail "analyze --backend metal printed no ownership map"
     printf '%s\n' 'boardsize 5' 'play b C3' 'genmove w' 'quit' \
         | "$BUILD/gtp" --checkpoint "$MCK/gen_0003.azn" --simulations 8 --backend metal > "$W/gtp-metal.out" 2> /dev/null \
         || fail "gtp --backend metal failed"
@@ -442,15 +442,15 @@ if [ "$METAL" = "metal=ON" ]; then
 
     echo "== metal: bench =="
     out="$("$BUILD/bench" --sizes 5 --seconds 0.1 --backend metal --configs "$SRC/configs" --hub-workers 2)"
-    echo "$out" | grep -Eq '^5x5 +3 x 32 +metal +[0-9]+ +-$' || fail "bench --backend metal printed no metal row"
-    echo "$out" | grep -q 'metal hub' || fail "bench --backend metal printed no hub table"
+    grep -Eq '^5x5 +3 x 32 +metal +[0-9]+ +-$' <<<"$out" || fail "bench --backend metal printed no metal row"
+    grep -q 'metal hub' <<<"$out" || fail "bench --backend metal printed no hub table"
 else
     echo "== metal: refused in a build without it =="
     NOT_BUILT="backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON (macOS only)"
     status=0
     out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/nometal" "${TINY[@]}" --set backend=metal --generations 1 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "train --set backend=metal without Metal exited $status, expected 1"
-    echo "$out" | grep -qF "$NOT_BUILT" || fail "train did not say metal is not built: $out"
+    grep -qF "$NOT_BUILT" <<<"$out" || fail "train did not say metal is not built: $out"
     test ! -e "$W/nometal/state.bin" || fail "a refused metal run wrote state.bin"
     test ! -e "$W/nometal/config.cfg" || fail "a refused metal run wrote config.cfg"
     status=0
@@ -460,19 +460,19 @@ else
     status=0
     out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --games 2 --backend metal 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "arena --backend metal without Metal exited $status, expected 1"
-    echo "$out" | grep -qF "$NOT_BUILT" || fail "arena did not say metal is not built: $out"
+    grep -qF "$NOT_BUILT" <<<"$out" || fail "arena did not say metal is not built: $out"
     status=0
     out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --backend metal 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "analyze --backend metal without Metal exited $status, expected 1"
-    echo "$out" | grep -qF "$NOT_BUILT" || fail "analyze did not say metal is not built: $out"
+    grep -qF "$NOT_BUILT" <<<"$out" || fail "analyze did not say metal is not built: $out"
     status=0
     out="$(echo quit | "$BUILD/gtp" --checkpoint "$CK/gen_0003.azn" --backend metal 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "gtp --backend metal without Metal exited $status, expected 1"
-    echo "$out" | grep -qF "$NOT_BUILT" || fail "gtp did not say metal is not built: $out"
+    grep -qF "$NOT_BUILT" <<<"$out" || fail "gtp did not say metal is not built: $out"
     status=0
     out="$("$BUILD/bench" --sizes 5 --seconds 0.1 --backend metal --configs "$SRC/configs" 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "bench --backend metal without Metal exited $status, expected 1"
-    echo "$out" | grep -qF "$NOT_BUILT" || fail "bench did not say metal is not built: $out"
+    grep -qF "$NOT_BUILT" <<<"$out" || fail "bench did not say metal is not built: $out"
 fi
 
 echo "integration_smoke: all checks passed"
