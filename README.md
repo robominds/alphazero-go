@@ -329,7 +329,8 @@ spread from the empty board to n² moves and encoded with their history
 planes. They are seeded by `deriveSeed(seed, 0, kPhaseBatchNorm)`, and
 the pass runs on the CPU with the naive backend on `train_threads`
 threads, so `gen_0000.azn` is the same bytes for any `workers`,
-`train_threads` and `backend`. Generation 0 then plays like the
+`train_threads` and `backend` on one machine type (another architecture
+may contract multiply-adds differently). Generation 0 then plays like the
 normalized random network training starts from: the same 10×128
 network has a value of 0.47 at the empty board, a median |value| of
 about 0.65 on other random positions, and 3.86 nats of policy entropy
@@ -347,6 +348,13 @@ What it changes and what it does not:
   before the key existed is read as `bn_calibrate = false` (what that
   run did), and `--resume` writes it so. The key is read only when a run
   starts; changing it on resume changes nothing.
+- So `config.cfg`'s `bn_calibrate` records the setting, not necessarily
+  what generation 0 got: an `--init-from` run records true for a network
+  it did not calibrate, and a value changed on resume is recorded too.
+- A new run started with `--config` pointing at an old run's
+  `config.cfg` (which has no `bn_calibrate` line) gets a calibrated
+  generation 0, unlike the old run; add `--set bn_calibrate=false` to
+  repeat it.
 
 It is not part of AlphaGo Zero's description, which does not say how its
 first network's batch norm statistics were set; it changes only how a

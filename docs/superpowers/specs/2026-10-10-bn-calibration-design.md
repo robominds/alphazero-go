@@ -78,9 +78,10 @@ kPhaseBatchNorm))` with the new phase constant `kPhaseBatchNorm = 7`
 (`kPhaseInit`, which seeds the weights, and `kPhaseCalibration`, the fixed
 players' rating games, are taken).
 
-Why 256: it is the presets' training batch size, so each layer's
-statistics are a training batch's (256 · 81 = 20,736 values per channel
-on 9×9; the standard error of a channel's mean is under 1% of its
+Why 256: it is the training batch size of the 9×9 and 19×19 presets
+(5×5 trains on 128), so each layer's statistics come from at least a
+training batch's worth of values (256 · 81 = 20,736 per channel on 9×9;
+the standard error of a channel's mean is under 1% of its
 standard deviation), and one pass costs about one forward of a training
 step: 1.4 to 1.9 s for 10×128 on 9×9 with the naive backend on 4 threads.
 The workspace is the training step's size, which the run allocates for
@@ -96,8 +97,10 @@ The pass runs on the CPU with the naive backend and a `ThreadPool` of
 cut their work into chunks fixed by the shapes, so the bits do not depend
 on the thread count, and BLAS and the GPU, which round differently, are
 not used. `gen_0000.azn` is therefore the same bytes for any `workers`,
-`train_threads` and `backend` (naive, blas, metal), a function of the
-seed and the network keys alone.
+`train_threads` and `backend` (naive, blas, metal): on one machine type,
+a function of the seed and the network keys. Across architectures the
+compiler may contract multiply-adds into FMAs differently, so the last
+bits can differ (an M5 Max and an M4 gave the same bytes for 10×128).
 
 ### The key
 
@@ -111,6 +114,11 @@ generation 0 was not calibrated, so `Trainer::resume`, `rerateRun` and
 `--buffer-from` read a run's `config.cfg` with false as the missing
 key's value (`loadRunConfig`), and a resume rewrites `config.cfg` with
 `bn_calibrate = false`. A new config's missing key is true.
+
+`config.cfg`'s `bn_calibrate` records the setting, not necessarily what
+generation 0 got: a run started with `--init-from` records true but
+used the given network as it was, and a value changed on resume is
+recorded although generation 0 is long made.
 
 The presets leave the key at its default, as they do `train_threads`.
 

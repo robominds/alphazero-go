@@ -4,6 +4,7 @@
 // go into one binary file that is replaced atomically, so a crash mid-save
 // leaves the old state.
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -92,6 +93,19 @@ uint64_t fileHash(const std::string& path);
 constexpr uint64_t kPhaseInit = 0, kPhaseSelfPlay = 1, kPhaseTrain = 2, kPhaseArena = 3,
                    kPhaseCalibration = 4, kPhaseReference = 5, kPhaseValidation = 6,
                    kPhaseBatchNorm = 7;
+
+namespace detail {
+constexpr uint64_t kPhases[] = {kPhaseInit,        kPhaseSelfPlay,  kPhaseTrain,      kPhaseArena,
+                                kPhaseCalibration, kPhaseReference, kPhaseValidation, kPhaseBatchNorm};
+constexpr bool phasesDistinct() {
+    for (size_t i = 0; i < sizeof kPhases / sizeof kPhases[0]; ++i)
+        for (size_t j = i + 1; j < sizeof kPhases / sizeof kPhases[0]; ++j)
+            if (kPhases[i] == kPhases[j]) return false;
+    return true;
+}
+} // namespace detail
+// Two phases with one value would give two streams the same seeds.
+static_assert(detail::phasesDistinct(), "every kPhase* constant must be distinct");
 
 // Run-directory paths.
 std::string checkpointPath(const std::string& runDir, int generation);  // runDir/checkpoints/gen_0007.azn

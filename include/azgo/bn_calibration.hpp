@@ -18,10 +18,10 @@
 namespace azgo {
 
 // Positions in one calibration batch: as many as a training batch of the
-// presets (batch_size = 256), so each layer's statistics are those of a
-// training batch's size (256 * 81 = 20736 values per channel on 9x9; the
-// standard error of a channel's mean is under 1% of its deviation), for
-// the cost of one forward pass.
+// 9x9 and 19x19 presets (batch_size = 256; 5x5 trains on 128), so each
+// layer's statistics come from at least a training batch's worth of values
+// (256 * 81 = 20736 per channel on 9x9; the standard error of a channel's
+// mean is under 1% of its deviation), for the cost of one forward pass.
 constexpr int kBnCalibrationPositions = 256;
 
 // `count` positions encoded as the network sees them ([count][planes][area],

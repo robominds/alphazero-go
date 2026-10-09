@@ -73,8 +73,9 @@ public:
     // Writes config.cfg, gen_0000.azn and an initial state.bin (generation 0,
     // with each reference network's path and hash). A fresh generation 0 has
     // its batch norm calibrated (bn_calibrate, azgo/bn_calibration.hpp,
-    // seeded by deriveSeed(seed, 0, kPhaseBatchNorm), on the CPU: the same
-    // bytes for any workers, train_threads and backend); an initFrom
+    // seeded by deriveSeed(seed, 0, kPhaseBatchNorm), on the CPU: on one
+    // machine type the same bytes for any workers, train_threads and
+    // backend; FMA contraction can differ across architectures); an initFrom
     // network is used as it is. With `init` also init.txt
     // recording where the start came from. Every fixed player (bot or
     // reference network) plays calibration_games against generation 0.
