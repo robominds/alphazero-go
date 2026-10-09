@@ -2648,7 +2648,8 @@ Correctness, all on the same machine:
   and in any batch, through every kernel, the whole network and the hub.
   Tiny metal runs are byte-identical for 1, 3 and 8 workers and for
   `inference_batch` 8 and 256. Worst error against the BLAS CPU path over
-  20 seeds: the network's outputs within 5.5e-6 (`maxErr`, spec ceiling
+  20 seeds: the network's outputs within 5.5e-6 through the GPU network
+  called directly and 6.5e-6 through the hub (`maxErr`, spec ceiling
   1e-5), the validation losses within 1.1e-7 relative.
   `analyze --backend metal` prints the same digits as `--backend blas` on
   the README's example.

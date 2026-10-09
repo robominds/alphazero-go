@@ -313,8 +313,11 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 # 49.35, policy_loss 2.23369, value_loss 0.39413, val_policy_loss 2.08466,
 # val_value_loss 0.73322, arena 0.20, Elo -225.7), and so are gen_0001.azn,
 # results.csv and the SGF: the GPU's last-bit differences changed no move in
-# this generation. state.bin differs in 118 bytes within its last 4 KB (the
-# search values it keeps for resignation calibration).
+# this generation. state.bin differs in 118 bytes, all in its last part:
+# loaded and compared field by field, the buffer, the momentum, the results
+# and the resignation threshold are identical, and the only differences are
+# 118 of the search values stored for resignation calibration (the same
+# plies, each value differing in its last bits).
 #
 # Against the spec's acceptance (docs/superpowers/specs/2026-10-09-metal-gpu-backend-design.md):
 #   hub, 36 workers x batch 8, 6x96:   27,220 evals/s   target >= 25,000   met

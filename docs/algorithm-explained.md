@@ -2661,7 +2661,7 @@ GenerationStats Trainer::runGeneration() {
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:540 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:552 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not.
@@ -2952,13 +2952,13 @@ see again in place.
 | Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:23, 40` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:125, 98` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:540` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:136, 109` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:552` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
 | Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:225` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:30`; `Trainer::resume` — `src/trainer.cpp:463` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:475` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |
 
 ---

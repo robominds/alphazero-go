@@ -140,9 +140,9 @@ against 266 and 427 ms on one core before
 
 **Backends.** `backend` is `naive`, `blas` or `metal`. The presets say
 `blas`. With `metal` (a build with `-DAZ_USE_METAL=ON`), self-play, the
-arena and the validation loss evaluate the network on the GPU. Training,
-the bots and `grow` stay on the CPU with BLAS; training on the GPU is the
-next phase. Each worker's search hands its leaves (`mcts_batch`, 8) to a
+arena and the validation loss evaluate the network on the GPU. Training
+stays on the CPU with BLAS (training on the GPU is the next phase); the
+bots need no network, and `grow` uses the naive backend as always. Each worker's search hands its leaves (`mcts_batch`, 8) to a
 batching evaluator, and one dispatcher thread packs whatever is waiting,
 from every game, into one GPU pass of at most `inference_batch` positions
 (default 256; 1–1024 and at least `mcts_batch`). Two passes are in flight,

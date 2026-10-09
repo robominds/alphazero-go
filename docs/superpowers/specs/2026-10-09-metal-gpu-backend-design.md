@@ -211,9 +211,10 @@ layout. No `metal` or `metallib` tool runs at build time.
 **Build.** `option(AZ_USE_METAL "GPU inference and training with Metal (macOS; implies AZ_USE_BLAS)" OFF)`:
 
 - `FATAL_ERROR` on a non-Apple system.
-- Turns `AZ_USE_BLAS` on, with a status message: everything that stays
-  on the CPU with `metal` (training in Phase A, the bots, `grow`) uses
-  BLAS, which on macOS is Accelerate.
+- Turns `AZ_USE_BLAS` on, with a status message: the network work that
+  stays on the CPU with `metal` (training, in Phase A) uses BLAS, which
+  on macOS is Accelerate. (The bots need no network, and `grow` keeps the
+  naive backend.)
 - `enable_language(OBJCXX)` (CMake ≥ 3.16). Adds `src/metal/*.mm` with
   `-fobjc-arc` and C++17, links `-framework Metal -framework
   Foundation`, and defines `AZ_USE_METAL` publicly, as `AZ_USE_BLAS` is
