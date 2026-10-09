@@ -2634,13 +2634,49 @@ Against the design's acceptance:
 - hub ≥ 25k evals/s at 36 workers: met.
 - self-play ≥ 1.6×: met, just (1.60×).
 - whole generation ≥ 1.4×: met, just (1.40×).
-- arena ≥ 1.3×: **not met** (1.02×). At generation 1 the arena is one
-  20-game match: 20 searches at once, split between two networks, too
-  few to fill the passes.
+- arena ≥ 1.3×: **not met** here (1.02×). At generation 1 the arena is
+  one 20-game match: 20 searches at once, split between two networks,
+  too few to fill the passes. **Met after the arena change below**
+  (1.43–1.51×).
 
-The spec's levers, in order: more workers (3–4× cores), a larger
-`inference_batch`, three slots, kernel fusion, implicit GEMM. None was
-tried yet.
+**The arena, its matches played at once**
+([design](../superpowers/specs/2026-10-10-arena-gpu-design.md), branch
+arena-gpu, `bench.txt`, last section).
+- Setup: generation 2 of a 9×9 6×96 run started from a copy of
+  9x9-recipe generation 250, with copies of generations 150, 200 and 230
+  as reference networks. Its arena plays four opponents (generation 1,
+  generation 0, ref1, ref2), 80 games. The training job was paused for
+  every measurement.
+- How it works: the round's matches share one pool of games, with one
+  hub per network. With metal every game runs at once (80 workers), and
+  each of the five hubs keeps one pass in flight.
+
+| code | backend | arena_s | metal's speedup |
+|---|---|---|---|
+| before | blas (18 workers) | 51.5 | |
+| before | metal (36 workers) | 50.0 | 1.03× |
+| after | blas (18 workers) | 47.0, 44.5 | |
+| after | metal, 36 workers, 2 slots per hub | 59.6 | 0.75–0.79× |
+| after | metal, 80 workers, 2 slots per hub | 38.1 | 1.17–1.23× |
+| after | **metal, 80 workers, 1 slot per hub (the default)** | **31.2** | **1.43–1.51×** (1.65× against blas before) |
+
+- The intermediate rows show the two levers that mattered.
+  - *Every game in flight.* An arena game has only one search waiting at
+    a time, so the games in flight are what fills the passes.
+  - *One pass in flight per hub.* With five hubs sharing the GPU, the
+    others' passes keep it busy. Each hub then takes everything waiting
+    into one pass. An arena-only harness on the same wave, with the
+    training job running, counted 14,300 passes instead of 20,700,
+    averaging 115
+    positions for the new network and ~30 for each opponent (77 and ~21
+    with two slots).
+- Before and after are byte-identical: checkpoint, `state.bin`,
+  `results.csv`, `elo.csv`, `references.csv`, the SGFs and `log.csv`
+  without its timing columns, for blas and for metal.
+- The spec's remaining levers (a larger `inference_batch`, kernel fusion,
+  implicit GEMM) are untried. The GPU is busy ~95% of the arena with
+  passes of ~30–115 positions, so faster small passes are what would help
+  next.
 
 Correctness, all on the same machine:
 

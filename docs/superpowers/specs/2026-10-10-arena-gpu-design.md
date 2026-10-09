@@ -29,7 +29,7 @@ promoted. Each match had its own two hubs. In a match:
   (`bench`), so passes of ~80 positions spend most of their time on fixed
   costs, and the GPU waits while the searches expand their leaves;
 - the match ends with its longest game, so the last seconds of each match
-  run with a few games and passes of 8–16 positions.
+  run with a few games, so its passes are presumably smaller still.
 
 The new network plays in every match. Played one after another, its
 searches never share a pass with those of another match.
@@ -71,8 +71,7 @@ and the live network and the reference networks are already in memory.
 - `metal`: one `InferenceHub` per network. The new network plays in
   every match, so its hub gathers about half of all the searches in
   flight in the wave, and each opponent's hub gathers the rest of its
-  own match. With 36 workers and 80 games, ~18 searches share the new
-  network's passes, against ~10 before.
+  own match.
 - `naive`, `blas`: each worker has one single-threaded backend and one
   `Workspace` sized for the largest request. It also has one
   `LocalEvaluator` per network, and all of them evaluate in that
@@ -88,21 +87,41 @@ All networks in a wave must share one `NetConfig` (they always do in a
 run). `playMatches` checks every match as `playMatch` does before any
 game starts, and it refuses a set whose networks differ in shape.
 
-**Worker count.** `arenaWorkers(workers, backend, games)`: an explicit
-count as given; 0 gives `resolveWorkers(0, metal)` (twice the hardware
-threads with metal, the cores otherwise), never more than the wave's
-games. The trainer passes `workers` unresolved. A wave of 80 games keeps
-all 36 metal workers busy until its last games. Before, a 20-game match
-used at most 20 of them. CPU backends gain too: 18 workers over 80 games
-leave one tail per wave instead of one per match. Running more workers
-than twice the cores is a lever for later. It is not on by default,
-because it raises the CPU load of a machine that may also be running
-another job (see "Performance").
+**Worker count: with metal, every game of the wave at once.**
+`arenaWorkers(workers, backend, games)` takes an explicit count as
+given. For 0 it gives:
+- naive and blas: one worker per core (`resolveWorkers(0)`);
+- metal: every game of the wave, up to `kMaxArenaWorkers` (256, the
+  `workers` key's limit). Never more than the wave's games.
 
-**Pipeline slots and `inference_batch`** stay as they are. With 36
-workers × `mcts_batch` 8, at most 288 positions are in flight across
-all of a wave's hubs, and one hub's pass rarely approaches 256. A third
-slot is a lever for later, kept only if `bench` shows it helps.
+The trainer passes `workers` unresolved. An arena game has only one
+search in flight, the side to move's, so the games in flight are what
+fills the passes. A worker waiting for the GPU costs no CPU. This was
+measured, not assumed. With the 36 workers of self-play's rule, the wave
+was *slower* than matches one after another (59.6 s against 50.0 s): five
+hubs split 36 searches, so passes shrank to ~20 positions. With all 80
+games it took 38.1 s. CPU backends keep one worker per core. 18 workers
+over 80 games leave one tail per wave instead of one per match: 47.0 and
+44.5 s against 51.5 s.
+
+**One pass in flight per hub when hubs share the GPU.** A hub alone keeps
+two passes in flight (`kInferenceSlots`), so one computes while the next
+fills. A wave's hubs share one GPU, so the other hubs' passes keep it
+busy, and a second slot per hub only splits what waits into smaller
+passes. So with several networks each hub's runner has one slot
+(`makeMetalRunner(net, maxBatch, slots)`,
+`WorkerEvaluators(..., slots)`). A wave of one network (against bots
+only) keeps two. Measured on the four-opponent wave with 80 workers:
+- 2 slots: 20,700 passes, the new network's averaging 77 positions and
+  the opponents' ~21; 37–40 s.
+- 1 slot: 14,300 passes, averaging 115 and ~30; 31.2 s.
+
+Which positions share a pass changes no result.
+`inference_batch` is unchanged: 80 searches × 8 positions rarely fill
+256 in one hub. Two other ideas were tried and not kept:
+- a command queue per hub, so that passes of different hubs could run on
+  the GPU at the same time: no change;
+- more than 80 workers (capped at the games anyway): the same.
 
 **Who uses it.** Live arena rounds, the calibration when a run starts
 (every fixed player at once) and `train --rerate`, which replays the
@@ -112,12 +131,14 @@ The `arena` app plays one long match (`playMatch`) and needs nothing
 new. It now passes `--workers` unresolved, which resolves the same way.
 
 **GPU memory.** A wave holds one hub per network at once. When a run
-starts, resumes or re-rates with `metal`, the memory check counts the
-most a wave can need, `max(1 + reference networks, 3 + arena_opponents
-+ gating)`, instead of two: 5 hubs for the presets, 6 with gating. At
-`inference_batch` 256 a hub needs 218 MB for 9×9 6×96 and 1,274 MB for
-19×19 10×128 (measured with the check itself), so a 19×19 wave of five
-hubs needs ~6.4 GB. That is fine on the 128 GB Studio. On a 16 GB Mac
+starts, resumes or re-rates with `metal`, the memory check covers two
+cases. One is self-play's hub with two slots. The other is the most hubs
+a wave can need, at one slot each: `max(1 + reference networks, 3 +
+arena_opponents + gating)`, so 5 for the presets and 6 with gating.
+Before, it checked two two-slot hubs. At `inference_batch` 256, a
+two-slot hub needs 218 MB for 9×9 6×96 and 1,274 MB for 19×19 10×128
+(measured with the check itself). A one-slot hub needs a little more
+than half that, so a 19×19 wave of five hubs needs ~3.3 GB. That is fine on the 128 GB Studio. On a 16 GB Mac
 mini the check may refuse it with its usual message (lower
 `inference_batch`) before the run writes anything. `makeMetalRunner` still checks each hub as it is
 created.
@@ -150,7 +171,9 @@ backend, worker count and `inference_batch`, on resume and on re-rating.
 | play the promotion games speculatively in wave 2 | rejected: 80 games wasted whenever g is not promoted (most generations) |
 | overlap the arena with the next generation's self-play | rejected: it changes the commit order of a generation (`state.bin` after the arena) for a few seconds |
 | interleave several games per worker (resumable searches) | rejected again, as in Phase A: a large rewrite of teaching code for what more threads give |
-| more workers than 2 × cores | kept as a lever: no change to results, measured before it becomes a default |
+| more workers than 2 × cores | **chosen** for metal: every game of the wave (see "Worker count") |
+| a command queue per hub | measured: no gain; not kept |
+| three slots per hub | moot: one slot per hub is what helped once several hubs share the GPU |
 
 ## Testing
 
@@ -178,7 +201,26 @@ backend, worker count and `inference_batch`, on resume and on re-rating.
 
 ## Performance
 
-Measured on one 9×9 6×96 generation whose arena has four opponents,
-`blas` against `metal`, old against new code. The numbers and
-conditions are in `docs/results/bench.txt`. Acceptance: arena phase
-≥ 1.3× faster with `metal` than with `blas`.
+The setup: generation 2 of a 9×9 6×96 run started from a copy of
+9x9-recipe generation 250, with copies of generations 150, 200 and 230
+as reference networks. Its arena plays four opponents (g−1, generation
+0, ref1, ref2), 80 games. The training job was paused for every
+measurement; details are in `docs/results/bench.txt`.
+
+| | arena_s |
+|---|---|
+| blas, before | 51.5 |
+| metal, before (matches one after another) | 50.0 |
+| blas, after | 47.0 / 44.5 |
+| metal, after (80 workers, one slot per hub) | **31.2** |
+
+**Acceptance (≥ 1.3× arena phase with metal): met.** Metal is 1.43–1.51×
+faster than blas with the same code, 1.65× faster than blas before the
+change, and 1.60× faster than metal before it. Old and new binaries wrote
+byte-identical files for blas and for metal.
+
+Each hub's slots stay busy ~95% of the wave, so the GPU's speed on
+passes of 30–115 positions now sets the pace. The levers left are the
+Phase A spec's kernel fusion and implicit GEMM. A single 20-game match
+(generation 1, or the arena app) still has too few searches to gain
+much.

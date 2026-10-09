@@ -514,6 +514,8 @@ entries.
   after another, so at most two hubs exist at once. Arena matches have
   20–80 games, so fewer searches are in flight than in self-play, split
   between two networks. The arena gains less (see "Performance").
+  *Superseded by `2026-10-10-arena-gpu-design.md`: a round's
+  independent matches now run at once, with one hub per network.*
 - **Validation loss.** The pass already evaluates batches of 256 in
   order on one thread, so it needs no hub. A `GpuNetwork` with one
   workspace runs `infer` with ownership, and a new CPU function

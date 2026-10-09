@@ -330,3 +330,76 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 # in order: more workers (3-4x cores), a larger inference_batch, three
 # slots, kernel fusion, implicit GEMM. Not attempted here (the plan says to
 # report, not optimize, in this task).
+
+# =============================================================================
+# The arena on the GPU: a round's matches played at once (2026-10-09)
+# =============================================================================
+# Branch arena-gpu (docs/superpowers/specs/2026-10-10-arena-gpu-design.md),
+# Apple M5 Max, 18 cores, macOS 27.0.1. Old = main 3ce8f40, built from git
+# archive in a scratch dir (build-metal, Release); new = arena-gpu's
+# build-metal. Both binaries hold naive, blas and metal.
+#
+# ---- Byte identity, old train binary against new ----
+# Each run was started for N-1 generations, resumed to N (workers 3), then
+# re-rated (workers 5). Compared: every checkpoint, the SGFs, state.bin,
+# results.csv, elo.csv, references.csv, reference-networks.csv, rerate/,
+# and log.csv without selfplay_s, train_s and arena_s.
+#   5x5 preset, 3 generations: 40 games, 50 steps, 64 simulations; arena
+#     10 games at 48 simulations, calibration_games 10; bots 50 and 200;
+#     one reference network; promote_threshold 0.5; workers 4.
+#     naive, blas, metal: identical. The same with gating = true and
+#     arena_opponents 1: identical. (No generation was promoted: a bot
+#     was always the strongest reference. The unit tests cover
+#     promotion.)
+#   9x9 preset, filters 96, --init-from a copy of 9x9-recipe gen 250,
+#     reference networks = copies of recipe gens 150, 200, 230; 8 games,
+#     50 simulations, 20 steps; arena 6 games, calibration_games 6;
+#     2 generations. blas and metal: identical. The calibration wave
+#     played 3 reference networks against gen 250; generation 2's round
+#     played 4 opponents.
+#   The measurement runs below: generation 2, old and new, identical for
+#     blas and for metal (checkpoint, state.bin, results.csv, elo.csv,
+#     references.csv, SGFs, log.csv without timings). blas against metal
+#     differ only in state.bin's stored resignation values, as in Phase A.
+#
+# ---- Arena phase, one real 9x9 6x96 generation with four opponents ----
+# The base run: train --config configs/9x9.cfg --init-from <copy of
+#   9x9-recipe gen_0250.azn> --set filters=96 --set backend=metal
+#   --set reference_networks=<copies of recipe gens 150,200,230>
+#   --generations 1
+# (seed 1, 200 games, 200 simulations, 400 steps; arena 20 games per
+# opponent at 100 simulations). Each measurement copies it and resumes
+# with --set backend=blas|metal --generations 2. Generation 2's arena
+# plays 1, 0, ref1 and ref2 ("vs 1:0.45 0:0.25 ref1:0.20 ref2:0.10" in
+# every run): 80 games, no promotion. workers 0 (18 with blas; with metal
+# 36 before; after, every game of the wave, 80).
+# The training job 9x9-scratch96 was paused (SIGSTOP/SIGCONT, Mark's
+# go-ahead) for three windows: 6.1, 7.2 and 5.0 minutes.
+#                                                  selfplay_s  train_s  arena_s   wall
+#   old  blas                                         95.1      38.9     51.5    185.7 s
+#   new  blas                                         93.7      38.6     47.0    179.5 s
+#   old  metal                                        59.4      37.7     50.0    147.2 s
+#   new  metal, 36 workers, 2 slots per hub           59.7      37.8     59.6    157.2 s
+#   new  metal, 80 workers, 2 slots per hub           53.2      37.6     38.1    129.2 s
+#   new  metal, 80 workers, 1 slot per hub (final)    60.3      37.3     31.2    129.1 s
+#   new  blas (again, the final window)               88.5      38.0     44.5    171.2 s
+# Arena speedup of metal (final) over blas: 1.43x (44.5 s) to 1.51x
+# (47.0 s) with the same code; 1.65x over blas before the change, and
+# 1.60x over metal before it. Target >= 1.3x: met. (selfplay_s varies by
+# ~10% between windows with identical self-play code.)
+# The two levers, found with an arena-only harness: playMatches on the
+# same 4 matches, with the training job running at nice 20, so the
+# timings are a little longer.
+#   metal 36 workers, matches one at a time        51-54 s   two hubs per match
+#   metal 36 workers, at once, 2 slots              54-55 s
+#   metal 80 workers, at once, 2 slots              37-40 s   20,700 passes; the new network's
+#                                                             mean 77 positions, opponents' ~21
+#   metal 80 workers, at once, 1 slot                32.5 s    14,300 passes; mean 115 and ~30
+#   metal 160 workers (capped at the 80 games)      32.2 s
+#   a command queue per hub (passes of different hubs free to overlap on
+#   the GPU): no change (55.0 and 37.3 s); not kept.
+# With 36 workers the wave is slower than matches one after another: five
+# hubs split 36 searches, so the passes shrink to ~20 positions. Every game
+# in flight and one pass in flight per hub reverse that. Each hub's slots
+# stay busy ~95% of the wave, so the GPU itself, with passes of 30-115
+# positions, now sets the pace.

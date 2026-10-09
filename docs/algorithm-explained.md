@@ -1333,7 +1333,13 @@ in every match, so its hub collects its searches from all of them. Each
 game keeps its own seed and its result is stored by match and game
 index, so the files are byte for byte those of matches played one at a
 time. Only the promotion games wait for a second wave, because whether
-they happen depends on the first.
+they happen depends on the first. Two more changes fill the passes. With
+`metal`, every game of the wave runs at once, because an arena game has
+only one search in flight. And when several hubs share the GPU, each
+keeps one pass in flight instead of two: the other hubs' passes keep the
+GPU busy, so each pass can take everything that is waiting. On a 9×9
+6×96 arena of four opponents, the time fell from 50 s to 31 s (`blas`:
+44–47 s).
 
 **Why timing cannot change a game.** Which requests share a pass, in
 what order, and how large it is depend on thread scheduling and differ
@@ -2211,8 +2217,7 @@ alternating) against a few earlier generations and the fixed players (bots
 and reference networks, below), with search but without Dirichlet noise:
 
 ```cpp
-GameOutcome playArenaGame(WorkerContext& ctx, const ArenaConfig& cfg, int n, uint64_t seed,
-                          int index) {
+GameOutcome playArenaGame(Seat& a, Seat& b, const ArenaConfig& cfg, int n, uint64_t seed, int index) {
     Rng rng(deriveSeed(seed, static_cast<uint64_t>(index)));
     bool aIsBlack = index % 2 == 0;   // colors alternate, so A is Black in half the games
     /* ... game; searchA, searchB from each Seat's MctsConfig, addNoise = false ... */
@@ -2229,7 +2234,7 @@ GameOutcome playArenaGame(WorkerContext& ctx, const ArenaConfig& cfg, int n, uin
     return {matchScore(game.resultForBlack(), aIsBlack), game.moves()};
 }
 ```
-*src/arena.cpp:35 — `playArenaGame` (abridged)*
+*src/arena.cpp:36 — `playArenaGame` (abridged)*
 
 **Opening diversity.** Without noise, search is deterministic up to
 random tie-breaks, and two fixed networks would replay nearly the same
@@ -2288,7 +2293,7 @@ std::vector<int> selectOpponents(int generation, const std::map<int, double>& ra
     return out;
 }
 ```
-*src/arena.cpp:325 — `selectOpponents` (abridged)*
+*src/arena.cpp:336 — `selectOpponents` (abridged)*
 
 The candidates are the **references**: a frozen set of players that
 starts as generation 0 plus the fixed players, and only grows.
@@ -2678,7 +2683,7 @@ GenerationStats Trainer::runGeneration() {
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:563 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:567 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not.
@@ -2964,18 +2969,18 @@ see again in place.
 | Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:112`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:104` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:21` |
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:111` |
-| Arena and opening diversity | `playArenaGame`, `playMatches` — `src/arena.cpp:35, 197` |
-| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:325, 353` |
+| Arena and opening diversity | `playArenaGame`, `playMatches` — `src/arena.cpp:36, 208` |
+| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:336, 364` |
 | Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:31, 54` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:148, 121` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:563` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:152, 125` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:567` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
 | Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:225` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:486` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:490` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |
 
 ---

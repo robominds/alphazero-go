@@ -158,7 +158,10 @@ hub gathers its searches from all of them into the same passes. Every game
 keeps its seed, and results are added in the same order, so the result
 files are identical to matches played one at a time
 ([the design](docs/superpowers/specs/2026-10-10-arena-gpu-design.md)).
-`--rerate` plays its rounds the same way.
+`--rerate` plays its rounds the same way. With `metal`, `workers = 0` in
+the arena means every game of the wave at once (an arena game has only
+one search in flight). When a wave has several hubs, each keeps one pass
+in flight rather than two, so the passes are fewer and larger.
 
 With `metal`, `workers = 0` means twice the hardware threads: a worker
 waiting for the GPU uses no CPU, so two groups of searches take turns. A
@@ -1072,15 +1075,24 @@ Measured on the M5 Max with the machine otherwise idle
 
   Every move, loss and the new checkpoint came out the same with both
   backends in that generation.
+- **The arena, once its matches were played at once**
+  ([design](docs/superpowers/specs/2026-10-10-arena-gpu-design.md)): a
+  9×9 6×96 generation whose arena plays four opponents, 80 games.
+  - The arena takes 31.2 s with `metal`. With `blas` it takes 44.5–47.0 s
+    with the same code (1.43–1.51×) and 51.5 s with the code before
+    (1.65×).
+  - Before the change, `metal` took 50.0 s, matches one after another.
+  - The old and new binaries wrote byte-identical files.
 
-The self-play, throughput and whole-generation targets of the design are
-met; the arena's (1.3×) is not. Too few searches run at once in a 20-game
-match between two networks to fill the GPU's passes.
+All of the design's Phase A targets are now met: self-play, throughput,
+the whole generation, and the arena's 1.3×. A single 20-game match, as at
+generation 1, still gains little: too few searches run at once to fill
+the GPU's passes.
 
 Next is training on the GPU (phase B of the
 [plan](docs/superpowers/plans/2026-10-09-metal-gpu-backend.md)): the
 backward pass, the losses and SGD as kernels, opt-in with
-`gpu_training = true`, and a better-fed arena. The CPU's other cores came first. The training
+`gpu_training = true`. The CPU's other cores came first. The training
 step runs on all of them (`train_threads`), 4.6× faster for 6×96 on 9×9.
 
 ## Authorship
