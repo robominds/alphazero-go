@@ -1,7 +1,7 @@
 #!/bin/bash
 # Two arms from the same start (6x96 gen 50 + its replay buffer): 400 vs 200 simulations, 50 generations each.
 set -uo pipefail
-cd .
+cd ~/projects/alphazero-go
 B=runs/bin-sims; E=runs/sims-eval; mkdir -p $E
 START=runs/9x9-wide96/checkpoints/gen_0050.azn
 COMMON="--config configs/9x9.cfg --init-from $START --buffer-from runs/9x9-wide96 --set filters=96 --set lr_schedule=0:0.002 --generations 50"

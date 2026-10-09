@@ -1,7 +1,7 @@
 #!/bin/bash
 # Resume the 200-simulation arm after the session stop, then run the evaluations.
 set -uo pipefail
-cd .
+cd ~/projects/alphazero-go
 B=runs/bin-sims; E=runs/sims-eval; mkdir -p $E
 START=runs/9x9-wide96/checkpoints/gen_0050.azn
 echo "resume $(date)"

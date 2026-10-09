@@ -13231,12 +13231,12 @@ EOF
 - Create: `tools/check_citations.py`, `docs/algorithm-explained.md`
 
 **Interfaces:**
-- Consumes: the source tree (every `src/*.cpp`, `include/azgo/*.hpp`, `apps/*.cpp`), `docs/results/` (Task 23), and the tic-tac-toe explainer and checker as models: `../alphazero-tictactoe/docs/algorithm-explained.md` and `../alphazero-tictactoe/tools/check_citations.py`.
+- Consumes: the source tree (every `src/*.cpp`, `include/azgo/*.hpp`, `apps/*.cpp`), `docs/results/` (Task 23), and the tic-tac-toe explainer and checker as models: `~/projects/alphazero-tictactoe/docs/algorithm-explained.md` and `~/projects/alphazero-tictactoe/tools/check_citations.py`.
 - Produces: the Markdown explainer whose chapter IDs and captions Task 25's HTML mirrors, and `tools/check_citations.py` with the caption formats below.
 
 - [ ] **Step 1: Port the citation checker**
 
-Copy `../alphazero-tictactoe/tools/check_citations.py` to `tools/check_citations.py` and change:
+Copy `~/projects/alphazero-tictactoe/tools/check_citations.py` to `tools/check_citations.py` and change:
 - the path regexes, so they accept `src/…`, `include/azgo/…` and `apps/…` paths ending in `.cpp` or `.hpp` (`[\w./]+` already allows these; check that it does)
 - `MD`/`HTML` constants, which stay `docs/algorithm-explained.{md,html}`
 - the docstring, updated for this project
@@ -13355,7 +13355,7 @@ EOF
 - Modify: `README.md`
 
 **Interfaces:**
-- Consumes: `docs/algorithm-explained.md` and its captions (Task 24), `docs/results/*/elo.csv` (Task 23), `tools/check_citations.py` (Task 24), and the tic-tac-toe HTML as the visual model: `../alphazero-tictactoe/docs/algorithm-explained.html`.
+- Consumes: `docs/algorithm-explained.md` and its captions (Task 24), `docs/results/*/elo.csv` (Task 23), `tools/check_citations.py` (Task 24), and the tic-tac-toe HTML as the visual model: `~/projects/alphazero-tictactoe/docs/algorithm-explained.html`.
 - Produces: the final documentation set.
 
 - [ ] **Step 1: Write `tools/plot_elo.py`**
