@@ -31,12 +31,27 @@ cmake --build build-blas -j
 ctest --test-dir build-blas --output-on-failure
 ```
 
+On an Apple-silicon Mac (M1 or later), the network can also run on the GPU
+(`backend = metal`, below). That build turns BLAS on too:
+
+```bash
+cmake -S . -B build-metal -DCMAKE_BUILD_TYPE=Release -DAZ_USE_METAL=ON
+cmake --build build-metal -j
+ctest --test-dir build-metal --output-on-failure
+```
+
+It needs only the Command Line Tools, not Xcode. The GPU kernels
+(`src/metal/kernels.metal`) are embedded in the library and compiled by
+macOS when a program first uses the GPU, so no `metal` shader compiler runs
+at build time.
+
 Each build has 29 component tests plus an integration smoke test (30 in
 ctest; `ctest -N | tail -1` prints `Total Tests: 30`). The GPU tests,
-`test_metal`, run only in a build configured with `-DAZ_USE_METAL=ON` on an
-Apple-silicon Mac (the Metal backend is work in progress); elsewhere ctest
-reports them as Skipped. The smoke test
-also runs `tools/gtp_match.py`, so it needs `python3` on the path.
+`test_metal`, run only in a build configured with `-DAZ_USE_METAL=ON` on a
+Mac with a usable GPU; elsewhere ctest reports them as Skipped. The smoke
+test checks `backend = metal` end to end in a Metal build and its refusal
+in the others. It also runs `tools/gtp_match.py`, so it needs `python3` on
+the path.
 
 **The presets in `configs/` say `backend = blas`**, because BLAS is 2.9×
 faster on 5×5 and 18× faster on 19×19 (`docs/results/bench.txt`). Use them
@@ -123,6 +138,43 @@ against 266 and 427 ms on one core before
 ([the design](docs/superpowers/specs/2026-10-08-multithreaded-training-design.md),
 `docs/results/bench.txt`).
 
+**Backends.** `backend` is `naive`, `blas` or `metal`. The presets say
+`blas`. With `metal` (a build with `-DAZ_USE_METAL=ON`), self-play, the
+arena and the validation loss evaluate the network on the GPU. Training,
+the bots and `grow` stay on the CPU with BLAS; training on the GPU is the
+next phase. Each worker's search hands its leaves (`mcts_batch`, 8) to a
+batching evaluator, and one dispatcher thread packs whatever is waiting,
+from every game, into one GPU pass of at most `inference_batch` positions
+(default 256; 1–1024 and at least `mcts_batch`). Two passes are in flight,
+so one computes while the next fills.
+
+With `metal`, `workers = 0` means twice the hardware threads: a worker
+waiting for the GPU uses no CPU, so two groups of searches take turns. A
+run prints which GPU it uses when it starts, resumes or re-rates:
+
+```
+gpu: Apple M5 Max, macOS 27.0.1, shaders b7b31a09 (inference: self-play, arena, validation)
+```
+
+On one machine and macOS version, a metal run is reproducible and resumes
+byte for byte, and its results do not depend on `workers`,
+`inference_batch` or timing. Every GPU kernel computes a position's
+outputs from that position alone, in a fixed order, so which positions
+share a pass cannot change a bit (explainer, chapter 03). Two things are
+*not* the same:
+- another Mac or macOS version, since macOS compiles the shaders and the
+  shader hash in the `gpu:` line identifies them;
+- a `blas` run, since the GPU rounds some sums differently, within 1e-5 of
+  the CPU on the network's outputs.
+
+`backend` and `inference_batch` are tunable on resume. A switch prints
+`note: backend changed from blas to metal; from here on results differ in
+the last bits from a run that kept blas`. A build without Metal refuses
+`backend = metal` before writing anything: `backend 'metal' not
+available: rebuild with -DAZ_USE_METAL=ON (macOS only)`. `arena`,
+`analyze` and `gtp` take `--backend metal` too; `arena` also takes
+`--inference-batch`.
+
 `bot_simulations` and `reference_networks` cannot change on resume
 either: bot k is arena player −k and the reference networks come after
 the bots, so both lists are fixed for the life of a run. `state.bin`
@@ -179,7 +231,8 @@ A wins 100, B wins 0, draws 0
 
 **`analyze`** plays a move list (GTP coordinates) or an SGF file, then
 prints the board, the network's value and policy, and an MCTS search
-(`docs/results/9x9/analyze-atari.txt`). For a checkpoint with an
+(`docs/results/9x9/analyze-atari.txt`). With `--backend metal` it prints
+the same digits for the example below as `--backend blas`. For a checkpoint with an
 ownership head (below) it also prints, after the value line, an
 ownership map: who the network expects to own each point at the end, in
 Black's terms, from +9 (surely Black's) to −9 (surely White's), with `.`
@@ -968,23 +1021,41 @@ python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-mai
   — the validation loss: the network scored on each generation's fresh games before it trains on them.
 - [`docs/superpowers/specs/2026-10-08-multithreaded-training-design.md`](docs/superpowers/specs/2026-10-08-multithreaded-training-design.md)
   — the training step on every core (`train_threads`), bit for bit the single-threaded result.
+- [`docs/superpowers/specs/2026-10-09-metal-gpu-backend-design.md`](docs/superpowers/specs/2026-10-09-metal-gpu-backend-design.md)
+  and [`docs/superpowers/plans/2026-10-09-metal-gpu-backend.md`](docs/superpowers/plans/2026-10-09-metal-gpu-backend.md)
+  — the Metal GPU backend: hand-written kernels, the batching evaluator and why timing cannot change a game.
 
 `python3 tools/check_citations.py` checks that every `file:line` citation
 in both explainers still points at the quoted definition.
 
 ## Extending to the GPU
 
-A `MetalBackend` would implement the `Backend` interface (gemm, im2col,
-col2im) with Metal compute kernels, so training steps benefit first. A
-batching `Evaluator` would then gather leaves from all worker threads into
-batches of 64–256 for the GPU, leaving MCTS unchanged. On Apple Silicon the
-BLAS backend already runs on the CPU's matrix units, and the spec estimates
-the M4 GPU's additional gain at roughly 2× and only at large batch sizes,
-which is why v1 stops at the CPU. `docs/results/metal-bench.txt` measured
-it on an M5 Max: a gemm-only Metal backend gains nothing, and only a
-whole-network port pays off. The CPU's other cores came first. The
-training step now runs on all of them (`train_threads`), 4.6× faster for
-6×96 on 9×9.
+The first step is in place: `backend = metal` (see **Backends**). The
+Metal spike (`docs/results/metal-bench.txt`) decided its shape:
+- A `Backend` that sends each gemm to the GPU gains nothing. The copies
+  and the per-call wake-up eat the gain, and most of a pass is not gemm.
+- Apple's MPS library is fast, but a position's output depends on the
+  other positions in its batch.
+
+So the whole forward pass runs as hand-written Metal kernels, one per
+CPU layer. A batching evaluator gathers the leaves of every worker's
+search into large GPU passes, and MCTS is unchanged. The kernels are
+batch-independent by construction and by test, so results stay
+independent of timing.
+
+*Measured speedup: pending.* The timed comparison of a generation with
+`blas` and with `metal` needs the machine otherwise idle and has not been
+run yet. A first measurement, taken beside a training run, reached 22,200
+network evaluations per second through the hub on 9×9 6×96 (36 threads,
+batch-8 requests). The spike measured 14,500 for 18 CPU workers. The
+design's targets are a hub throughput of at least 25,000 evaluations per
+second and self-play at least 1.6× faster.
+
+Next is training on the GPU (phase B of the
+[plan](docs/superpowers/plans/2026-10-09-metal-gpu-backend.md)): the
+backward pass, the losses and SGD as kernels, opt-in with
+`gpu_training = true`. The CPU's other cores came first. The training
+step runs on all of them (`train_threads`), 4.6× faster for 6×96 on 9×9.
 
 ## Authorship
 

@@ -4,7 +4,8 @@
 // one value per position. LocalEvaluator runs the shared network on the
 // calling thread with its own scratch memory; UniformEvaluator is a
 // "know-nothing" stand-in (equal priors, constant value) that lets tests
-// check the search logic without any network at all.
+// check the search logic without any network at all. With backend = metal,
+// workers get BatchingEvaluators instead (azgo/inference_hub.hpp).
 #pragma once
 #include <memory>
 #include "azgo/network.hpp"
@@ -12,8 +13,8 @@
 namespace azgo {
 
 // What MCTS asks of "the network": a batch of encoded positions in, policy
-// logits and values out. A future GPU evaluator batching across threads
-// would implement this same interface.
+// logits and values out. BatchingEvaluator (azgo/inference_hub.hpp), the
+// GPU's, implements it too, gathering leaves from every worker.
 class Evaluator {
 public:
     virtual ~Evaluator() = default;

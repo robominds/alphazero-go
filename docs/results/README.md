@@ -2595,6 +2595,33 @@ Generation 2 took more than twice as long as generation 1. Its self-play
 games were 2.5 times longer (364.5 plies on average; the cap is 722).
 Two generations say nothing about strength, and none is claimed.
 
+### GPU inference with `backend = metal` (pending)
+
+The timed comparison is task A9 of the
+[Metal plan](../superpowers/plans/2026-10-09-metal-gpu-backend.md) and
+needs the training jobs paused, so it has not been run. It will cover:
+- `bench --backend metal`: raw GPU passes at batches 8, 144 and 256, and
+  the hub under 18, 36 and 72 threads;
+- one 6×96 9×9 generation with `blas` and with `metal`, compared on
+  `selfplay_s`, `arena_s`, `train_s` and the losses.
+
+What is known so far, all on the M5 Max under macOS 27.0.1:
+
+- *Correctness, measured.* Positions get bitwise the same outputs alone
+  and in any batch, through every kernel, the whole network and the hub.
+  Tiny metal runs are byte-identical for 1, 3 and 8 workers and for
+  `inference_batch` 8 and 256. Worst error against the BLAS CPU path over
+  20 seeds: the network's outputs within 5.5e-6 (`maxErr`, spec ceiling
+  1e-5), the validation losses within 1.1e-7 relative.
+  `analyze --backend metal` prints the same digits as `--backend blas` on
+  the README's example.
+- *Throughput, preliminary.* It was measured beside a training run that
+  kept the CPU busy, so it is not a benchmark. 36 threads sending batch-8
+  requests through the hub reached 22,200 evaluations/s on 6×96 (passes
+  of about 100 positions), and 72 threads 23,200. The spike measured
+  14,500 for 18 CPU workers with the CPU idle
+  ([metal-bench.txt](metal-bench.txt)).
+
 ## Next experiments
 
 A living to-do list. A review of the 9×9 runs (Claude, at Mark's

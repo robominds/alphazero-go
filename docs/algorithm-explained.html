@@ -1122,7 +1122,7 @@ void checkGradient(const char* what, float* value, const float* analytic, size_t
 <p><code>Network::loss</code> computes the log-softmax with the usual guard (subtract the largest logit before <code>exp</code>, so nothing overflows) and the two closed-form output gradients familiar from tic-tac-toe: <code>softmax − π</code> for the policy logits, and <code>2(v − z)(1 − v²)</code> through the <code>tanh</code>, both divided by the batch size.</p>
 <div class="callout">
   <span class="cal-label">parameters versus activations</span>
-  <p><code>Network</code> holds only weights and batch-norm running statistics; every activation buffer lives in a separate <code>Workspace</code>. Ten self-play threads can then share one read-only network, each with its own workspace, with no locks and no copies of the weights. The same split is what a GPU backend would need: weights uploaded once, scratch per stream.</p>
+  <p><code>Network</code> holds only weights and batch-norm running statistics; every activation buffer lives in a separate <code>Workspace</code>. Ten self-play threads can then share one read-only network, each with its own workspace, with no locks and no copies of the weights. The GPU backend (chapter 03) uses the same split: the weights are uploaded once per phase, and each batch in flight has its own workspace.</p>
 </div>
 </section>
 
@@ -1359,7 +1359,7 @@ Top 10 moves by visits:
 }</code></pre>
 <span class="src">src/mcts.cpp:213 — <code>Mcts::search</code> (abridged)</span>
 <p><strong>Collisions end the round.</strong> Virtual loss discourages repeats but does not forbid them: when one move is much better than the rest, a second descent can still land on a leaf that is already waiting. Evaluating it twice would waste a slot and double-count it, so the round stops early and evaluates the leaves it has. A terminal leaf never waits at all; its exact value is backed up on the spot. The cost of batching is a slightly different search: descents in a round cannot see each other's results. A batch size of 8 (<code>mcts_batch</code> in every preset) is a common compromise — small enough that the tree does not "go wide" much, large enough to fill the matrix unit better.</p>
-<p><strong>Why batch size matters to gemm.</strong> Take the 5×5 preset's residual convolution: its weight matrix is 32 × 288 (32 filters, 32 channels × 9 offsets). At batch 1 it multiplies a column matrix 25 wide; at batch 8, 200 wide. Both products cost the same per column, but the batch-8 call pays the fixed costs — the call itself, packing the operands, starting the matrix unit, and all the per-layer bookkeeping around it — once for eight positions instead of once for each. Measured on the M4, one thread, BLAS backend (<code>docs/results/bench.txt</code>, last table): the 5×5 network evaluates about 23,000 positions per second at batch 1 and 30,400 at batch 8; the 9×9 network about 2,750 and 3,700. Batching buys about 1.3× on this CPU — worth having, but modest: on one CPU thread the fixed costs are a small part of each call. Hardware with much higher fixed costs per call, such as a GPU, gains more from the same batching; this project measured only the CPU. <code>bench</code> measures inference at the MCTS batch of 8 (<code>docs/results/bench.txt</code>): 30,488 positions per second on 5×5 is 3,811 network calls per second, each covering a whole batch.</p>
+<p><strong>Why batch size matters to gemm.</strong> Take the 5×5 preset's residual convolution: its weight matrix is 32 × 288 (32 filters, 32 channels × 9 offsets). At batch 1 it multiplies a column matrix 25 wide; at batch 8, 200 wide. Both products cost the same per column, but the batch-8 call pays the fixed costs — the call itself, packing the operands, starting the matrix unit, and all the per-layer bookkeeping around it — once for eight positions instead of once for each. Measured on the M4, one thread, BLAS backend (<code>docs/results/bench.txt</code>, last table): the 5×5 network evaluates about 23,000 positions per second at batch 1 and 30,400 at batch 8; the 9×9 network about 2,750 and 3,700. Batching buys about 1.3× on this CPU — worth having, but modest: on one CPU thread the fixed costs are a small part of each call. Hardware with much higher fixed costs per call, such as a GPU, gains far more from batching, as the end of this chapter shows. <code>bench</code> measures inference at the MCTS batch of 8 (<code>docs/results/bench.txt</code>): 30,488 positions per second on 5×5 is 3,811 network calls per second, each covering a whole batch.</p>
 <p><strong>The <code>Evaluator</code> seam.</strong> MCTS never touches <code>Network</code>. It encodes its leaves into input planes (chapter 00) and hands them to an <code>Evaluator</code>:</p>
 <pre><code>class Evaluator {
 public:
@@ -1370,9 +1370,140 @@ public:
     // input [B][numPlanes(history())][n*n]; logits [B][n*n+1]; values [B].
     virtual void evaluate(const float* input, int B, float* logits, float* values) = 0;
 };</code></pre>
-<span class="src">include/azgo/evaluator.hpp:17 — <code>Evaluator</code></span>
-<p>The shipped implementation, <code>LocalEvaluator</code>, is one per worker thread: it wraps the shared read-only network and a private <code>Workspace</code> and just calls <code>Network::infer</code>. <code>UniformEvaluator</code> returns equal logits and a constant value, which lets the search tests run with no network at all ("with a uniform prior, does search still find the one winning capture?").</p>
-<p>This is where a GPU would plug in, without touching MCTS. The design spec's extension path has two steps. First, a <code>MetalBackend</code> implementing the <code>Backend</code> interface (<code>gemm</code>, <code>im2col</code>, <code>col2im</code>) with Metal compute kernels; on Apple Silicon the CPU and GPU share memory, so buffers need not be copied. Second, a <em>batching evaluator</em>: an <code>Evaluator</code> whose <code>evaluate</code> puts a worker's leaves in a shared queue and blocks until a dispatcher thread has run one large batch — 64 to 256 positions gathered from all ten workers — through the GPU. MCTS would still see the same <code>evaluate</code> call. The spec estimates the M4's GPU at only about 2× the Accelerate/matrix-unit CPU path, and only at large batch sizes; that estimate, not a measurement, is why v1 stops at the CPU.</p>
+<span class="src">include/azgo/evaluator.hpp:18 — <code>Evaluator</code></span>
+<p>On the CPU, <code>LocalEvaluator</code> is one per worker thread: it wraps the shared read-only network and a private <code>Workspace</code> and just calls <code>Network::infer</code>. <code>UniformEvaluator</code> returns equal logits and a constant value, which lets the search tests run with no network at all ("with a uniform prior, does search still find the one winning capture?").</p>
+<p><code>BatchingEvaluator</code> is the third, and the GPU plugs in through it without touching MCTS (<code>backend = metal</code>; the design is <code>docs/superpowers/specs/2026-10-09-metal-gpu-backend-design.md</code>).</p>
+<p><strong>Why batch across workers.</strong> A GPU is the extreme case of high fixed costs per call. The Metal spike (<code>docs/results/metal-bench.txt</code>) measured, on an M5 Max, a whole 6×96 forward pass on the GPU at 2.21 ms for 8 positions and 5.73 ms for 144: 0.28 ms a position against 0.04. At the search's batch of 8 the GPU loses to the 18 CPU cores working side by side; it wins only with batches of about 50 or more. No single search makes such batches, but 18 or 36 searches running at once do, between them. Two cheaper designs were measured and rejected. A <code>Backend</code> that sent each gemm to the GPU gained nothing: copying the operands and waking the GPU (~130 µs a call) ate the gain, and 70% of a pass is not gemm at all. Apple's MPS library was faster, but a position's output changed with the other positions in its batch, which would have made results depend on timing (below). So the whole forward pass runs on the GPU as hand-written Metal kernels, one per CPU layer (<code>src/metal/kernels.metal</code>, <code>src/metal/gpu_network.mm</code>), and the batching happens above the search.</p>
+<p><strong>The hub.</strong> With <code>backend = metal</code>, every self-play or arena worker gets a <code>BatchingEvaluator</code> from one <code>InferenceHub</code> per network. Its <code>evaluate</code> puts the request (pointers to the worker's planes and output arrays, and B) in the hub's queue and blocks. One dispatcher thread packs waiting requests into a GPU pass, copies the planes into the pass's staging buffer, commits it, and when the GPU is done copies each request's rows back and wakes its worker:</p>
+<figure>
+<div class="fig-frame">
+<div class="diagram-wrap">
+<svg viewBox="0 0 440 330" role="img" class="diagram" aria-label="The inference hub: worker threads each run a search and hand their leaves to a shared queue; a dispatcher packs waiting requests into one of two slots, one pass runs on the GPU while the other fills, and each request's rows go back to its waiting worker">
+<rect x="10" y="20" width="132" height="34" rx="5" fill="var(--surface)" class="rule" stroke-width="1.4"/>
+<text x="20" y="42" font-size="12.5" font-family="IBM Plex Mono, ui-monospace, monospace">worker 1</text>
+<rect x="10" y="64" width="132" height="34" rx="5" fill="var(--surface)" class="rule" stroke-width="1.4"/>
+<text x="20" y="86" font-size="12.5" font-family="IBM Plex Mono, ui-monospace, monospace">worker 2</text>
+<text x="69" y="122" text-anchor="middle" font-size="14" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">⋮</text>
+<rect x="10" y="134" width="132" height="34" rx="5" fill="var(--surface)" class="rule" stroke-width="1.4"/>
+<text x="20" y="156" font-size="12.5" font-family="IBM Plex Mono, ui-monospace, monospace">worker W</text>
+<line x1="140" y1="37" x2="166" y2="84" class="rule" stroke-width="1.4"/>
+<line x1="140" y1="81" x2="166" y2="94" class="rule" stroke-width="1.4"/>
+<line x1="140" y1="151" x2="166" y2="104" class="rule" stroke-width="1.4"/>
+<path d="M171 94 l-8 -5 v10 z" class="dim"/>
+<text x="210" y="226" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">evaluate(8 leaves),</text>
+<text x="210" y="242" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">then block</text>
+<rect x="172" y="64" width="80" height="60" rx="5" fill="var(--surface)" class="black-stroke" stroke-width="1.5"/>
+<text x="212" y="84" text-anchor="middle" font-size="13" font-weight="600" font-family="IBM Plex Mono, ui-monospace, monospace">queue</text>
+<rect x="182" y="96" width="14" height="14" rx="2" fill="var(--surface)" class="rule" stroke-width="1.2"/>
+<rect x="200" y="96" width="14" height="14" rx="2" fill="var(--surface)" class="rule" stroke-width="1.2"/>
+<rect x="218" y="96" width="14" height="14" rx="2" fill="var(--surface)" class="rule" stroke-width="1.2"/>
+<text x="212" y="142" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">dispatcher</text>
+<line x1="252" y1="86" x2="282" y2="60" class="rule" stroke-width="1.4"/>
+<line x1="252" y1="102" x2="282" y2="140" class="rule" stroke-width="1.4"/>
+<path d="M284 58.5 L279.6 67.6 L274.2 60.4 Z" class="dim"/>
+<path d="M284 142 L274.6 138.3 L281.4 132.3 Z" class="dim"/>
+<rect x="272" y="14" width="158" height="186" rx="8" fill="none" class="rule" stroke-width="1.2" stroke-dasharray="5 4"/>
+<text x="420" y="32" text-anchor="end" font-size="13" font-weight="600" font-family="IBM Plex Mono, ui-monospace, monospace">GPU</text>
+<rect x="284" y="42" width="134" height="56" rx="5" fill="var(--surface)" class="black-stroke" stroke-width="1.5"/>
+<text x="294" y="63" font-size="12.5" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">slot 0</text>
+<text x="294" y="82" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">one forward pass</text>
+<rect x="284" y="122" width="134" height="56" rx="5" fill="var(--surface)" class="white-stroke" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="294" y="143" font-size="12.5" class="white-fill" font-family="IBM Plex Mono, ui-monospace, monospace">slot 1</text>
+<text x="294" y="162" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">filling the next</text>
+<path d="M351 200 V262 H69 V176" fill="none" class="rule" stroke-width="1.6"/>
+<path d="M69 170 l-5 8 h10 z" class="dim"/>
+<text x="210" y="282" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">each request's rows copied back; its worker wakes</text>
+<text x="220" y="316" text-anchor="middle" font-size="12" class="faint" font-family="IBM Plex Mono, ui-monospace, monospace">a pass leaves as soon as a slot is free and anything waits</text>
+</svg>
+</div>
+</div>
+<figcaption>The inference hub with <code>backend = metal</code>. Each worker's search blocks in <code>evaluate</code> while its request waits in the queue. The dispatcher packs whole requests, in order, up to <code>inference_batch</code> positions, into a free slot and commits one forward pass. With two slots, <span class="black-word">one pass runs</span> while <span class="white-word">the next fills</span>. Under load the queue grows while both slots are busy, so passes grow too.</figcaption>
+</figure>
+<pre><code>void InferenceHub::dispatcherLoop() {
+    std::unique_lock&lt;std::mutex&gt; lock(mutex_);
+    for (;;) {
+        // 1. Wait until a slot has completed, or a slot is free and requests
+        //    wait (or they must be failed), or the hub stops with nothing in flight.
+        dispatcherWake_.wait(lock, [&amp;] {
+            return anyCompleted() || (!queue_.empty() &amp;&amp; (anyFree() || !failed_.empty())) ||
+                   (stop_ &amp;&amp; !anyBusy());
+        });
+        // 2. Hand back every completed batch.
+        for (size_t i = 0; i &lt; slots_.size(); ++i)
+            if (slots_[i].busy &amp;&amp; slots_[i].completed) finish(slots_[i], static_cast&lt;int&gt;(i), lock);
+        /* ... after a failure, every waiting request fails too ... */
+        // 3. While a slot is free and requests wait: whole requests from the
+        //    front of the queue, up to maxBatch positions, into one batch.
+        for (size_t i = 0; i &lt; slots_.size() &amp;&amp; !queue_.empty() &amp;&amp; failed_.empty(); ++i) {
+            Slot&amp; slot = slots_[i];
+            if (slot.busy) continue;
+            /* ... move requests to the slot while they fit in maxBatch ... */
+            lock.unlock();
+            /* ... copy every request's planes into runner_-&gt;input(i) ... */
+            runner_-&gt;begin(index, slot.positions, [this](int s, std::string err) {
+                std::lock_guard&lt;std::mutex&gt; guard(mutex_);
+                slots_[static_cast&lt;size_t&gt;(s)].completed = true;
+                slots_[static_cast&lt;size_t&gt;(s)].error = std::move(err);
+                dispatcherWake_.notify_one();
+            });
+            lock.lock();
+        }
+        /* ... return once stopped with nothing in flight ... */
+    }
+}</code></pre>
+<span class="src">src/inference_hub.cpp:137 — <code>InferenceHub::dispatcherLoop</code> (abridged)</span>
+<p>There are two slots, so one pass runs on the GPU while the next one fills. The flush policy is greedy: a pass is submitted as soon as a slot is free and anything waits. There is no timer and no "wait until every worker has asked". Under load, requests pile up while both slots are busy, so the next pass takes all of them and batches grow by themselves. Under light load nobody waits for company that may never come. And nothing can deadlock: a worker waits only for its own request, and a request only for a slot, which the GPU frees. To keep the GPU fed, <code>workers = 0</code> means twice the cores with <code>metal</code>. A worker waiting for the GPU uses no CPU, so one group of searches runs on the CPU while the other waits on the GPU.</p>
+<p><strong>Why timing cannot change a game.</strong> Which requests share a pass, in what order, and how large it is depend on thread scheduling and differ from run to run. The results do not, because every kernel computes a position's outputs from that position alone, with the same sequence of operations wherever it sits in the batch. The copies, batch norm with its running statistics, ReLU, the skip add and tanh are one thread per element. <code>im2col</code> pads with zeros, never with a neighbouring sample's board. The products are the interesting case. A gemm tiles C into 64×64 blocks, one per threadgroup, and walks K in steps of 16 through fast threadgroup memory. The scalar version, from the spike, makes the tiling easy to see:</p>
+<pre><code>kernel void gemm_tiled(device const float* A [[buffer(0)]],
+                       device const float* B [[buffer(1)]],
+                       device float* C [[buffer(2)]],
+                       constant GemmParams&amp; p [[buffer(3)]],
+                       uint3 tg [[threadgroup_position_in_grid]],
+                       uint3 lid [[thread_position_in_threadgroup]]) {
+    threadgroup float As[BK][BM];
+    threadgroup float Bs[BK][BN];
+    /* ... tx, ty: this thread's place; row0, col0: the tile's corner; acc[4][4] = 0 ... */
+    for (uint k0 = kBegin; k0 &lt; kEnd; k0 += BK) {
+        /* ... the threadgroup copies a 64 x 16 slice of A and a 16 x 64 slice of B ... */
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint k = 0; k &lt; BK; ++k) {
+            float a[4], b[4];
+            for (uint i = 0; i &lt; 4; ++i) a[i] = As[k][ty + 16 * i];
+            for (uint j = 0; j &lt; 4; ++j) b[j] = Bs[k][tx + 16 * j];
+            for (uint i = 0; i &lt; 4; ++i)
+                for (uint j = 0; j &lt; 4; ++j) acc[i][j] = fma(a[i], b[j], acc[i][j]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    /* ... each thread writes its 4 x 4 outputs, alpha * acc + beta * C ... */
+}</code></pre>
+<span class="src">tools/metal_bench/metal_bench.mm:483 — <code>gemm_tiled</code> (abridged)</span>
+<p>Each of the 256 threads keeps a 4×4 block of outputs, and each output is one fused multiply-add chain over k = 0, 1, …, K−1, in order. The kernel the program ships does the same on the GPU's 8×8 simdgroup matrices: four simdgroups of 32 threads each own a 32×32 quarter of the tile, and one instruction multiplies and adds a whole 8×8 block:</p>
+<pre><code>kernel void gemm_simd(device const float* A [[buffer(0)]],
+                      device const float* B [[buffer(1)]],
+                      device float* C [[buffer(2)]],
+                      constant GemmParams&amp; p [[buffer(3)]],
+                      uint2 tile [[threadgroup_position_in_grid]],
+                      uint tid [[thread_index_in_threadgroup]]) {
+    /* ... As, Bs in threadgroup memory; sr, sc: this simdgroup's quarter; acc[4][4] = 0 ... */
+    for (uint k0 = 0; k0 &lt; p.K; k0 += kGemmStepK) {
+        /* ... stage op(A) and op(B), zeros past M, N or K ... */
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint kk = 0; kk &lt; kGemmStepK; kk += 8) {
+            simdgroup_float8x8 a[4], b[4];
+            /* ... simdgroup_load a[i] and b[j] from As and Bs ... */
+            for (uint i = 0; i &lt; 4; ++i)
+                for (uint j = 0; j &lt; 4; ++j)
+                    simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    /* ... write back each 8 x 8 block, skipping rows past M and columns past N ... */
+}</code></pre>
+<span class="src">src/metal/kernels.metal:58 — <code>gemm_simd</code> (abridged)</span>
+<p>Every 8×8 output block runs the same instructions over the same k order, wherever it lies, and K is never split across threadgroups. A split would add partial sums in an order that depends on the shape, and so on the batch. So an output element's bits depend only on its row of op(A) and its column of op(B). In a convolution, a sample's outputs read only its own columns of the im2col matrix. In a Linear layer they read only its own row of activations. The weights are the other operand and the same for everyone. A position therefore gets the same bits alone, in a batch of 8 or of 256, first or last. Every game is a pure function of the seed, the generation, its index and the weights, exactly as on the CPU. Accelerate cannot promise that: the spike found a position's outputs alone and in a batch of 256 differing in 4 of 4 tries. That is harmless on the CPU, where each worker evaluates only its own batches, but it is why the project offers no CPU batching evaluator.</p>
+<p>The tests hold the hub to this. <code>tests/test_metal.cpp</code> checks positions alone, in batches of 8, 144 and 256, at the first and last slot and among random companions: bitwise identical for every kernel and the whole network. The hub has a chaos mode for tests, which caps each pass at a random size, delays submissions and shuffles requests within a pass. With it on, every request's outputs must equal its positions evaluated alone, bitwise. This runs in every build with a CPU stand-in runner on the naive backend, which is batch-independent by construction (<code>tests/test_inference_hub.cpp</code>). End to end, self-play through the hub plays exactly the games of per-worker <code>LocalEvaluator</code>s. A tiny metal run writes byte-identical checkpoints, <code>state.bin</code>, ratings and SGF for 1, 3 and 8 workers, for <code>inference_batch</code> 8 and 256, and with chaos on. A metal run is not bit-identical to a <code>blas</code> run: the GPU rounds some sums differently, within a measured 1e-5 of the CPU on the network's outputs. Nor is it reproducible across machines or macOS versions, since the OS compiles the shaders. The <code>gpu:</code> line a run prints names both.</p>
+<p><strong>What it buys.</strong> <em>Pending: the timed comparison (task A9 of the plan) needs the machine otherwise idle and has not been run yet.</em> A first measurement, made beside a training run that kept the CPU busy: 36 threads sending batch-8 requests through the hub reached 22,200 network evaluations per second on 9×9 6×96, in passes of about 100 positions. The spike measured 14,500 for 18 CPU workers. The design expects self-play about 1.6–1.9× faster.</p>
 </section>
 
 <section id="selfplay">
@@ -1718,7 +1849,7 @@ Ownership, Black + / White - (9 = certain, "." below 0.1):
     }
     return {matchScore(game.resultForBlack(), aIsBlack), game.moves()};
 }</code></pre>
-<span class="src">src/arena.cpp:47 — <code>playArenaGame</code> (abridged)</span>
+<span class="src">src/arena.cpp:38 — <code>playArenaGame</code> (abridged)</span>
 <p><strong>Opening diversity.</strong> Without noise, search is deterministic up to random tie-breaks, and two fixed networks would replay nearly the same game twenty times — twenty games of evidence that are really one. Tic-tac-toe's arena once did exactly that: 2 distinct games out of 40. So the first <code>arena_temperature_moves</code> plies (2 on 5×5, 4 on the larger boards) are sampled from the visit counts, and the arena counts the distinct move sequences it produced; <code>log.csv</code>'s last column, <code>distinct_vs_prev</code>, records that count for the match against g − 1. On 5×5 seed 1 it ranged from 9 to 20 out of 20 (<code>docs/results/5x5/log.csv</code>) — fewer once the network found the perfect line, which is evidence in its own right: the policy was collapsing onto one opening. On 9×9 it ranged from 19 to 20 out of 20 (<code>docs/results/9x9/log.csv</code>): with 81 points and 4 sampled plies, the openings almost never repeat.</p>
 <p><strong>Choosing informative opponents.</strong> Playing only g − 1 measures one step at a time, and small errors add up. Playing everyone is too expensive. So which earlier players are worth twenty games? A game the new network wins with probability p has a result with variance p(1 − p), and that is how much it can tell you: 0.25 at p = 0.5, 0.21 at 0.7, 0.09 at 0.9, 0.01 at 0.99. A game against an opponent it beats 99% of the time is worth a twenty-fifth of an even game. The rating fit adds a second limit (next section): a 20–0 sweep can never say more than 400·log₁₀(41) ≈ 645 Elo. The reference runs in <code>docs/results/</code> were made with a fixed ladder: g − 1, g − 2, g − 4, g − 8, and always generation 0. On 9×9, generation 0 scored at most 2 of 20 in every one of its 137 matches from generation 14 on, and 0 of 20 in 110 of all 150 matches (<code>docs/results/9x9/results.csv</code>). The end of this chapter shows what that did to the curve. The arena now picks its opponents from the current ratings instead:</p>
 <pre><code>std::vector&lt;int&gt; selectOpponents(int generation, const std::map&lt;int, double&gt;&amp; ratings,
@@ -1746,7 +1877,7 @@ Ownership, Black + / White - (9 = certain, "." below 0.1):
     if (bestNetwork &amp;&amp; !chosen(*bestNetwork)) out.push_back(*bestNetwork);   // gating
     return out;
 }</code></pre>
-<span class="src">src/arena.cpp:195 — <code>selectOpponents</code> (abridged)</span>
+<span class="src">src/arena.cpp:214 — <code>selectOpponents</code> (abridged)</span>
 <p>The candidates are the <strong>references</strong>: a frozen set of players that starts as generation 0 plus the fixed players, and only grows.</p>
 <ul>
 <li><strong>g − 1</strong> is always played. It is the progress signal, and its match is the one <code>log.csv</code> reports.</li>
@@ -2014,17 +2145,25 @@ A wins 4, B wins 0, draws 0</code></pre>
   <li>the training phase, on threads of its own, cuts its work into chunks fixed by the data's shapes, never by the thread count, so every output value is computed by exactly one chunk with the same sequence of floating-point operations.</li>
 </ul>
 <pre><code>GenerationStats Trainer::runGeneration() {
-    /* ... g = state_.generation + 1, workers, per-worker backends and evaluators ... */
+    /* ... g = state_.generation + 1, workers, the self-play settings ... */
+        // One evaluator per worker; the network itself is shared read-only.
+        // naive, blas: a single-threaded backend and workspace per worker.
+        // metal: one batching hub that gathers every worker's leaves into
+        // GPU passes; a position's outputs do not depend on its batch, so
+        // the games are the same either way (azgo/inference_hub.hpp).
+        const int selfPlayWorkers = std::min(workers, numGames);
+        WorkerEvaluators evaluators(selfPlayNet, cfg_.backend, selfPlayWorkers, cfg_.mctsBatch,
+                                    cfg_.inferenceBatch);
         // Game i's randomness depends only on i, and its record is stored at
         // index i, so the result does not depend on which thread played it.
-        parallelFor(numGames, workers, [&amp;](int i, int w) {
+        parallelFor(numGames, selfPlayWorkers, [&amp;](int i, int w) {
             Rng rng(deriveSeed(cfg_.seed, static_cast&lt;uint64_t&gt;(g), kPhaseSelfPlay,
                                static_cast&lt;uint64_t&gt;(i)));
-            records[static_cast&lt;size_t&gt;(i)] = playSelfPlayGame(*evaluators[static_cast&lt;size_t&gt;(w)], sp, rng);
+            records[static_cast&lt;size_t&gt;(i)] = playSelfPlayGame(evaluators.forWorker(w), sp, rng);
         });
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }</code></pre>
-<span class="src">src/trainer.cpp:522 — <code>Trainer::runGeneration</code> (abridged)</span>
+<span class="src">src/trainer.cpp:540 — <code>Trainer::runGeneration</code> (abridged)</span>
 <p><code>parallelFor</code> hands out indices from an atomic counter; which worker plays game 17 varies from run to run, but game 17 itself does not.</p>
 <p>Training has threads of its own. With BLAS, every training step used to run on one core: the BLAS backend is single-threaded, which suits self-play, where every worker already has a core to itself. Now <code>runGeneration</code> makes one <code>ThreadPool trainPool(cfg_.effectiveTrainThreads())</code> — <code>train_threads</code> threads, 0 (the default) meaning every core — and hands it to the <code>Workspace</code> of the validation loss and of the training steps, to <code>ReplayBuffer::sample</code> and to <code>SgdMomentum::step</code>. The pool (<code>include/azgo/parallel.hpp</code>) starts its threads once, because a step is about a hundred short parallel loops, and lets them spin briefly, then sleep, between loops. <code>ThreadPool::run(chunks, fn)</code> (<code>src/parallel.cpp</code>) calls <code>fn</code> once per chunk, handing chunk indices out from an atomic counter as <code>parallelFor</code> hands out games, with the calling thread taking chunks too, and returns when every chunk is done. On an Apple M5 Max with 18 cores, a 9×9 step at batch 256 with BLAS went from 427 ms to 93 ms on a 6 × 96 network, and from 266 to 52 ms on the 6 × 64 preset (<code>docs/results/bench.txt</code>). Part of that is the rewritten loops alone, 323 and 201 ms on one thread: ReLU's backward lost a mispredicted branch per element, and <code>im2col</code> and <code>col2im</code> their per-pixel bounds checks.</p>
 <p>Every layer cuts its loops into chunks fixed by the shapes, never by the thread count: a channel for batch norm and for <code>im2col</code> and <code>col2im</code>, a block of 512 gemm columns — 512 pixels — for a convolution's forward product and its input gradient, a run of 32,768 elements for ReLU, the residual sums and the SGD update, and 16 samples for per-sample work such as encoding the batch and the loss's softmax. The weight gradient, a sum over every pixel, is not cut into columns; it runs as one call beside the input gradient's blocks (the naive backend cuts it into bands of 16 output rows instead). The pool hands chunks to whichever thread is free, but each output value belongs to exactly one chunk and is computed with the same operations in the same order as on one thread. Sums over the whole batch keep their old order: batch norm sums each channel inside that channel's chunk, and the loss adds up its per-sample terms serially afterwards. A block of gemm columns is one plain gemm call on its own columns of C:</p>
@@ -2046,7 +2185,7 @@ void gemmColumns(const Backend&amp; be, ThreadPool* pool, bool transA, bool tran
         gemmColumnBlock(be, block, blocks, transA, transB, M, N, K, alpha, A, B, beta, C);
     });
 }</code></pre>
-<span class="src">src/backend.cpp:224 — <code>gemmColumnBlock</code></span>
+<span class="src">src/backend.cpp:225 — <code>gemmColumnBlock</code></span>
 <p>Each element of a block is still one sum over the whole of K. (A split over the <em>inner</em> dimension K would also be parallel, but partial sums added in a different order give different floating-point results.) Since the cut depends only on the shapes, a run is bit-for-bit the same for any <code>train_threads</code>; <code>tests/test_trainer.cpp</code> checks that 1 and 4 threads write byte-identical checkpoints and <code>state.bin</code>. It is also the same as before the pool existed. For the naive backend a block gives exactly the unsplit call's bits by construction: each element sums over K in one fixed order, whatever the block. For BLAS that is up to the library, so it was measured: on Accelerate every block of 128 to 1,024 columns, over about 11,000 convolution shapes, matched the unsplit call bit for bit (<code>tests/test_backend.cpp</code> keeps a representative set), and the splits that did change bits are never made: a product with fewer than 8 rows (a 1×1 head convolution's forward product) stays one call, and the weight gradient is never cut into columns. The payoff is visible in the results. The komi-24.5 pilot ran with 5 worker threads while another run shared the machine; the first seed-1 reference run, made with the same code (before the pass fix explained in chapter 02, whose story is in chapter 07), used all 10. Apart from the three timing columns, their logs are identical, to the last digit:</p>
 <pre><code>$ diff &lt;(cut -d, -f1-9,13-15 docs/results/pilots/5x5-komi24.5.csv) \
        &lt;(cut -d, -f1-9,13-15 docs/results/passbug/5x5-seed1/log.csv) &amp;&amp; echo identical
@@ -2137,9 +2276,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Input planes and the all-ones color plane</dt>
   <dd><code>encodePlanes</code> <span class="loc">— src/encode.cpp:14</span></dd>
   <dt>Convolution as im2col + gemm</dt>
-  <dd><code>Conv2d::forward</code>, <code>Conv2d::backward</code> <span class="loc">— src/layers.cpp:35, 48</span>; <code>Backend::im2col</code>, <code>Backend::col2im</code> <span class="loc">— src/backend.cpp:19, 55</span></dd>
+  <dd><code>Conv2d::forward</code>, <code>Conv2d::backward</code> <span class="loc">— src/layers.cpp:35, 48</span>; <code>Backend::im2col</code>, <code>Backend::col2im</code> <span class="loc">— src/backend.cpp:20, 56</span></dd>
   <dt>The compute backend seam</dt>
-  <dd><code>Backend</code> <span class="loc">— include/azgo/backend.hpp:18</span>; <code>NaiveBackend::gemm</code> <span class="loc">— src/backend.cpp:144</span></dd>
+  <dd><code>Backend</code> <span class="loc">— include/azgo/backend.hpp:20</span>; <code>NaiveBackend::gemm</code> <span class="loc">— src/backend.cpp:145</span></dd>
   <dt>Batch norm, training vs. inference</dt>
   <dd><code>BatchNorm2d::forwardTrain</code>, <code>BatchNorm2d::forwardInfer</code>, <code>BatchNorm2d::backward</code> <span class="loc">— src/layers.cpp:99, 88, 133</span></dd>
   <dt>Residual ResNet, policy and value heads</dt>
@@ -2161,7 +2300,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Virtual loss and batched search</dt>
   <dd><code>Mcts::search</code>, <code>Mcts::addVirtualLoss</code> <span class="loc">— src/mcts.cpp:213, 108</span></dd>
   <dt>The evaluator seam</dt>
-  <dd><code>Evaluator</code> <span class="loc">— include/azgo/evaluator.hpp:17</span>; <code>LocalEvaluator::evaluate</code> <span class="loc">— src/evaluator.cpp:19</span></dd>
+  <dd><code>Evaluator</code> <span class="loc">— include/azgo/evaluator.hpp:18</span>; <code>LocalEvaluator::evaluate</code> <span class="loc">— src/evaluator.cpp:19</span></dd>
+  <dt>Batching leaves across workers on the GPU</dt>
+  <dd><code>InferenceHub::dispatcherLoop</code> <span class="loc">— src/inference_hub.cpp:137</span>; <code>gemm_simd</code> <span class="loc">— src/metal/kernels.metal:58</span></dd>
   <dt>Dirichlet root noise</dt>
   <dd><code>Mcts::setRootPriors</code> <span class="loc">— src/mcts.cpp:351</span>; <code>dirichlet</code> <span class="loc">— src/rng.cpp:122</span></dd>
   <dt>Temperature</dt>
@@ -2179,15 +2320,15 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Symmetry augmentation</dt>
   <dd><code>transformPoint</code>, <code>transformAction</code> <span class="loc">— src/symmetry.cpp:6, 21</span></dd>
   <dt>Ownership, an auxiliary target</dt>
-  <dd><code>replayFinalOwnership</code> <span class="loc">— src/selfplay.cpp:112</span>; <code>addOwnershipHead</code> <span class="loc">— src/grow.cpp:219</span>; <code>printOwnershipMap</code> <span class="loc">— apps/analyze.cpp:100</span></dd>
+  <dd><code>replayFinalOwnership</code> <span class="loc">— src/selfplay.cpp:112</span>; <code>addOwnershipHead</code> <span class="loc">— src/grow.cpp:219</span>; <code>printOwnershipMap</code> <span class="loc">— apps/analyze.cpp:104</span></dd>
   <dt>SGD with momentum, weight decay</dt>
   <dd><code>SgdMomentum::step</code> <span class="loc">— src/optimizer.cpp:21</span></dd>
   <dt>Learning-rate schedule</dt>
   <dd><code>LrSchedule::at</code> <span class="loc">— src/optimizer.cpp:111</span></dd>
   <dt>Arena and opening diversity</dt>
-  <dd><code>playArenaGame</code>, <code>playMatch</code> <span class="loc">— src/arena.cpp:47, 117</span></dd>
+  <dd><code>playArenaGame</code>, <code>playMatch</code> <span class="loc">— src/arena.cpp:38, 108</span></dd>
   <dt>Choosing opponents, gating</dt>
-  <dd><code>selectOpponents</code>, <code>passesGate</code> <span class="loc">— src/arena.cpp:195, 223</span></dd>
+  <dd><code>selectOpponents</code>, <code>passesGate</code> <span class="loc">— src/arena.cpp:214, 242</span></dd>
   <dt>Arena rounds: calibration, promotion</dt>
   <dd><code>calibrateFixedPlayers</code>, <code>runArenaRound</code> <span class="loc">— src/arena_round.cpp:23, 40</span></dd>
   <dt>Bradley-Terry Elo with a virtual draw</dt>
@@ -2195,21 +2336,21 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Wilson intervals</dt>
   <dd><code>wilsonInterval</code> <span class="loc">— src/elo.cpp:184</span></dd>
   <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
-  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:116, 89</span></dd>
+  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:125, 98</span></dd>
   <dt>One generation</dt>
-  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:522</span></dd>
+  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:540</span></dd>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
   <dd><code>parallelFor</code> <span class="loc">— src/parallel.cpp:14</span></dd>
   <dt>Training on a thread pool, bit for bit</dt>
-  <dd><code>ThreadPool::run</code>, <code>parallelRanges</code> <span class="loc">— src/parallel.cpp:142, 190</span>; <code>gemmColumnBlock</code> <span class="loc">— src/backend.cpp:224</span></dd>
+  <dd><code>ThreadPool::run</code>, <code>parallelRanges</code> <span class="loc">— src/parallel.cpp:147, 195</span>; <code>gemmColumnBlock</code> <span class="loc">— src/backend.cpp:225</span></dd>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
-  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:30</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:451</span></dd>
+  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:30</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:463</span></dd>
   <dt>Inspecting a position</dt>
-  <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:77, 117</span></dd>
+  <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:81, 121</span></dd>
 </dl>
 </section>
 

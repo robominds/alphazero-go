@@ -851,8 +851,9 @@ both divided by the batch size.
 > batch-norm running statistics; every activation buffer lives in a
 > separate `Workspace`. Ten self-play threads can then share one
 > read-only network, each with its own workspace, with no locks and no
-> copies of the weights. The same split is what a GPU backend would
-> need: weights uploaded once, scratch per stream.
+> copies of the weights. The GPU backend (chapter 03) uses the same
+> split: the weights are uploaded once per phase, and each batch in
+> flight has its own workspace.
 
 ---
 
@@ -1211,8 +1212,8 @@ network evaluates about 23,000 positions per second at batch 1 and 30,400
 at batch 8; the 9×9 network about 2,750 and 3,700. Batching buys about
 1.3× on this CPU — worth having, but modest: on one CPU thread the
 fixed costs are a small part of each call. Hardware with much higher
-fixed costs per call, such as a GPU, gains more from the same batching;
-this project measured only the CPU.
+fixed costs per call, such as a GPU, gains far more from batching, as
+the end of this chapter shows.
 `bench` measures inference at the MCTS batch of 8
 (`docs/results/bench.txt`): 30,488 positions per second on 5×5 is
 3,811 network calls per second, each covering a whole batch.
@@ -1231,27 +1232,201 @@ public:
     virtual void evaluate(const float* input, int B, float* logits, float* values) = 0;
 };
 ```
-*include/azgo/evaluator.hpp:17 — `Evaluator`*
+*include/azgo/evaluator.hpp:18 — `Evaluator`*
 
-The shipped implementation, `LocalEvaluator`, is one per worker thread:
+On the CPU, `LocalEvaluator` is one per worker thread:
 it wraps the shared read-only network and a private `Workspace` and just
 calls `Network::infer`. `UniformEvaluator` returns equal logits and a
 constant value, which lets the search tests run with no network at all
 ("with a uniform prior, does search still find the one winning
 capture?").
 
-This is where a GPU would plug in, without touching MCTS. The design
-spec's extension path has two steps. First, a `MetalBackend`
-implementing the `Backend` interface (`gemm`, `im2col`, `col2im`) with
-Metal compute kernels; on Apple Silicon the CPU and GPU share memory, so
-buffers need not be copied. Second, a *batching evaluator*: an
-`Evaluator` whose `evaluate` puts a worker's leaves in a shared queue and
-blocks until a dispatcher thread has run one large batch — 64 to 256
-positions gathered from all ten workers — through the GPU. MCTS would
-still see the same `evaluate` call. The spec estimates the M4's GPU at
-only about 2× the Accelerate/matrix-unit CPU path, and only at large
-batch sizes; that estimate, not a measurement, is why v1 stops at the
-CPU.
+`BatchingEvaluator` is the third, and the GPU plugs in through it
+without touching MCTS (`backend = metal`; the design is
+`docs/superpowers/specs/2026-10-09-metal-gpu-backend-design.md`).
+
+**Why batch across workers.** A GPU is the extreme case of high fixed
+costs per call. The Metal spike (`docs/results/metal-bench.txt`)
+measured, on an M5 Max, a whole 6×96 forward pass on the GPU at 2.21 ms
+for 8 positions and 5.73 ms for 144: 0.28 ms a position against 0.04.
+At the search's batch of 8 the GPU loses to the 18 CPU cores working
+side by side; it wins only with batches of about 50 or more. No single
+search makes such batches, but 18 or 36 searches running at once do,
+between them. Two cheaper designs were measured and rejected. A
+`Backend` that sent each gemm to the GPU gained nothing: copying the
+operands and waking the GPU (~130 µs a call) ate the gain, and 70% of a
+pass is not gemm at all. Apple's MPS library was faster, but a
+position's output changed with the other positions in its batch, which
+would have made results depend on timing (below). So the whole forward
+pass runs on the GPU as hand-written Metal kernels, one per CPU layer
+(`src/metal/kernels.metal`, `src/metal/gpu_network.mm`), and the
+batching happens above the search.
+
+**The hub.** With `backend = metal`, every self-play or arena worker
+gets a `BatchingEvaluator` from one `InferenceHub` per network. Its
+`evaluate` puts the request (pointers to the worker's planes and output
+arrays, and B) in the hub's queue and blocks. One dispatcher thread
+packs waiting requests into a GPU pass, copies the planes into the
+pass's staging buffer, commits it, and when the GPU is done copies each
+request's rows back and wakes its worker:
+
+```cpp
+void InferenceHub::dispatcherLoop() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    for (;;) {
+        // 1. Wait until a slot has completed, or a slot is free and requests
+        //    wait (or they must be failed), or the hub stops with nothing in flight.
+        dispatcherWake_.wait(lock, [&] {
+            return anyCompleted() || (!queue_.empty() && (anyFree() || !failed_.empty())) ||
+                   (stop_ && !anyBusy());
+        });
+        // 2. Hand back every completed batch.
+        for (size_t i = 0; i < slots_.size(); ++i)
+            if (slots_[i].busy && slots_[i].completed) finish(slots_[i], static_cast<int>(i), lock);
+        /* ... after a failure, every waiting request fails too ... */
+        // 3. While a slot is free and requests wait: whole requests from the
+        //    front of the queue, up to maxBatch positions, into one batch.
+        for (size_t i = 0; i < slots_.size() && !queue_.empty() && failed_.empty(); ++i) {
+            Slot& slot = slots_[i];
+            if (slot.busy) continue;
+            /* ... move requests to the slot while they fit in maxBatch ... */
+            lock.unlock();
+            /* ... copy every request's planes into runner_->input(i) ... */
+            runner_->begin(index, slot.positions, [this](int s, std::string err) {
+                std::lock_guard<std::mutex> guard(mutex_);
+                slots_[static_cast<size_t>(s)].completed = true;
+                slots_[static_cast<size_t>(s)].error = std::move(err);
+                dispatcherWake_.notify_one();
+            });
+            lock.lock();
+        }
+        /* ... return once stopped with nothing in flight ... */
+    }
+}
+```
+*src/inference_hub.cpp:137 — `InferenceHub::dispatcherLoop` (abridged)*
+
+There are two slots, so one pass runs on the GPU while the next one
+fills. The flush policy is greedy: a pass is submitted as soon as a slot
+is free and anything waits. There is no timer and no "wait until every
+worker has asked". Under load, requests pile up while both slots are
+busy, so the next pass takes all of them and batches grow by
+themselves. Under light load nobody waits for company that may never
+come. And nothing can deadlock: a worker waits only for its own request,
+and a request only for a slot, which the GPU frees. To keep the GPU fed,
+`workers = 0` means twice the cores with `metal`. A worker waiting for
+the GPU uses no CPU, so one group of searches runs on the CPU while the
+other waits on the GPU.
+
+**Why timing cannot change a game.** Which requests share a pass, in
+what order, and how large it is depend on thread scheduling and differ
+from run to run. The results do not, because every kernel computes a
+position's outputs from that position alone, with the same sequence of
+operations wherever it sits in the batch. The copies, batch norm with
+its running statistics, ReLU, the skip add and tanh are one thread per
+element. `im2col` pads with zeros, never with a neighbouring sample's
+board. The products are the interesting case. A gemm tiles C into
+64×64 blocks, one per threadgroup, and walks K in steps of 16 through
+fast threadgroup memory. The scalar version, from the spike, makes the
+tiling easy to see:
+
+```cpp
+kernel void gemm_tiled(device const float* A [[buffer(0)]],
+                       device const float* B [[buffer(1)]],
+                       device float* C [[buffer(2)]],
+                       constant GemmParams& p [[buffer(3)]],
+                       uint3 tg [[threadgroup_position_in_grid]],
+                       uint3 lid [[thread_position_in_threadgroup]]) {
+    threadgroup float As[BK][BM];
+    threadgroup float Bs[BK][BN];
+    /* ... tx, ty: this thread's place; row0, col0: the tile's corner; acc[4][4] = 0 ... */
+    for (uint k0 = kBegin; k0 < kEnd; k0 += BK) {
+        /* ... the threadgroup copies a 64 x 16 slice of A and a 16 x 64 slice of B ... */
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint k = 0; k < BK; ++k) {
+            float a[4], b[4];
+            for (uint i = 0; i < 4; ++i) a[i] = As[k][ty + 16 * i];
+            for (uint j = 0; j < 4; ++j) b[j] = Bs[k][tx + 16 * j];
+            for (uint i = 0; i < 4; ++i)
+                for (uint j = 0; j < 4; ++j) acc[i][j] = fma(a[i], b[j], acc[i][j]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    /* ... each thread writes its 4 x 4 outputs, alpha * acc + beta * C ... */
+}
+```
+*tools/metal_bench/metal_bench.mm:483 — `gemm_tiled` (abridged)*
+
+Each of the 256 threads keeps a 4×4 block of outputs, and each output is
+one fused multiply-add chain over k = 0, 1, …, K−1, in order. The kernel
+the program ships does the same on the GPU's 8×8 simdgroup matrices: four
+simdgroups of 32 threads each own a 32×32 quarter of the tile, and one
+instruction multiplies and adds a whole 8×8 block:
+
+```cpp
+kernel void gemm_simd(device const float* A [[buffer(0)]],
+                      device const float* B [[buffer(1)]],
+                      device float* C [[buffer(2)]],
+                      constant GemmParams& p [[buffer(3)]],
+                      uint2 tile [[threadgroup_position_in_grid]],
+                      uint tid [[thread_index_in_threadgroup]]) {
+    /* ... As, Bs in threadgroup memory; sr, sc: this simdgroup's quarter; acc[4][4] = 0 ... */
+    for (uint k0 = 0; k0 < p.K; k0 += kGemmStepK) {
+        /* ... stage op(A) and op(B), zeros past M, N or K ... */
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint kk = 0; kk < kGemmStepK; kk += 8) {
+            simdgroup_float8x8 a[4], b[4];
+            /* ... simdgroup_load a[i] and b[j] from As and Bs ... */
+            for (uint i = 0; i < 4; ++i)
+                for (uint j = 0; j < 4; ++j)
+                    simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    /* ... write back each 8 x 8 block, skipping rows past M and columns past N ... */
+}
+```
+*src/metal/kernels.metal:58 — `gemm_simd` (abridged)*
+
+Every 8×8 output block runs the same instructions over the same k order,
+wherever it lies, and K is never split across threadgroups. A split
+would add partial sums in an order that depends on the shape, and so on
+the batch. So an output element's bits depend only on its row of op(A)
+and its column of op(B). In a convolution, a sample's outputs read only
+its own columns of the im2col matrix. In a Linear layer they read only
+its own row of activations. The weights are the other operand and the
+same for everyone. A position therefore gets the same bits alone, in a
+batch of 8 or of 256, first or last. Every game is a pure function of
+the seed, the generation, its index and the weights, exactly as on the
+CPU. Accelerate cannot promise that: the spike found a position's
+outputs alone and in a batch of 256 differing in 4 of 4 tries. That is
+harmless on the CPU, where each worker evaluates only its own batches,
+but it is why the project offers no CPU batching evaluator.
+
+The tests hold the hub to this. `tests/test_metal.cpp` checks positions
+alone, in batches of 8, 144 and 256, at the first and last slot and
+among random companions: bitwise identical for every kernel and the
+whole network. The hub has a chaos mode for tests, which caps each pass
+at a random size, delays submissions and shuffles requests within a
+pass. With it on, every request's outputs must equal its positions
+evaluated alone, bitwise. This runs in every build with a CPU stand-in
+runner on the naive backend, which is batch-independent by construction
+(`tests/test_inference_hub.cpp`). End to end, self-play through the hub
+plays exactly the games of per-worker `LocalEvaluator`s. A tiny metal run
+writes byte-identical checkpoints, `state.bin`, ratings and SGF for 1, 3
+and 8 workers, for `inference_batch` 8 and 256, and with chaos on. A
+metal run is not bit-identical to a `blas` run: the GPU rounds some sums
+differently, within a measured 1e-5 of the CPU on the network's outputs.
+Nor is it reproducible across machines or macOS versions, since the OS
+compiles the shaders. The `gpu:` line a run prints names both.
+
+**What it buys.** *Pending: the timed comparison (task A9 of the plan)
+needs the machine otherwise idle and has not been run yet.* A first
+measurement, made beside a training run that kept the CPU busy: 36
+threads sending batch-8 requests through the hub reached 22,200 network
+evaluations per second on 9×9 6×96, in passes of about 100 positions.
+The spike measured 14,500 for 18 CPU workers. The design expects
+self-play about 1.6–1.9× faster.
 
 ---
 
@@ -2033,7 +2208,7 @@ GameOutcome playArenaGame(WorkerContext& ctx, const ArenaConfig& cfg, int n, uin
     return {matchScore(game.resultForBlack(), aIsBlack), game.moves()};
 }
 ```
-*src/arena.cpp:47 — `playArenaGame` (abridged)*
+*src/arena.cpp:38 — `playArenaGame` (abridged)*
 
 **Opening diversity.** Without noise, search is deterministic up to
 random tie-breaks, and two fixed networks would replay nearly the same
@@ -2092,7 +2267,7 @@ std::vector<int> selectOpponents(int generation, const std::map<int, double>& ra
     return out;
 }
 ```
-*src/arena.cpp:195 — `selectOpponents` (abridged)*
+*src/arena.cpp:214 — `selectOpponents` (abridged)*
 
 The candidates are the **references**: a frozen set of players that
 starts as generation 0 plus the fixed players, and only grows.
@@ -2462,18 +2637,26 @@ The output is identical for any W anyway, because of three rules:
 
 ```cpp
 GenerationStats Trainer::runGeneration() {
-    /* ... g = state_.generation + 1, workers, per-worker backends and evaluators ... */
+    /* ... g = state_.generation + 1, workers, the self-play settings ... */
+        // One evaluator per worker; the network itself is shared read-only.
+        // naive, blas: a single-threaded backend and workspace per worker.
+        // metal: one batching hub that gathers every worker's leaves into
+        // GPU passes; a position's outputs do not depend on its batch, so
+        // the games are the same either way (azgo/inference_hub.hpp).
+        const int selfPlayWorkers = std::min(workers, numGames);
+        WorkerEvaluators evaluators(selfPlayNet, cfg_.backend, selfPlayWorkers, cfg_.mctsBatch,
+                                    cfg_.inferenceBatch);
         // Game i's randomness depends only on i, and its record is stored at
         // index i, so the result does not depend on which thread played it.
-        parallelFor(numGames, workers, [&](int i, int w) {
+        parallelFor(numGames, selfPlayWorkers, [&](int i, int w) {
             Rng rng(deriveSeed(cfg_.seed, static_cast<uint64_t>(g), kPhaseSelfPlay,
                                static_cast<uint64_t>(i)));
-            records[static_cast<size_t>(i)] = playSelfPlayGame(*evaluators[static_cast<size_t>(w)], sp, rng);
+            records[static_cast<size_t>(i)] = playSelfPlayGame(evaluators.forWorker(w), sp, rng);
         });
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:522 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:540 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not.
@@ -2533,7 +2716,7 @@ void gemmColumns(const Backend& be, ThreadPool* pool, bool transA, bool transB, 
     });
 }
 ```
-*src/backend.cpp:224 — `gemmColumnBlock`*
+*src/backend.cpp:225 — `gemmColumnBlock`*
 
 Each element of a block is still one sum over the whole of K. (A split
 over the *inner* dimension K would also be parallel, but partial sums
@@ -2734,8 +2917,8 @@ see again in place.
 | Zobrist hashing and positional superko | `Board::hashAfter` — `src/board.cpp:174`; `Game::isLegal` — `src/game.cpp:19` |
 | Tromp-Taylor area scoring, komi, the draw | `Board::ownership`, `Board::areaScore` — `src/board.cpp:201, 236`; `Game::resultForBlack` — `src/game.cpp:61` |
 | Input planes and the all-ones color plane | `encodePlanes` — `src/encode.cpp:14` |
-| Convolution as im2col + gemm | `Conv2d::forward`, `Conv2d::backward` — `src/layers.cpp:35, 48`; `Backend::im2col`, `Backend::col2im` — `src/backend.cpp:19, 55` |
-| The compute backend seam | `Backend` — `include/azgo/backend.hpp:18`; `NaiveBackend::gemm` — `src/backend.cpp:144` |
+| Convolution as im2col + gemm | `Conv2d::forward`, `Conv2d::backward` — `src/layers.cpp:35, 48`; `Backend::im2col`, `Backend::col2im` — `src/backend.cpp:20, 56` |
+| The compute backend seam | `Backend` — `include/azgo/backend.hpp:20`; `NaiveBackend::gemm` — `src/backend.cpp:145` |
 | Batch norm, training vs. inference | `BatchNorm2d::forwardTrain`, `BatchNorm2d::forwardInfer`, `BatchNorm2d::backward` — `src/layers.cpp:99, 88, 133` |
 | Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:224, 369` |
 | Growing a network (deeper or wider) without changing its function | `growBlocks`, `widenFilters` — `src/grow.cpp:17, 159` |
@@ -2746,7 +2929,8 @@ see again in place.
 | Backup and the sign flip | `Mcts::backup` — `src/mcts.cpp:201` |
 | Terminal positions scored by the rules | `Mcts::isTerminal`, `Mcts::terminalValue` — `src/mcts.cpp:41, 52` |
 | Virtual loss and batched search | `Mcts::search`, `Mcts::addVirtualLoss` — `src/mcts.cpp:213, 108` |
-| The evaluator seam | `Evaluator` — `include/azgo/evaluator.hpp:17`; `LocalEvaluator::evaluate` — `src/evaluator.cpp:19` |
+| The evaluator seam | `Evaluator` — `include/azgo/evaluator.hpp:18`; `LocalEvaluator::evaluate` — `src/evaluator.cpp:19` |
+| Batching leaves across workers on the GPU | `InferenceHub::dispatcherLoop` — `src/inference_hub.cpp:137`; `gemm_simd` — `src/metal/kernels.metal:58` |
 | Dirichlet root noise | `Mcts::setRootPriors` — `src/mcts.cpp:351`; `dirichlet` — `src/rng.cpp:122` |
 | Temperature | `Mcts::selectAction` — `src/mcts.cpp:314`; `playSelfPlayGame` — `src/selfplay.cpp:50` |
 | Tree reuse and compaction | `Mcts::advance` — `src/mcts.cpp:368` |
@@ -2755,22 +2939,22 @@ see again in place.
 | The value target z | `GameRecord::zAt` — `src/selfplay.cpp:12` |
 | Replay buffer of whole games | `encodeTrainingSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:59, 102` |
 | Symmetry augmentation | `transformPoint`, `transformAction` — `src/symmetry.cpp:6, 21` |
-| Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:112`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:100` |
+| Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:112`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:104` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:21` |
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:111` |
-| Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:47, 117` |
-| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:195, 223` |
+| Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:38, 108` |
+| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:214, 242` |
 | Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:23, 40` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:116, 89` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:522` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:125, 98` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:540` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
-| Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:142, 190`; `gemmColumnBlock` — `src/backend.cpp:224` |
+| Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:225` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:30`; `Trainer::resume` — `src/trainer.cpp:451` |
-| Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:77, 117` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:30`; `Trainer::resume` — `src/trainer.cpp:463` |
+| Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |
 
 ---
 

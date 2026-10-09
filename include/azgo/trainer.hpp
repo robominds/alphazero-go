@@ -6,7 +6,9 @@
 // checkpoint and the full training state are written. Every random stream is
 // derived from (seed, generation, phase, index), so a run is reproducible for a
 // seed, independent of the worker count, and a resumed run continues
-// byte-identically to one that was never interrupted.
+// byte-identically to one that was never interrupted. With backend = metal,
+// self-play, the arena and the validation loss evaluate the network on the
+// GPU through batching hubs, under the same guarantees on one machine.
 #include <iostream>
 #include <memory>
 #include <ostream>

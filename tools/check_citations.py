@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Verify the file:line citations in docs/algorithm-explained.{md,html}.
 
-The alphazero-go explainer quotes the real C++ -- library sources in src/,
-headers in include/azgo/, the apps in apps/ and a few tests in tests/ --
+The alphazero-go explainer quotes the real C++ -- library sources in src/
+(the Metal kernels in src/metal/*.metal and Objective-C++ in *.mm too),
+headers in include/azgo/, the apps in apps/, a few tests in tests/ and the
+Metal spike in tools/ --
 and captions each excerpt with the file and line it came from. Those line
 numbers rot: every commit that touches a source file above a quoted line
 silently invalidates a citation, and nothing about the document looks
@@ -44,10 +46,10 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 MD = ROOT / "docs" / "algorithm-explained.md"
 HTML = ROOT / "docs" / "algorithm-explained.html"
 
-MD_CAPTION = re.compile(r"^\*(?P<path>[\w./]+\.(?:cpp|hpp)):(?P<line>\d+)\s+—\s+`(?P<sym>[^`]+)`(?P<tail>[^*]*)\*\s*$")
-HTML_CAPTION = re.compile(r'<span class="src">(?P<path>[\w./]+\.(?:cpp|hpp)):(?P<line>\d+)\s+—\s+<code>(?P<sym>[^<]+)</code>')
-MD_LOC = re.compile(r'(?P<codes>(?:`[^`]+`(?:,\s*|\s+and\s+)?)+)\s*—\s*`(?P<path>[\w./]+\.(?:cpp|hpp)):(?P<lines>[\d,\s]+)`')
-HTML_LOC = re.compile(r'(?P<codes>(?:<code>[^<]+</code>(?:,\s*)?)+)\s*<span class="loc">—\s*(?P<path>[\w./]+\.(?:cpp|hpp)):(?P<lines>[\d,\s]+)</span>')
+MD_CAPTION = re.compile(r"^\*(?P<path>[\w./]+\.(?:cpp|hpp|mm|metal)):(?P<line>\d+)\s+—\s+`(?P<sym>[^`]+)`(?P<tail>[^*]*)\*\s*$")
+HTML_CAPTION = re.compile(r'<span class="src">(?P<path>[\w./]+\.(?:cpp|hpp|mm|metal)):(?P<line>\d+)\s+—\s+<code>(?P<sym>[^<]+)</code>')
+MD_LOC = re.compile(r'(?P<codes>(?:`[^`]+`(?:,\s*|\s+and\s+)?)+)\s*—\s*`(?P<path>[\w./]+\.(?:cpp|hpp|mm|metal)):(?P<lines>[\d,\s]+)`')
+HTML_LOC = re.compile(r'(?P<codes>(?:<code>[^<]+</code>(?:,\s*)?)+)\s*<span class="loc">—\s*(?P<path>[\w./]+\.(?:cpp|hpp|mm|metal)):(?P<lines>[\d,\s]+)</span>')
 
 _source_cache = {}
 
