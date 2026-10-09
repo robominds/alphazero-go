@@ -1,0 +1,503 @@
+# Metal GPU spike: should azgo get a Metal backend? (2026-10-08)
+#
+# Machine: Apple M5 Max, 18 CPU cores (6 super + 12 performance), 40-core GPU
+# (Metal 4), 128 GB unified memory, macOS 27.0.1, Xcode 27 SDK.
+# Program: tools/metal_bench (source, build script and README there); raw
+# output of every section follows the analysis below.
+#
+# Conditions. The 9x9-scratch96 run (6x96, 18 workers, nice'd) was using the
+# CPU throughout. It was paused (SIGSTOP, resumed with SIGCONT, about 1.5,
+# 1.3 and 2.4 min) for the three sections that time the CPU: cpu1, cpuall,
+# seam. The gpu and det sections ran beside it; GPU kernel times barely
+# depend on the CPU, but the per-call wall times (commit + wait) and a few
+# rows are noisy (e.g. 6x96 B=256 fwd block, hand: 1.36 ms per call against
+# 0.74 ms batched). Medians of >= 0.5 s per measurement.
+#
+# ======================================================================
+# Summary
+# ======================================================================
+#
+# 1. A MetalBackend behind today's Backend seam (gemm on the GPU, everything
+#    else on the CPU) gains nothing. Measured with the real Network: a 6x96
+#    training step takes 409-426 ms against 424.5 ms on the CPU, and
+#    inference at batch 8 gets slower (4.7-7.3 ms against 2.0-3.2 ms).
+#    Gemm is only 18-42% of the CPU's time for a pass (29% of a 6x96 step:
+#    125 of 424 ms). The other ~70% is im2col, col2im, batch norm and the
+#    copies, single-threaded on the CPU. Copying the operands in and out
+#    costs about as much as the GPU saves. (The Workspace's std::vectors are
+#    not page-aligned, so Metal cannot wrap them without a copy.)
+#
+# 2. The GPU wins only when the whole pass runs on it: every layer as a
+#    kernel on shared buffers, one command buffer per forward or backward.
+#    6x96 training step at B=256: CPU 424.5 ms; GPU 36.3 ms with the
+#    scalar-tiled hand kernel (11.7x), 28.7 ms with the simdgroup-matrix
+#    hand kernel (14.8x), 22.2 ms with MPS for the gemms (19x). Those GPU
+#    figures use stand-in BN, ReLU and loss kernels of the right sizes, so a
+#    real port would come out somewhat slower.
+#
+# 3. Inference: a single CPU core is beaten even at B=8, but all 18 cores
+#    together need a batch of about 50 per pass before the GPU passes them.
+#    The 18 workers together reach only 14,554 evals/s on 6x96 (809 per
+#    worker against 2,491 for one worker alone; the CPU's matrix units are
+#    shared). The GPU, pipelined with 2 command buffers in flight at B=144,
+#    reaches 21.5k (hand), 30.2k (simd) or 41.8k (MPS) evals/s, so 1.5x,
+#    2.1x or 2.9x. On 6x64: 31.3k on the CPU against 52-75k on the GPU.
+#
+# 4. Determinism holds for the hand kernels, and they are bitwise identical
+#    to Accelerate except where split-K reorders the dW sums. They give the
+#    same bits in all 20 repeats. A position's logits and value are
+#    identical alone, in a batch of 8 or in a batch of 256, verified end to
+#    end through Network::infer. Every forward and dX gemm output is
+#    bitwise equal to Accelerate's (both evidently compute one sequential
+#    fma chain over k). dW with split-K differs from the CPU by up to 3.6e-7 in a gradient
+#    of 0.6, and is closer to an exact (double) result than Accelerate. dW
+#    without split-K is bitwise equal to Accelerate too, but 4-7x slower.
+#    MPS is deterministic run to run, but a position's output depends on
+#    the batch it is in (0/4 equal; the small-M Linear gemms), so it cannot
+#    serve a batching evaluator under the project's determinism guarantee.
+#    Accelerate itself is not batch-independent either (0/4 alone), which
+#    is harmless today because each worker batches its own leaves.
+#
+# 5. Recommendation. Do not build a MetalBackend behind the current seam.
+#    If GPU work is wanted, port the whole Network (forward, backward,
+#    optimizer) to Metal for the training phase first. One thread at a
+#    fixed batch of 256 needs no concurrency changes, and it takes the
+#    training phase from 174 s to about 15 s. Use own deterministic kernels
+#    (gather col2im, split-K fixed per shape, no atomics), not MPS. A
+#    cross-worker batching evaluator for self-play and arena could come
+#    second, for another 1.5-2.1x on network throughput. Expected time per
+#    generation, using gen 1 of 9x9-scratch96 (self-play 235.6 s, train
+#    174.3 s, arena 23.2 s; 433 s):
+#        training on the GPU only:                       ~273 s   (1.6x)
+#        + batching evaluator, simd kernel:              ~152 s   (2.8x)
+#        + batching evaluator, scalar hand kernel:       ~199 s   (2.2x)
+#        (MPS evaluator, not deterministic:              ~119 s   (3.6x))
+#    The cost: a macOS-only second implementation of every layer (forward
+#    and backward) in Metal and Objective-C++, kept in step with the CPU
+#    one, plus asynchronous self-play (two batches of 144 leaves in flight
+#    means about 36 games running at once on 18 threads). Note too that
+#    ~70% of the CPU step is single-threaded non-gemm code, so CPU-side work
+#    on im2col and BN would recover part of the training gain with no new
+#    platform.
+#
+# ======================================================================
+# Details
+# ======================================================================
+#
+# Shapes (src/layers.cpp, src/network.cpp). The input has 2*8+2 = 18 planes,
+# so the stem conv gemm has K = 18*9 = 162. A block conv is M = filters,
+# K = 9*filters, N = 81*B. Backward, per 3x3 conv: dW = gemm(no, T) with
+# M = F, N = 9F, K = 81*B, accumulated (beta 1); dX = gemm(T, no) with
+# M = 9F, N = 81*B, K = F. A 6xF forward pass is 18 gemms (stem, 12 block
+# convs, 2 1x1 head convs, 3 Linear); a training step is 53.
+#
+# Per gemm, 6x96 (ms; CPU = project BlasBackend, 1 thread; GPU "batched" =
+# GPU time per gemm with 20 in one command buffer; "per call" = wall time
+# for one command buffer with commit + wait):
+#                         CPU 1T   CPU all |  hand   simd    mps   (batched)
+#   fwd block  B=8        0.060    0.060   | 0.100  0.143  0.016
+#                                per call  | 0.258  0.286  0.132
+#   fwd block  B=144      1.870    0.937   | 0.451  0.313  0.155
+#   fwd block  B=256      3.327    2.276   | 0.744  0.476  0.259
+#   bwd dW     B=256      2.787    1.854   | 0.842  0.622  0.427
+#   bwd dX     B=256      4.323    3.031   | 0.528  0.370  0.236
+# The CPU gemm runs at ~0.8-1.8 TFLOP/s on one thread (the SME matrix unit);
+# at B >= 144 the hand kernels reach 4-7 TFLOP/s (scalar), 5.5-10 TFLOP/s
+# (simd) and MPS 10-15 TFLOP/s on the 9x9 shapes. On the 19x19 forward and
+# dX shapes MPS falls to ~5-7 TFLOP/s and the simd kernel beats it. At B=8 a single gemm is too small for the GPU:
+# the CPU's 0.06 ms beats every per-call GPU time.
+#
+# Call overhead: an empty command buffer costs 13.5 us (commit + wait); a
+# buffer with one tiny kernel costs 129 us of wall time for 7 us of GPU work
+# (wake-up and scheduling). A forward pass sent one kernel per command
+# buffer (49 kernels) takes 6-8 ms even at B=8, against 0.9-2.2 ms as one
+# command buffer. Any per-call design pays that.
+#
+# Whole forward pass on the GPU (one command buffer, ms) against the CPU
+# (Network::infer, 1 thread):
+#   6x96   B=8     CPU 3.21   | hand 1.83   simd 2.21   mps 0.88
+#   6x96   B=144   CPU 57.5   | hand 7.40   simd 5.73   mps 4.33
+#   6x96   B=256   CPU 110.6  | hand 12.47  simd 9.27   mps 6.97
+#   6x64   B=144   CPU 34.8   | hand 3.32   simd 3.26   mps 3.39
+# Break-even batch against all 18 CPU cores (14.5k evals/s, 6x96), fitting
+# time = a + b*B through B = 8 and 144: hand B ~ 54, simd ~ 47, MPS ~ 16.
+# Against one CPU worker, the GPU is ahead from B ~ 4.
+#
+# In the seam table, "gemm ms" is the mean over all calls including the two
+# warm-ups and "total ms" the median, so at B=8 gemm can exceed total.
+#
+# Accelerate with all threads (cpuall): gemm up to 1.5x faster at B >= 144,
+# but a 6x96 training step only goes from 424.5 to 386.8 ms (-9%), so it is
+# no substitute. Its results are bitwise equal to one thread's (same gemm
+# hashes in cpu1 and cpuall).
+#
+# The live run: 9x9-scratch96 logs train 174.3 s at gen 1 (181-196 s at
+# gens 2-4). 400 steps x 424.5 ms = 170 s, plus validation inference
+# (~18.6k fresh positions at gen 1, twice that later, at 2,315 evals/s on
+# one thread at B=256 = 8-16 s), which matches. Self-play at gen 1 played
+# 200 games x 92.9 plies with 200 simulations per move: at most 3.7M
+# evaluations, i.e. at most ~256 s at the 18-worker rate of 14.5k evals/s.
+# It took 235.6 s, so self-play is almost entirely network evaluation; the
+# projections above assume 90% of self-play and arena time is the network.
+#
+# Projection arithmetic (gen 1). Training on the GPU: 400 x ~29-36 ms
+# + ~1 s validation = ~13-16 s (taken as 14). Batching evaluator: self-play
+# and arena scale by 0.1 + 0.9/r with r = 2.07 (simd), 1.48 (hand),
+# 2.87 (MPS), from the pipelined B=144 rates against 14.5k:
+#   simd: 235.6*0.535 + 14 + 23.2*0.535 = 126 + 14 + 12 = 152 s
+#   hand: 235.6*0.708 + 16 + 23.2*0.708 = 167 + 16 + 16 = 199 s
+# Bit-identical-to-CPU training (dW without split-K: 3.2 ms hand, 4.7 ms
+# simd per dW gemm, 12 per step) would add ~30-50 ms to a step: ~65-80 ms,
+# still 5-6x faster than the CPU.
+#
+# 19x19 10x128 for reference: one CPU thread does 229-254 evals/s and a
+# 4.23 s training step; the GPU (simd, one command buffer) does 2.9k evals/s
+# at B=256 and a 280 ms step (15x).
+#
+# What was not tried: Metal 4 tensor operations
+# (MetalPerformancePrimitives, the M5 GPU's per-core matrix hardware),
+# fp16/bf16, and fusing im2col into the gemm (implicit convolution). Each
+# could raise the GPU figures further; none changes the conclusion about
+# the seam.
+#
+# Raw output follows, one section per process, in the order run.
+
+# ---------------------------------------------------------------- cpu1
+# metal_bench cpu1 --seconds 0.5   (training job paused)
+
+# section cpu1: project BlasBackend = makeBackend("blas"): Accelerate, VECLIB_MAXIMUM_THREADS=1
+
+## gemm per call (median of >= 0.5 s)
+net              B  shape          tA tB      M       N      K         ms   GFLOP/s  hash
+9x9 6x64         8  fwd stem 3x3    0  0     64     648    162      0.009      1528  533b2fec793d0abc
+9x9 6x64         8  fwd block 3x3   0  0     64     648    576      0.027      1797  eb5faf4af2a6a188
+9x9 6x64       144  fwd stem 3x3    0  0     64   11664    162      0.209      1154  621fa33d3996bd80
+9x9 6x64       144  fwd block 3x3   0  0     64   11664    576      0.721      1193  4f93e7ec482e2735
+9x9 6x64       256  fwd stem 3x3    0  0     64   20736    162      0.496       867  9486cf00a87a2905
+9x9 6x64       256  fwd block 3x3   0  0     64   20736    576      1.679       911  820b7805b7fe04a3
+9x9 6x64       256  bwd dW block    0  1     64     576  20736      1.420      1076  750dd12fd87ced1c
+9x9 6x64       256  bwd dX block    1  0    576   20736     64      2.191       698  1a6a7368176b6781
+9x9 6x96         8  fwd stem 3x3    0  0     96     648    162      0.015      1374  b31f12c799005775
+9x9 6x96         8  fwd block 3x3   0  0     96     648    864      0.060      1785  4f41e29e56c2284b
+9x9 6x96       144  fwd stem 3x3    0  0     96   11664    162      0.243      1490  9f67ed1c919ac130
+9x9 6x96       144  fwd block 3x3   0  0     96   11664    864      1.870      1035  61e2fb2e971efe0d
+9x9 6x96       256  fwd stem 3x3    0  0     96   20736    162      0.785       822  c769a24360408229
+9x9 6x96       256  fwd block 3x3   0  0     96   20736    864      3.327      1034  14b49b90ebf9a28d
+9x9 6x96       256  bwd dW block    0  1     96     864  20736      2.787      1234  ca43f5bce9fc7ee7
+9x9 6x96       256  bwd dX block    1  0    864   20736     96      4.323       796  2b19140bb7839d3f
+19x19 10x128     8  fwd stem 3x3    0  0    128    2888    162      0.085      1404  4df4f586e8ade908
+19x19 10x128     8  fwd block 3x3   0  0    128    2888   1152      0.532      1601  355cf615aa71ca4b
+19x19 10x128   144  fwd stem 3x3    0  0    128   51984    162      1.991      1083  2d70ddbf8c1a7e9a
+19x19 10x128   144  fwd block 3x3   0  0    128   51984   1152     10.161      1509  b7aab7bacccb9810
+19x19 10x128   256  fwd stem 3x3    0  0    128   92416    162      4.067       942  95805b30c5255f59
+19x19 10x128   256  fwd block 3x3   0  0    128   92416   1152     23.423      1164  1272adf8a753f6c7
+19x19 10x128   256  bwd dW block    0  1    128    1152  92416     21.908      1244  2a5f70ac529d55e2
+19x19 10x128   256  bwd dX block    1  0   1152   92416    128     25.480      1070  7aa0300f04d5baa8
+
+## whole passes: plan gemms only vs the real Network (median ms)
+net              B  pass        gemms      GFLOP    gemm ms network ms    gemm %
+9x9 6x64         8  infer          18      0.587      0.368      1.995       18%   (4011 evals/s)
+9x9 6x64       144  infer          18     10.571      9.103     34.775       26%   (4141 evals/s)
+9x9 6x64       256  infer          18     18.793     23.189     74.522       31%   (3435 evals/s)
+9x9 6x64       256  trainStep      53     55.950     72.302    275.150       26%
+9x9 6x96         8  infer          18      1.311      0.726      3.211       23%   (2491 evals/s)
+9x9 6x96       144  infer          18     23.594     17.439     57.479       30%   (2505 evals/s)
+9x9 6x96       256  infer          18     41.945     40.612    110.568       37%   (2315 evals/s)
+9x9 6x96       256  trainStep      53    125.189    124.976    424.531       29%
+19x19 10x128     8  infer          26     17.162     10.993     33.181       33%   (241 evals/s)
+19x19 10x128   144  infer          26    308.912    204.300    566.894       36%   (254 evals/s)
+19x19 10x128   256  infer          26    549.177    471.453   1116.251       42%   (229 evals/s)
+19x19 10x128   256  trainStep      77   1643.697   1383.746   4233.046       33%
+
+## 18 workers, each Network::infer at batch 8 on its own thread (aggregate)
+9x9 6x64          31328 evals/s total     1740 per worker  (4.60 ms per batch-8 call)
+9x9 6x96          14554 evals/s total      809 per worker  (9.89 ms per batch-8 call)
+
+# ---------------------------------------------------------------- cpuall
+# metal_bench cpuall --seconds 0.5   (training job paused)
+
+# section cpuall: Accelerate cblas_sgemm, default threading (VECLIB_MAXIMUM_THREADS unset)
+
+## gemm per call (median of >= 0.5 s)
+net              B  shape          tA tB      M       N      K         ms   GFLOP/s  hash
+9x9 6x64         8  fwd stem 3x3    0  0     64     648    162      0.010      1295  533b2fec793d0abc
+9x9 6x64         8  fwd block 3x3   0  0     64     648    576      0.030      1575  eb5faf4af2a6a188
+9x9 6x64       144  fwd stem 3x3    0  0     64   11664    162      0.207      1170  621fa33d3996bd80
+9x9 6x64       144  fwd block 3x3   0  0     64   11664    576      0.735      1170  4f93e7ec482e2735
+9x9 6x64       256  fwd stem 3x3    0  0     64   20736    162      0.472       912  9486cf00a87a2905
+9x9 6x64       256  fwd block 3x3   0  0     64   20736    576      1.764       867  820b7805b7fe04a3
+9x9 6x64       256  bwd dW block    0  1     64     576  20736      1.466      1043  750dd12fd87ced1c
+9x9 6x64       256  bwd dX block    1  0    576   20736     64      2.414       633  1a6a7368176b6781
+9x9 6x96         8  fwd stem 3x3    0  0     96     648    162      0.015      1366  b31f12c799005775
+9x9 6x96         8  fwd block 3x3   0  0     96     648    864      0.060      1785  4f41e29e56c2284b
+9x9 6x96       144  fwd stem 3x3    0  0     96   11664    162      0.310      1170  9f67ed1c919ac130
+9x9 6x96       144  fwd block 3x3   0  0     96   11664    864      0.937      2065  61e2fb2e971efe0d
+9x9 6x96       256  fwd stem 3x3    0  0     96   20736    162      0.643      1003  c769a24360408229
+9x9 6x96       256  fwd block 3x3   0  0     96   20736    864      2.276      1511  14b49b90ebf9a28d
+9x9 6x96       256  bwd dW block    0  1     96     864  20736      1.854      1856  ca43f5bce9fc7ee7
+9x9 6x96       256  bwd dX block    1  0    864   20736     96      3.031      1135  2b19140bb7839d3f
+19x19 10x128     8  fwd stem 3x3    0  0    128    2888    162      0.094      1270  4df4f586e8ade908
+19x19 10x128     8  fwd block 3x3   0  0    128    2888   1152      0.524      1625  355cf615aa71ca4b
+19x19 10x128   144  fwd stem 3x3    0  0    128   51984    162      1.348      1599  2d70ddbf8c1a7e9a
+19x19 10x128   144  fwd block 3x3   0  0    128   51984   1152      6.843      2240  b7aab7bacccb9810
+19x19 10x128   256  fwd stem 3x3    0  0    128   92416    162      2.783      1377  95805b30c5255f59
+19x19 10x128   256  fwd block 3x3   0  0    128   92416   1152     15.877      1717  1272adf8a753f6c7
+19x19 10x128   256  bwd dW block    0  1    128    1152  92416     14.473      1883  2a5f70ac529d55e2
+19x19 10x128   256  bwd dX block    1  0   1152   92416    128     17.973      1516  7aa0300f04d5baa8
+
+## whole passes: plan gemms only vs the real Network (median ms)
+net              B  pass        gemms      GFLOP    gemm ms network ms    gemm %
+9x9 6x64         8  infer          18      0.587      0.367      2.019       18%   (3963 evals/s)
+9x9 6x64       144  infer          18     10.571      9.135     35.360       26%   (4072 evals/s)
+9x9 6x64       256  infer          18     18.793     21.989     67.773       32%   (3777 evals/s)
+9x9 6x64       256  trainStep      53     55.950     67.514    269.078       25%
+9x9 6x96         8  infer          18      1.311      0.726      3.153       23%   (2537 evals/s)
+9x9 6x96       144  infer          18     23.594     11.620     50.843       23%   (2832 evals/s)
+9x9 6x96       256  infer          18     41.945     27.204     95.839       28%   (2671 evals/s)
+9x9 6x96       256  trainStep      53    125.189     80.563    386.843       21%
+19x19 10x128     8  infer          26     17.162     10.745     31.219       34%   (256 evals/s)
+19x19 10x128   144  infer          26    308.912    136.738    541.070       25%   (266 evals/s)
+19x19 10x128   256  infer          26    549.177    319.217   1009.475       32%   (254 evals/s)
+19x19 10x128   256  trainStep      77   1643.697    932.750   3872.368       24%
+
+# ---------------------------------------------------------------- gpu
+# metal_bench gpu --seconds 0.5
+
+# section gpu: Apple M5 Max, hand kernel (64x64 tile, 4x4 per thread, MTLMathModeSafe) and MPSMatrixMultiplication
+# per call = new command buffer, encode, commit, waitUntilCompleted (wall, median);
+# gpu = GPUEndTime - GPUStartTime of that buffer; batched = 20 copies in one buffer, GPU time / 20.
+
+## overhead: empty command buffer commit+wait 13.5 us (min 8.0); one tiny kernel 128.6 us wall, 7.3 us GPU
+
+## gemm per shape (ms; GFLOP/s from the batched time)
+net              B  shape          tA tB      M       N      K | impl  per-call       gpu   batched  GFLOP/s
+9x9 6x64         8  fwd stem 3x3    0  0     64     648    162 | hand     0.257     0.128     0.022      624
+9x9 6x64         8  fwd stem 3x3    0  0     64     648    162 | simd     0.299     0.135     0.032      416
+9x9 6x64         8  fwd stem 3x3    0  0     64     648    162 | mps      0.150     0.025     0.020      656
+9x9 6x64         8  fwd block 3x3   0  0     64     648    576 | hand     0.304     0.175     0.123      387
+9x9 6x64         8  fwd block 3x3   0  0     64     648    576 | simd     0.351     0.226     0.118      405
+9x9 6x64         8  fwd block 3x3   0  0     64     648    576 | mps      0.172     0.017     0.046     1031
+9x9 6x64       144  fwd stem 3x3    0  0     64   11664    162 | hand     0.264     0.105     0.051     4726
+9x9 6x64       144  fwd stem 3x3    0  0     64   11664    162 | simd     0.173     0.050     0.048     5049
+9x9 6x64       144  fwd stem 3x3    0  0     64   11664    162 | mps      0.177     0.026     0.024     9886
+9x9 6x64       144  fwd block 3x3   0  0     64   11664    576 | hand     0.374     0.228     0.166     5180
+9x9 6x64       144  fwd block 3x3   0  0     64   11664    576 | simd     0.307     0.178     0.173     4962
+9x9 6x64       144  fwd block 3x3   0  0     64   11664    576 | mps      0.209     0.075     0.074    11681
+9x9 6x64       256  fwd stem 3x3    0  0     64   20736    162 | hand     0.264     0.127     0.085     5068
+9x9 6x64       256  fwd stem 3x3    0  0     64   20736    162 | simd     0.192     0.062     0.061     7050
+9x9 6x64       256  fwd stem 3x3    0  0     64   20736    162 | mps      0.195     0.038     0.037    11718
+9x9 6x64       256  fwd block 3x3   0  0     64   20736    576 | hand     0.466     0.316     0.281     5447
+9x9 6x64       256  fwd block 3x3   0  0     64   20736    576 | simd     0.359     0.209     0.206     7412
+9x9 6x64       256  fwd block 3x3   0  0     64   20736    576 | mps      0.266     0.129     0.125    12233
+9x9 6x64       256  bwd dW block    0  1     64     576  20736 | hand     0.528     0.389     0.330     4638
+9x9 6x64       256  bwd dW block    0  1     64     576  20736 | simd     0.518     0.382     0.382     4007
+9x9 6x64       256  bwd dW block    0  1     64     576  20736 | mps      0.392     0.239     0.237     6455
+9x9 6x64       256  bwd dX block    1  0    576   20736     64 | hand     0.387     0.238     0.233     6556
+9x9 6x64       256  bwd dX block    1  0    576   20736     64 | simd     0.325     0.180     0.176     8665
+9x9 6x64       256  bwd dX block    1  0    576   20736     64 | mps      0.259     0.108     0.110    13871
+9x9 6x96         8  fwd stem 3x3    0  0     96     648    162 | hand     0.179     0.051     0.021      949
+9x9 6x96         8  fwd stem 3x3    0  0     96     648    162 | simd     0.150     0.038     0.031      658
+9x9 6x96         8  fwd stem 3x3    0  0     96     648    162 | mps      0.126     0.007     0.005     4068
+9x9 6x96         8  fwd block 3x3   0  0     96     648    864 | hand     0.258     0.116     0.100     1079
+9x9 6x96         8  fwd block 3x3   0  0     96     648    864 | simd     0.286     0.173     0.143      754
+9x9 6x96         8  fwd block 3x3   0  0     96     648    864 | mps      0.132     0.019     0.016     6907
+9x9 6x96       144  fwd stem 3x3    0  0     96   11664    162 | hand     0.265     0.127     0.092     3960
+9x9 6x96       144  fwd stem 3x3    0  0     96   11664    162 | simd     0.176     0.063     0.062     5886
+9x9 6x96       144  fwd stem 3x3    0  0     96   11664    162 | mps      0.156     0.037     0.035    10501
+9x9 6x96       144  fwd block 3x3   0  0     96   11664    864 | hand     0.599     0.463     0.451     4287
+9x9 6x96       144  fwd block 3x3   0  0     96   11664    864 | simd     0.445     0.311     0.313     6189
+9x9 6x96       144  fwd block 3x3   0  0     96   11664    864 | mps      0.306     0.162     0.155    12497
+9x9 6x96       256  fwd stem 3x3    0  0     96   20736    162 | hand     0.281     0.158     0.150     4305
+9x9 6x96       256  fwd stem 3x3    0  0     96   20736    162 | simd     0.258     0.102     0.100     6479
+9x9 6x96       256  fwd stem 3x3    0  0     96   20736    162 | mps      0.191     0.059     0.136     4732
+9x9 6x96       256  fwd block 3x3   0  0     96   20736    864 | hand     1.361     1.204     0.744     4623
+9x9 6x96       256  fwd block 3x3   0  0     96   20736    864 | simd     0.611     0.472     0.476     7233
+9x9 6x96       256  fwd block 3x3   0  0     96   20736    864 | mps      0.420     0.268     0.259    13305
+9x9 6x96       256  bwd dW block    0  1     96     864  20736 | hand     0.981     0.839     0.842     4086
+9x9 6x96       256  bwd dW block    0  1     96     864  20736 | simd     0.761     0.608     0.622     5530
+9x9 6x96       256  bwd dW block    0  1     96     864  20736 | mps      0.590     0.427     0.427     8055
+9x9 6x96       256  bwd dX block    1  0    864   20736     96 | hand     0.670     0.526     0.528     6521
+9x9 6x96       256  bwd dX block    1  0    864   20736     96 | simd     0.520     0.372     0.370     9298
+9x9 6x96       256  bwd dX block    1  0    864   20736     96 | mps      0.395     0.237     0.236    14587
+19x19 10x128     8  fwd stem 3x3    0  0    128    2888    162 | hand     0.152     0.036     0.055     2183
+19x19 10x128     8  fwd stem 3x3    0  0    128    2888    162 | simd     0.201     0.078     0.035     3405
+19x19 10x128     8  fwd stem 3x3    0  0    128    2888    162 | mps      0.130     0.015     0.014     8803
+19x19 10x128     8  fwd block 3x3   0  0    128    2888   1152 | hand     0.355     0.225     0.212     4012
+19x19 10x128     8  fwd block 3x3   0  0    128    2888   1152 | simd     0.399     0.281     0.279     3058
+19x19 10x128     8  fwd block 3x3   0  0    128    2888   1152 | mps      0.214     0.075     0.074    11483
+19x19 10x128   144  fwd stem 3x3    0  0    128   51984    162 | hand     0.669     0.536     0.367     5871
+19x19 10x128   144  fwd stem 3x3    0  0    128   51984    162 | simd     0.400     0.262     0.256     8409
+19x19 10x128   144  fwd stem 3x3    0  0    128   51984    162 | mps      0.646     0.423     0.425     5074
+19x19 10x128   144  fwd block 3x3   0  0    128   51984   1152 | hand     2.485     2.330     2.397     6395
+19x19 10x128   144  fwd block 3x3   0  0    128   51984   1152 | simd     1.819     1.665     1.674     9159
+19x19 10x128   144  fwd block 3x3   0  0    128   51984   1152 | mps      2.419     2.153     2.198     6975
+19x19 10x128   256  fwd stem 3x3    0  0    128   92416    162 | hand     0.780     0.637     0.640     5991
+19x19 10x128   256  fwd stem 3x3    0  0    128   92416    162 | simd     0.578     0.437     0.438     8745
+19x19 10x128   256  fwd stem 3x3    0  0    128   92416    162 | mps      1.019     0.747     0.757     5061
+19x19 10x128   256  fwd block 3x3   0  0    128   92416   1152 | hand     4.256     4.107     4.116     6622
+19x19 10x128   256  fwd block 3x3   0  0    128   92416   1152 | simd     2.921     2.763     2.789     9771
+19x19 10x128   256  fwd block 3x3   0  0    128   92416   1152 | mps      4.141     3.809     3.976     6854
+19x19 10x128   256  bwd dW block    0  1    128    1152  92416 | hand     4.647     4.477     4.558     5980
+19x19 10x128   256  bwd dW block    0  1    128    1152  92416 | simd     3.641     3.482     3.510     7765
+19x19 10x128   256  bwd dW block    0  1    128    1152  92416 | mps      2.538     2.333     2.350    11599
+19x19 10x128   256  bwd dX block    1  0   1152   92416    128 | hand     4.072     3.894     3.941     6916
+19x19 10x128   256  bwd dX block    1  0   1152   92416    128 | simd     2.842     2.675     2.715    10039
+19x19 10x128   256  bwd dX block    1  0   1152   92416    128 | mps      5.704     5.374     5.401     5046
+
+## whole passes on the GPU (ms). one-cb = every op in one command buffer (training: forward
+## buffer, wait, backward buffer, wait, as the loss runs between); per-op = commit+wait per op.
+net              B  pass      impl  ops     one-cb        gpu     per-op evals/s(1cb)
+9x9 6x64         8  infer     hand   49      1.127      0.987      7.155         7096
+9x9 6x64         8  infer     simd   49      1.553      1.414      8.048         5150
+9x9 6x64         8  infer     mps    49      1.475      1.073      7.547         5425
+9x9 6x64       144  infer     hand   49      3.322      3.152      9.396        43351
+9x9 6x64       144  infer     simd   49      3.256      3.082      9.524        44229
+9x9 6x64       144  infer     mps    49      3.393      2.948     10.774        42443
+9x9 6x64       256  infer     hand   49      5.821      5.618     12.255        43981
+9x9 6x64       256  infer     simd   49      4.782      4.602     10.805        53535
+9x9 6x64       256  infer     mps    49      4.423      3.978     10.693        57878
+9x9 6x64       256  trainStep hand  180     17.619     17.231     40.392
+9x9 6x64       256  trainStep simd  180     16.816     16.392     40.145
+9x9 6x64       256  trainStep mps   180     13.893     12.566     37.756
+9x9 6x96         8  infer     hand   49      1.831      1.699      7.819         4369
+9x9 6x96         8  infer     simd   49      2.208      2.020      8.190         3623
+9x9 6x96         8  infer     mps    49      0.881      0.489      6.278         9079
+9x9 6x96       144  infer     hand   49      7.398      7.234     13.831        19464
+9x9 6x96       144  infer     simd   49      5.725      5.549     11.860        25153
+9x9 6x96       144  infer     mps    49      4.331      3.893     11.225        33247
+9x9 6x96       256  infer     hand   49     12.465     12.275     18.845        20538
+9x9 6x96       256  infer     simd   49      9.273      9.118     15.601        27608
+9x9 6x96       256  infer     mps    49      6.966      6.529     13.293        36747
+9x9 6x96       256  trainStep hand  180     36.342     35.934     59.411
+9x9 6x96       256  trainStep simd  180     28.732     28.362     52.186
+9x9 6x96       256  trainStep mps   180     22.236     20.995     46.089
+19x19 10x128     8  infer     hand   73      5.393      5.215     14.504         1483
+19x19 10x128     8  infer     simd   73      7.011      6.821     15.869         1141
+19x19 10x128     8  infer     mps    73      3.057      2.513     15.348         2617
+19x19 10x128   144  infer     hand   73     64.676     64.487     74.746         2226
+19x19 10x128   144  infer     simd   73     51.670     51.476     61.332         2787
+19x19 10x128   144  infer     mps    73     65.699     63.959     74.154         2192
+19x19 10x128   256  infer     hand   73    114.185    113.957    123.986         2242
+19x19 10x128   256  infer     simd   73     87.518     87.305     97.484         2925
+19x19 10x128   256  infer     mps    73    115.193    112.719    123.436         2222
+19x19 10x128   256  trainStep hand  272    352.557    352.067    391.067
+19x19 10x128   256  trainStep simd  272    280.368    279.883    319.750
+19x19 10x128   256  trainStep mps   272    342.130    336.270    379.265
+
+## pipelined inference: 2 command buffers in flight, one-cb forward passes
+9x9 6x64      B=144 hand    2.749 ms per pass      52387 evals/s
+9x9 6x64      B=144 simd    2.420 ms per pass      59499 evals/s
+9x9 6x64      B=144 mps     1.917 ms per pass      75111 evals/s
+9x9 6x64      B=256 hand    4.969 ms per pass      51518 evals/s
+9x9 6x64      B=256 simd    4.094 ms per pass      62534 evals/s
+9x9 6x64      B=256 mps     3.694 ms per pass      69292 evals/s
+9x9 6x96      B=144 hand    6.691 ms per pass      21521 evals/s
+9x9 6x96      B=144 simd    4.774 ms per pass      30161 evals/s
+9x9 6x96      B=144 mps     3.442 ms per pass      41840 evals/s
+9x9 6x96      B=256 hand   11.839 ms per pass      21623 evals/s
+9x9 6x96      B=256 simd    8.642 ms per pass      29623 evals/s
+9x9 6x96      B=256 mps     6.272 ms per pass      40815 evals/s
+19x19 10x128  B=144 hand   64.450 ms per pass       2234 evals/s
+19x19 10x128  B=144 simd   51.005 ms per pass       2823 evals/s
+19x19 10x128  B=144 mps    62.724 ms per pass       2296 evals/s
+19x19 10x128  B=256 hand  113.686 ms per pass       2252 evals/s
+19x19 10x128  B=256 simd   88.375 ms per pass       2897 evals/s
+19x19 10x128  B=256 mps   119.725 ms per pass       2138 evals/s
+
+# ---------------------------------------------------------------- seam
+# metal_bench seam --seconds 0.5   (training job paused)
+
+# section seam: the real Network driven through a Backend whose gemm runs on the GPU
+# (copy in, one command buffer, commit+wait, copy out); everything else on one CPU thread.
+net              B  pass      backend     total ms    gemm ms   calls
+9x9 6x64         8  infer     seam-hand      5.341      5.353      18
+9x9 6x64       144  infer     seam-hand     39.479     13.470      18
+9x9 6x64       256  infer     seam-hand     69.928     24.518      18
+9x9 6x64       256  trainStep seam-hand    282.880     84.057      53
+9x9 6x64         8  infer     seam-simd      5.950      4.557      18
+9x9 6x64       144  infer     seam-simd     38.957     13.230      18
+9x9 6x64       256  infer     seam-simd     68.582     23.390      18
+9x9 6x64       256  trainStep seam-simd    279.418     81.162      53
+9x9 6x64         8  infer     seam-mps       4.719      3.287      18
+9x9 6x64       144  infer     seam-mps      38.278     12.460      18
+9x9 6x64       256  infer     seam-mps      69.085     23.441      18
+9x9 6x64       256  trainStep seam-mps     275.363     77.295      53
+9x9 6x96         8  infer     seam-hand      6.499      4.351      18
+9x9 6x96       144  infer     seam-hand     61.082     22.932      18
+9x9 6x96       256  infer     seam-hand    105.567     38.631      18
+9x9 6x96       256  trainStep seam-hand    426.044    131.206      53
+9x9 6x96         8  infer     seam-simd      7.269      5.160      18
+9x9 6x96       144  infer     seam-simd     59.347     21.168      18
+9x9 6x96       256  infer     seam-simd    102.970     35.848      18
+9x9 6x96       256  trainStep seam-simd    417.631    119.896      53
+9x9 6x96         8  infer     seam-mps       5.702      3.475      18
+9x9 6x96       144  infer     seam-mps      59.004     20.494      18
+9x9 6x96       256  infer     seam-mps     100.514     34.075      18
+9x9 6x96       256  trainStep seam-mps     408.740    111.655      53
+19x19 10x128     8  infer     seam-hand     33.788     14.814      26
+19x19 10x128   144  infer     seam-hand    554.436    195.024      26
+19x19 10x128   256  infer     seam-hand   1013.542    373.128      26
+19x19 10x128   256  trainStep seam-hand   3912.911   1104.498      77
+19x19 10x128     8  infer     seam-simd     34.861     15.669      26
+19x19 10x128   144  infer     seam-simd    540.433    180.467      26
+19x19 10x128   256  infer     seam-simd    954.459    320.759      26
+19x19 10x128   256  trainStep seam-simd   3800.634    972.804      77
+19x19 10x128     8  infer     seam-mps      32.596     12.649      26
+19x19 10x128   144  infer     seam-mps     543.390    188.034      26
+19x19 10x128   256  infer     seam-mps     993.889    349.697      26
+19x19 10x128   256  trainStep seam-mps    3834.159   1016.070      77
+
+# ---------------------------------------------------------------- det
+# metal_bench det --seconds 0.5
+
+# section det: determinism and accuracy
+
+## repeated runs (20) and error vs a double-precision reference, 9x9 6x96, B=256
+shape          impl       repeats        max|ref|  max abs err  max rel err  elements != accelerate
+fwd stem 3x3   hand         20/20           1.046      6.2e-07      0.00021  0 of 1990656
+fwd stem 3x3   simd         20/20           1.046      6.2e-07      0.00021  0 of 1990656
+fwd stem 3x3   mps          20/20           1.046      6.2e-07      0.00021  0 of 1990656
+fwd stem 3x3   accelerate   20/20           1.046      6.2e-07      0.00021  0 of 1990656
+fwd block 3x3  hand         20/20           2.587     3.39e-06     0.000427  0 of 1990656
+fwd block 3x3  simd         20/20           2.587     3.39e-06     0.000427  0 of 1990656
+fwd block 3x3  mps          20/20           2.587     3.39e-06     0.000427  0 of 1990656
+fwd block 3x3  accelerate   20/20           2.587     3.39e-06     0.000427  0 of 1990656
+bwd dW block   hand         20/20            10.7     6.84e-06      0.00036  81994 of 82944
+bwd dW block   simd         20/20            10.7     6.84e-06      0.00036  81994 of 82944
+bwd dW block   mps          20/20            10.7     2.26e-05      0.00143  82050 of 82944
+bwd dW block   accelerate   20/20            10.7     5.47e-05     0.000955  0 of 82944
+bwd dW block   hand-nosplit                    10.7     5.47e-05     0.000955  0 of 82944
+bwd dW block   simd-nosplit                    10.7     5.47e-05     0.000955  0 of 82944
+bwd dW block   hand       split-K (S=20): 0.846 ms per gemm (GPU)
+bwd dW block   hand       no split-K   : 3.223 ms per gemm (GPU)
+bwd dW block   simd       split-K (S=20): 0.653 ms per gemm (GPU)
+bwd dW block   simd       no split-K   : 4.726 ms per gemm (GPU)
+bwd dX block   hand         20/20          0.8663     4.68e-07     0.000153  0 of 17915904
+bwd dX block   simd         20/20          0.8663     4.68e-07     0.000153  0 of 17915904
+bwd dX block   mps          20/20          0.8663     4.68e-07     0.000153  0 of 17915904
+bwd dX block   accelerate   20/20          0.8663     4.68e-07     0.000153  0 of 17915904
+
+## a sample's columns inside a large batch vs alone (forward block conv 9x9 6x96, K=864)
+impl       samples checked          bitwise equal to the B=256 result
+hand       b in {0,1,7,100,200,255}  alone (N=81): 6/6, in a batch of 8: 6/6, max |diff| 0
+simd       b in {0,1,7,100,200,255}  alone (N=81): 6/6, in a batch of 8: 6/6, max |diff| 0
+mps        b in {0,1,7,100,200,255}  alone (N=81): 6/6, in a batch of 8: 6/6, max |diff| 0
+accelerate b in {0,1,7,100,200,255}  alone (N=81): 6/6, in a batch of 8: 6/6, max |diff| 0
+
+## Network::infer, positions alone vs in a batch of 256 (9x9 6x96)
+seam-hand  logits+value bitwise equal to batch-256 result: alone 4/4, in a batch of 8 4/4  (max |logit diff| alone 0)
+seam-simd  logits+value bitwise equal to batch-256 result: alone 4/4, in a batch of 8 4/4  (max |logit diff| alone 0)
+seam-mps   logits+value bitwise equal to batch-256 result: alone 0/4, in a batch of 8 0/4  (max |logit diff| alone 7.63e-06)
+blas       logits+value bitwise equal to batch-256 result: alone 0/4, in a batch of 8 2/4  (max |logit diff| alone 5.72e-06)
+seam-hand  vs blas: max |logit diff| 0 (max |logit| 34.6)
+seam-simd  vs blas: max |logit diff| 0 (max |logit| 34.6)
+seam-mps   vs blas: max |logit diff| 1.53e-05 (max |logit| 34.6)
+
+## Network::trainStep from the same seed, 3 times per backend (9x9 6x96, B=256): gradient hash
+seam-hand  loss p 4.9129753 v 1.2159667  hashes e5bc4537a1b00bad e5bc4537a1b00bad e5bc4537a1b00bad  identical
+seam-simd  loss p 4.9129753 v 1.2159667  hashes e5bc4537a1b00bad e5bc4537a1b00bad e5bc4537a1b00bad  identical
+seam-mps   loss p 4.9129753 v 1.2159668  hashes 5fe94375150104cc 5fe94375150104cc 5fe94375150104cc  identical
+blas       loss p 4.9129753 v 1.2159667  hashes cf1136b33fa2e07c cf1136b33fa2e07c cf1136b33fa2e07c  identical
+seam-hand  vs blas: max |grad diff| 3.58e-07 (max |grad| 0.597)
+seam-simd  vs blas: max |grad diff| 3.58e-07 (max |grad| 0.597)
+seam-mps   vs blas: max |grad diff| 3.87e-07 (max |grad| 0.597)
