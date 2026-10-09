@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include "azgo/backend.hpp"
+#include "azgo/layers.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/rng.hpp"
 
@@ -355,6 +356,304 @@ void test_gemm_columns_and_rows_batch_independent() {
     }
 }
 
+// ---------------------------------------------------------------- forward layers
+
+// The CPU loops of Network::forward that have no function of their own,
+// written out: the input transpose [B][P][A] -> [P][B][A] and the policy
+// flatten [2][B][A] -> [B][2A] (feature c * A + p).
+std::vector<float> cpuTranspose(const std::vector<float>& in, int B, int P, int A) {
+    std::vector<float> out(in.size());
+    for (int p = 0; p < P; ++p)
+        for (int b = 0; b < B; ++b)
+            std::copy_n(in.data() + (static_cast<size_t>(b) * P + p) * A, A,
+                        out.data() + (static_cast<size_t>(p) * B + b) * A);
+    return out;
+}
+
+std::vector<float> cpuFlatten(const std::vector<float>& act, int B, int A) {
+    std::vector<float> flat(act.size());
+    for (int b = 0; b < B; ++b)
+        for (int c = 0; c < 2; ++c)
+            std::copy_n(act.data() + (static_cast<size_t>(c) * B + b) * A, A,
+                        flat.data() + static_cast<size_t>(b) * 2 * A + static_cast<size_t>(c) * A);
+    return flat;
+}
+
+// Sample s of a channel-major tensor [C][B][A], as a batch of one [C][1][A].
+std::vector<float> sampleOf(const std::vector<float>& t, int C, int B, int A, int s) {
+    std::vector<float> out(static_cast<size_t>(C) * A);
+    for (int c = 0; c < C; ++c)
+        std::copy_n(t.data() + (static_cast<size_t>(c) * B + s) * A, A,
+                    out.data() + static_cast<size_t>(c) * A);
+    return out;
+}
+
+// Rows s * cols ... of a row-major [B][cols] matrix.
+std::vector<float> rowOf(const std::vector<float>& t, int cols, int s) {
+    return std::vector<float>(t.begin() + static_cast<size_t>(s) * cols,
+                              t.begin() + static_cast<size_t>(s + 1) * cols);
+}
+
+bool same(const std::vector<float>& a, const std::vector<float>& b) {
+    return a.size() == b.size() && bitwiseEqual(a.data(), b.data(), a.size());
+}
+
+void test_copy_kernels_bitwise() {
+    Rng rng(301);
+    NaiveBackend cpu;
+    for (int n : {5, 9, 19}) {
+        const int A = n * n;
+        for (int C : {1, 18, 96}) {
+            for (int B : {1, 2, 7}) {
+                const std::vector<float> x = randomVector(rng, static_cast<size_t>(B) * C * A);
+                std::vector<float> t(x.size());
+                metal_probe::transposeInput(x.data(), B, C, A, t.data());
+                assert(same(t, cpuTranspose(x, B, C, A)));
+
+                std::vector<float> col(static_cast<size_t>(C) * 9 * B * A), ref(col.size());
+                metal_probe::im2col3(x.data(), C, B, n, col.data());
+                cpu.im2col(x.data(), C, B, n, 3, ref.data());
+                assert(same(col, ref));
+            }
+        }
+        for (int B : {1, 2, 7}) {
+            const std::vector<float> act = randomVector(rng, static_cast<size_t>(2) * B * A);
+            std::vector<float> flat(act.size());
+            metal_probe::policyFlatten(act.data(), B, A, flat.data());
+            assert(same(flat, cpuFlatten(act, B, A)));
+        }
+    }
+}
+
+// Conv2d::forward with the BLAS backend against the GPU's im2col + gemm.
+// Measured on an M5 Max (macOS 27.0.1), 20 seeds: worst maxErr 5.6e-7 (ceiling 2e-6).
+void test_conv_forward_vs_cpu() {
+    auto blas = makeBackend("blas");
+    MaxErr err("conv forward vs CPU", 2e-6);
+    for (int seed = 0; seed < gSeeds; ++seed) {
+        Rng rng(302 + 1000 * seed);
+        for (int F : {8, 32, 96}) {
+            for (int n : {5, 9, 19}) {
+                for (int B : {1, 16, 256}) {
+                    const int M = B * n * n;
+                    struct Shape { int cin, cout, k; };
+                    const Shape shapes[] = {{18, F, 3}, {F, F, 3}, {F, 1, 1}, {F, 2, 1}};
+                    for (const Shape sh : shapes) {
+                        Conv2d conv(sh.cin, sh.cout, sh.k);
+                        conv.init(rng);
+                        const std::vector<float> x = randomVector(rng, static_cast<size_t>(sh.cin) * M);
+                        std::vector<float> col(conv.colSize(B, n)), ref(static_cast<size_t>(sh.cout) * M);
+                        conv.forward(*blas, x.data(), B, n, col.data(), ref.data());
+                        std::vector<float> y(ref.size());
+                        metal_probe::convForward(conv, x.data(), B, n, y.data());
+                        err.add(y.data(), ref.data(), y.size());
+                    }
+                }
+            }
+        }
+    }
+}
+
+// BatchNorm2d::forwardInfer with random gamma, beta and running statistics.
+// Measured on an M5 Max (macOS 27.0.1), 20 seeds: maxErr 0 (ceiling 1e-6): the
+// GPU's scale, shift and fma gave the CPU's bits on every element.
+void test_bn_infer_vs_cpu() {
+    MaxErr err("BN inference vs CPU", 1e-6);
+    for (int seed = 0; seed < gSeeds; ++seed) {
+        Rng rng(303 + 1000 * seed);
+        for (int C : {1, 2, 32, 96}) {
+            for (int M : {1, 25, 567, 20736}) {
+                BatchNorm2d bn(C);
+                for (int c = 0; c < C; ++c) {
+                    bn.gamma[c] = static_cast<float>(0.5 + rng.uniform());
+                    bn.beta[c] = static_cast<float>(rng.uniform() - 0.5);
+                    bn.runMean[c] = static_cast<float>(2.0 * rng.uniform() - 1.0);
+                    bn.runVar[c] = static_cast<float>(0.05 + 2.0 * rng.uniform());
+                }
+                const std::vector<float> x = randomVector(rng, static_cast<size_t>(C) * M, 3.0);
+                std::vector<float> ref(x.size()), y(x.size());
+                bn.forwardInfer(x.data(), M, ref.data());
+                metal_probe::bnInfer(bn, x.data(), M, y.data());
+                err.add(y.data(), ref.data(), y.size());
+            }
+        }
+    }
+}
+
+void test_relu_add_bitwise() {
+    Rng rng(304);
+    for (size_t count : {size_t(1), size_t(255), size_t(257), size_t(96 * 20736)}) {
+        std::vector<float> x = randomVector(rng, count);
+        // The corner cases: signed zeros and NaN (the CPU's x > 0 ? x : 0 maps
+        // all three to +0).
+        x[0] = -0.0f;
+        if (count > 2) {
+            x[1] = 0.0f;
+            x[2] = std::numeric_limits<float>::quiet_NaN();
+        }
+        std::vector<float> ref = x, y = x;
+        reluForward(ref.data(), count);
+        metal_probe::relu(y.data(), count);
+        assert(same(y, ref));
+
+        const std::vector<float> a = randomVector(rng, count), b = randomVector(rng, count);
+        std::vector<float> sum = a, expect = a;
+        for (size_t i = 0; i < count; ++i) expect[i] += b[i];
+        metal_probe::addInto(sum.data(), b.data(), count);
+        assert(same(sum, expect));
+    }
+}
+
+// The value and ownership heads' tanh against std::tanh (float), over [-20, 20].
+// Measured on an M5 Max (macOS 27.0.1), 20 seeds: worst maxErr 1.8e-7 (ceiling 1e-6).
+void test_tanh_vs_cpu() {
+    MaxErr err("tanh vs CPU", 1e-6);
+    for (int seed = 0; seed < gSeeds; ++seed) {
+        Rng rng(305 + 1000 * seed);
+        std::vector<float> x = randomVector(rng, 100000, 20.0);
+        for (float v : {0.0f, -0.0f, 1e-8f, -1e-8f, 0.5f, -0.5f, 9.0f, -9.0f, 20.0f, -20.0f})
+            x.push_back(v);
+        std::vector<float> ref(x.size()), y = x;
+        for (size_t i = 0; i < x.size(); ++i) ref[i] = std::tanh(x[i]);
+        metal_probe::tanhInPlace(y.data(), y.size());
+        err.add(y.data(), ref.data(), y.size());
+        // Element by element as well, so small values are held to their own scale.
+        for (size_t i = 0; i < x.size(); ++i)
+            assert(std::fabs(y[i] - ref[i]) <= 1e-6 * std::max(1e-3f, std::fabs(ref[i])));
+    }
+}
+
+// Linear::forward (gemm against w^T, then the bias per row) with the BLAS
+// backend, on the heads of the three presets. maxErr is taken per layer over
+// its outputs at all three batches together: value fc2 at batch 1 is a single
+// number, and when its bias cancels the product (0.0025 left from a bias of
+// -0.10) max|ref| stops measuring the layer's scale. Taken per batch, that
+// case reached 3.3e-5 with an absolute error of 8e-8, plain float rounding.
+// Measured on an M5 Max (macOS 27.0.1), 20 seeds: worst maxErr 7.5e-7 (ceiling 2e-6).
+void test_linear_forward_vs_cpu() {
+    auto blas = makeBackend("blas");
+    MaxErr err("Linear forward vs CPU", 2e-6);
+    struct Preset { int n, V; };
+    for (int seed = 0; seed < gSeeds; ++seed) {
+        Rng rng(306 + 1000 * seed);
+        for (const Preset pr : {Preset{5, 32}, Preset{9, 64}, Preset{19, 256}}) {
+            const int A = pr.n * pr.n;
+            struct Shape { int in, out; };
+            for (const Shape sh : {Shape{2 * A, A + 1}, Shape{A, pr.V}, Shape{pr.V, 1}}) {
+                Linear fc(sh.in, sh.out);
+                fc.init(rng);
+                for (float& b : fc.b) b = static_cast<float>(rng.uniform() - 0.5);
+                std::vector<float> ys, refs;
+                for (int B : {1, 16, 256}) {
+                    const std::vector<float> x = randomVector(rng, static_cast<size_t>(B) * sh.in);
+                    std::vector<float> ref(static_cast<size_t>(B) * sh.out), y(ref.size());
+                    fc.forward(*blas, x.data(), B, ref.data());
+                    metal_probe::linearForward(fc, x.data(), B, y.data());
+                    ys.insert(ys.end(), y.begin(), y.end());
+                    refs.insert(refs.end(), ref.begin(), ref.end());
+                }
+                err.add(ys.data(), refs.data(), ys.size());
+            }
+        }
+    }
+}
+
+// Every forward layer kernel gives a sample the same bits alone (a batch of
+// one) as at its place in a batch of 256 (9x9, 96 channels).
+void test_layer_kernels_batch_independent() {
+    Rng rng(307);
+    const int n = 9, A = n * n, B = 256, F = 96, P = 18, V = 64;
+    const std::vector<int> picks = {0, 1, 7, 100, 255};
+
+    // transpose_input: [B][P][A] -> [P][B][A].
+    {
+        const std::vector<float> x = randomVector(rng, static_cast<size_t>(B) * P * A);
+        std::vector<float> t(x.size());
+        metal_probe::transposeInput(x.data(), B, P, A, t.data());
+        for (int s : picks) {
+            const std::vector<float> one = rowOf(x, P * A, s);
+            std::vector<float> t1(one.size());
+            metal_probe::transposeInput(one.data(), 1, P, A, t1.data());
+            assert(same(t1, sampleOf(t, P, B, A, s)));
+        }
+    }
+    // im2col3, the convolutions, BN, ReLU, add and tanh on [F][B][A].
+    {
+        const std::vector<float> x = randomVector(rng, static_cast<size_t>(F) * B * A);
+        const std::vector<float> skip = randomVector(rng, x.size());
+        std::vector<float> col(static_cast<size_t>(F) * 9 * B * A);
+        metal_probe::im2col3(x.data(), F, B, n, col.data());
+        Conv2d c3(F, F, 3), c1(F, 2, 1);
+        c3.init(rng);
+        c1.init(rng);
+        std::vector<float> y3(x.size()), y1(static_cast<size_t>(2) * B * A);
+        metal_probe::convForward(c3, x.data(), B, n, y3.data());
+        metal_probe::convForward(c1, x.data(), B, n, y1.data());
+        BatchNorm2d bn(F);
+        for (int c = 0; c < F; ++c) {
+            bn.gamma[c] = static_cast<float>(0.5 + rng.uniform());
+            bn.beta[c] = static_cast<float>(rng.uniform() - 0.5);
+            bn.runMean[c] = static_cast<float>(rng.uniform() - 0.5);
+            bn.runVar[c] = static_cast<float>(0.1 + rng.uniform());
+        }
+        std::vector<float> yb(x.size());
+        metal_probe::bnInfer(bn, x.data(), B * A, yb.data());
+        std::vector<float> relu = x, added = x, th = x;
+        metal_probe::relu(relu.data(), relu.size());
+        metal_probe::addInto(added.data(), skip.data(), added.size());
+        metal_probe::tanhInPlace(th.data(), th.size());
+        for (int s : picks) {
+            const std::vector<float> xs = sampleOf(x, F, B, A, s);
+            const std::vector<float> ks = sampleOf(skip, F, B, A, s);
+            std::vector<float> col1(static_cast<size_t>(F) * 9 * A);
+            metal_probe::im2col3(xs.data(), F, 1, n, col1.data());
+            assert(same(col1, sampleOf(col, F * 9, B, A, s)));
+            std::vector<float> y31(xs.size()), y11(static_cast<size_t>(2) * A);
+            metal_probe::convForward(c3, xs.data(), 1, n, y31.data());
+            metal_probe::convForward(c1, xs.data(), 1, n, y11.data());
+            assert(same(y31, sampleOf(y3, F, B, A, s)));
+            assert(same(y11, sampleOf(y1, 2, B, A, s)));
+            std::vector<float> yb1(xs.size());
+            metal_probe::bnInfer(bn, xs.data(), A, yb1.data());
+            assert(same(yb1, sampleOf(yb, F, B, A, s)));
+            std::vector<float> r1 = xs, a1 = xs, t1 = xs;
+            metal_probe::relu(r1.data(), r1.size());
+            metal_probe::addInto(a1.data(), ks.data(), a1.size());
+            metal_probe::tanhInPlace(t1.data(), t1.size());
+            assert(same(r1, sampleOf(relu, F, B, A, s)));
+            assert(same(a1, sampleOf(added, F, B, A, s)));
+            assert(same(t1, sampleOf(th, F, B, A, s)));
+        }
+    }
+    // policy_flatten [2][B][A] -> [B][2A] and the Linear heads [B][in] -> [B][out].
+    {
+        const std::vector<float> act = randomVector(rng, static_cast<size_t>(2) * B * A);
+        std::vector<float> flat(act.size());
+        metal_probe::policyFlatten(act.data(), B, A, flat.data());
+        struct Shape { int in, out; };
+        for (const Shape sh : {Shape{2 * A, A + 1}, Shape{A, V}, Shape{V, 1}}) {
+            Linear fc(sh.in, sh.out);
+            fc.init(rng);
+            for (float& b : fc.b) b = static_cast<float>(rng.uniform() - 0.5);
+            const std::vector<float> x = randomVector(rng, static_cast<size_t>(B) * sh.in);
+            std::vector<float> y(static_cast<size_t>(B) * sh.out);
+            metal_probe::linearForward(fc, x.data(), B, y.data());
+            for (int s : picks) {
+                const std::vector<float> xs = rowOf(x, sh.in, s);
+                std::vector<float> ys(sh.out);
+                metal_probe::linearForward(fc, xs.data(), 1, ys.data());
+                assert(same(ys, rowOf(y, sh.out, s)));
+            }
+        }
+        for (int s : picks) {
+            const std::vector<float> as = sampleOf(act, 2, B, A, s);
+            std::vector<float> f1(as.size());
+            metal_probe::policyFlatten(as.data(), 1, A, f1.data());
+            assert(same(f1, rowOf(flat, 2 * A, s)));
+        }
+    }
+}
+
 } // namespace
 
 #endif // AZ_USE_METAL
@@ -382,6 +681,13 @@ int main() {
     test_gemm_vs_blas_forward_shapes();
     test_gemm_repeat_bitwise();
     test_gemm_columns_and_rows_batch_independent();
+    test_copy_kernels_bitwise();
+    test_conv_forward_vs_cpu();
+    test_bn_infer_vs_cpu();
+    test_relu_add_bitwise();
+    test_tanh_vs_cpu();
+    test_linear_forward_vs_cpu();
+    test_layer_kernels_batch_independent();
 #endif
     std::printf("test_metal: all tests passed\n");
     return 0;

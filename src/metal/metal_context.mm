@@ -41,6 +41,14 @@ struct KernelSpec {
 const KernelSpec kKernels[] = {
     {"fill", {kElementThreads, 1, 1}},
     {"gemm_simd", {kGemmThreads, 1, 1}},
+    {"transpose_input", {kElementThreads, 1, 1}},
+    {"im2col3", {kIm2colGroupX, kIm2colGroupY, 1}},
+    {"bn_infer", {kElementThreads, 1, 1}},
+    {"relu_forward", {kElementThreads, 1, 1}},
+    {"add_into", {kElementThreads, 1, 1}},
+    {"policy_flatten", {kElementThreads, 1, 1}},
+    {"bias_add_rows", {kElementThreads, 1, 1}},
+    {"tanh_inplace", {kElementThreads, 1, 1}},
 };
 
 // 32-bit FNV-1a: a short fingerprint of the shader source for the description.

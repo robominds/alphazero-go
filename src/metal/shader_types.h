@@ -50,4 +50,35 @@ struct GemmParams {
     float alpha, beta;
 };
 
+// transpose_input: [B][planes][area] -> [planes][B][area].
+struct TransposeParams {
+    az_uint B, planes, area;
+};
+
+// im2col3: in [C][B][n * n] -> col [C * 9][B * n * n], as Backend::im2col with k = 3.
+struct Im2colParams {
+    az_uint C, B, n;
+};
+
+// bn_infer: x, y [C][M]; per channel gamma, beta, runMean, runVar.
+AZ_CONSTANT float kBnEps = 1e-5f;   // BatchNorm2d::kEps
+struct BnInferParams {
+    az_uint C, M;
+};
+
+// relu_forward, add_into, tanh_inplace: count elements.
+struct CountParams {
+    az_uint count;
+};
+
+// policy_flatten: act [2][B][area] -> flat [B][2 * area].
+struct FlattenParams {
+    az_uint B, area;
+};
+
+// bias_add_rows: y [rows][cols] += b [cols] per row.
+struct BiasParams {
+    az_uint rows, cols;
+};
+
 #endif // AZGO_SHADER_TYPES_H

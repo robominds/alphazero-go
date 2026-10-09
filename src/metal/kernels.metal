@@ -132,3 +132,106 @@ kernel void gemm_simd(device const float* A [[buffer(0)]],
             simdgroup_barrier(mem_flags::mem_threadgroup);
         }
 }
+
+// ---------------------------------------------------------------- forward layers
+//
+// One thread per output element, each reading only the inputs that element
+// is made from. None of them reads another sample's data, so in inference
+// mode a sample's outputs are the same bits alone or in any batch.
+
+// Network::forward's first step: [B][planes][area] -> [planes][B][area].
+// Channel-major lets a convolution treat the whole batch as one wide matrix.
+kernel void transpose_input(device const float* in [[buffer(0)]],
+                            device float* out [[buffer(1)]],
+                            constant TransposeParams& p [[buffer(2)]],
+                            uint i [[thread_position_in_grid]]) {
+    if (i >= p.planes * p.B * p.area) return;
+    const uint a = i % p.area, pb = i / p.area;          // out index (plane * B + b) * area + a
+    const uint b = pb % p.B, plane = pb / p.B;
+    out[i] = in[(b * p.planes + plane) * p.area + a];
+}
+
+// Backend::im2col for k = 3 ('same' padding): row (c * 3 + dy) * 3 + dx of
+// col holds, for every pixel of every sample, the input value at offset
+// (dy - 1, dx - 1) from it, or 0 off the board. One thread per element of
+// col: x is the pixel (column), y the row. Padding reads 0, never a
+// neighbouring sample's board.
+kernel void im2col3(device const float* in [[buffer(0)]],
+                    device float* col [[buffer(1)]],
+                    constant Im2colParams& p [[buffer(2)]],
+                    uint2 gid [[thread_position_in_grid]]) {
+    const uint area = p.n * p.n, columns = p.B * area;
+    if (gid.x >= columns || gid.y >= p.C * 9) return;
+    const uint c = gid.y / 9, r = gid.y % 9;
+    const uint b = gid.x / area, q = gid.x % area;
+    const int y = int(q / p.n) + int(r / 3) - 1, x = int(q % p.n) + int(r % 3) - 1;
+    float v = 0.0f;
+    if (y >= 0 && y < int(p.n) && x >= 0 && x < int(p.n))
+        v = in[(c * p.B + b) * area + uint(y) * p.n + uint(x)];
+    col[gid.y * columns + gid.x] = v;
+}
+
+// BatchNorm2d::forwardInfer: the running statistics folded into one scale and
+// shift per channel, y = scale * x + shift, written as the CPU writes it.
+kernel void bn_infer(device const float* x [[buffer(0)]],
+                     device float* y [[buffer(1)]],
+                     device const float* gamma [[buffer(2)]],
+                     device const float* beta [[buffer(3)]],
+                     device const float* runMean [[buffer(4)]],
+                     device const float* runVar [[buffer(5)]],
+                     constant BnInferParams& p [[buffer(6)]],
+                     uint i [[thread_position_in_grid]]) {
+    if (i >= p.C * p.M) return;
+    const uint c = i / p.M;
+    const float scale = precise::divide(gamma[c], precise::sqrt(runVar[c] + kBnEps));
+    const float shift = beta[c] - scale * runMean[c];
+    y[i] = scale * x[i] + shift;
+}
+
+// reluForward, in place. x > 0 ? x : 0 maps -0 and NaN to +0, as on the CPU.
+kernel void relu_forward(device float* x [[buffer(0)]],
+                         constant CountParams& p [[buffer(1)]],
+                         uint i [[thread_position_in_grid]]) {
+    if (i >= p.count) return;
+    const float v = x[i];
+    x[i] = v > 0.0f ? v : 0.0f;
+}
+
+// The skip connection: dst += src.
+kernel void add_into(device float* dst [[buffer(0)]],
+                     device const float* src [[buffer(1)]],
+                     constant CountParams& p [[buffer(2)]],
+                     uint i [[thread_position_in_grid]]) {
+    if (i >= p.count) return;
+    dst[i] = dst[i] + src[i];
+}
+
+// The policy head's per-sample flatten: [2][B][area] -> [B][2 * area],
+// feature index c * area + point.
+kernel void policy_flatten(device const float* act [[buffer(0)]],
+                           device float* flat [[buffer(1)]],
+                           constant FlattenParams& p [[buffer(2)]],
+                           uint i [[thread_position_in_grid]]) {
+    const uint features = 2 * p.area;
+    if (i >= p.B * features) return;
+    const uint b = i / features, f = i % features;
+    const uint c = f / p.area, q = f % p.area;
+    flat[i] = act[(c * p.B + b) * p.area + q];
+}
+
+// The bias loop of Linear::forward: every row of y [rows][cols] += b.
+kernel void bias_add_rows(device float* y [[buffer(0)]],
+                          device const float* b [[buffer(1)]],
+                          constant BiasParams& p [[buffer(2)]],
+                          uint i [[thread_position_in_grid]]) {
+    if (i >= p.rows * p.cols) return;
+    y[i] = y[i] + b[i % p.cols];
+}
+
+// The value and ownership heads' last step, in place.
+kernel void tanh_inplace(device float* x [[buffer(0)]],
+                         constant CountParams& p [[buffer(1)]],
+                         uint i [[thread_position_in_grid]]) {
+    if (i >= p.count) return;
+    x[i] = precise::tanh(x[i]);
+}

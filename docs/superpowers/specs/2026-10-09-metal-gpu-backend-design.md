@@ -837,9 +837,9 @@ norm's backward).
 | phase | quantity | metric | ceiling |
 |---|---|---|---|
 | A | transpose, im2col, flatten, ReLU, add | bitwise vs CPU | 0 |
-| A | gemm (any trans, alpha, beta) | maxErr vs double | 1e-5 (spike: 1.3e-6 forward) |
-| A | conv forward, Linear forward | maxErr vs CPU | 2e-6 |
-| A | BN inference, tanh | maxErr vs CPU | 1e-6 |
+| A | gemm (any trans, alpha, beta) | maxErr vs double | 1e-5 (spike: 1.3e-6 forward; measured 1.5e-6) |
+| A | conv forward, Linear forward | maxErr vs CPU | 2e-6 (measured 5.6e-7, 7.5e-7†) |
+| A | BN inference, tanh | maxErr vs CPU | 1e-6 (measured 0, 1.8e-7) |
 | A | whole inference forward: logits, value, ownership | maxErr vs `Network::infer` | 1e-5 |
 | A | `lossFromOutputs` on CPU outputs | bitwise vs `Network::inferLoss` | 0 |
 | A | validation `LossStats` (GPU outputs) | relative | 1e-5 |
@@ -853,6 +853,14 @@ norm's backward).
 | B | per-sample loss terms, `LossStats` | relative | 1e-6 |
 | B | one `trainStep`: `LossStats` / each gradient | relative / normErr, maxErr | 1e-5 / 1e-4, 1e-3 |
 | B | five steps (lr 0.02, momentum 0.9, decay 1e-4): `LossStats` / weights / momentum | relative / normErr / normErr | 1e-4 / 1e-5 / 1e-3 |
+
+Measured values (tasks A2–A3) are the worst over 20 seeds on an M5 Max
+with macOS 27.0.1 (`AZGO_METAL_SEEDS=20 build-metal/test_metal`). Every
+batch-independence check was bitwise equal. BN inference matched the CPU
+bit for bit. † Linear forward is measured per layer over its outputs at
+batches 1, 16 and 256 together: value fc2 at batch 1 is a single number,
+and when its bias cancels the product, max|ref| no longer measures the
+layer's scale (3.3e-5 relative for an absolute error of 8e-8).
 
 Over a generation, metal and BLAS runs drift apart in their last bits,
 as two CPU builds with different BLAS libraries would. No test compares

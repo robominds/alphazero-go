@@ -13,6 +13,10 @@
 
 namespace azgo {
 
+struct BatchNorm2d;   // azgo/layers.hpp
+struct Conv2d;
+struct Linear;
+
 // True when this binary was built with -DAZ_USE_METAL=ON.
 bool metalBuilt();
 
@@ -48,6 +52,19 @@ void fill(float* data, size_t n, float value, size_t tail = 0);
 // when beta != 0.
 void gemm(bool transA, bool transB, int M, int N, int K, float alpha, const float* A, const float* B,
           float beta, float* C);
+
+// The forward layers, each against its CPU counterpart (Network::forward's
+// loops, Backend::im2col, the layer objects of azgo/layers.hpp). Activations
+// are channel-major [C][B * n * n] as on the CPU.
+void transposeInput(const float* input, int B, int planes, int area, float* out);  // [B][P][A] -> [P][B][A]
+void im2col3(const float* in, int C, int B, int n, float* col);              // Backend::im2col, k = 3
+void convForward(const Conv2d& conv, const float* x, int B, int n, float* y);  // Conv2d::forward
+void bnInfer(const BatchNorm2d& bn, const float* x, int M, float* y);  // BatchNorm2d::forwardInfer
+void relu(float* x, size_t count);                                     // reluForward
+void addInto(float* dst, const float* src, size_t count);              // dst += src
+void policyFlatten(const float* act, int B, int A, float* flat);       // [2][B][A] -> [B][2A]
+void linearForward(const Linear& fc, const float* x, int B, float* y);  // Linear::forward
+void tanhInPlace(float* x, size_t count);                               // x = tanh(x)
 
 } // namespace metal_probe
 #endif
