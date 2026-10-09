@@ -1,4 +1,5 @@
 #include "azgo/backend.hpp"
+#include "azgo/parallel.hpp"
 #include <algorithm>
 #include <cstddef>
 #include <stdexcept>
@@ -25,21 +26,24 @@ void Backend::im2col(const float* in, int C, int B, int n, int k, float* col) co
                 // at offset (dy - r, dx - r) from it; off-board reads are 0.
                 float* row = col + static_cast<size_t>((c * k + dy) * k + dx) * M;
                 const int oy = dy - r, ox = dx - r;
+                // Output columns x in [x0, x1) read on-board input sx = x + ox.
+                const int x0 = std::max(0, -ox), x1 = std::min(n, n - ox);
                 for (int b = 0; b < B; ++b) {
                     const float* src = in + (static_cast<size_t>(c) * B + b) * area;
                     float* dst = row + static_cast<size_t>(b) * area;
                     for (int y = 0; y < n; ++y) {
                         const int sy = y + oy;
                         float* out = dst + static_cast<size_t>(y) * n;
-                        if (sy < 0 || sy >= n) {
-                            std::fill(out, out + n, 0.0f);
+                        if (sy < 0 || sy >= n || x0 >= x1) {
+                            for (int x = 0; x < n; ++x) out[x] = 0.0f;
                             continue;
                         }
+                        // Plain loops, not std::copy: rows are short (n
+                        // floats), too short to pay for a memmove call.
                         const float* srcRow = src + static_cast<size_t>(sy) * n;
-                        for (int x = 0; x < n; ++x) {
-                            const int sx = x + ox;
-                            out[x] = (sx >= 0 && sx < n) ? srcRow[sx] : 0.0f;
-                        }
+                        for (int x = 0; x < x0; ++x) out[x] = 0.0f;
+                        for (int x = x0; x < x1; ++x) out[x] = srcRow[x + ox];
+                        for (int x = x1; x < n; ++x) out[x] = 0.0f;
                     }
                 }
             }
@@ -55,12 +59,14 @@ void Backend::col2im(const float* col, int C, int B, int n, int k, float* in) co
     // Exactly the loops of im2col with the assignment reversed: every place
     // im2col copied in[p] into col, col2im adds that col entry back into in[p].
     // That makes col2im the transpose (adjoint) of im2col, which is what the
-    // backward pass of a convolution needs.
+    // backward pass of a convolution needs. Each input point receives its
+    // contributions in (dy, dx) order.
     for (int c = 0; c < C; ++c) {
         for (int dy = 0; dy < k; ++dy) {
             for (int dx = 0; dx < k; ++dx) {
                 const float* row = col + static_cast<size_t>((c * k + dy) * k + dx) * M;
                 const int oy = dy - r, ox = dx - r;
+                const int x0 = std::max(0, -ox), x1 = std::min(n, n - ox);
                 for (int b = 0; b < B; ++b) {
                     float* dst = in + (static_cast<size_t>(c) * B + b) * area;
                     const float* src = row + static_cast<size_t>(b) * area;
@@ -69,10 +75,7 @@ void Backend::col2im(const float* col, int C, int B, int n, int k, float* in) co
                         if (sy < 0 || sy >= n) continue;
                         float* dstRow = dst + static_cast<size_t>(sy) * n;
                         const float* srcRow = src + static_cast<size_t>(y) * n;
-                        for (int x = 0; x < n; ++x) {
-                            const int sx = x + ox;
-                            if (sx >= 0 && sx < n) dstRow[sx] += srcRow[x];
-                        }
+                        for (int x = x0; x < x1; ++x) dstRow[x + ox] += srcRow[x];
                     }
                 }
             }
@@ -92,22 +95,24 @@ constexpr int kBlockN = 512;
 // Below this many multiply-adds, starting threads costs more than it saves.
 constexpr size_t kThreadingThreshold = size_t(1) << 18;
 
-// dst (cols x rows) = transpose of src (rows x cols).
-void transposeInto(const float* src, int rows, int cols, std::vector<float>& dst) {
+// dst (cols x rows, packed) = transpose of src (rows x cols, row length ld).
+void transposeInto(const float* src, int rows, int cols, int ld, std::vector<float>& dst) {
     dst.resize(static_cast<size_t>(rows) * cols);
     for (int r = 0; r < rows; ++r)
         for (int c = 0; c < cols; ++c)
-            dst[static_cast<size_t>(c) * rows + r] = src[static_cast<size_t>(r) * cols + c];
+            dst[static_cast<size_t>(c) * rows + r] = src[static_cast<size_t>(r) * ld + c];
 }
 
 // Rows [r0, r1) of C = alpha * A * B + beta * C with A (M x K) and B (K x N)
-// both non-transposed. i-k-j order: row i of C accumulates alpha * A[i][p]
-// times row p of B, so the innermost loop walks C and B contiguously and the
-// compiler vectorizes it.
-void gemmRows(int r0, int r1, int N, int K, float alpha, const float* A, const float* B,
-              float beta, float* C) {
+// both non-transposed, rows lda, ldb and ldc floats apart. i-k-j order: row i
+// of C accumulates alpha * A[i][p] times row p of B, so the innermost loop
+// walks C and B contiguously and the compiler vectorizes it. Element (i, j)
+// sums over p = 0, 1, ..., K-1 in that order whatever the row range and the
+// column count, so any split of the rows or columns gives the same bits.
+void gemmRows(int r0, int r1, int N, int K, float alpha, const float* A, int lda, const float* B,
+              int ldb, float beta, float* C, int ldc) {
     for (int i = r0; i < r1; ++i) {
-        float* c = C + static_cast<size_t>(i) * N;
+        float* c = C + static_cast<size_t>(i) * ldc;
         if (beta == 0.0f) {
             std::fill(c, c + N, 0.0f);            // never read C: it may hold NaN
         } else if (beta != 1.0f) {
@@ -119,11 +124,11 @@ void gemmRows(int r0, int r1, int N, int K, float alpha, const float* A, const f
         for (int p0 = 0; p0 < K; p0 += kBlockK) {
             const int p1 = std::min(K, p0 + kBlockK);
             for (int i = r0; i < r1; ++i) {
-                float* c = C + static_cast<size_t>(i) * N;
-                const float* a = A + static_cast<size_t>(i) * K;
+                float* c = C + static_cast<size_t>(i) * ldc;
+                const float* a = A + static_cast<size_t>(i) * lda;
                 for (int p = p0; p < p1; ++p) {
                     const float s = alpha * a[p];
-                    const float* b = B + static_cast<size_t>(p) * N;
+                    const float* b = B + static_cast<size_t>(p) * ldb;
                     for (int j = j0; j < j1; ++j) c[j] += s * b[j];
                 }
             }
@@ -136,26 +141,29 @@ void gemmRows(int r0, int r1, int N, int K, float alpha, const float* A, const f
 NaiveBackend::NaiveBackend(int threads) : threads_(std::max(1, threads)) {}
 
 void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alpha,
-                        const float* A, const float* B, float beta, float* C) const {
+                        const float* A, int lda, const float* B, int ldb, float beta,
+                        float* C, int ldc) const {
     if (M <= 0 || N <= 0) return;
     // Pack transposed operands once into row-major scratch, so the kernel
-    // only ever sees the contiguous layout. thread_local: several worker
+    // only ever sees the non-transposed layout. thread_local: several worker
     // threads may share one backend, and reusing the vectors avoids an
     // allocation per call.
     thread_local std::vector<float> packA, packB;
     if (transA) {
-        transposeInto(A, K, M, packA);            // A is stored K x M
+        transposeInto(A, K, M, lda, packA);       // A is stored K x M
         A = packA.data();
+        lda = K;
     }
     if (transB) {
-        transposeInto(B, N, K, packB);            // B is stored N x K
+        transposeInto(B, N, K, ldb, packB);       // B is stored N x K
         B = packB.data();
+        ldb = N;
     }
 
     const size_t work = static_cast<size_t>(M) * N * K;
     const int workers = (threads_ > 1 && work >= kThreadingThreshold) ? std::min(threads_, M) : 1;
     if (workers == 1) {
-        gemmRows(0, M, N, K, alpha, A, B, beta, C);
+        gemmRows(0, M, N, K, alpha, A, lda, B, ldb, beta, C, ldc);
         return;
     }
     // Split the rows of C into contiguous chunks, one per thread. Each element
@@ -167,10 +175,54 @@ void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alp
     for (int t = 1; t < workers; ++t) {
         const int r0 = t * chunk, r1 = std::min(M, r0 + chunk);
         if (r0 >= r1) break;
-        pool.emplace_back(gemmRows, r0, r1, N, K, alpha, A, B, beta, C);
+        pool.emplace_back(gemmRows, r0, r1, N, K, alpha, A, lda, B, ldb, beta, C, ldc);
     }
-    gemmRows(0, std::min(M, chunk), N, K, alpha, A, B, beta, C);   // chunk 0 on this thread
+    gemmRows(0, std::min(M, chunk), N, K, alpha, A, lda, B, ldb, beta, C, ldc);   // chunk 0 on this thread
     for (std::thread& t : pool) t.join();
+}
+
+// ---------------------------------------------------------------- row blocks
+
+void gemmRowBlocks(const Backend& be, ThreadPool* pool, bool transA, bool transB, int M, int N, int K,
+                   float alpha, const float* A, const float* B, float beta, float* C) {
+    const int lda = transA ? M : K, ldb = transB ? K : N;
+    if (pool == nullptr || M < 2 * kGemmRowBlock) {
+        be.gemm(transA, transB, M, N, K, alpha, A, lda, B, ldb, beta, C, N);
+        return;
+    }
+    const int bands = M / kGemmRowBlock;   // the last band takes the remainder
+    parallelChunks(pool, bands, [&](int band) {
+        const int r0 = band * kGemmRowBlock;
+        const int rows = band == bands - 1 ? M - r0 : kGemmRowBlock;
+        // Rows r0.. of op(A): further rows of A, or further columns when A
+        // is stored transposed. B is shared by every band.
+        const float* a = transA ? A + r0 : A + static_cast<size_t>(r0) * K;
+        be.gemm(transA, transB, rows, N, K, alpha, a, lda, B, ldb, beta, C + static_cast<size_t>(r0) * N, N);
+    });
+}
+
+void im2colChannels(const Backend& be, ThreadPool* pool, const float* in, int C, int B, int n, int k,
+                    float* col) {
+    if (pool == nullptr) {
+        be.im2col(in, C, B, n, k, col);
+        return;
+    }
+    const size_t M = static_cast<size_t>(B) * n * n;
+    parallelChunks(pool, C, [&](int c) {
+        be.im2col(in + static_cast<size_t>(c) * M, 1, B, n, k, col + static_cast<size_t>(c) * k * k * M);
+    });
+}
+
+void col2imChannels(const Backend& be, ThreadPool* pool, const float* col, int C, int B, int n, int k,
+                    float* in) {
+    if (pool == nullptr) {
+        be.col2im(col, C, B, n, k, in);
+        return;
+    }
+    const size_t M = static_cast<size_t>(B) * n * n;
+    parallelChunks(pool, C, [&](int c) {
+        be.col2im(col + static_cast<size_t>(c) * k * k * M, 1, B, n, k, in + static_cast<size_t>(c) * M);
+    });
 }
 
 // ---------------------------------------------------------------- factory

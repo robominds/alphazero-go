@@ -29,14 +29,17 @@ class BlasBackend : public Backend {
 public:
     const char* name() const override { return "blas"; }
 
-    void gemm(bool transA, bool transB, int M, int N, int K, float alpha,
-              const float* A, const float* B, float beta, float* C) const override {
+    using Backend::gemm;
+    void gemm(bool transA, bool transB, int M, int N, int K, float alpha, const float* A, int lda,
+              const float* B, int ldb, float beta, float* C, int ldc) const override {
         if (M <= 0 || N <= 0) return;
         if (K <= 0) {
             // BLAS requires leading dimensions >= 1; the product is empty anyway.
-            const size_t count = static_cast<size_t>(M) * N;
-            if (beta == 0.0f) std::fill(C, C + count, 0.0f);
-            else for (size_t i = 0; i < count; ++i) C[i] *= beta;
+            for (int i = 0; i < M; ++i) {
+                float* c = C + static_cast<size_t>(i) * ldc;
+                if (beta == 0.0f) std::fill(c, c + N, 0.0f);
+                else for (int j = 0; j < N; ++j) c[j] *= beta;
+            }
             return;
         }
         // Row-major leading dimensions are the STORED row lengths:
@@ -44,7 +47,7 @@ public:
         // Like reference BLAS, cblas_sgemm does not read C when beta == 0.
         cblas_sgemm(CblasRowMajor, transA ? CblasTrans : CblasNoTrans,
                     transB ? CblasTrans : CblasNoTrans, M, N, K, alpha,
-                    A, transA ? M : K, B, transB ? K : N, beta, C, N);
+                    A, lda, B, ldb, beta, C, ldc);
     }
 };
 

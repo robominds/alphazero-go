@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include "azgo/backend.hpp"
+#include "azgo/parallel.hpp"
 #include "azgo/rng.hpp"
 
 using namespace azgo;
@@ -215,6 +216,153 @@ static void test_blas_matches_naive() {
     }
 }
 
+// Leading dimensions: the gemm of a sub-matrix stored inside larger arrays
+// equals the packed gemm of a copy of it, bit for bit (same backend).
+static void checkStridedMatchesPacked(const Backend& be) {
+    Rng rng(21);
+    const int M = 13, N = 11, K = 9, pad = 5;
+    for (int t = 0; t < 4; ++t) {
+        const bool tA = (t & 1) != 0, tB = (t & 2) != 0;
+        const int aRows = tA ? K : M, aCols = tA ? M : K, bRows = tB ? N : K, bCols = tB ? K : N;
+        const int lda = aCols + pad, ldb = bCols + pad, ldc = N + pad;
+        std::vector<float> A = randomVector(rng, static_cast<size_t>(aRows) * lda);
+        std::vector<float> B = randomVector(rng, static_cast<size_t>(bRows) * ldb);
+        std::vector<float> C = randomVector(rng, static_cast<size_t>(M) * ldc);
+        std::vector<float> Ap, Bp, Cp;
+        for (int r = 0; r < aRows; ++r) Ap.insert(Ap.end(), A.begin() + r * lda, A.begin() + r * lda + aCols);
+        for (int r = 0; r < bRows; ++r) Bp.insert(Bp.end(), B.begin() + r * ldb, B.begin() + r * ldb + bCols);
+        for (int r = 0; r < M; ++r) Cp.insert(Cp.end(), C.begin() + r * ldc, C.begin() + r * ldc + N);
+        const std::vector<float> C0 = C;
+        be.gemm(tA, tB, M, N, K, 0.5f, A.data(), lda, B.data(), ldb, 0.75f, C.data(), ldc);
+        be.gemm(tA, tB, M, N, K, 0.5f, Ap.data(), Bp.data(), 0.75f, Cp.data());
+        for (int r = 0; r < M; ++r) {
+            assert(std::memcmp(C.data() + r * ldc, Cp.data() + r * N, N * sizeof(float)) == 0);
+            // The padding between rows is never written.
+            for (int j = N; j < ldc; ++j) assert(C[static_cast<size_t>(r) * ldc + j] == C0[static_cast<size_t>(r) * ldc + j]);
+        }
+    }
+}
+
+static void test_strided_gemm() {
+    NaiveBackend naive;
+    checkStridedMatchesPacked(naive);
+    if (blasAvailable()) checkStridedMatchesPacked(*makeBackend("blas"));
+}
+
+// gemmRowBlocks with any pool (1, 2, 3 or 7 threads) gives the bits of one
+// plain gemm call. The shapes are a convolution's three gemms (forward, dW
+// accumulated with beta = 1, dX) and the stem's, at several board sizes,
+// widths and batches, including the presets' (5x5 3x32 B=128, 9x9 6x64 and
+// 6x96 B=256, 19x19 10x128) and odd tails like a validation pass's last
+// batch. For the naive backend this holds by construction; for Accelerate
+// it is a measurement (a 5,000-shape sweep in development found no
+// exception for bands of 8, 16 or 32 rows; single rows do differ, which is
+// why no band is thinner than kGemmRowBlock).
+static void checkRowBlocksMatchUnsplit(const Backend& be, bool large) {
+    struct Conv { int n, F, B; };
+    const Conv convs[] = {{5, 8, 16},  {5, 32, 128}, {5, 32, 7},  {7, 48, 33},  {9, 64, 256},
+                          {9, 96, 256}, {9, 96, 100}, {9, 64, 3},  {9, 100, 64}, {13, 80, 16},
+                          {19, 128, 16}, {19, 128, 1}};
+    const int planes = 18;
+    ThreadPool p1(1), p2(2), p3(3), p7(7);
+    ThreadPool* pools[] = {&p1, &p2, &p3, &p7};
+    Rng rng(31);
+    for (const Conv& c : convs) {
+        // The naive backend gets the small shapes only: there the equality
+        // follows from the loop order, and the big ones are slow.
+        if (!large && c.B * c.n * c.n * c.F > 64 * 1024) continue;
+        const int Mpix = c.B * c.n * c.n;
+        struct G { bool tA, tB; int M, N, K; float beta; };
+        const G gemms[] = {
+            {false, false, c.F, Mpix, 9 * c.F, 0.0f},     // forward
+            {false, false, c.F, Mpix, 9 * planes, 0.0f},  // stem forward
+            {false, true, c.F, 9 * c.F, Mpix, 1.0f},      // dW (accumulates)
+            {false, true, c.F, 9 * planes, Mpix, 1.0f},   // stem dW
+            {true, false, 9 * c.F, Mpix, c.F, 0.0f},      // dX into the columns
+            {true, false, c.F, Mpix, 2, 0.0f},            // 1x1 policy conv dX
+        };
+        for (const G& g : gemms) {
+            std::vector<float> A = randomVector(rng, static_cast<size_t>(g.M) * g.K);
+            std::vector<float> B = randomVector(rng, static_cast<size_t>(g.K) * g.N);
+            std::vector<float> C0 = randomVector(rng, static_cast<size_t>(g.M) * g.N);
+            std::vector<float> expected = C0;
+            be.gemm(g.tA, g.tB, g.M, g.N, g.K, 1.0f, A.data(), B.data(), g.beta, expected.data());
+            for (ThreadPool* pool : pools) {
+                std::vector<float> C = C0;
+                gemmRowBlocks(be, pool, g.tA, g.tB, g.M, g.N, g.K, 1.0f, A.data(), B.data(), g.beta, C.data());
+                if (std::memcmp(C.data(), expected.data(), C.size() * sizeof(float)) != 0) {
+                    std::printf("%s row blocks differ: n=%d F=%d B=%d M=%d N=%d K=%d threads=%d\n", be.name(),
+                                c.n, c.F, c.B, g.M, g.N, g.K, pool->threads());
+                    assert(false);
+                }
+            }
+        }
+    }
+}
+
+static void test_row_blocks_match_unsplit_gemm() {
+    NaiveBackend naive;
+    checkRowBlocksMatchUnsplit(naive, false);
+    if (blasAvailable()) checkRowBlocksMatchUnsplit(*makeBackend("blas"), true);
+}
+
+// The definitions of im2col and col2im as first written (plain loops). The
+// backend's versions must give exactly these bits: im2col is a copy, and
+// col2im adds each pixel's contributions in the same (dy, dx) order.
+static void referenceIm2col(const float* in, int C, int B, int n, int k, float* col) {
+    const int r = k / 2;
+    const size_t area = static_cast<size_t>(n) * n, M = static_cast<size_t>(B) * area;
+    for (int c = 0; c < C; ++c)
+        for (int dy = 0; dy < k; ++dy)
+            for (int dx = 0; dx < k; ++dx)
+                for (int b = 0; b < B; ++b)
+                    for (int y = 0; y < n; ++y)
+                        for (int x = 0; x < n; ++x) {
+                            const int sy = y + dy - r, sx = x + dx - r;
+                            col[static_cast<size_t>((c * k + dy) * k + dx) * M + b * area + y * n + x] =
+                                (sy >= 0 && sy < n && sx >= 0 && sx < n)
+                                    ? in[(static_cast<size_t>(c) * B + b) * area + sy * n + sx]
+                                    : 0.0f;
+                        }
+}
+
+static void referenceCol2im(const float* col, int C, int B, int n, int k, float* in) {
+    const int r = k / 2;
+    const size_t area = static_cast<size_t>(n) * n, M = static_cast<size_t>(B) * area;
+    std::fill(in, in + static_cast<size_t>(C) * M, 0.0f);
+    for (int c = 0; c < C; ++c)
+        for (int dy = 0; dy < k; ++dy)
+            for (int dx = 0; dx < k; ++dx)
+                for (int b = 0; b < B; ++b)
+                    for (int y = 0; y < n; ++y)
+                        for (int x = 0; x < n; ++x) {
+                            const int sy = y + dy - r, sx = x + dx - r;
+                            if (sy >= 0 && sy < n && sx >= 0 && sx < n)
+                                in[(static_cast<size_t>(c) * B + b) * area + sy * n + sx] +=
+                                    col[static_cast<size_t>((c * k + dy) * k + dx) * M + b * area + y * n + x];
+                        }
+}
+
+static void test_im2col_col2im_match_definition_bitwise() {
+    NaiveBackend be;
+    Rng rng(41);
+    for (int n : {1, 2, 3, 5, 9, 19})
+        for (int k : {1, 3})
+            for (int B : {1, 3}) {
+                const int C = 4;
+                const size_t inSize = static_cast<size_t>(C) * B * n * n, colSize = inSize * k * k;
+                std::vector<float> x = randomVector(rng, inSize), y = randomVector(rng, colSize);
+                std::vector<float> col(colSize, -7.0f), colRef(colSize, -9.0f);
+                be.im2col(x.data(), C, B, n, k, col.data());
+                referenceIm2col(x.data(), C, B, n, k, colRef.data());
+                assert(std::memcmp(col.data(), colRef.data(), colSize * sizeof(float)) == 0);
+                std::vector<float> back(inSize, std::numeric_limits<float>::quiet_NaN()), backRef(inSize);
+                be.col2im(y.data(), C, B, n, k, back.data());
+                referenceCol2im(y.data(), C, B, n, k, backRef.data());
+                assert(std::memcmp(back.data(), backRef.data(), inSize * sizeof(float)) == 0);
+            }
+}
+
 int main() {
     test_naive_gemm_matches_reference();
     test_beta_zero_ignores_nan_in_c();
@@ -225,6 +373,9 @@ int main() {
     test_col2im_overwrites_and_counts_overlaps();
     test_make_backend();
     test_blas_matches_naive();
+    test_strided_gemm();
+    test_row_blocks_match_unsplit_gemm();
+    test_im2col_col2im_match_definition_bitwise();
     std::printf("test_backend: all tests passed\n");
     return 0;
 }
