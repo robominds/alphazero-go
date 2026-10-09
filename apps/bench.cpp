@@ -21,6 +21,7 @@
 #include <thread>
 #include <cstdlib>
 #include <exception>
+#include <functional>
 #include <filesystem>
 #include <memory>
 #include <sstream>
@@ -121,6 +122,34 @@ double callsPerSecond(Fn fn, double seconds) {
     return static_cast<double>(calls) / elapsed;
 }
 
+// Runs body(w) on `workers` threads until stop is set after `seconds`, or
+// until one of them throws; rethrows the first exception after joining
+// (an exception escaping a std::thread would end the program).
+template <class Body>
+double runWorkers(int workers, double seconds, std::atomic<bool>& stop, Body body) {
+    std::mutex m;
+    std::exception_ptr first;
+    std::vector<std::thread> threads;
+    const auto start = Clock::now();
+    for (int w = 0; w < workers; ++w) {
+        threads.emplace_back([&, w] {
+            try {
+                body(w);
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(m);
+                if (!first) first = std::current_exception();
+                stop = true;
+            }
+        });
+    }
+    while (!stop.load() && secondsSince(start) < seconds)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    stop = true;
+    for (std::thread& t : threads) t.join();
+    if (first) std::rethrow_exception(first);
+    return secondsSince(start);
+}
+
 #ifdef AZ_USE_METAL
 // Positions per second through the GPU network, one synchronous pass of
 // `batch` at a time (copy in, one command buffer, wait, copy out).
@@ -138,41 +167,51 @@ double measureGpuSync(const azgo::NetConfig& nc, int batch, double seconds) {
 // have a pass of `batch` in flight, each resubmitted as soon as it is done.
 double measureGpuPipelined(const azgo::NetConfig& nc, int batch, double seconds) {
     const azgo::Network net(nc, 1);
-    std::unique_ptr<azgo::BatchRunner> runner = azgo::makeMetalRunner(net, batch);
-    azgo::Rng rng(7);
-    const std::vector<float> input = randomInput(nc, batch, rng);
-    for (int s = 0; s < runner->slots(); ++s)
-        std::copy(input.begin(), input.end(), runner->input(s));
+    // The completion handler's state is declared before the runner, so it
+    // outlives it: the runner's destructor waits for passes in flight, whose
+    // handlers still use it.
     std::mutex m;
     std::condition_variable cv;
     std::vector<int> ready;   // slots whose pass is done
     std::string error;
     auto done = [&](int slot, std::string err) {
         std::lock_guard<std::mutex> lock(m);
-        if (!err.empty()) error = err;
+        if (!err.empty() && error.empty()) error = err;
         ready.push_back(slot);
         cv.notify_one();
     };
-    for (int s = 0; s < runner->slots(); ++s) runner->begin(s, batch, done);
+    std::unique_ptr<azgo::BatchRunner> runner = azgo::makeMetalRunner(net, batch);
+    azgo::Rng rng(7);
+    const std::vector<float> input = randomInput(nc, batch, rng);
+    for (int s = 0; s < runner->slots(); ++s)
+        std::copy(input.begin(), input.end(), runner->input(s));
+    int inFlight = 0;
+    for (int s = 0; s < runner->slots(); ++s) {
+        runner->begin(s, batch, done);
+        ++inFlight;
+    }
     long long passes = 0;
     const auto start = Clock::now();
-    int inFlight = runner->slots();
+    // After an error nothing is resubmitted; the passes in flight are
+    // drained before it is reported.
     while (inFlight > 0) {
         int slot;
+        bool failed;
         {
             std::unique_lock<std::mutex> lock(m);
             cv.wait(lock, [&] { return !ready.empty(); });
             slot = ready.back();
             ready.pop_back();
-            if (!error.empty()) throw std::runtime_error(error);
+            failed = !error.empty();
         }
         --inFlight;
         ++passes;
-        if (secondsSince(start) < seconds) {
+        if (!failed && secondsSince(start) < seconds) {
             runner->begin(slot, batch, done);
             ++inFlight;
         }
     }
+    if (!error.empty()) throw std::runtime_error(error);
     return static_cast<double>(passes) * batch / secondsSince(start);
 }
 
@@ -189,26 +228,18 @@ HubLoad measureHub(const azgo::NetConfig& nc, int workers, double seconds) {
     azgo::InferenceHub hub(azgo::makeMetalRunner(net, options.maxBatch), nc, options);
     std::atomic<bool> stop{false};
     std::atomic<long long> evals{0};
-    std::vector<std::thread> threads;
-    const auto start = Clock::now();
-    for (int w = 0; w < workers; ++w) {
-        threads.emplace_back([&, w] {
-            std::unique_ptr<azgo::Evaluator> ev = hub.makeEvaluator(kInferBatch);
-            azgo::Rng rng(static_cast<uint64_t>(100 + w));
-            const std::vector<float> input = randomInput(nc, kInferBatch, rng);
-            std::vector<float> logits(static_cast<size_t>(kInferBatch) * nc.actions()), values(kInferBatch);
-            long long mine = 0;
-            while (!stop.load(std::memory_order_relaxed)) {
-                ev->evaluate(input.data(), kInferBatch, logits.data(), values.data());
-                mine += kInferBatch;
-            }
-            evals += mine;
-        });
-    }
-    std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
-    stop = true;
-    for (std::thread& t : threads) t.join();
-    const double elapsed = secondsSince(start);
+    const double elapsed = runWorkers(workers, seconds, stop, [&](int w) {
+        std::unique_ptr<azgo::Evaluator> ev = hub.makeEvaluator(kInferBatch);
+        azgo::Rng rng(static_cast<uint64_t>(100 + w));
+        const std::vector<float> input = randomInput(nc, kInferBatch, rng);
+        std::vector<float> logits(static_cast<size_t>(kInferBatch) * nc.actions()), values(kInferBatch);
+        long long mine = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+            ev->evaluate(input.data(), kInferBatch, logits.data(), values.data());
+            mine += kInferBatch;
+        }
+        evals += mine;
+    });
     const azgo::InferenceHub::Stats st = hub.stats();
     return {static_cast<double>(evals) / elapsed,
             st.batches > 0 ? static_cast<double>(st.positions) / static_cast<double>(st.batches) : 0.0,
@@ -225,27 +256,20 @@ double measureCpuWorkers(const azgo::NetConfig& nc, double seconds) {
     const std::string backendName = azgo::blasAvailable() ? "blas" : "naive";
     std::atomic<bool> stop{false};
     std::atomic<long long> evals{0};
-    std::vector<std::thread> threads;
-    const auto start = Clock::now();
-    for (int w = 0; w < workers; ++w) {
-        threads.emplace_back([&, w] {
-            std::unique_ptr<azgo::Backend> backend = azgo::makeBackend(backendName, 1);
-            azgo::Workspace ws(nc, kInferBatch, *backend);
-            azgo::Rng rng(static_cast<uint64_t>(200 + w));
-            const std::vector<float> input = randomInput(nc, kInferBatch, rng);
-            std::vector<float> logits(static_cast<size_t>(kInferBatch) * nc.actions()), values(kInferBatch);
-            long long mine = 0;
-            while (!stop.load(std::memory_order_relaxed)) {
-                net.infer(ws, input.data(), kInferBatch, logits.data(), values.data());
-                mine += kInferBatch;
-            }
-            evals += mine;
-        });
-    }
-    std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
-    stop = true;
-    for (std::thread& t : threads) t.join();
-    return static_cast<double>(evals) / secondsSince(start);
+    const double elapsed = runWorkers(workers, seconds, stop, [&](int w) {
+        std::unique_ptr<azgo::Backend> backend = azgo::makeBackend(backendName, 1);
+        azgo::Workspace ws(nc, kInferBatch, *backend);
+        azgo::Rng rng(static_cast<uint64_t>(200 + w));
+        const std::vector<float> input = randomInput(nc, kInferBatch, rng);
+        std::vector<float> logits(static_cast<size_t>(kInferBatch) * nc.actions()), values(kInferBatch);
+        long long mine = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+            net.infer(ws, input.data(), kInferBatch, logits.data(), values.data());
+            mine += kInferBatch;
+        }
+        evals += mine;
+    });
+    return static_cast<double>(evals) / elapsed;
 }
 
 // Positions evaluated per second, batch kInferBatch, one thread.

@@ -18,6 +18,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <system_error>
 #include <unistd.h>
@@ -1151,34 +1152,95 @@ void test_metal_rerate_reproduces_live() {
         assert(readBytes(dir.file(std::string("rerate/") + f)) == readBytes(dir.file(f)));
 }
 
-// A GPU failure in generation 2's self-play: the generation fails with the
-// spec's message, state.bin still says generation 1, and a resume
-// reproduces the uninterrupted run byte for byte.
+// A GPU failure during generation 2, in each phase that uses the GPU:
+// self-play, the validation loss and the arena. The generation fails with
+// the spec's message and state.bin still says generation 1. A failure in
+// the arena comes after the checkpoint is written, which leaves a
+// gen_0002.azn the run has not committed: re-rating must stop at
+// state.bin's generation. A resume reproduces the uninterrupted run byte
+// for byte. With one worker every pass holds one request, so the number of
+// command buffers per phase is fixed, and the failing one can be placed:
+// the 6th (self-play), the last before the arena (validation, measured on a
+// run without an arena) and the last of the generation (the arena).
 void test_gpu_failure_keeps_last_good_state() {
-    RunDir broken("fail"), clean("fail_clean");
-    startRun(metalRunConfig(), clean)->runUntil(2);
+    Config c = metalRunConfig();
+    c.workers = 1;
+    RunDir clean("fail_clean"), noArena("fail_noarena");
+    long long withArena = 0, withoutArena = 0;
     {
-        std::unique_ptr<Trainer> t = startRun(metalRunConfig(), broken);
+        std::unique_ptr<Trainer> t = startRun(c, clean);
         t->runUntil(1);
-        metal_probe::failCommandBuffersAfter(5);
-        bool threw = false;
-        try {
-            t->runGeneration();
-        } catch (const std::runtime_error& e) {
-            threw = std::string(e.what()).rfind("GPU inference failed: ", 0) == 0;
-        }
-        metal_probe::failCommandBuffersAfter(0);
-        assert(threw);
+        const long long before = metal_probe::commandBuffersCommitted();
+        t->runGeneration();
+        withArena = metal_probe::commandBuffersCommitted() - before;
     }
-    assert(loadTrainingState(statePath(broken.str())).generation == 1);
-    assert(!fs::exists(checkpointPath(broken.str(), 2)));
     {
-        std::ostringstream out;
-        std::unique_ptr<Trainer> t = Trainer::resume(broken.str(), {}, &out);
-        t->setLog(nullptr);
-        t->runUntil(2);
+        Config a = c;
+        a.arenaEvery = 0;
+        std::unique_ptr<Trainer> t = startRun(a, noArena);
+        t->runUntil(1);
+        const long long before = metal_probe::commandBuffersCommitted();
+        t->runGeneration();
+        withoutArena = metal_probe::commandBuffersCommitted() - before;
     }
-    assert(runFingerprint(broken, 2) == runFingerprint(clean, 2));
+    assert(withoutArena > 6 && withArena > withoutArena);
+    struct Case { const char* phase; long long n; };
+    const Case cases[] = {{"self-play", 5}, {"validation", withoutArena - 1}, {"arena", withArena - 1}};
+    for (const Case& k : cases) {
+        RunDir broken(std::string("fail_") + k.phase);
+        {
+            std::unique_ptr<Trainer> t = startRun(c, broken);
+            t->runUntil(1);
+            metal_probe::failCommandBuffersAfter(static_cast<int>(k.n));
+            bool threw = false;
+            try {
+                t->runGeneration();
+            } catch (const std::runtime_error& e) {
+                threw = std::string(e.what()).rfind("GPU inference failed: ", 0) == 0;
+            }
+            metal_probe::failCommandBuffersAfter(0);
+            assert(threw);
+        }
+        assert(loadTrainingState(statePath(broken.str())).generation == 1);
+        assert(fs::exists(checkpointPath(broken.str(), 2)) == (std::string(k.phase) == "arena"));
+        assert(rerateRun(broken.str(), {}, nullptr) == 1);   // never the uncommitted generation 2
+        {
+            std::ostringstream out;
+            std::unique_ptr<Trainer> t = Trainer::resume(broken.str(), {}, &out);
+            t->setLog(nullptr);
+            t->runUntil(2);
+        }
+        assert(runFingerprint(broken, 2) == runFingerprint(clean, 2));
+    }
+}
+
+// The hubs' GPU memory is checked when a run starts or resumes, for
+// inference_batch and two hubs at once (an arena match), before anything
+// is written: a batch too large for the GPU fails up front, not in the
+// first arena. The device's working set is replaced by a small limit here.
+void test_metal_memory_checked_up_front() {
+    RunDir fresh("mem_fresh"), existing("mem_existing");
+    startRun(metalRunConfig(), existing)->runUntil(1);
+    const std::string config = readBytes(configPath(existing.str()));
+    metal_probe::setWorkingSetLimit(size_t(1) << 20);   // 1 MB
+    auto refused = [](const std::function<void()>& f) {
+        try {
+            f();
+        } catch (const std::runtime_error& e) {
+            return std::string(e.what()).find("lower inference_batch") != std::string::npos;
+        }
+        return false;
+    };
+    std::ostringstream out;
+    const bool startRefused = refused([&] { Trainer::startNew(metalRunConfig(), fresh.str(), {}, &out); });
+    const bool resumeRefused =
+        refused([&] { Trainer::resume(existing.str(), {"inference_batch=1024"}, &out); });
+    metal_probe::setWorkingSetLimit(0);
+    assert(startRefused && resumeRefused);
+    assert(out.str().empty());   // no device line for a run that did not start
+    assert(!fs::exists(fresh.path) || !fs::exists(statePath(fresh.str())));
+    assert(!fs::exists(configPath(fresh.str())));
+    assert(readBytes(configPath(existing.str())) == config);
 }
 
 // Arena matches on the GPU: network against network (random symmetry on one
@@ -1354,6 +1416,7 @@ int main() {
     test_metal_runs_are_reproducible();
     test_metal_rerate_reproduces_live();
     test_gpu_failure_keeps_last_good_state();
+    test_metal_memory_checked_up_front();
     test_single_search_hub_matches_alone();
 #endif
     std::printf("test_metal: all tests passed\n");

@@ -70,6 +70,11 @@ void saveTrainingState(const std::string& path, const TrainingState& state);
 // naming the path.
 TrainingState loadTrainingState(const std::string& path, const std::vector<int>& bots = {});
 
+// The generation a state.bin was committed at, read from its header alone
+// (no buffer or optimizer state is loaded). Throws like loadTrainingState
+// for a missing or foreign file.
+int trainingStateGeneration(const std::string& path);
+
 // 64-bit FNV-1a hash of the file's bytes: what state.bin records for each
 // reference network. Throws std::runtime_error naming the path if it cannot
 // be read.

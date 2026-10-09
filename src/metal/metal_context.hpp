@@ -108,6 +108,11 @@ void runInPool(const std::function<void()>& fn);
 // if the GPU had; n = 0 disables it.
 void setCommandBufferFailureAfter(int n);
 
+// Test hooks: a stand-in for the device's recommended working set (0: none),
+// and the number of command buffers committed so far.
+void setWorkingSetOverride(size_t bytes);
+long long commandBuffersCommitted();
+
 // One command buffer with one compute encoder whose dispatches run in order,
 // each seeing the previous ones' results (serial dispatch, default hazard
 // tracking). Encode kernels with dispatch, then commit once.

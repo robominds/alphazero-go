@@ -27,6 +27,21 @@ std::vector<int> initialReferences(int numFixed) {
     return refs;
 }
 
+int trainingStateGeneration(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error(path + ": cannot open training state");
+    try {
+        BinaryReader r(in);
+        if (r.u32() != kStateMagic) throw std::runtime_error("bad magic (not a training state file)");
+        const uint32_t version = r.u32();
+        if (version < 1 || version > kStateVersion)
+            throw std::runtime_error("unsupported version " + std::to_string(version));
+        return r.i32();
+    } catch (const std::exception& e) {
+        throw std::runtime_error(path + ": " + e.what());
+    }
+}
+
 void saveTrainingState(const std::string& path, const TrainingState& state) {
     // Build the whole file in memory first: writeFileAtomically then either
     // replaces the old state completely or (on a crash) not at all.

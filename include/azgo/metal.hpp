@@ -43,6 +43,11 @@ std::string metalDescription();
 // working set, before allocating them.
 std::unique_ptr<BatchRunner> makeMetalRunner(const Network& net, int maxBatch);
 
+// The same memory check up front, for a run before it writes anything:
+// throws that error unless `hubs` hubs (2: an arena match) of a network
+// shaped cfg, at inferenceBatch positions per pass, fit.
+void checkMetalInferenceMemory(const NetConfig& cfg, int inferenceBatch, int hubs);
+
 // The whole network's inference forward on the GPU, synchronously: weights
 // uploaded once, one workspace for up to maxBatch positions. For the
 // validation loss (and analyze); search goes through the hub. Errors
@@ -110,6 +115,13 @@ uint64_t hubChaosSeed();
 // next one reports a failure through the normal error path (as a GPU fault
 // would); later ones run normally again. n = 0 disables it.
 void failCommandBuffersAfter(int n);
+
+// The GPU memory the memory checks allow, in place of the device's
+// recommended working set (0: the device's again). A test hook.
+void setWorkingSetLimit(size_t bytes);
+
+// Command buffers committed by this process so far. A test hook.
+long long commandBuffersCommitted();
 
 // Uploads net into weights laid out for layoutNet (ParamLayout::of): throws
 // std::logic_error naming the first tensor the layout does not know.

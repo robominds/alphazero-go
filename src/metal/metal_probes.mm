@@ -204,6 +204,8 @@ void setHubChaosSeed(uint64_t seed) { gHubChaosSeed = seed; }
 uint64_t hubChaosSeed() { return gHubChaosSeed; }
 
 void failCommandBuffersAfter(int n) { setCommandBufferFailureAfter(n); }
+void setWorkingSetLimit(size_t bytes) { setWorkingSetOverride(bytes); }
+long long commandBuffersCommitted() { return azgo::commandBuffersCommitted(); }
 
 void checkUpload(const Network& layoutNet, const Network& net) {
     runInPool([&] {

@@ -45,6 +45,17 @@ void printDeviceLine(const Config& cfg, std::ostream* log) {
         *log << "gpu: " << metalDescription() << " (inference: self-play, arena, validation)\n";
 }
 
+// The backend can run here, and with metal its hubs fit in GPU memory at
+// inference_batch: two at once, as an arena match between two networks
+// needs. Checked before a run writes anything, so a too-large
+// inference_batch fails up front rather than in the first arena.
+void checkBackend(const Config& cfg) {
+    checkBackendAvailable(cfg.backend);
+#ifdef AZ_USE_METAL
+    if (cfg.backend == "metal") checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, 2);
+#endif
+}
+
 const char* const kLogHeader =
     "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
     "lr,replay_ratio,selfplay_s,train_s,arena_s,elo,winrate_vs_prev,distinct_vs_prev,"
@@ -365,8 +376,7 @@ Trainer::Trainer(const Config& cfg, const std::string& runDir, Network net, Trai
 std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string& runDir,
                                            const RunInit& init, std::ostream* log) {
     checkConsistency(cfg);
-    checkBackendAvailable(cfg.backend);
-    printDeviceLine(cfg, log);
+    checkBackend(cfg);
     try {
         LrSchedule::parse(cfg.lrSchedule);
     } catch (const std::invalid_argument& e) {
@@ -421,6 +431,8 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
         }
     }
 
+    // Every check passed: the run starts here.
+    printDeviceLine(cfg, log);
     fs::create_directories(fs::path(runDir) / "checkpoints");
     fs::create_directories(fs::path(runDir) / "sgf");
     writeFileAtomically(configPath(runDir), configToString(cfg));
@@ -481,7 +493,7 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
         throw ConfigError("cannot change architecture keys on resume: " + keys);
     }
     checkConsistency(cfg);
-    checkBackendAvailable(cfg.backend);
+    checkBackend(cfg);
 
     // A version-1 state.bin (written before bots existed) adopts the
     // configured bots and gets each as a reference.
@@ -898,12 +910,22 @@ int rerateRun(const std::string& runDir, const std::vector<std::string>& overrid
         throw std::runtime_error(checkpointPath(runDir, 0) + ": missing");
 
     // Every generation is measured against g-1, so the replay ends at the
-    // first missing checkpoint.
+    // first missing checkpoint, and at the generation state.bin committed:
+    // a generation that failed after writing its checkpoint (in the arena,
+    // say) left that file behind, but the run has not got that far.
     int last = 0;
     while (fs::exists(checkpointPath(runDir, last + 1))) ++last;
+    // A damaged state.bin does not block a replay that needs nothing else
+    // from it: then every checkpoint on disk counts, as before.
+    if (fs::exists(statePath(runDir))) {
+        try {
+            last = std::min(last, trainingStateGeneration(statePath(runDir)));
+        } catch (const std::runtime_error&) {
+        }
+    }
 
     // Fail on an unavailable backend before anything is written.
-    checkBackendAvailable(cfg.backend);
+    checkBackend(cfg);
     printDeviceLine(cfg, log);
 
     // Each reference network is read once. When the replay uses the run's

@@ -58,13 +58,21 @@ public:
                 std::lock_guard<std::mutex> lock(mutex_);
                 ++inFlight_;
             }
-            // A fresh batch commits exactly once, so commit cannot throw here.
-            batch.commit([this, slot, done](const std::string& err) {
-                done(slot, err);
+            try {
+                batch.commit([this, slot, done](const std::string& err) {
+                    done(slot, err);
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    --inFlight_;
+                    idle_.notify_all();   // under the lock: the destructor may free us right after
+                });
+            } catch (...) {
+                // Not committed, so no handler will run: undo the count, or
+                // the destructor would wait for it forever.
                 std::lock_guard<std::mutex> lock(mutex_);
                 --inFlight_;
-                idle_.notify_all();   // under the lock: the destructor may free us right after
-            });
+                idle_.notify_all();
+                throw;
+            }
         });
     }
 
@@ -80,28 +88,50 @@ private:
 
 } // namespace
 
-std::unique_ptr<BatchRunner> makeMetalRunner(const Network& net, int maxBatch) {
-    if (maxBatch < 1) throw std::invalid_argument("makeMetalRunner: maxBatch must be >= 1");
+namespace {
+
+// GPU memory of one hub: two inference workspaces and the weights.
+double hubBytes(const NetConfig& cfg, size_t weightFloats, int maxBatch) {
+    return static_cast<double>(kInferenceSlots) *
+               GpuWorkspace::bytesFor(cfg, maxBatch, GpuWorkspace::Purpose::Inference) +
+           static_cast<double>(weightFloats) * sizeof(float);
+}
+
+// Throws unless `need` more bytes fit the GPU's recommended working set
+// beside what the process already holds. Allocating past it would not fail,
+// only page and crawl.
+void checkFits(double need, int maxBatch, int hubs) {
     MetalContext& ctx = MetalContext::instance();
-    // Check the memory first: allocating past the working set would not
-    // fail, only page and crawl.
-    const NetConfig& cfg = net.config();
-    const ParamLayout layout = ParamLayout::of(const_cast<Network&>(net));
-    const double need = static_cast<double>(kInferenceSlots) *
-                            GpuWorkspace::bytesFor(cfg, maxBatch, GpuWorkspace::Purpose::Inference) +
-                        static_cast<double>(layout.paramFloats + layout.bufferFloats) * sizeof(float);
-    // What the process already holds counts too: an arena match builds a
-    // hub for each network.
     const double used = static_cast<double>(ctx.currentAllocatedSize());
     const double have = static_cast<double>(ctx.recommendedWorkingSet());
-    if (used + need > have)
-        throw std::runtime_error(
-            "metal: inference needs " + std::to_string(static_cast<long long>(need / 1e6)) +
-            " MB of GPU memory at inference_batch " + std::to_string(maxBatch) + ", which with the " +
-            std::to_string(static_cast<long long>(used / 1e6)) + " MB already in use exceeds the GPU's " +
-            "recommended working set of " + std::to_string(static_cast<long long>(have / 1e6)) +
-            " MB; lower inference_batch");
+    if (used + need <= have) return;
+    throw std::runtime_error(
+        "metal: inference needs " + std::to_string(static_cast<long long>(need / 1e6)) +
+        " MB of GPU memory at inference_batch " + std::to_string(maxBatch) +
+        (hubs > 1 ? " (" + std::to_string(hubs) + " hubs)" : std::string()) + ", which with the " +
+        std::to_string(static_cast<long long>(used / 1e6)) + " MB already in use exceeds the GPU's " +
+        "recommended working set of " + std::to_string(static_cast<long long>(have / 1e6)) +
+        " MB; lower inference_batch");
+}
+
+} // namespace
+
+std::unique_ptr<BatchRunner> makeMetalRunner(const Network& net, int maxBatch) {
+    if (maxBatch < 1) throw std::invalid_argument("makeMetalRunner: maxBatch must be >= 1");
+    const ParamLayout layout = ParamLayout::of(const_cast<Network&>(net));
+    // What the process already holds counts too: an arena match builds a
+    // hub for each network.
+    checkFits(hubBytes(net.config(), layout.paramFloats + layout.bufferFloats, maxBatch), maxBatch, 1);
     return std::make_unique<MetalBatchRunner>(net, maxBatch);
+}
+
+void checkMetalInferenceMemory(const NetConfig& cfg, int inferenceBatch, int hubs) {
+    if (inferenceBatch < 1 || hubs < 1)
+        throw std::invalid_argument("checkMetalInferenceMemory: bad arguments");
+    Network shape(cfg, 0);   // only for the tensor sizes
+    const ParamLayout layout = ParamLayout::of(shape);
+    checkFits(hubs * hubBytes(cfg, layout.paramFloats + layout.bufferFloats, inferenceBatch), inferenceBatch,
+              hubs);
 }
 
 } // namespace azgo

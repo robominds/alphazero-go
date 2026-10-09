@@ -116,7 +116,8 @@ private:
 };
 
 // Re-rates the run in runDir without training it: replays the arena phase of
-// generations 1, 2, ... for as long as their checkpoints exist, with today's
+// generations 1, 2, ... for as long as their checkpoints exist (and, with a
+// readable state.bin, no further than the generation it committed), with today's
 // opponent selection, starting from an empty results table, the initial
 // reference set and the fixed players' calibration, and with the seeds of
 // live training (every arena_every-th generation, as live). Gating is

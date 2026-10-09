@@ -1658,7 +1658,22 @@ static void test_backend_switch_prints_note() {
     assert(t->config().backend == "blas");
 }
 
+// A generation that fails after writing its checkpoint (in the arena,
+// say) leaves a file the run has not committed. Re-rating stops at the
+// generation state.bin committed, and a resume overwrites the file with the
+// same bytes.
+static void test_rerate_ignores_uncommitted_checkpoint() {
+    TempDir dir("orphan");
+    startQuiet(tinyConfig(), dir)->runUntil(2);
+    const std::string results = readFile(dir.file("results.csv"));
+    // An orphan gen 3, as a failed arena would leave it.
+    writeFile(checkpointPath(dir.str(), 3), readFile(checkpointPath(dir.str(), 2)));
+    assert(rerateRun(dir.str(), {}, nullptr) == 2);
+    assert(readFile(dir.file("rerate/results.csv")) == results);
+}
+
 int main() {
+    test_rerate_ignores_uncommitted_checkpoint();
     test_metal_unavailable_writes_nothing();
     test_backend_switch_prints_note();
     test_train_threads_change_nothing();

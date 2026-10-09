@@ -14,6 +14,7 @@
 
 #include "metal_context.hpp"
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -257,7 +258,16 @@ size_t MetalContext::currentAllocatedSize() const {
     return static_cast<size_t>(impl_->device.currentAllocatedSize);
 }
 
+namespace {
+std::atomic<size_t> gWorkingSetOverride{0};
+std::atomic<long long> gCommitted{0};
+} // namespace
+
+void setWorkingSetOverride(size_t bytes) { gWorkingSetOverride = bytes; }
+long long commandBuffersCommitted() { return gCommitted.load(); }
+
 size_t MetalContext::recommendedWorkingSet() const {
+    if (const size_t limit = gWorkingSetOverride.load()) return limit;
     return static_cast<size_t>(impl_->device.recommendedMaxWorkingSetSize);
 }
 
@@ -373,6 +383,7 @@ void CommandBatch::commitAndWait() {
     if (impl_->committed) throw std::logic_error("CommandBatch: committed twice");
     std::string error;
     const bool inject = injectFailure();
+    ++gCommitted;
     @autoreleasepool {
         impl_->committed = true;
         [impl_->encoder endEncoding];
@@ -394,6 +405,7 @@ void CommandBatch::commit(std::function<void(const std::string& error)> onDone) 
         // The handler only reports the status: no C++ exception may unwind
         // through Metal's thread.
         const bool inject = injectFailure();
+        ++gCommitted;
         [impl_->commands addCompletedHandler:^(id<MTLCommandBuffer> cb) {
             std::string error;
             if (cb.status != MTLCommandBufferStatusCompleted)
