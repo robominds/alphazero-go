@@ -286,16 +286,27 @@ static void checkColumnBlocksMatchUnsplit(const Backend& be, bool large) {
             std::vector<float> A = randomVector(rng, static_cast<size_t>(g.M) * g.K);
             std::vector<float> B = randomVector(rng, static_cast<size_t>(g.K) * g.N);
             std::vector<float> C0 = randomVector(rng, static_cast<size_t>(g.M) * g.N);
-            std::vector<float> expected = C0;
-            be.gemm(g.tA, g.tB, g.M, g.N, g.K, 1.0f, A.data(), B.data(), g.beta, expected.data());
+            // Thread-count invariance first (pool(N) against pool(1), which
+            // holds for any backend because the cut is fixed), then identity
+            // with the unsplit call (pool(1) against no pool: by
+            // construction for naive, measured for Accelerate).
+            std::vector<float> one = C0;
+            gemmColumns(be, pools[0], g.tA, g.tB, g.M, g.N, g.K, 1.0f, A.data(), B.data(), g.beta, one.data());
             for (ThreadPool* pool : pools) {
                 std::vector<float> C = C0;
                 gemmColumns(be, pool, g.tA, g.tB, g.M, g.N, g.K, 1.0f, A.data(), B.data(), g.beta, C.data());
-                if (std::memcmp(C.data(), expected.data(), C.size() * sizeof(float)) != 0) {
-                    std::printf("%s column blocks differ: n=%d F=%d B=%d M=%d N=%d K=%d threads=%d\n", be.name(),
-                                c.n, c.F, c.B, g.M, g.N, g.K, pool->threads());
-                    assert(false);
+                if (std::memcmp(C.data(), one.data(), C.size() * sizeof(float)) != 0) {
+                    std::printf("%s column blocks on %d threads differ from 1 thread: n=%d F=%d B=%d M=%d N=%d K=%d\n",
+                                be.name(), pool->threads(), c.n, c.F, c.B, g.M, g.N, g.K);
+                    assert(false && "thread-count invariance");
                 }
+            }
+            std::vector<float> expected = C0;
+            be.gemm(g.tA, g.tB, g.M, g.N, g.K, 1.0f, A.data(), B.data(), g.beta, expected.data());
+            if (std::memcmp(one.data(), expected.data(), one.size() * sizeof(float)) != 0) {
+                std::printf("%s column blocks differ from the unsplit call: n=%d F=%d B=%d M=%d N=%d K=%d\n",
+                            be.name(), c.n, c.F, c.B, g.M, g.N, g.K);
+                assert(false && "identity with the unsplit call");
             }
         }
     }

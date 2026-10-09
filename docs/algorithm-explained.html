@@ -2046,7 +2046,7 @@ void gemmColumns(const Backend&amp; be, ThreadPool* pool, bool transA, bool tran
         gemmColumnBlock(be, block, blocks, transA, transB, M, N, K, alpha, A, B, beta, C);
     });
 }</code></pre>
-<span class="src">src/backend.cpp:222 — <code>gemmColumnBlock</code></span>
+<span class="src">src/backend.cpp:224 — <code>gemmColumnBlock</code></span>
 <p>Each element of a block is still one sum over the whole of K. (A split over the <em>inner</em> dimension K would also be parallel, but partial sums added in a different order give different floating-point results.) Since the cut depends only on the shapes, a run is bit-for-bit the same for any <code>train_threads</code>; <code>tests/test_trainer.cpp</code> checks that 1 and 4 threads write byte-identical checkpoints and <code>state.bin</code>. It is also the same as before the pool existed. For the naive backend a block gives exactly the unsplit call's bits by construction: each element sums over K in one fixed order, whatever the block. For BLAS that is up to the library, so it was measured: on Accelerate every block of 128 to 1,024 columns, over about 11,000 convolution shapes, matched the unsplit call bit for bit (<code>tests/test_backend.cpp</code> keeps a representative set), and the splits that did change bits are never made: a product with fewer than 8 rows (a 1×1 head convolution's forward product) stays one call, and the weight gradient is never cut into columns. The payoff is visible in the results. The komi-24.5 pilot ran with 5 worker threads while another run shared the machine; the first seed-1 reference run, made with the same code (before the pass fix explained in chapter 02, whose story is in chapter 07), used all 10. Apart from the three timing columns, their logs are identical, to the last digit:</p>
 <pre><code>$ diff &lt;(cut -d, -f1-9,13-15 docs/results/pilots/5x5-komi24.5.csv) \
        &lt;(cut -d, -f1-9,13-15 docs/results/passbug/5x5-seed1/log.csv) &amp;&amp; echo identical
@@ -2201,9 +2201,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
-  <dd><code>parallelFor</code> <span class="loc">— src/parallel.cpp:13</span></dd>
+  <dd><code>parallelFor</code> <span class="loc">— src/parallel.cpp:14</span></dd>
   <dt>Training on a thread pool, bit for bit</dt>
-  <dd><code>ThreadPool::run</code>, <code>parallelRanges</code> <span class="loc">— src/parallel.cpp:125, 164</span>; <code>gemmColumnBlock</code> <span class="loc">— src/backend.cpp:222</span></dd>
+  <dd><code>ThreadPool::run</code>, <code>parallelRanges</code> <span class="loc">— src/parallel.cpp:142, 190</span>; <code>gemmColumnBlock</code> <span class="loc">— src/backend.cpp:224</span></dd>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>

@@ -32,11 +32,18 @@ void parallelFor(int count, int workers, const std::function<void(int index, int
 // workers <= 0 means std::thread::hardware_concurrency() (at least 1).
 int resolveWorkers(int workers);
 
+// resolveWorkers(threads), but never more than the hardware's thread count
+// (when it is known): extra pool threads would only take turns on the same
+// cores. The training step's result does not depend on the count.
+int resolveTrainThreads(int threads);
+
 // A fixed set of threads: the caller of run() plus threads - 1 helpers that
 // live as long as the pool and sleep between runs.
 class ThreadPool {
 public:
-    explicit ThreadPool(int threads);    // threads >= 1
+    // threads >= 1. If a helper thread cannot be started, the ones already
+    // running are stopped and joined and the error is rethrown.
+    explicit ThreadPool(int threads);
     ~ThreadPool();
     ThreadPool(const ThreadPool&) = delete;
     ThreadPool& operator=(const ThreadPool&) = delete;
@@ -47,11 +54,15 @@ public:
     // handed out by an atomic counter, so fn must write only its own chunk's
     // output. With one thread or one chunk it is a plain loop on the caller.
     // The first exception thrown by fn is rethrown after every thread has
-    // finished. One run at a time: fn must not call run() on the same pool.
+    // finished. Each run waits for every helper to check in, even helpers
+    // that found no chunk left: a run is a barrier, which is what lets fn
+    // live on the caller's stack. One run at a time: a nested call (from fn)
+    // or a concurrent one (from another thread) throws std::logic_error.
     void run(int chunks, const std::function<void(int chunk)>& fn);
 
 private:
     void helperLoop();
+    void stopHelpers();                  // stop and join every helper (destructor, failed constructor)
     void work();                         // claim and run chunks until none are left
     int threads_;
     std::vector<std::thread> helpers_;
@@ -63,6 +74,7 @@ private:
     std::atomic<uint64_t> epoch_{0};     // bumped once per run; helpers wait for a change
     std::atomic<bool> stop_{false};
     std::atomic<bool> failed_{false};
+    std::atomic<bool> running_{false};   // a run is in progress (guards misuse)
     int busy_ = 0;                       // helpers not yet finished with the current run
     std::exception_ptr error_;
 };

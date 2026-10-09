@@ -142,6 +142,55 @@ static void test_parallel_ranges() {
     }
 }
 
+// One run at a time: a run started from inside a chunk, or from a second
+// thread while one is in progress, throws std::logic_error instead of
+// deadlocking or corrupting the job; the pool stays usable.
+static void test_pool_refuses_nested_and_concurrent_runs() {
+    for (int threads : {1, 3}) {
+        ThreadPool pool(threads);
+        bool caught = false;
+        try {
+            pool.run(4, [&](int) { pool.run(2, [](int) {}); });
+        } catch (const std::logic_error& e) {
+            caught = std::string(e.what()).find("in progress") != std::string::npos;
+        }
+        assert(caught);
+        std::atomic<int> sum{0};
+        pool.run(10, [&](int c) { sum.fetch_add(c); });
+        assert(sum.load() == 45);
+    }
+    ThreadPool pool(2);
+    std::atomic<bool> started{false}, release{false};
+    std::thread other([&] {
+        pool.run(2, [&](int) {
+            started.store(true);
+            while (!release.load()) std::this_thread::yield();
+        });
+    });
+    while (!started.load()) std::this_thread::yield();
+    bool caught = false;
+    try {
+        pool.run(2, [](int) {});
+    } catch (const std::logic_error&) {
+        caught = true;
+    }
+    release.store(true);
+    other.join();
+    assert(caught);
+    std::atomic<int> sum{0};
+    pool.run(10, [&](int c) { sum.fetch_add(c); });
+    assert(sum.load() == 45);
+}
+
+// The training pool never has more threads than the hardware.
+static void test_resolve_train_threads() {
+    const int cores = resolveWorkers(0);
+    assert(resolveTrainThreads(0) == cores);
+    assert(resolveTrainThreads(1) == 1);
+    assert(resolveTrainThreads(256) == cores);
+    assert(resolveTrainThreads(cores) == cores);
+}
+
 int main() {
     test_every_index_exactly_once();
     test_results_stored_by_index();
@@ -152,6 +201,8 @@ int main() {
     test_pool_uses_helpers();
     test_pool_exception_propagates_and_pool_survives();
     test_parallel_ranges();
+    test_pool_refuses_nested_and_concurrent_runs();
+    test_resolve_train_threads();
     std::printf("test_parallel: all tests passed\n");
     return 0;
 }

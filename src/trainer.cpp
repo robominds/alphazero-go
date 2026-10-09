@@ -648,7 +648,10 @@ GenerationStats Trainer::runGeneration() {
     // train_threads threads (layers.hpp): batches of 256 are wide enough to
     // share among cores, and every value is computed in a fixed chunk, so
     // the result does not depend on the thread count.
-    ThreadPool trainPool(cfg_.effectiveTrainThreads());
+    // The pool lives from here to the end of training (reset below), so its
+    // threads exist only while the training phase runs.
+    std::unique_ptr<ThreadPool> trainPoolOwner = std::make_unique<ThreadPool>(cfg_.effectiveTrainThreads());
+    ThreadPool& trainPool = *trainPoolOwner;
     double validationSeconds = 0;
     if (cfg_.validationLoss) {
         const auto validationStart = Clock::now();
@@ -727,6 +730,7 @@ GenerationStats Trainer::runGeneration() {
                                      std::to_string(g) + "; last good state kept");
         state_.velocity = opt.velocity();
     }
+    trainPoolOwner.reset();   // training done: stop and join the pool's threads
     const long long drawn = static_cast<long long>(cfg_.trainSteps) * cfg_.batchSize;
     state_.samplesTrained += drawn;
     stats.lr = lr;

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -6,6 +7,7 @@
 #include <string>
 #include <vector>
 #include "azgo/config.hpp"
+#include "azgo/parallel.hpp"
 
 using namespace azgo;
 
@@ -559,11 +561,14 @@ static void test_train_threads_key() {
     // With the run settings, after workers.
     assert(contains(configToString(c), "workers = 0\ntrain_threads = 0\nbackend = "));
     c = parseConfigText("train_threads = 7\n", "t.cfg");
-    assert(c.trainThreads == 7 && c.effectiveTrainThreads() == 7);
+    // More threads than the hardware has are capped at its count.
+    const int cores = resolveWorkers(0);
+    assert(c.trainThreads == 7 && c.effectiveTrainThreads() == std::min(7, cores));
     assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
     Config o;
     applyOverride(o, "train_threads=256");
-    assert(o.trainThreads == 256);
+    assert(o.trainThreads == 256 && o.effectiveTrainThreads() == std::min(256, cores));
+    assert(Config{}.effectiveTrainThreads() == cores);
     assert(contains(errorOf("train_threads = -1"), "t.cfg:1: train_threads: "));
     assert(contains(errorOf("train_threads = 257"), "t.cfg:1: train_threads: "));
     assert(contains(errorOf("train_threads = two"), "t.cfg:1: train_threads: "));

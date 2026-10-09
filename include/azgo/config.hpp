@@ -28,8 +28,9 @@ struct Config {
     int generations = 100;
     int workers = 0;                   // 0 = hardware concurrency
     // Threads of the training phase's network passes (training steps and
-    // the validation loss); 0 = hardware concurrency. Changes speed only:
-    // the result is bitwise the same for every value.
+    // the validation loss); 0 = hardware concurrency, and a larger value is
+    // capped at it. Changes speed only: the result is bitwise the same for
+    // every value.
     int trainThreads = 0;
     std::string backend = "naive";     // naive | blas
     // game
@@ -91,7 +92,7 @@ struct Config {
     NetConfig netConfig() const;
     int effectiveMaxMoves() const;     // maxMoves or 2 * n * n
     int effectiveWorkers() const;      // resolveWorkers(workers)
-    int effectiveTrainThreads() const; // resolveWorkers(trainThreads)
+    int effectiveTrainThreads() const; // resolveTrainThreads(trainThreads): capped at the core count
 };
 
 // key = value per line; '#' starts a comment (anywhere); blank lines ignored;

@@ -342,7 +342,7 @@ int Config::effectiveMaxMoves() const {
 }
 
 int Config::effectiveWorkers() const { return resolveWorkers(workers); }
-int Config::effectiveTrainThreads() const { return resolveWorkers(trainThreads); }
+int Config::effectiveTrainThreads() const { return resolveTrainThreads(trainThreads); }
 
 Config parseConfigText(const std::string& text, const std::string& sourceName, const Config& base) {
     Config cfg = base;

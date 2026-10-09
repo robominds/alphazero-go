@@ -5,6 +5,7 @@
 #include <climits>
 #include <exception>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -49,6 +50,12 @@ int resolveWorkers(int workers) {
     return hw > 0 ? static_cast<int>(hw) : 1;
 }
 
+int resolveTrainThreads(int threads) {
+    const int resolved = resolveWorkers(threads);
+    const unsigned hw = std::thread::hardware_concurrency();   // 0 if unknown
+    return hw > 0 ? std::min(resolved, static_cast<int>(hw)) : resolved;
+}
+
 // ---------------------------------------------------------------- ThreadPool
 
 namespace {
@@ -72,17 +79,27 @@ constexpr int kSpinIterations = 1 << 14;
 
 ThreadPool::ThreadPool(int threads) : threads_(threads) {
     assert(threads >= 1);
-    helpers_.reserve(static_cast<size_t>(threads - 1));
-    for (int t = 1; t < threads; ++t) helpers_.emplace_back(&ThreadPool::helperLoop, this);
+    try {
+        helpers_.reserve(static_cast<size_t>(threads - 1));
+        for (int t = 1; t < threads; ++t) helpers_.emplace_back(&ThreadPool::helperLoop, this);
+    } catch (...) {
+        // The destructor will not run for a half-built pool: stop and join
+        // the helpers already started, then report the failure.
+        stopHelpers();
+        throw;
+    }
 }
 
-ThreadPool::~ThreadPool() {
+ThreadPool::~ThreadPool() { stopHelpers(); }
+
+void ThreadPool::stopHelpers() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         stop_.store(true);
     }
     wake_.notify_all();
     for (std::thread& t : helpers_) t.join();
+    helpers_.clear();
 }
 
 void ThreadPool::work() {
@@ -124,6 +141,15 @@ void ThreadPool::helperLoop() {
 
 void ThreadPool::run(int chunks, const std::function<void(int)>& fn) {
     if (chunks <= 0) return;
+    // One run at a time. A nested run would deadlock (the caller's helpers
+    // are busy with the outer one); a concurrent one would overwrite the job.
+    if (running_.exchange(true))
+        throw std::logic_error("ThreadPool::run called while another run of the same pool is in progress "
+                               "(nested in a chunk, or from a second thread)");
+    struct Clear {
+        std::atomic<bool>& flag;
+        ~Clear() { flag.store(false); }
+    } clear{running_};
     if (threads_ == 1 || chunks == 1) {
         for (int c = 0; c < chunks; ++c) fn(c);
         return;

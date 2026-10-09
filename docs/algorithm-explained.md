@@ -2533,7 +2533,7 @@ void gemmColumns(const Backend& be, ThreadPool* pool, bool transA, bool transB, 
     });
 }
 ```
-*src/backend.cpp:222 — `gemmColumnBlock`*
+*src/backend.cpp:224 — `gemmColumnBlock`*
 
 Each element of a block is still one sum over the whole of K. (A split
 over the *inner* dimension K would also be parallel, but partial sums
@@ -2766,8 +2766,8 @@ see again in place.
 | `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:116, 89` |
 | One generation | `Trainer::runGeneration` — `src/trainer.cpp:522` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
-| Work sharing by index | `parallelFor` — `src/parallel.cpp:13` |
-| Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:125, 164`; `gemmColumnBlock` — `src/backend.cpp:222` |
+| Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
+| Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:142, 190`; `gemmColumnBlock` — `src/backend.cpp:224` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
 | Training state and resume | `saveTrainingState` — `src/run_state.cpp:30`; `Trainer::resume` — `src/trainer.cpp:451` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:77, 117` |

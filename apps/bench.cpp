@@ -113,11 +113,12 @@ double measureInference(const azgo::NetConfig& nc, const std::string& backendNam
 
 // Milliseconds per training step (forward, loss, backward and the SGD
 // update) at the given batch, the network passes spread over `threads`
-// threads (resolveWorkers: 0 = all cores) as the trainer's train_threads does.
+// threads (resolveTrainThreads: 0 = all cores, capped at them) as the
+// trainer's train_threads does.
 double measureTrainStep(const azgo::NetConfig& nc, const std::string& backendName, int batch, int threads,
                         double seconds) {
     std::unique_ptr<azgo::Backend> backend = azgo::makeBackend(backendName, 1);
-    azgo::ThreadPool pool(azgo::resolveWorkers(threads));
+    azgo::ThreadPool pool(azgo::resolveTrainThreads(threads));
     azgo::Network net(nc, 1);
     azgo::Workspace ws(nc, batch, *backend, &pool);
     azgo::SgdMomentum opt(net, 0.9f, 1e-4f);
@@ -238,7 +239,7 @@ int main(int argc, char** argv) {
                         std::snprintf(shape, sizeof shape, "%d x %d", nc.blocks, nc.filters);
                         std::snprintf(size, sizeof size, "%dx%d", nc.boardSize, nc.boardSize);
                         std::printf("%-6s %-17s %-8s %6d %8d %14.1f %7.2fx\n", size, shape, b.c_str(), trainBatch,
-                                    azgo::resolveWorkers(t), stepMs, first / stepMs);
+                                    azgo::resolveTrainThreads(t), stepMs, first / stepMs);
                         std::fflush(stdout);
                     }
                 }

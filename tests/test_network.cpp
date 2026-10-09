@@ -566,8 +566,8 @@ static std::vector<unsigned char> trainingFingerprint(const NetConfig& cfg, cons
     return out;
 }
 
-// A training step on a pool of 1, 2, 3 or 7 threads gives exactly the
-// bits of one without a pool, on 5x5 and 9x9 networks with batches wide
+// A training step on a pool of 2, 3 or 7 threads gives exactly the bits
+// of a pool of 1, which gives exactly the bits of one without a pool, on 5x5 and 9x9 networks with batches wide
 // enough that the convolutions' gemms are cut into column blocks (over
 // 1024 pixels) and that span several chunks of every kind; with the naive
 // backend and, when built, BLAS.
@@ -582,13 +582,23 @@ static void test_thread_pool_gives_identical_bits() {
         for (const Case& c : cases) {
             NetConfig cfg = makeConfig(c.n, 2, c.blocks, c.filters, 16);
             cfg.ownership = c.ownership;
-            const std::vector<unsigned char> reference = trainingFingerprint(cfg, *be, c.B, nullptr);
-            for (ThreadPool* pool : {&p1, &p2, &p3, &p7}) {
-                if (trainingFingerprint(cfg, *be, c.B, pool) != reference) {
-                    std::printf("%s %dx%d %dx%d B=%d: %d threads differ\n", be->name(), c.n, c.n, c.blocks,
-                                c.filters, c.B, pool->threads());
-                    assert(false);
+            // Two separate claims, checked separately. Thread-count
+            // invariance (what a run's determinism needs): every pool size
+            // gives pool(1)'s bytes. Identity with the code before pools
+            // existed: pool(1) gives the no-pool bytes (by construction for
+            // naive, measured for Accelerate).
+            const std::vector<unsigned char> one = trainingFingerprint(cfg, *be, c.B, &p1);
+            for (ThreadPool* pool : {&p2, &p3, &p7}) {
+                if (trainingFingerprint(cfg, *be, c.B, pool) != one) {
+                    std::printf("%s %dx%d %dx%d B=%d: %d threads differ from 1 thread\n", be->name(), c.n, c.n,
+                                c.blocks, c.filters, c.B, pool->threads());
+                    assert(false && "thread-count invariance");
                 }
+            }
+            if (trainingFingerprint(cfg, *be, c.B, nullptr) != one) {
+                std::printf("%s %dx%d %dx%d B=%d: a pool of 1 differs from no pool\n", be->name(), c.n, c.n,
+                            c.blocks, c.filters, c.B);
+                assert(false && "identity with the single-threaded code");
             }
         }
     }

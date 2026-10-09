@@ -185,8 +185,10 @@ void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alp
 bool NaiveBackend::gemmRowsOnPool(ThreadPool& pool, bool transA, bool transB, int M, int N, int K, float alpha,
                                   const float* A, const float* B, float beta, float* C) const {
     if (M <= 0 || N <= 0) return true;
-    // Packed once here, read by every band.
-    std::vector<float> packA, packB;
+    // Packed once here, read by every band. thread_local and reused, like
+    // gemm's: the transposed column matrix of a weight gradient is tens of
+    // megabytes, too big to allocate per call.
+    thread_local std::vector<float> packA, packB;
     int lda = transA ? M : K, ldb = transB ? K : N;
     if (transA) {
         transposeInto(A, K, M, lda, packA);
