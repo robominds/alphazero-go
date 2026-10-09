@@ -22,8 +22,9 @@ it still misreads a basic two-eye shape
 judges another move bigger)
 
 **About the numbers.** Everything measured was measured on one Apple M4
-with 10 cores (`docs/results/bench.txt`), and every number names the file
-it came from. The 5×5 numbers come from two complete 60-generation runs,
+with 10 cores (`docs/results/bench.txt`), except the timings of the
+training thread pool in chapter 08, made later on an Apple M5 Max with 18
+cores (the same file), and every number names the file it came from. The 5×5 numbers come from two complete 60-generation runs,
 seeds 1 and 2, whose `log.csv`, `elo.csv` and `results.csv` are kept in
 `docs/results/5x5/` and `docs/results/5x5-seed2/`. The 9×9 and 19×19
 numbers come from `docs/results/9x9/` (an overnight run) and
@@ -423,19 +424,26 @@ column of a matrix, then the whole convolution is one multiplication of
 the weight matrix by that column matrix.
 
 ```cpp
-void Conv2d::forward(const Backend& be, const float* x, int B, int n, float* col, float* y) const {
+void Conv2d::forward(const Backend& be, const float* x, int B, int n, float* col, float* y,
+                     ThreadPool* pool) const {
     const int M = B * n * n;
     // A 1x1 convolution needs no unfolding: x [cin][M] already is the column matrix.
     const float* columns = x;
     if (k != 1) {
-        be.im2col(x, cin, B, n, k, col);
+        im2colChannels(be, pool, x, cin, B, n, k, col);
         columns = col;
     }
     // y [cout][M] = w [cout][cin*k*k] . columns [cin*k*k][M]
-    be.gemm(false, false, cout, M, cin * k * k, 1.0f, w.data(), columns, 0.0f, y);
+    gemmColumns(be, pool, false, false, cout, M, cin * k * k, 1.0f, w.data(), columns, 0.0f, y);
 }
 ```
-*src/layers.cpp:34 — `Conv2d::forward`*
+*src/layers.cpp:35 — `Conv2d::forward`*
+
+The optional `pool` is for training: `im2colChannels` and `gemmColumns`
+are `be.im2col` and `be.gemm` cut into pieces that run on a thread pool,
+and every layer below takes the same pool. Search passes none, and then
+they are exactly the plain calls; chapter 08 shows why the pieces never
+change a bit of the result.
 
 **Worked example** — the one in `tests/test_layers.cpp` and
 `tests/test_backend.cpp`: a single 3×3 input plane holding 1…9, and one
@@ -481,28 +489,29 @@ transposes the input once:
 
 ```cpp
 void Network::forward(Workspace& ws, const float* input, int B, Mode mode) {
-    /* ... be = backend, n, A = n * n, P = planes, M = B * A, col, convOut ... */
+    /* ... be = backend, pool = ws.pool_, n, A = n * n, P = planes, M = B * A, col, convOut ... */
     // [B][planes][A] -> [planes][B][A]. Channel-major lets a conv treat the
     // whole batch as one wide matrix: one gemm per layer, not one per sample.
-    for (int b = 0; b < B; ++b)
-        for (int p = 0; p < P; ++p)
+    parallelChunks(pool, P, [&](int p) {
+        for (int b = 0; b < B; ++b)
             std::copy(input + (static_cast<size_t>(b) * P + p) * A,
                       input + (static_cast<size_t>(b) * P + p + 1) * A,
                       ws.input_.data() + (static_cast<size_t>(p) * B + b) * A);
+    });
 
     /* ... norm() runs a batch norm in this call's mode (below); the stem is
            conv3x3 -> norm -> ReLU; then, for each residual block: ... */
-        blk.conv1.forward(be, x, B, n, col, convOut);
+        blk.conv1.forward(be, x, B, n, col, convOut, pool);
         norm(blk.bn1, convOut, buf.act1.data(), buf.xhat1.data(), buf.invStd1.data());
-        reluForward(buf.act1.data(), trunk);
-        blk.conv2.forward(be, buf.act1.data(), B, n, col, convOut);
+        reluForward(buf.act1.data(), trunk, pool);
+        blk.conv2.forward(be, buf.act1.data(), B, n, col, convOut, pool);
         norm(blk.bn2, convOut, buf.out.data(), buf.xhat2.data(), buf.invStd2.data());
-        for (size_t j = 0; j < trunk; ++j) buf.out[j] += x[j];   // the skip connection
-        reluForward(buf.out.data(), trunk);
+        addInto(buf.out.data(), x, trunk, pool);                 // the skip connection
+        reluForward(buf.out.data(), trunk, pool);
     /* ... policy head, value head and (chapter 06) the ownership head ... */
 }
 ```
-*src/network.cpp:208 — `Network::forward` (abridged)*
+*src/network.cpp:224 — `Network::forward` (abridged)*
 
 With this layout the column matrix of a batch is just wider: M = B·n²
 columns instead of n², and one gemm computes the layer for every sample
@@ -518,9 +527,9 @@ minibatch, per channel, over all B·n² values:
 
 ```cpp
 void BatchNorm2d::forwardTrain(const float* x, int M, float* y, float* xhat, float* invStd,
-                               bool updateRunning) {
+                               bool updateRunning, ThreadPool* pool) {
     assert(M > 1);
-    for (int ch = 0; ch < c; ++ch) {
+    parallelChunks(pool, c, [&](int ch) {
         /* ... mean and biased variance of channel ch over its M values, in double ... */
         const float inv = static_cast<float>(1.0 / std::sqrt(var + kEps));
         invStd[ch] = inv;
@@ -532,28 +541,28 @@ void BatchNorm2d::forwardTrain(const float* x, int M, float* y, float* xhat, flo
             runMean[ch] = (1.0f - kMomentum) * runMean[ch] + kMomentum * static_cast<float>(mean);
             runVar[ch] = (1.0f - kMomentum) * runVar[ch] + kMomentum * static_cast<float>(unbiased);
         }
-    }
+    });
 }
 ```
-*src/layers.cpp:85 — `BatchNorm2d::forwardTrain` (abridged)*
+*src/layers.cpp:99 — `BatchNorm2d::forwardTrain` (abridged)*
 
 In inference — every evaluation during search — it uses the running
 averages collected during training instead, which reduce to one fixed
 scale and shift per channel:
 
 ```cpp
-void BatchNorm2d::forwardInfer(const float* x, int M, float* y) const {
-    for (int ch = 0; ch < c; ++ch) {
+void BatchNorm2d::forwardInfer(const float* x, int M, float* y, ThreadPool* pool) const {
+    parallelChunks(pool, c, [&](int ch) {
         // Fold the fixed statistics into one scale and shift per channel.
         const float scale = gamma[ch] / std::sqrt(runVar[ch] + kEps);
         const float shift = beta[ch] - scale * runMean[ch];
         const float* xc = x + static_cast<size_t>(ch) * M;
         float* yc = y + static_cast<size_t>(ch) * M;
         for (int i = 0; i < M; ++i) yc[i] = scale * xc[i] + shift;
-    }
+    });
 }
 ```
-*src/layers.cpp:74 — `BatchNorm2d::forwardInfer`*
+*src/layers.cpp:88 — `BatchNorm2d::forwardInfer`*
 
 Mixing the two up fails in two different, quiet ways. Use batch
 statistics during search, and a position's evaluation depends on which
@@ -659,8 +668,9 @@ trunk costs roughly blocks · F² · n²: 10 · 128² · 361 ≈ 59.1 million fo
 19×19's preset against 3 · 32² · 25 = 76,800 for 5×5's, about 770 times
 the arithmetic per evaluation. Measured on the M4
 (`docs/results/bench.txt`; inference at batch 8 on one thread; a
-training step at batch 128, which the naive backend splits across all
-10 cores while BLAS runs on one thread):
+training step at batch 128, measured before training had its own thread
+pool (chapter 08), when the naive backend split its gemms across all 10
+cores and BLAS ran on one thread):
 
 | board | blocks × filters | backend | evaluations/s | training step |
 |---|---|---|---|---|
@@ -675,8 +685,8 @@ Two things stand out. First, the 5×5 → 19×19 slowdown is about 130×
 with BLAS, not 770×: at 5×5 the matrices are so small that fixed costs
 per call dominate. Second, the BLAS advantage grows with the matrices,
 from 2.9× on 5×5 to 18× on 19×19 — the matrix unit needs big products to
-pay off. (Even the training step, where the naive gemm gets ten cores
-and BLAS one, is 2.3–4.4× faster with BLAS.) Chapter 03 makes the same argument about batch
+pay off. (Even the training step, where the naive gemm got ten cores
+and BLAS one, was 2.3–4.4× faster with BLAS.) Chapter 03 makes the same argument about batch
 size.
 
 **Backprop through convolution, batch norm and linear layers.** The
@@ -689,26 +699,35 @@ position it was copied from, so overlapping patches sum:
 
 ```cpp
 void Conv2d::backward(const Backend& be, const float* x, const float* col, const float* dy,
-                      int B, int n, float* dcol, float* dx) {
+                      int B, int n, float* dcol, float* dx, ThreadPool* pool) {
     const int M = B * n * n;
     const int K = cin * k * k;
     const float* columns = k == 1 ? x : col;
+    // dL/dx = w^T . dy: for a 1x1 conv directly (the columns ARE x); for a
+    // 3x3 conv into dcol, whose columns col2im then folds back onto the
+    // pixels they were copied from (summing overlapping patches).
+    float* dIn = k == 1 ? dx : dcol;
+    const int rows = k == 1 ? cin : K;
+    const int blocks = dx == nullptr ? 0 : (pool ? gemmColumnBlockCount(rows, M) : 1);
     // y = w . columns, so dL/dw = dy . columns^T (summed over all M pixels),
-    // accumulated into gw (beta = 1).
-    be.gemm(false, true, cout, K, M, 1.0f, dy, columns, 1.0f, gw.data());
-    if (dx == nullptr) return;
-    if (k == 1) {
-        // dL/dx = w^T . dy directly: the columns ARE x.
-        be.gemm(true, false, cin, M, cout, 1.0f, w.data(), dy, 0.0f, dx);
-    } else {
-        // dL/dcolumns = w^T . dy, then fold the columns back onto the pixels
-        // they were copied from; col2im sums overlapping patches.
-        be.gemm(true, false, K, M, cout, 1.0f, w.data(), dy, 0.0f, dcol);
-        be.col2im(dcol, cin, B, n, k, dx);
-    }
+    // accumulated into gw (beta = 1). It is one call, chunk 0 of the run
+    // below beside the column blocks of dL/dx, unless the backend can cut it
+    // into row bands on the pool itself. Without a pool: the two gemms in
+    // that order.
+    const bool dWDone = pool != nullptr &&
+                        be.gemmRowsOnPool(*pool, false, true, cout, K, M, 1.0f, dy, columns, 1.0f, gw.data());
+    const int first = dWDone ? 0 : 1;
+    parallelChunks(pool, first + blocks, [&](int chunk) {
+        if (chunk < first) {
+            be.gemm(false, true, cout, K, M, 1.0f, dy, columns, 1.0f, gw.data());
+        } else {
+            gemmColumnBlock(be, chunk - first, blocks, true, false, rows, M, cout, 1.0f, w.data(), dy, 0.0f, dIn);
+        }
+    });
+    if (dx != nullptr && k != 1) col2imChannels(be, pool, dcol, cin, B, n, k, dx);
 }
 ```
-*src/layers.cpp:46 — `Conv2d::backward`*
+*src/layers.cpp:48 — `Conv2d::backward`*
 
 Three gemms per convolution per step, all through the same `Backend`
 call as the forward pass, so the BLAS speedup applies to training too.
@@ -726,29 +745,29 @@ their trunk gradients added (the trunk feeds both), then the residual
 blocks in reverse:
 
 ```cpp
-void Network::backward(Workspace& ws, int B) {
-    /* ... value head and policy head backward; dTrunk = dL/d(trunk output) ... */
+void Network::backward(Workspace& ws, int B, bool withOwnership) {
+    /* ... value, policy and (if withOwnership) ownership heads backward; dTrunk = dL/d(trunk output) ... */
     for (size_t i = blocks_.size(); i-- > 0;) {
         ResidualBlock& blk = blocks_[i];
         Workspace::BlockBuffers& buf = ws.blocks_[i];
         const float* in = i == 0 ? ws.stemOut_.data() : ws.blocks_[i - 1].out.data();
-        reluBackward(buf.out.data(), dTrunk, trunk);           // now dL/d(bn2 output + skip)
+        reluBackward(buf.out.data(), dTrunk, trunk, pool);     // now dL/d(bn2 output + skip)
         /* ... bn2, conv2, ReLU and bn1 backward into dTmp2 ... */
-        be.im2col(in, F, B, n, 3, col);
-        blk.conv1.backward(be, in, col, dTmp2, B, n, dcol, dTmp);
+        im2colChannels(be, pool, in, F, B, n, 3, col);
+        blk.conv1.backward(be, in, col, dTmp2, B, n, dcol, dTmp, pool);
         // The skip path passes dTrunk to the block input unchanged; the conv
         // path adds its own contribution.
-        for (size_t j = 0; j < trunk; ++j) dTrunk[j] += dTmp[j];
+        addInto(dTrunk, dTmp, trunk, pool);
     }
     /* ... stem backward; no gradient needed for the input planes ... */
 }
 ```
-*src/network.cpp:334 — `Network::backward` (abridged)*
+*src/network.cpp:369 — `Network::backward` (abridged)*
 
 One memory detail: all 3×3 convolutions share a single `im2col` buffer,
 so by the time the backward pass reaches a convolution its columns have
 been overwritten. The code rebuilds them from the saved input just
-before use (`be.im2col(...)` above) — one extra cheap copy per layer
+before use (`im2colChannels(...)` above) — one extra cheap copy per layer
 instead of keeping 2·blocks + 1 column matrices alive.
 
 **How do you know it is right? Finite differences.** A backprop bug
@@ -817,7 +836,7 @@ LossStats Network::trainStep(Workspace& ws, const float* input, const float* pi,
     return stats;
 }
 ```
-*src/network.cpp:183 — `Network::trainStep`*
+*src/network.cpp:185 — `Network::trainStep`*
 
 (The `ownership` arguments are chapter 06's auxiliary target. Without
 them the loss is the two terms above.)
@@ -1716,7 +1735,7 @@ void encodeTrainingSample(const GameRecord& g, int ply, int history, int sym,
     /* ... the ownership target (end of this chapter) ... */
 }
 ```
-*src/replay_buffer.cpp:54 — `encodeTrainingSample` (abridged)*
+*src/replay_buffer.cpp:59 — `encodeTrainingSample` (abridged)*
 
 `sample` draws each of a batch's positions uniformly over all positions
 in the window (so long games contribute more samples, in proportion to
@@ -1789,25 +1808,26 @@ preset's generation 250 0.853 (`docs/results/README.md`).
 momentum 0.9, L2 weight decay 1e-4.
 
 ```cpp
-void SgdMomentum::step(Network& net, float lr) {
+void SgdMomentum::step(Network& net, float lr, ThreadPool* pool) {
     std::vector<ParamView> params = net.params();
     assert(params.size() == velocity_.size());
-    for (size_t k = 0; k < params.size(); ++k) {
-        ParamView& p = params[k];
-        std::vector<float>& v = velocity_[k];
-        assert(v.size() == p.size);
+    /* ... chunks: every parameter tensor cut into runs of kElementChunk elements ... */
+    parallelChunks(pool, static_cast<int>(chunks.size()), [&](int c) {
+        const Chunk& chunk = chunks[static_cast<size_t>(c)];
+        ParamView& p = params[chunk.param];
+        std::vector<float>& v = velocity_[chunk.param];
         // Decay only weights: shrinking BN's gamma/beta or a bias toward zero
         // does not make the function smoother, it just fights the fit.
         const float decay = p.decay ? weightDecay_ : 0.0f;
-        for (size_t i = 0; i < p.size; ++i) {
+        for (size_t i = chunk.begin; i < chunk.end; ++i) {
             const float g = p.grad[i] + decay * p.value[i];
             v[i] = momentum_ * v[i] + g;
             p.value[i] -= lr * v[i];
         }
-    }
+    });
 }
 ```
-*src/optimizer.cpp:19 — `SgdMomentum::step`*
+*src/optimizer.cpp:21 — `SgdMomentum::step` (abridged)*
 
 Adding `λ·w` to the gradient is the same as adding `(λ/2)·‖w‖²` to the
 loss. Tic-tac-toe put the penalty in the loss and decayed every
@@ -1873,13 +1893,15 @@ network, next to its 1,032,349) and is optional (`ownership = true`):
 
 ```cpp
     if (cfg_.ownership) {
-        ownershipConv_.forward(be, x, B, n, col, convOut);
+        ownershipConv_.forward(be, x, B, n, col, convOut, pool);
         norm(ownershipBn_, convOut, ws.ownership_.data(), ws.ownershipXhat_.data(),
              ws.ownershipInvStd_.data());
-        for (int j = 0; j < M; ++j) ws.ownership_[j] = std::tanh(ws.ownership_[j]);
+        parallelRanges(pool, static_cast<size_t>(M), kElementChunk, [&](size_t begin, size_t end) {
+            for (size_t j = begin; j < end; ++j) ws.ownership_[j] = std::tanh(ws.ownership_[j]);
+        });
     }
 ```
-*src/network.cpp:208 — `Network::forward` (abridged)*
+*src/network.cpp:224 — `Network::forward` (abridged)*
 
 The loss gains a third term, the squared error averaged over the n²
 points and weighted by `w = ownership_weight` (1.5 by default):
@@ -1905,7 +1927,7 @@ symmetry moves the input planes:
             ownership[transformPoint(sym, p, n)] = sign * g.finalOwnership[static_cast<size_t>(p)];
     }
 ```
-*src/replay_buffer.cpp:54 — `encodeTrainingSample` (abridged)*
+*src/replay_buffer.cpp:59 — `encodeTrainingSample` (abridged)*
 
 Either mistake would teach nonsense without any error: a target from the
 wrong side's view says that every living group is dead, and one that is
@@ -2433,9 +2455,10 @@ The output is identical for any W anyway, because of three rules:
   `deriveSeed(seed, g, kPhaseTrain)`, the arena
   `deriveSeed(seed, g, kPhaseArena, opponent)`;
 - results are stored by index, not by completion order;
-- in the training phase the naive backend splits a gemm's output rows
-  across threads, so every output element is computed by exactly one
-  thread with the same sequence of floating-point operations.
+- the training phase, on threads of its own, cuts its work into chunks
+  fixed by the data's shapes, never by the thread count, so every output
+  value is computed by exactly one chunk with the same sequence of
+  floating-point operations.
 
 ```cpp
 GenerationStats Trainer::runGeneration() {
@@ -2453,34 +2476,81 @@ GenerationStats Trainer::runGeneration() {
 *src/trainer.cpp:522 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
-plays game 17 varies from run to run, but game 17 itself does not. The
-row split in the naive gemm keeps the arithmetic identical too:
+plays game 17 varies from run to run, but game 17 itself does not.
+
+Training has threads of its own. With BLAS, every training step used
+to run on one core: the BLAS backend is single-threaded, which suits
+self-play, where every worker already has a core to itself. Now
+`runGeneration` makes one `ThreadPool trainPool(cfg_.effectiveTrainThreads())`
+— `train_threads` threads, 0 (the default) meaning every core — and
+hands it to the `Workspace` of the validation loss and of the training
+steps, to `ReplayBuffer::sample` and to `SgdMomentum::step`. The pool
+(`include/azgo/parallel.hpp`) starts its threads once, because a step is
+about a hundred short parallel loops, and lets them spin briefly, then
+sleep, between loops. `ThreadPool::run(chunks, fn)` (`src/parallel.cpp`)
+calls `fn` once per chunk, handing chunk indices out from an atomic
+counter as `parallelFor` hands out games, with the calling thread taking
+chunks too, and returns when every chunk is done. On an Apple
+M5 Max with 18 cores, a 9×9 step at batch 256 with BLAS went from 427 ms
+to 93 ms on a 6 × 96 network, and from 266 to 52 ms on the 6 × 64 preset
+(`docs/results/bench.txt`). Part of that is the rewritten loops alone,
+323 and 201 ms on one thread: ReLU's backward lost a mispredicted branch
+per element, and `im2col` and `col2im` their per-pixel bounds checks.
+
+Every layer cuts its loops into chunks fixed by the shapes, never by
+the thread count: a channel for batch norm and for `im2col` and
+`col2im`, a block of 512 gemm columns — 512 pixels — for a
+convolution's forward product and its input gradient, a run of 32,768
+elements for ReLU, the residual sums and the SGD update, and 16 samples
+for per-sample work such as encoding the batch and the loss's softmax.
+The weight gradient, a sum over every pixel, is not cut into columns; it
+runs as one call beside the input gradient's blocks (the naive backend
+cuts it into bands of 16 output rows instead). The pool hands chunks to
+whichever thread is free, but each output value belongs to exactly one
+chunk and is computed with the same operations in the same order as on
+one thread. Sums over the whole batch keep their old order: batch norm
+sums each channel inside that channel's chunk, and the loss adds up its
+per-sample terms serially afterwards. A block of gemm columns is one
+plain gemm call on its own columns of C:
 
 ```cpp
-void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alpha,
-                        const float* A, const float* B, float beta, float* C) const {
-    /* ... pack transposed operands; small products run on this thread ... */
-    // Split the rows of C into contiguous chunks, one per thread. Each element
-    // of C is computed by exactly one thread with exactly the same sequence of
-    // floating-point operations (the loop order over p does not depend on the
-    // row range), so the result is bitwise identical for any thread count.
-    const int chunk = (M + workers - 1) / workers;
-    std::vector<std::thread> pool;
-    for (int t = 1; t < workers; ++t) {
-        const int r0 = t * chunk, r1 = std::min(M, r0 + chunk);
-        if (r0 >= r1) break;
-        pool.emplace_back(gemmRows, r0, r1, N, K, alpha, A, B, beta, C);
-    }
-    gemmRows(0, std::min(M, chunk), N, K, alpha, A, B, beta, C);   // chunk 0 on this thread
-    for (std::thread& t : pool) t.join();
+void gemmColumnBlock(const Backend& be, int block, int blocks, bool transA, bool transB, int M, int N, int K,
+                     float alpha, const float* A, const float* B, float beta, float* C) {
+    assert(blocks >= 1 && block >= 0 && block < blocks);
+    const int j0 = block * kGemmColumnBlock;
+    const int width = blocks == 1 ? N : (block == blocks - 1 ? N - j0 : kGemmColumnBlock);
+    // Columns j0.. of op(B): further columns of B, or further rows when B is
+    // stored transposed. A is shared by every block.
+    const float* b = transB ? B + static_cast<size_t>(j0) * K : B + j0;
+    be.gemm(transA, transB, M, width, K, alpha, A, transA ? M : K, b, transB ? K : N, beta, C + j0, N);
+}
+
+void gemmColumns(const Backend& be, ThreadPool* pool, bool transA, bool transB, int M, int N, int K,
+                 float alpha, const float* A, const float* B, float beta, float* C) {
+    const int blocks = pool ? gemmColumnBlockCount(M, N) : 1;
+    parallelChunks(pool, blocks, [&](int block) {
+        gemmColumnBlock(be, block, blocks, transA, transB, M, N, K, alpha, A, B, beta, C);
+    });
 }
 ```
-*src/backend.cpp:138 — `NaiveBackend::gemm` (abridged)*
+*src/backend.cpp:222 — `gemmColumnBlock`*
 
-(A split over the *inner* dimension K would also be parallel, but
-partial sums added in a different order give different floating-point
-results.) The BLAS backend is single-threaded per call, so the same
-holds for it. The payoff is visible in the results. The komi-24.5 pilot
+Each element of a block is still one sum over the whole of K. (A split
+over the *inner* dimension K would also be parallel, but partial sums
+added in a different order give different floating-point results.)
+Since the cut depends only on the shapes, a run is bit-for-bit the same
+for any `train_threads`; `tests/test_trainer.cpp` checks that 1 and 4
+threads write byte-identical checkpoints and `state.bin`. It is also the
+same as before the pool existed. For the naive backend a block gives
+exactly the unsplit call's bits by construction: each element sums over
+K in one fixed order, whatever the block. For BLAS that is up to the
+library, so it was measured: on Accelerate every block of 128 to 1,024
+columns, over about 11,000 convolution shapes, matched the unsplit call
+bit for bit (`tests/test_backend.cpp` keeps a representative set), and
+the splits that did change bits are never made: a product with fewer
+than 8 rows (a 1×1 head convolution's forward product) stays one call,
+and the weight gradient is never cut into columns. The payoff is visible
+in the results. The komi-24.5 pilot
 ran with 5 worker threads while another run shared the machine; the
 first seed-1 reference run, made with the same code (before the pass
 fix explained in chapter 02, whose story is in chapter 07), used all 10. Apart from the three timing columns,
@@ -2642,7 +2712,7 @@ night is enough to watch it learn.
 | Optimizer | momentum, decay on every parameter, fixed LR | momentum, decay on weights only, stepped LR schedule | batch norm; longer runs |
 | Evaluation | vs. exhaustive minimax | arena vs. own references and a uniform bot, Bradley-Terry Elo, Wilson intervals, optional gating | no oracle for Go |
 | Randomness | `std::mt19937`, `random_device` | one specified generator, streams from `deriveSeed` | reproducible for any thread count |
-| Parallelism | single thread | W self-play/arena workers, row-split gemm | a run takes hours, not minutes |
+| Parallelism | single thread | W self-play/arena workers; a thread pool for the training step | a run takes hours, not minutes |
 | Persistence | one weights file | checkpoints plus an atomic, fsync'd `state.bin`; resume | runs outlive a laptop lid |
 
 What did *not* change is the part worth remembering: one network with
@@ -2664,12 +2734,12 @@ see again in place.
 | Zobrist hashing and positional superko | `Board::hashAfter` — `src/board.cpp:174`; `Game::isLegal` — `src/game.cpp:19` |
 | Tromp-Taylor area scoring, komi, the draw | `Board::ownership`, `Board::areaScore` — `src/board.cpp:201, 236`; `Game::resultForBlack` — `src/game.cpp:61` |
 | Input planes and the all-ones color plane | `encodePlanes` — `src/encode.cpp:14` |
-| Convolution as im2col + gemm | `Conv2d::forward`, `Conv2d::backward` — `src/layers.cpp:34, 46`; `Backend::im2col`, `Backend::col2im` — `src/backend.cpp:17, 50` |
-| The compute backend seam | `Backend` — `include/azgo/backend.hpp:16`; `NaiveBackend::gemm` — `src/backend.cpp:138` |
-| Batch norm, training vs. inference | `BatchNorm2d::forwardTrain`, `BatchNorm2d::forwardInfer`, `BatchNorm2d::backward` — `src/layers.cpp:85, 74, 119` |
-| Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:208, 334` |
+| Convolution as im2col + gemm | `Conv2d::forward`, `Conv2d::backward` — `src/layers.cpp:35, 48`; `Backend::im2col`, `Backend::col2im` — `src/backend.cpp:19, 55` |
+| The compute backend seam | `Backend` — `include/azgo/backend.hpp:18`; `NaiveBackend::gemm` — `src/backend.cpp:144` |
+| Batch norm, training vs. inference | `BatchNorm2d::forwardTrain`, `BatchNorm2d::forwardInfer`, `BatchNorm2d::backward` — `src/layers.cpp:99, 88, 133` |
+| Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:224, 369` |
 | Growing a network (deeper or wider) without changing its function | `growBlocks`, `widenFilters` — `src/grow.cpp:17, 159` |
-| The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:284, 183` |
+| The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:306, 185` |
 | Gradient checking | `checkGradient` — `tests/test_layers.cpp:36` |
 | PUCT selection | `Mcts::selectEdge` — `src/mcts.cpp:57` |
 | Legal masking, superko in the tree | `Mcts::expand` — `src/mcts.cpp:150` |
@@ -2683,11 +2753,11 @@ see again in place.
 | Resignation and its calibration | `resignValue`, `ResignTrace::falsePositiveAt`, `calibrateResignThreshold` — `src/selfplay.cpp:17, 34, 135` |
 | Passes and the end of the game | `Game::play`, `Game::isTerminal` — `src/game.cpp:39, 53` |
 | The value target z | `GameRecord::zAt` — `src/selfplay.cpp:12` |
-| Replay buffer of whole games | `encodeTrainingSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:54, 97` |
+| Replay buffer of whole games | `encodeTrainingSample`, `ReplayBuffer::sample` — `src/replay_buffer.cpp:59, 102` |
 | Symmetry augmentation | `transformPoint`, `transformAction` — `src/symmetry.cpp:6, 21` |
 | Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:112`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:100` |
-| SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:19` |
-| Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:100` |
+| SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:21` |
+| Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:111` |
 | Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:47, 117` |
 | Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:195, 223` |
 | Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:23, 40` |
@@ -2696,7 +2766,8 @@ see again in place.
 | `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:116, 89` |
 | One generation | `Trainer::runGeneration` — `src/trainer.cpp:522` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
-| Work sharing by index | `parallelFor` — `src/parallel.cpp:12` |
+| Work sharing by index | `parallelFor` — `src/parallel.cpp:13` |
+| Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:125, 164`; `gemmColumnBlock` — `src/backend.cpp:222` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
 | Training state and resume | `saveTrainingState` — `src/run_state.cpp:30`; `Trainer::resume` — `src/trainer.cpp:451` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:77, 117` |
