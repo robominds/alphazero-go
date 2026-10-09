@@ -361,6 +361,13 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 #     blas and for metal (checkpoint, state.bin, results.csv, elo.csv,
 #     references.csv, SGFs, log.csv without timings). blas against metal
 #     differ only in state.bin's stored resignation values, as in Phase A.
+#   train --rerate of those generation-2 metal runs (calibration wave of 3
+#     reference networks x 80 games, rounds 1 and 2), old against new:
+#     rerate/ identical. (Wall 189 s old, 153 s new, with the training
+#     job running: not a clean timing.)
+#   With the final code (every arena game at once, one slot per hub):
+#     the 5x5 metal runs again with workers 0 to start and to re-rate
+#     (7 to resume), with and without gating: identical.
 #
 # ---- Arena phase, one real 9x9 6x96 generation with four opponents ----
 # The base run: train --config configs/9x9.cfg --init-from <copy of
