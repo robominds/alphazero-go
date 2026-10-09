@@ -74,8 +74,17 @@ signs the branch mispredicts half the time.
 threads for its lifetime, and the caller of `run(chunks, fn)` is the
 last thread. Helpers sleep between runs, after a short spin, because a
 step makes ~100 parallel loops microseconds apart. `run` hands out
-chunk indices through an atomic counter and returns when every chunk is
-done, rethrowing the first exception. `parallelChunks(pool, …)` and
+chunk indices through an atomic counter and rethrows the first
+exception.
+
+Each run is a barrier: it returns only after every helper has checked
+in, including helpers that found no chunk left. That lets `fn` live on
+the caller's stack, and it means a run costs at least one wake-up of
+every helper. A nested or concurrent `run` on the same pool throws
+`std::logic_error` (an atomic "running" flag). If starting a helper
+fails, the constructor stops and joins the helpers it already started,
+then rethrows. The trainer creates the pool for the validation loss and
+the training steps only, and destroys it afterwards. `parallelChunks(pool, …)` and
 `parallelRanges(pool, count, chunk, …)` fall back to a plain loop when
 `pool` is null.
 
@@ -117,6 +126,17 @@ one gemm call's sum over the whole of K:
 With a pool, these cuts are made even at one thread. Without a pool
 (search), every gemm is one call as before.
 
+**Two claims.** First, every thread count gives the same bits. That is
+what a run's determinism needs, and it holds for any backend because the
+cuts are fixed. Second, the result equals the old single-threaded code.
+For the naive backend this follows from the loops; for Accelerate it was
+measured (below), on one machine and OS version. The tests check the two
+separately: pool(N) against pool(1), then pool(1) against no pool.
+
+Both assume every thread runs in the same floating-point environment
+(default rounding, no flush-to-zero change). Nothing in the program
+changes it, and threads start with the process defaults.
+
 **Why these cuts reproduce the old bits.** For the naive backend this
 follows from the loops: every element sums over K in one fixed order,
 whatever range of rows or columns a call covers. Accelerate is a black
@@ -130,7 +150,9 @@ head products or of some small-batch weight gradients. Those are exactly
 the cuts the design avoids. `tests/test_backend.cpp` keeps a
 representative set of the shapes. The thread-count independence is
 structural and holds for any backend. Equality with the old binary is
-proven for the naive backend and measured for Accelerate.
+proven for the naive backend and measured for Accelerate on an M5 Max
+under macOS 27.0.1. It was not measured for OpenBLAS or for other chips
+and OS versions.
 
 **Why columns, not rows, for BLAS.** The first version cut every gemm
 into 16-row bands. Each band re-reads the whole column matrix (72 MB for
@@ -152,7 +174,9 @@ A bitwise test against the original loops guards both.
 
 `train_threads` (int, 0 = `std::thread::hardware_concurrency()`, else
 1–256; default 0) is the pool size for the validation loss and the
-training steps. Results do not depend on it, so it is tunable on
+training steps. A value above the hardware's thread count is capped at
+it (`resolveTrainThreads`). More threads would only take turns on the
+same cores, and the result does not depend on the count anyway. Results do not depend on it, so it is tunable on
 resume. The presets leave it at 0. `bench --train-threads 1,2,4,8
 --train-batch 256` times the step at each thread count.
 

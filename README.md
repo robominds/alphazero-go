@@ -96,7 +96,8 @@ error: cannot change architecture keys on resume: blocks
 
 **Threads.** `workers` (0 = every core) is how many self-play and arena
 games run at once, one per thread. `train_threads` (0 = every core, the
-default; otherwise 1–256) is how many threads share the training phase:
+default; otherwise 1–256, and a value above the core count uses the core
+count) is how many threads share the training phase:
 the validation loss and every SGD step, from assembling the batch to the
 optimizer update. A run's results do not depend on either. Self-play
 seeds each game from its index, and the training step cuts its work into
@@ -104,9 +105,16 @@ chunks fixed by the tensors' shapes: a channel, a block of 512 gemm
 columns, 32k elements, 16 samples. Every value is computed by one chunk
 with the same operations in the same order as on one thread, and batch
 sums stay serial. So checkpoints, `state.bin` and the ratings are
-byte-identical for every `train_threads`, and identical to the
-single-threaded code before the key existed. Both keys are tunable on
-resume. The presets leave both at 0. On an 18-core M5 Max a 9×9 training
+byte-identical for every `train_threads`, on any backend. That is the
+guarantee a run needs.
+
+Whether they also match the single-threaded code from before the key
+existed is a separate question. For the naive backend they do by
+construction. For Accelerate it was measured on an M5 Max under macOS
+27.0.1: a sweep of ~11,000 convolution shapes, plus byte-identical runs
+of the old and new binaries. It was not measured for OpenBLAS or for
+other chips and OS versions, where a column block of a gemm could round
+differently from the whole call. Both keys are tunable on resume. The presets leave both at 0. On an 18-core M5 Max a 9×9 training
 step at batch 256 takes 52 ms (6×64) and 93 ms (6×96) with all cores,
 against 266 and 427 ms on one core before
 ([the design](docs/superpowers/specs/2026-10-08-multithreaded-training-design.md),
