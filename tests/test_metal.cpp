@@ -1367,7 +1367,125 @@ void test_single_search_hub_matches_alone() {
 
 } // namespace
 
+// ---------------------------------------------------------------- arena rounds at once
+
+// playMatches on the GPU: every match of a set at once, one hub per
+// network for all of them. Each result equals the match played alone, for
+// any worker count, inference_batch and with the hubs' chaos mode on.
+void test_metal_play_matches_equal_one_at_a_time() {
+    NetConfig shape;
+    shape.boardSize = 5;
+    shape.history = 2;
+    shape.blocks = 1;
+    shape.filters = 8;
+    shape.valueHidden = 8;
+    const Network a = randomNetwork(shape, 611), b = randomNetwork(shape, 612), c = randomNetwork(shape, 613);
+    ArenaConfig cfg;
+    cfg.simulations = 12;
+    cfg.mctsBatch = 4;
+    cfg.temperatureMoves = 2;
+    ArenaPlayer smallB = ArenaPlayer::network(b);
+    smallB.mctsBatch = 2;
+    const std::vector<ArenaMatchSpec> specs = {
+        {ArenaPlayer::network(a), ArenaPlayer::network(b), 6, 201},
+        {ArenaPlayer::network(a), ArenaPlayer::bot(12), 4, 202},
+        {ArenaPlayer::network(a, 0, true), ArenaPlayer::network(c, 16), 4, 203},
+        {ArenaPlayer::network(a), smallB, 2, 204},
+        {ArenaPlayer::network(c), ArenaPlayer::network(c, 0, true), 4, 205},
+        {ArenaPlayer::bot(4), ArenaPlayer::network(b), 2, 206},
+    };
+    auto same = [](const MatchResult& x, const MatchResult& y) {
+        return x.games == y.games && x.scoreA == y.scoreA && x.winsA == y.winsA && x.winsB == y.winsB &&
+               x.draws == y.draws && x.distinctGames == y.distinctGames;
+    };
+    std::vector<MatchResult> alone;
+    for (const ArenaMatchSpec& m : specs) {
+        ArenaConfig one = cfg;
+        one.games = m.games;
+        alone.push_back(playMatch(m.a, m.b, one, m.seed, 1, "metal", 8));
+    }
+    struct Variant { int workers, inferenceBatch; uint64_t chaos; };
+    for (const Variant& v : {Variant{1, 8, 0}, Variant{3, 256, 0}, Variant{8, 16, 5}, Variant{0, 256, 0}}) {
+        metal_probe::setHubChaosSeed(v.chaos);
+        const std::vector<MatchResult> together = playMatches(specs, cfg, v.workers, "metal", v.inferenceBatch);
+        metal_probe::setHubChaosSeed(0);
+        for (size_t i = 0; i < specs.size(); ++i) assert(same(together[i], alone[i]));
+    }
+    arena_probe::setOneMatchAtATime(true);
+    const std::vector<MatchResult> sequential = playMatches(specs, cfg, 5, "metal", 256);
+    arena_probe::setOneMatchAtATime(false);
+    for (size_t i = 0; i < specs.size(); ++i) assert(same(sequential[i], alone[i]));
+}
+
+// A metal run whose arena rounds have every kind of match: two bots, two
+// reference networks, gating, and promotions (promote_threshold 0.5) with
+// their calibration games. The trainer plays each wave at once; every file
+// equals the run that plays its matches one after another, for workers 1,
+// 3, 8 and 0, inference_batch 8 and 256, chaos on, on resume and on
+// re-rating.
+void test_metal_rounds_at_once_equal_one_at_a_time() {
+    RunDir refs("rounds_refs");
+    fs::create_directories(refs.path);
+    for (int k = 0; k < 2; ++k) {
+        RunDir donor("rounds_donor" + std::to_string(k));
+        Config d = metalRunConfig();
+        d.seed = 31 + k;
+        startRun(d, donor)->runUntil(k);
+        fs::copy_file(checkpointPath(donor.str(), k), refs.file("ref" + std::to_string(k) + ".azn"));
+    }
+    Config base = metalRunConfig();
+    base.botSimulations = {8, 16};
+    base.referenceNetworks = {refs.file("ref0.azn"), refs.file("ref1.azn")};
+    base.arenaGames = 4;
+    base.calibrationGames = 4;
+    base.promoteThreshold = 0.5f;
+    base.gating = true;
+    base.gatingThreshold = 0.5f;
+
+    RunDir sequential("rounds_seq");
+    Config c = base;
+    c.workers = 1;
+    arena_probe::setOneMatchAtATime(true);
+    startRun(c, sequential)->runUntil(4);
+    arena_probe::setOneMatchAtATime(false);
+    const std::string reference = runFingerprint(sequential, 4);
+    assert(loadTrainingState(statePath(sequential.str())).references.back() > 0);   // a promotion
+
+    struct Variant { int workers, inferenceBatch; uint64_t chaos; };
+    for (const Variant& v : {Variant{1, 8, 0}, Variant{3, 256, 0}, Variant{8, 8, 7}, Variant{0, 256, 0}}) {
+        RunDir dir("rounds_variant");
+        c = base;
+        c.workers = v.workers;
+        c.inferenceBatch = v.inferenceBatch;
+        metal_probe::setHubChaosSeed(v.chaos);
+        startRun(c, dir)->runUntil(4);
+        metal_probe::setHubChaosSeed(0);
+        assert(runFingerprint(dir, 4) == reference);
+    }
+
+    RunDir resumed("rounds_resume");
+    c = base;
+    c.workers = 3;
+    startRun(c, resumed)->runUntil(2);
+    {
+        std::ostringstream out;
+        std::unique_ptr<Trainer> t = Trainer::resume(resumed.str(), {}, &out);
+        t->setLog(nullptr);
+        t->runUntil(4);
+    }
+    assert(runFingerprint(resumed, 4) == reference);
+
+    arena_probe::setOneMatchAtATime(true);
+    assert(rerateRun(sequential.str(), {}, nullptr) == 4);
+    arena_probe::setOneMatchAtATime(false);
+    assert(rerateRun(resumed.str(), {"workers=5"}, nullptr) == 4);
+    for (const char* f : {"results.csv", "elo.csv", "references.csv", "reference-networks.csv", "log.csv"})
+        assert(readBytes(resumed.file(std::string("rerate/") + f)) ==
+               readBytes(sequential.file(std::string("rerate/") + f)));
+}
+
 #endif // AZ_USE_METAL
+
 
 int main() {
     std::string why;
@@ -1418,6 +1536,8 @@ int main() {
     test_gpu_failure_keeps_last_good_state();
     test_metal_memory_checked_up_front();
     test_single_search_hub_matches_alone();
+    test_metal_play_matches_equal_one_at_a_time();
+    test_metal_rounds_at_once_equal_one_at_a_time();
 #endif
     std::printf("test_metal: all tests passed\n");
     return 0;

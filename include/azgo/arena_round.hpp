@@ -24,6 +24,22 @@ namespace azgo {
 // real networks; tests can return made-up results.
 using MatchFn = std::function<MatchResult(int a, int b, int games, uint64_t seed)>;
 
+// One match of a wave: players a and b, games, seed.
+struct MatchRequest {
+    int a = 0, b = 0, games = 0;
+    uint64_t seed = 0;
+};
+
+// Plays a wave of matches, which do not depend on each other's results, and
+// returns each one's result from its a's side, in order. The trainer plays
+// a wave's matches at once (playMatches, azgo/arena.hpp), so the GPU sees
+// all their searches together; a match's result does not depend on which
+// others share its wave. Never called with an empty wave.
+using MatchesFn = std::function<std::vector<MatchResult>(const std::vector<MatchRequest>& wave)>;
+
+// A MatchesFn that plays a wave's matches one after another with `play`.
+MatchesFn oneAtATime(MatchFn play);
+
 struct ArenaRoundSettings {
     uint64_t seed = 1;                // the run's seed
     int arenaGames = 20;              // games per opponent
@@ -47,7 +63,11 @@ struct ArenaRoundResult {
 // Plays settings.calibrationGames games of generation 0 against every fixed
 // player (negative ID) in `references` that has never played generation 0,
 // so each is rated before it can be chosen. Player p's seed is
-// deriveSeed(seed, 0, kPhaseCalibration, p). Returns the number calibrated.
+// deriveSeed(seed, 0, kPhaseCalibration, p). The calibrations are one wave,
+// added to `results` in `references` order. Returns the number calibrated.
+int calibrateFixedPlayers(ResultsTable& results, const std::vector<int>& references,
+                          const ArenaRoundSettings& settings, const MatchesFn& play);
+// The same, one match at a time: calibrateFixedPlayers(..., oneAtATime(play)).
 int calibrateFixedPlayers(ResultsTable& results, const std::vector<int>& references,
                           const ArenaRoundSettings& settings, const MatchFn& play);
 
@@ -55,11 +75,16 @@ int calibrateFixedPlayers(ResultsTable& results, const std::vector<int>& referen
 //   1. calibrateFixedPlayers;
 //   2. refit: ratings = fitBradleyTerry(results, 0);
 //   3. opponents = selectOpponents(g, ratings, references, maxExtra, bestNetwork);
-//   4. arenaGames against each, seed deriveSeed(seed, g, kPhaseArena, opponent);
+//   4. arenaGames against each, seed deriveSeed(seed, g, kPhaseArena, opponent),
+//      all in one wave;
 //   5. promotion: if g scored >= promoteThreshold against the strongest
 //      reference, calibrationGames more against it (seed deriveSeed(seed, g,
-//      kPhaseCalibration, strongest)), and g joins `references` (kept sorted).
-// Every result is added to `results`.
+//      kPhaseCalibration, strongest)), a second wave since it depends on the
+//      first, and g joins `references` (kept sorted).
+// Every result is added to `results`, in the order above.
+ArenaRoundResult runArenaRound(int generation, ResultsTable& results, std::vector<int>& references,
+                               const ArenaRoundSettings& settings, const MatchesFn& play);
+// The same, one match at a time: runArenaRound(..., oneAtATime(play)).
 ArenaRoundResult runArenaRound(int generation, ResultsTable& results, std::vector<int>& references,
                                const ArenaRoundSettings& settings, const MatchFn& play);
 

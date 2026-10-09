@@ -15,6 +15,7 @@
 #include <unistd.h>
 #include <utility>
 #include <vector>
+#include "azgo/arena.hpp"
 #include "azgo/backend.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/config.hpp"
@@ -1672,6 +1673,115 @@ static void test_rerate_ignores_uncommitted_checkpoint() {
     assert(readFile(dir.file("rerate/results.csv")) == results);
 }
 
+
+// ---- arena rounds played at once ---------------------------------------------
+
+// Everything a run wrote that must not depend on how its arena matches were
+// scheduled: every checkpoint, state.bin, the rating files, the SGFs, and
+// log.csv without its three timing columns (selfplay_s, train_s, arena_s).
+static std::string runFingerprint(const TempDir& dir, int generations) {
+    std::string out;
+    for (int g = 0; g <= generations; ++g) out += readFile(checkpointPath(dir.str(), g));
+    for (const char* f : {"state.bin", "results.csv", "references.csv", "elo.csv"}) out += readFile(dir.file(f));
+    if (fs::exists(dir.file("reference-networks.csv"))) out += readFile(dir.file("reference-networks.csv"));
+    std::vector<std::string> sgf;
+    for (const auto& e : fs::directory_iterator(dir.file("sgf"))) sgf.push_back(e.path().string());
+    std::sort(sgf.begin(), sgf.end());
+    assert(!sgf.empty());
+    for (const std::string& f : sgf) out += readFile(f);
+    for (const std::string& row : splitLines(readFile(dir.file("log.csv")))) {
+        const std::vector<std::string> fields = splitFields(row);
+        for (size_t i = 0; i < fields.size(); ++i)
+            if (i < 9 || i > 11) out += fields[i] + ",";
+        out += "\n";
+    }
+    return out;
+}
+
+// A run whose arena rounds have every kind of match: two bots and two
+// reference networks (all calibrated against generation 0 in one wave),
+// gating (the best network joins the opponents), and promote_threshold 0.5
+// so generations are promoted and play calibration games in a second wave.
+static Config roundsConfig(const TempDir& refs, const std::string& backend) {
+    Config c = tinyConfig();
+    c.backend = backend;
+    c.botSimulations = {8, 16};
+    c.arenaGames = 4;
+    c.calibrationGames = 4;
+    c.promoteThreshold = 0.5f;
+    c.gating = true;
+    c.gatingThreshold = 0.5f;
+    if (!fs::exists(refs.file("ref.azn"))) frozenGeneration1(refs);
+    if (!fs::exists(refs.file("ref0.azn"))) {
+        TempDir donor(refs.path.filename().string() + "_donor0");
+        Config d = tinyConfig();
+        d.seed = 5;
+        startQuiet(d, donor)->runUntil(0);
+        fs::copy_file(checkpointPath(donor.str(), 0), refs.file("ref0.azn"));
+    }
+    c.referenceNetworks = {refs.file("ref.azn"), refs.file("ref0.azn")};
+    return c;
+}
+
+// The trainer plays each wave of an arena round (the calibrations at the
+// start, a generation's opponents, its promotion games) at once. Every file
+// is byte for byte what playing the matches one after another (the arena
+// test hook) gives, for 1, 3, 8 and all-core workers and both inference
+// batches, on resume and on re-rating.
+static void test_rounds_at_once_equal_one_at_a_time() {
+    std::vector<std::string> backends = {"naive"};
+    if (blasAvailable()) backends.push_back("blas");
+    for (const std::string& be : backends) {
+        TempDir refs("rounds_refs_" + be), sequential("rounds_seq_" + be);
+        const Config base = roundsConfig(refs, be);
+        Config c = base;
+        c.workers = 1;
+        arena_probe::setOneMatchAtATime(true);
+        startQuiet(c, sequential)->runUntil(4);
+        arena_probe::setOneMatchAtATime(false);
+        const std::string reference = runFingerprint(sequential, 4);
+
+        // The run exercises what it should: both bots and both reference
+        // networks were rated, a generation was promoted, gating is on.
+        const TrainingState s = loadTrainingState(statePath(sequential.str()));
+        assert(s.references.back() > 0);   // a promoted generation
+        const std::map<std::pair<int, int>, ResultsTable::Pair> pairs = readResults(sequential);
+        for (int p : {-4, -3, -2, -1}) assert(pairs.count({p, 0}) && pairs.at({p, 0}).games == 4);
+        bool fixedOpponent = false;
+        for (const auto& [key, pair] : pairs) fixedOpponent = fixedOpponent || (key.first < 0 && key.second > 0);
+        assert(fixedOpponent);
+
+        const int workerCounts[] = {1, 3, 8, 0};
+        const int batches[] = {8, 256, 256, 8};
+        for (int v = 0; v < 4; ++v) {
+            TempDir dir("rounds_" + be + "_" + std::to_string(v));
+            c = base;
+            c.workers = workerCounts[v];
+            c.inferenceBatch = batches[v];
+            startQuiet(c, dir)->runUntil(4);
+            assert(runFingerprint(dir, 4) == reference);
+        }
+
+        // Resume: two generations, then two more.
+        TempDir resumed("rounds_resume_" + be);
+        c = base;
+        c.workers = 3;
+        startQuiet(c, resumed)->runUntil(2);
+        resumeQuiet(resumed, {})->runUntil(4);
+        assert(runFingerprint(resumed, 4) == reference);
+
+        // Re-rating (which ignores gating) gives the same files whether its
+        // waves are played at once or one match after another.
+        arena_probe::setOneMatchAtATime(true);
+        assert(rerateRun(sequential.str(), {}, nullptr) == 4);
+        arena_probe::setOneMatchAtATime(false);
+        assert(rerateRun(resumed.str(), {"workers=5"}, nullptr) == 4);
+        for (const char* f : {"results.csv", "elo.csv", "references.csv", "reference-networks.csv", "log.csv"})
+            assert(readFile(resumed.file(std::string("rerate/") + f)) ==
+                   readFile(sequential.file(std::string("rerate/") + f)));
+    }
+}
+
 int main() {
     test_rerate_ignores_uncommitted_checkpoint();
     test_metal_unavailable_writes_nothing();
@@ -1714,6 +1824,7 @@ int main() {
     test_validation_loss_worker_independence();
     test_resume_adds_validation_columns();
     test_validation_loss_prints_nan();
+    test_rounds_at_once_equal_one_at_a_time();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }

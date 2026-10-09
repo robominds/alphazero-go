@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -254,6 +255,93 @@ static void test_reference_network_csvs() {
     assert(referenceNetworksCsv({"x.azn"}, 0) == "player,name,path\n-1,ref1,x.azn\n");
 }
 
+
+// The same synthetic arena seen through MatchesFn: each call is one wave of
+// matches that the trainer plays at once. The wave's matches are recorded
+// in order, and each scores as FakeArena would.
+struct WaveArena {
+    FakeArena arena;
+    std::vector<std::vector<MatchRequest>> waves;
+    MatchesFn fn() {
+        return [this](const std::vector<MatchRequest>& wave) {
+            assert(!wave.empty());   // never asked to play nothing
+            waves.push_back(wave);
+            std::vector<MatchResult> out;
+            const MatchFn one = arena.fn();
+            for (const MatchRequest& m : wave) out.push_back(one(m.a, m.b, m.games, m.seed));
+            return out;
+        };
+    }
+};
+
+static bool sameRequest(const MatchRequest& m, const std::tuple<int, int, int, uint64_t>& call) {
+    return std::make_tuple(m.a, m.b, m.games, m.seed) == call;
+}
+
+// A round played in waves: the fixed players' calibrations in one wave, then
+// every opponent in one wave, then the promotion games. The matches, seeds,
+// results table, opponents and references are exactly those of the same
+// round played one match at a time (MatchFn), the order matches were added
+// to the table included.
+static void test_round_in_waves_equals_one_at_a_time() {
+    const double nearTarget = 400.0 * std::log10(1.0 / 0.7 - 1.0);
+    const std::map<int, double> truth = {{-3, 300.0}, {-2, nearTarget}, {-1, -300.0}, {0, 0.0},
+                                         {1, 500.0}, {2, 900.0}, {3, 1300.0}};
+    WaveArena waves;
+    waves.arena.truth = truth;
+    FakeArena single;
+    single.truth = truth;
+    ArenaRoundSettings s = settings();
+    s.maxExtra = 2;
+    ResultsTable wavesTable, singleTable;
+    std::vector<int> wavesRefs = initialReferences(3), singleRefs = initialReferences(3);
+
+    assert(calibrateFixedPlayers(wavesTable, wavesRefs, s, waves.fn()) == 3);
+    assert(calibrateFixedPlayers(singleTable, singleRefs, s, single.fn()) == 3);
+    assert(waves.waves.size() == 1 && waves.waves[0].size() == 3);   // every calibration at once
+    assert(calibrateFixedPlayers(wavesTable, wavesRefs, s, waves.fn()) == 0);
+    assert(waves.waves.size() == 1);   // nothing left: no wave at all
+
+    bool promotedOnce = false;
+    for (int g = 1; g <= 3; ++g) {
+        s.bestNetwork = g == 3 ? std::optional<int>(1) : std::nullopt;   // gating in the last round
+        const size_t before = waves.waves.size();
+        const ArenaRoundResult w = runArenaRound(g, wavesTable, wavesRefs, s, waves.fn());
+        const ArenaRoundResult o = runArenaRound(g, singleTable, singleRefs, s, single.fn());
+        assert(w.strongest == o.strongest && w.promoted == o.promoted);
+        assert(w.matches.size() == o.matches.size());
+        for (size_t i = 0; i < w.matches.size(); ++i) {
+            assert(w.matches[i].opponent == o.matches[i].opponent);
+            assert(w.matches[i].result.scoreA == o.matches[i].result.scoreA);
+        }
+        // One wave of every opponent, then one of the promotion games.
+        assert(waves.waves.size() == before + (w.promoted ? 2 : 1));
+        assert(waves.waves[before].size() == w.matches.size());
+        if (w.promoted) assert(waves.waves[before + 1].size() == 1);
+        promotedOnce = promotedOnce || w.promoted;
+        if (g == 3) assert(w.matches.size() >= 3 && w.matches.back().opponent == 1);   // gating: the best last
+    }
+    assert(promotedOnce);
+    assert(wavesRefs == singleRefs);
+    assert(wavesTable.toCsv() == singleTable.toCsv());
+    // The same matches with the same seeds, in the same order.
+    std::vector<MatchRequest> flat;
+    for (const std::vector<MatchRequest>& wave : waves.waves) flat.insert(flat.end(), wave.begin(), wave.end());
+    assert(flat.size() == single.calls.size());
+    for (size_t i = 0; i < flat.size(); ++i) assert(sameRequest(flat[i], single.calls[i]));
+}
+
+// oneAtATime turns a single-match function into a MatchesFn that plays a
+// wave's matches in order.
+static void test_one_at_a_time_adapter() {
+    FakeArena arena;
+    arena.truth = {{0, 0.0}, {1, 100.0}, {2, 200.0}};
+    const MatchesFn play = oneAtATime(arena.fn());
+    const std::vector<MatchResult> r = play({{1, 0, 20, 5}, {2, 1, 10, 6}});
+    assert(r.size() == 2 && r[0].games == 20 && r[1].games == 10);
+    assert(arena.calls.size() == 2 && arena.calls[1] == std::make_tuple(2, 1, 10, uint64_t{6}));
+}
+
 int main() {
     test_calibration();
     test_round_uses_selection_and_live_seeds();
@@ -264,6 +352,8 @@ int main() {
     test_fixed_player_names();
     test_reference_networks_are_calibrated_and_chosen();
     test_reference_network_csvs();
+    test_round_in_waves_equals_one_at_a_time();
+    test_one_at_a_time_adapter();
     std::printf("test_arena_round: all tests passed\n");
     return 0;
 }

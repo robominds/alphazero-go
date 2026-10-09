@@ -45,14 +45,26 @@ void printDeviceLine(const Config& cfg, std::ostream* log) {
         *log << "gpu: " << metalDescription() << " (inference: self-play, arena, validation)\n";
 }
 
+#ifdef AZ_USE_METAL
+// The most hubs an arena wave can hold at once with metal, one per network
+// (bots need none): the calibrations when a run starts (generation 0 and
+// every reference network), or a round (the new network, g-1, the strongest
+// reference, arena_opponents more and, with gating, the best network).
+int arenaHubs(const Config& cfg) {
+    const int calibration = 1 + static_cast<int>(cfg.referenceNetworks.size());
+    const int round = 3 + cfg.arenaOpponents + (cfg.gating ? 1 : 0);
+    return std::max(calibration, round);
+}
+#endif
+
 // The backend can run here, and with metal its hubs fit in GPU memory at
-// inference_batch: two at once, as an arena match between two networks
-// needs. Checked before a run writes anything, so a too-large
-// inference_batch fails up front rather than in the first arena.
+// inference_batch: every hub an arena wave may need at once. Checked before
+// a run writes anything, so a too-large inference_batch fails up front
+// rather than in the first arena.
 void checkBackend(const Config& cfg) {
     checkBackendAvailable(cfg.backend);
 #ifdef AZ_USE_METAL
-    if (cfg.backend == "metal") checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, 2);
+    if (cfg.backend == "metal") checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, arenaHubs(cfg));
 #endif
 }
 
@@ -185,30 +197,29 @@ ArenaRoundSettings roundSettings(const Config& cfg, std::optional<int> bestNetwo
 // k (player -k) is bot k from bot_simulations, or past the bots one of
 // `referenceNets` (the run's reference networks, loaded once and fitted to
 // its shape); generations come from their checkpoints, except `liveNet`
-// (generation `liveGeneration`), which is already in memory.
-MatchFn runMatches(const Config& cfg, const std::string& runDir, int liveGeneration,
-                   const Network* liveNet, const std::vector<Network>* referenceNets) {
-    return [cfg, runDir, liveGeneration, liveNet, referenceNets](int a, int b, int games, uint64_t seed) {
-        ArenaConfig ac = arenaConfig(cfg);
-        ac.games = games;
-        std::unique_ptr<Network> loaded[2];
-        ArenaPlayer players[2];
-        const int ids[2] = {a, b};
+// (generation `liveGeneration`), which is already in memory. A wave's
+// matches are played at once (playMatches): each checkpoint is read once
+// and each network gets one set of evaluators (one hub with metal) for all
+// its matches, so the GPU sees every search of the wave together.
+MatchesFn runMatches(const Config& cfg, const std::string& runDir, int liveGeneration,
+                     const Network* liveNet, const std::vector<Network>* referenceNets) {
+    return [cfg, runDir, liveGeneration, liveNet, referenceNets](const std::vector<MatchRequest>& wave) {
+        std::map<int, std::unique_ptr<Network>> loaded;   // generation -> its checkpoint
         const size_t bots = cfg.botSimulations.size();
-        for (int i = 0; i < 2; ++i) {
-            if (ids[i] < 0) {
-                const size_t k = static_cast<size_t>(-ids[i]);
-                players[i] = k <= bots ? ArenaPlayer::bot(cfg.botSimulations[k - 1])
-                                       : ArenaPlayer::network(referenceNets->at(k - bots - 1));
-            } else if (liveNet && ids[i] == liveGeneration) {
-                players[i] = ArenaPlayer::network(*liveNet);
-            } else {
-                loaded[i] = std::make_unique<Network>(loadNetwork(checkpointPath(runDir, ids[i])));
-                players[i] = ArenaPlayer::network(*loaded[i]);
+        auto player = [&](int id) {
+            if (id < 0) {
+                const size_t k = static_cast<size_t>(-id);
+                return k <= bots ? ArenaPlayer::bot(cfg.botSimulations[k - 1])
+                                 : ArenaPlayer::network(referenceNets->at(k - bots - 1));
             }
-        }
-        return playMatch(players[0], players[1], ac, seed, cfg.effectiveWorkers(), cfg.backend,
-                         cfg.inferenceBatch);
+            if (liveNet && id == liveGeneration) return ArenaPlayer::network(*liveNet);
+            std::unique_ptr<Network>& net = loaded[id];
+            if (!net) net = std::make_unique<Network>(loadNetwork(checkpointPath(runDir, id)));
+            return ArenaPlayer::network(*net);
+        };
+        std::vector<ArenaMatchSpec> specs;
+        for (const MatchRequest& m : wave) specs.push_back({player(m.a), player(m.b), m.games, m.seed});
+        return playMatches(specs, arenaConfig(cfg), cfg.workers, cfg.backend, cfg.inferenceBatch);
     };
 }
 
@@ -948,7 +959,7 @@ int rerateRun(const std::string& runDir, const std::vector<std::string>& overrid
     std::vector<int> references = initialReferences(numBots + numNetworks);
     const ArenaRoundSettings settings = roundSettings(cfg, std::nullopt);   // gating ignored
     // Every generation from disk.
-    const MatchFn play = runMatches(cfg, runDir, -1, nullptr, &referenceNets.networks);
+    const MatchesFn play = runMatches(cfg, runDir, -1, nullptr, &referenceNets.networks);
     calibrateFixedPlayers(results, references, settings, play);
     writeRatingFiles(outDir, results, references, cfg);
     if (log) {

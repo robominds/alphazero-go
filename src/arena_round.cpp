@@ -20,25 +20,39 @@ std::string fixedPlayerName(int player, const std::vector<int>& botSimulations, 
     return "ref" + std::to_string(k - bots);
 }
 
+MatchesFn oneAtATime(MatchFn play) {
+    return [play](const std::vector<MatchRequest>& wave) {
+        std::vector<MatchResult> out;
+        for (const MatchRequest& m : wave) out.push_back(play(m.a, m.b, m.games, m.seed));
+        return out;
+    };
+}
+
 int calibrateFixedPlayers(ResultsTable& results, const std::vector<int>& references,
-                          const ArenaRoundSettings& settings, const MatchFn& play) {
+                          const ArenaRoundSettings& settings, const MatchesFn& play) {
     std::set<int> calibrated;   // fixed players that already have results against generation 0
     for (const ResultsTable::Pair& p : results.pairs())
         if (p.a < 0 && p.b == 0) calibrated.insert(p.a);
-    int count = 0;
+    std::vector<MatchRequest> wave;
     for (int fixed : references) {
         if (fixed >= 0 || calibrated.count(fixed)) continue;
-        const MatchResult r = play(0, fixed, settings.calibrationGames,
-                                   deriveSeed(settings.seed, 0, kPhaseCalibration,
-                                              static_cast<uint64_t>(fixed)));
-        results.addMatch(0, fixed, r.games, r.scoreA);
-        ++count;
+        wave.push_back({0, fixed, settings.calibrationGames,
+                        deriveSeed(settings.seed, 0, kPhaseCalibration, static_cast<uint64_t>(fixed))});
     }
-    return count;
+    if (wave.empty()) return 0;
+    // The calibrations do not depend on each other: one wave.
+    const std::vector<MatchResult> r = play(wave);
+    for (size_t i = 0; i < wave.size(); ++i) results.addMatch(0, wave[i].b, r[i].games, r[i].scoreA);
+    return static_cast<int>(wave.size());
+}
+
+int calibrateFixedPlayers(ResultsTable& results, const std::vector<int>& references,
+                          const ArenaRoundSettings& settings, const MatchFn& play) {
+    return calibrateFixedPlayers(results, references, settings, oneAtATime(play));
 }
 
 ArenaRoundResult runArenaRound(int generation, ResultsTable& results, std::vector<int>& references,
-                               const ArenaRoundSettings& settings, const MatchFn& play) {
+                               const ArenaRoundSettings& settings, const MatchesFn& play) {
     // Normally a no-op: fixed players are calibrated when a run starts. A run
     // resumed from a state.bin written before bots existed calibrates here, once.
     calibrateFixedPlayers(results, references, settings, play);
@@ -50,11 +64,18 @@ ArenaRoundResult runArenaRound(int generation, ResultsTable& results, std::vecto
     const std::vector<int> opponents =
         selectOpponents(generation, ratings, references, settings.maxExtra, settings.bestNetwork);
 
+    // Every opponent was chosen from the results before the round, so the
+    // matches do not depend on each other: one wave.
+    std::vector<MatchRequest> wave;
+    for (int o : opponents)
+        wave.push_back({generation, o, settings.arenaGames,
+                        deriveSeed(settings.seed, static_cast<uint64_t>(generation), kPhaseArena,
+                                   static_cast<uint64_t>(o))});
+    const std::vector<MatchResult> played = play(wave);
     double scoreVsStrongest = 0;
-    for (int o : opponents) {
-        const MatchResult r = play(generation, o, settings.arenaGames,
-                                   deriveSeed(settings.seed, static_cast<uint64_t>(generation),
-                                              kPhaseArena, static_cast<uint64_t>(o)));
+    for (size_t i = 0; i < opponents.size(); ++i) {
+        const int o = opponents[i];
+        const MatchResult& r = played[i];
         results.addMatch(generation, o, r.games, r.scoreA);
         if (o == round.strongest) scoreVsStrongest = r.scoreA;
         round.matches.push_back({o, r});
@@ -64,18 +85,23 @@ ArenaRoundResult runArenaRound(int generation, ResultsTable& results, std::vecto
     // network the next yardstick. The extra games pin its rating down before
     // later generations are measured against it. promote_threshold is a float
     // config key (0.85f is 0.8500000238...), so passesGate's tolerance is what
-    // accepts 17 of 20.
+    // accepts 17 of 20. They depend on the first wave's result: a second wave.
     if (passesGate(scoreVsStrongest, settings.arenaGames, settings.promoteThreshold)) {
-        const MatchResult r = play(generation, round.strongest, settings.calibrationGames,
-                                   deriveSeed(settings.seed, static_cast<uint64_t>(generation),
-                                              kPhaseCalibration,
-                                              static_cast<uint64_t>(round.strongest)));
+        const MatchResult r = play({{generation, round.strongest, settings.calibrationGames,
+                                     deriveSeed(settings.seed, static_cast<uint64_t>(generation),
+                                                kPhaseCalibration,
+                                                static_cast<uint64_t>(round.strongest))}})[0];
         results.addMatch(generation, round.strongest, r.games, r.scoreA);
         references.insert(std::upper_bound(references.begin(), references.end(), generation),
                           generation);
         round.promoted = true;
     }
     return round;
+}
+
+ArenaRoundResult runArenaRound(int generation, ResultsTable& results, std::vector<int>& references,
+                               const ArenaRoundSettings& settings, const MatchFn& play) {
+    return runArenaRound(generation, results, references, settings, oneAtATime(play));
 }
 
 std::string opponentSummary(const ArenaRoundResult& round, const std::vector<int>& botSimulations,
