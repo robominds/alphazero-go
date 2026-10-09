@@ -591,6 +591,92 @@ static void test_worker_evaluators_match_per_worker_loop() {
     assert(threw);
 }
 
+
+// The matches of a round as playMatches plays them: network against network,
+// the same network in several matches (a), against a bot from either seat,
+// one-sided random symmetry, a simulations override, a network with a
+// different batch in another match (b), and a network against itself (c).
+static std::vector<ArenaMatchSpec> roundSpecs(const Network& a, const Network& b, const Network& c) {
+    ArenaPlayer smallB = ArenaPlayer::network(b);
+    smallB.mctsBatch = 2;
+    ArenaPlayer puctA = ArenaPlayer::network(a);
+    puctA.cPuct = 3.0f;
+    return {
+        {ArenaPlayer::network(a), ArenaPlayer::network(b), 8, 101},
+        {ArenaPlayer::network(a), ArenaPlayer::bot(12), 6, 102},
+        {ArenaPlayer::network(a, 0, true), ArenaPlayer::network(c, 16), 4, 103},
+        {puctA, smallB, 2, 104},
+        {ArenaPlayer::network(c), ArenaPlayer::network(c, 0, true), 4, 105},
+        {ArenaPlayer::bot(4), ArenaPlayer::network(b), 2, 106},
+    };
+}
+
+// playMatches plays every game of every match at once, in one pool of
+// workers, with one set of evaluators per network for all of them. Each
+// match's result must be exactly what playing it alone gives, today's
+// playMatch and the per-worker loop before WorkerEvaluators existed, for
+// any worker count.
+static void test_play_matches_equal_one_at_a_time() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22), c(tinyNet(), 33);
+    ArenaConfig cfg = tinyArena();
+    cfg.temperatureMoves = 2;
+    const std::vector<ArenaMatchSpec> specs = roundSpecs(a, b, c);
+    std::vector<std::string> backends = {"naive"};
+    if (blasAvailable()) backends.push_back("blas");
+    for (const std::string& be : backends) {
+        std::vector<MatchResult> alone;
+        for (const ArenaMatchSpec& m : specs) {
+            ArenaConfig one = cfg;
+            one.games = m.games;
+            alone.push_back(playMatch(m.a, m.b, one, m.seed, 1, be));
+            assert(sameResult(alone.back(), perWorkerMatch(m.a, m.b, one, m.seed, 2, be)));
+            checkBookkeeping(alone.back(), m.games);
+        }
+        for (int workers : {1, 3, 8, 0}) {
+            const std::vector<MatchResult> together = playMatches(specs, cfg, workers, be);
+            assert(together.size() == specs.size());
+            for (size_t i = 0; i < specs.size(); ++i) assert(sameResult(together[i], alone[i]));
+        }
+        // The test hook that plays them one after another gives the same.
+        arena_probe::setOneMatchAtATime(true);
+        const std::vector<MatchResult> sequential = playMatches(specs, cfg, 3, be);
+        arena_probe::setOneMatchAtATime(false);
+        for (size_t i = 0; i < specs.size(); ++i) assert(sameResult(sequential[i], alone[i]));
+    }
+    assert(playMatches({}, cfg, 3, "naive").empty());
+}
+
+// playMatches checks every match as playMatch does, before playing any.
+static void test_play_matches_rejects_bad_matches() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22);
+    NetConfig other = tinyNet();
+    other.filters = 8;
+    Network wide(other, 33);
+    const ArenaConfig cfg = tinyArena();
+    auto refuses = [&](const std::vector<ArenaMatchSpec>& specs, const std::string& expected) {
+        try {
+            playMatches(specs, cfg, 2, "naive");
+        } catch (const std::invalid_argument& e) {
+            return std::string(e.what()).find(expected) != std::string::npos;
+        }
+        return false;
+    };
+    const ArenaMatchSpec good{ArenaPlayer::network(a), ArenaPlayer::network(b), 2, 1};
+    assert(refuses({good, {ArenaPlayer::network(a), ArenaPlayer::network(b), 3, 2}}, "games must be even"));
+    assert(refuses({good, {ArenaPlayer::bot(4), ArenaPlayer::bot(4), 2, 2}}, "two bots"));
+    assert(refuses({good, {ArenaPlayer::network(a), ArenaPlayer::bot(0), 2, 2}}, "at least 1 simulation"));
+    // Every network of a round shares one shape (one workspace per worker).
+    assert(refuses({good, {ArenaPlayer::network(wide), ArenaPlayer::bot(4), 2, 2}}, "different architectures"));
+    ArenaPlayer big = ArenaPlayer::network(a);
+    big.mctsBatch = 16;
+    try {
+        playMatches({good, {big, ArenaPlayer::bot(4), 2, 2}}, cfg, 2, "naive", 8);
+        assert(false);
+    } catch (const std::invalid_argument& e) {
+        assert(std::string(e.what()).find("inference batch") != std::string::npos);
+    }
+}
+
 int main() {
     test_gate();
     test_worker_evaluators_match_per_worker_loop();
@@ -609,6 +695,8 @@ int main() {
     test_rejects_bad_players();
     test_strongest_reference();
     test_select_opponents();
+    test_play_matches_equal_one_at_a_time();
+    test_play_matches_rejects_bad_matches();
     std::printf("test_arena: all tests passed\n");
     return 0;
 }

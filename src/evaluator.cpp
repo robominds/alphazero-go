@@ -5,12 +5,13 @@
 
 namespace azgo {
 
-// net_ is declared before ws_, so net_ is already bound when the Workspace
-// is sized from its config.
+// net_ and own_ are declared before ws_, so ws_ can refer to own_.
 LocalEvaluator::LocalEvaluator(const Network& net, const Backend& backend, int maxBatch)
-    : net_(net), ws_(net.config(), maxBatch, backend) {
+    : net_(net), own_(std::make_unique<Workspace>(net.config(), maxBatch, backend)), ws_(*own_) {
     assert(maxBatch >= 1);
 }
+
+LocalEvaluator::LocalEvaluator(const Network& net, Workspace& shared) : net_(net), ws_(shared) {}
 
 int LocalEvaluator::boardSize() const { return net_.config().boardSize; }
 int LocalEvaluator::history() const { return net_.config().history; }

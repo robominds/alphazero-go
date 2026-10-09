@@ -29,6 +29,11 @@ public:
 class LocalEvaluator : public Evaluator {
 public:
     LocalEvaluator(const Network& net, const Backend& backend, int maxBatch);
+    // The same, but evaluating in `shared`, a Workspace of net's shape that
+    // the caller owns and keeps alive: e.g. one per arena worker for every
+    // network the worker plays with, since it evaluates for one at a time.
+    // A Workspace is scratch memory, so the outputs are the same as with one's own.
+    LocalEvaluator(const Network& net, Workspace& shared);
     int boardSize() const override;
     int history() const override;
     int maxBatch() const override;
@@ -36,7 +41,8 @@ public:
     long long evaluations() const { return evaluations_; }   // positions evaluated so far
 private:
     const Network& net_;
-    Workspace ws_;
+    std::unique_ptr<Workspace> own_;   // null when the workspace is shared
+    Workspace& ws_;
     long long evaluations_ = 0;
 };
 

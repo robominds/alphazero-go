@@ -87,6 +87,46 @@ MatchResult playMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaCon
                       uint64_t seed, int workers, const std::string& backendName,
                       int inferenceBatch = 256);
 
+// One match of a set that playMatches plays at once: games >= 2, even.
+struct ArenaMatchSpec {
+    ArenaPlayer a, b;
+    int games = 0;
+    uint64_t seed = 0;
+};
+
+// Plays several matches at once: every game of every match is one task in a
+// single pool of worker threads, and each network (by address) gets one set
+// of evaluators for all its seats in all the matches. With metal that is one
+// batching hub per network, so the leaves of every search a network runs in
+// the whole set share its GPU passes; with naive and blas each worker has
+// one backend and one workspace that all its evaluators share (it plays one
+// game, and so evaluates for one network, at a time). A generation's arena
+// is a few short matches in which the new network plays every time: played
+// one after another, too few searches were in flight per network for the
+// GPU to batch well.
+// Result i is exactly playMatch(matches[i].a, matches[i].b, cfg with
+// games = matches[i].games, matches[i].seed, ...): game j of match i uses
+// Rng(deriveSeed(matches[i].seed, j)) and results are stored by match and
+// game, never by completion order, so they do not depend on workers,
+// inferenceBatch or which matches share the set. cfg.games is ignored.
+// Every match is checked as playMatch checks it before any game starts, and
+// all networks must share one NetConfig. workers <= 0 means
+// arenaWorkers(0, backendName, total games); never more threads than games.
+std::vector<MatchResult> playMatches(const std::vector<ArenaMatchSpec>& matches, const ArenaConfig& cfg,
+                                     int workers, const std::string& backendName,
+                                     int inferenceBatch = 256);
+
+// The worker threads for `games` arena games: an explicit count (> 0) as
+// given; otherwise resolveWorkers(0, backend == "metal"). Never more than games.
+int arenaWorkers(int workers, const std::string& backendName, int games);
+
+namespace arena_probe {
+// Tests only: when on, playMatches plays its matches one after another, each
+// with its own evaluators (hubs), as arena rounds were played before matches
+// ran at once. The program never turns it on.
+void setOneMatchAtATime(bool on);
+} // namespace arena_probe
+
 // Two networks: the same as playMatch(ArenaPlayer::network(a), ArenaPlayer::network(b), ...).
 MatchResult playMatch(const Network& a, const Network& b, const ArenaConfig& cfg,
                       uint64_t seed, int workers, const std::string& backendName,
