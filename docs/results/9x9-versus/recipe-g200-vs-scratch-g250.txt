@@ -1,0 +1,2 @@
+A runs/9x9-recipe/checkpoints/gen_0200.azn vs B runs/versus/scratch-g250-as-6x96.azn: A scored 246/400 = 0.615 (95% CI 0.566-0.661), distinct games 333
+A wins 246, B wins 154, draws 0

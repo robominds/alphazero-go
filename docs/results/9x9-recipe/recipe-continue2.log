@@ -1,0 +1,7 @@
+continue start Thu Oct  8 08:44:56 PDT 2026
+--- resumed after interruption Thu Oct  8 14:53:02 PDT 2026
+continue start Thu Oct  8 14:53:02 PDT 2026
+train exit 0 Thu Oct  8 16:38:22 PDT 2026
+g250-vs-g200: A runs/9x9-recipe/checkpoints/gen_0250.azn vs B runs/9x9-recipe/checkpoints/gen_0200.azn: A scored 253/400 = 0.632 (95% CI 0.584-0.678), distinct games 330
+g250-vs-start: A runs/9x9-recipe/checkpoints/gen_0250.azn vs B runs/9x9-wide96/checkpoints/gen_0050.azn: A scored 370/400 = 0.925 (95% CI 0.895-0.947), distinct games 376
+all done Thu Oct  8 17:06:21 PDT 2026

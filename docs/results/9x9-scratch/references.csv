@@ -7,6 +7,9 @@ player,kind,simulations,promoted_at,elo
 25,checkpoint,,25,1200.3
 32,checkpoint,,32,1433.3
 43,checkpoint,,43,1595.6
-67,checkpoint,,67,1764.4
-102,checkpoint,,102,1949.4
-129,checkpoint,,129,2056.1
+67,checkpoint,,67,1764.6
+102,checkpoint,,102,1948.4
+129,checkpoint,,129,2049.2
+161,checkpoint,,161,2099.4
+221,checkpoint,,221,2177.5
+243,checkpoint,,243,2245.1

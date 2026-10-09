@@ -1,0 +1,8 @@
+--- relaunched Thu Oct  8 14:53:03 PDT 2026
+start Thu Oct  8 17:07:09 PDT 2026
+grow g150 exit 0
+grow g250 exit 0
+recipe-g250-vs-scratch-g250: A runs/9x9-recipe/checkpoints/gen_0250.azn vs B runs/versus/scratch-g250-as-6x96.azn: A scored 244/400 = 0.610 (95% CI 0.561-0.657), distinct games 360
+recipe-g200-vs-scratch-g250: A runs/9x9-recipe/checkpoints/gen_0200.azn vs B runs/versus/scratch-g250-as-6x96.azn: A scored 246/400 = 0.615 (95% CI 0.566-0.661), distinct games 333
+recipe-g250-vs-scratch-g150: A runs/9x9-recipe/checkpoints/gen_0250.azn vs B runs/versus/scratch-g150-as-6x96.azn: A scored 311/400 = 0.777 (95% CI 0.734-0.816), distinct games 366
+all done Thu Oct  8 17:48:25 PDT 2026
