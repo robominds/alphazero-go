@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 #include "azgo/parallel.hpp"
 
@@ -57,11 +58,100 @@ static void test_resolve_workers() {
     assert(resolveWorkers(1) == 1);
 }
 
+// The pool's threads persist across runs; every chunk of every run is
+// executed exactly once, whatever the thread and chunk counts.
+static void test_pool_runs_every_chunk_once() {
+    for (int threads : {1, 2, 3, 7}) {
+        ThreadPool pool(threads);
+        assert(pool.threads() == threads);
+        for (int chunks : {0, 1, 2, 5, 64, 1000}) {
+            for (int repeat = 0; repeat < 50; ++repeat) {
+                std::vector<std::atomic<int>> hits(static_cast<size_t>(chunks));
+                for (auto& h : hits) h.store(0);
+                pool.run(chunks, [&](int c) { hits[static_cast<size_t>(c)].fetch_add(1); });
+                for (auto& h : hits) assert(h.load() == 1);
+            }
+        }
+    }
+}
+
+// One thread, or one chunk, runs inline on the calling thread.
+static void test_pool_single_thread_is_inline() {
+    const std::thread::id caller = std::this_thread::get_id();
+    ThreadPool one(1);
+    bool inline1 = true;
+    one.run(10, [&](int) { inline1 = inline1 && std::this_thread::get_id() == caller; });
+    assert(inline1);
+    ThreadPool four(4);
+    bool inline2 = false;
+    four.run(1, [&](int) { inline2 = std::this_thread::get_id() == caller; });
+    assert(inline2);
+    // nullptr: no pool, a plain loop in chunk order.
+    std::vector<int> order;
+    parallelChunks(nullptr, 4, [&](int c) { order.push_back(c); });
+    assert((order == std::vector<int>{0, 1, 2, 3}));
+}
+
+// With several threads the work really is spread: some chunk runs on a
+// helper thread (each chunk waits until two threads have arrived, bounded).
+static void test_pool_uses_helpers() {
+    ThreadPool pool(4);
+    std::atomic<int> arrived{0};
+    std::atomic<bool> helperSeen{false};
+    const std::thread::id caller = std::this_thread::get_id();
+    pool.run(4, [&](int) {
+        arrived.fetch_add(1);
+        if (std::this_thread::get_id() != caller) helperSeen.store(true);
+        for (int spin = 0; spin < 2000000 && arrived.load() < 2; ++spin) std::this_thread::yield();
+    });
+    assert(helperSeen.load());
+}
+
+static void test_pool_exception_propagates_and_pool_survives() {
+    ThreadPool pool(3);
+    bool caught = false;
+    try {
+        pool.run(100, [&](int c) {
+            if (c == 13) throw std::runtime_error("chunk 13");
+        });
+    } catch (const std::runtime_error& e) {
+        caught = std::string(e.what()) == "chunk 13";
+    }
+    assert(caught);
+    std::atomic<int> sum{0};
+    pool.run(10, [&](int c) { sum.fetch_add(c); });   // still usable afterwards
+    assert(sum.load() == 45);
+}
+
+// Fixed chunks: the partition depends only on the count and the chunk size.
+static void test_parallel_ranges() {
+    for (int threads : {1, 3}) {
+        ThreadPool pool(threads);
+        for (size_t count : {size_t(0), size_t(1), size_t(9), size_t(10), size_t(1001)}) {
+            std::vector<std::atomic<int>> hits(count);
+            for (auto& h : hits) h.store(0);
+            std::atomic<int> calls{0};
+            parallelRanges(&pool, count, 10, [&](size_t begin, size_t end) {
+                assert(begin % 10 == 0 && end > begin && end - begin <= 10 && end <= count);
+                calls.fetch_add(1);
+                for (size_t i = begin; i < end; ++i) hits[i].fetch_add(1);
+            });
+            for (auto& h : hits) assert(h.load() == 1);
+            assert(calls.load() == static_cast<int>((count + 9) / 10));
+        }
+    }
+}
+
 int main() {
     test_every_index_exactly_once();
     test_results_stored_by_index();
     test_exception_propagates_after_join();
     test_resolve_workers();
+    test_pool_runs_every_chunk_once();
+    test_pool_single_thread_is_inline();
+    test_pool_uses_helpers();
+    test_pool_exception_propagates_and_pool_survives();
+    test_parallel_ranges();
     std::printf("test_parallel: all tests passed\n");
     return 0;
 }
