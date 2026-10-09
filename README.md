@@ -636,7 +636,7 @@ is self-play + training + arena from the runs' `log.csv`
 | board | komi | blocks × filters | simulations | games per generation | measured time per generation |
 |---|---|---|---|---|---|
 | 5×5 | 24.5 | 3 × 32 | 200 | 200 | 11.3 s on average; 60 generations in 11.4 min wall time |
-| 9×9 | 7.5 | 6 × 64 | 200 | 200 | 5.6 min on average (4.5 to 7.2); 150 generations in 13 h 55 min on a 16 GB M4 Mac mini (with the earlier 100 games and 200 steps: 4.1 min, 10 h 10 min) |
+| 9×9 | 7.5 | 6 × 64 | 200 | 200 | 5.6 min on average (4.5 to 7.2); 150 generations in 13 h 55 min on a 16 GB M4 Mac mini (with the earlier 100 games and 200 steps: 4.1 min, 10 h 10 min); continued to 250, 4.8 min over generations 151–250 as games shortened |
 | 19×19 | 7.5 | 10 × 128 | 400 | 20 | 58.2 min for generation 1, 129.7 min for generation 2 |
 
 The 9×9 preset is the experiments' "recipe": the `sims200` control's
@@ -657,10 +657,12 @@ network, seed and generation 0, about 0.9 at equal generations (400
 games each), 318/400 (0.795, about +235 Elo) at equal SGD steps
 (generation 125 against 250) with about 70% of the self-play
 positions, and 341/400 (0.853) with its generation 150 against the
-earlier run's generation 250 (one seed; see
-[The 9×9 preset from scratch](docs/results/README.md#the-99-preset-from-scratch-150-generations)).
+earlier run's generation 250; continued to 250, it beat the earlier
+run's generation 250 366/400 (0.915) at equal generations (one seed; see
+[The 9×9 preset from scratch](docs/results/README.md#the-99-preset-from-scratch-250-generations)).
 From scratch its games are longer early on, about 100 plies over the
-first ten generations, and about 64 on average over the run.
+first ten generations, and about 64 on average over the preset's 150
+generations.
 Earlier 9×9 runs, the reference runs in `docs/results/` among them,
 used 100 games, 200 steps, 20 opening moves at temperature and no
 resignation (each experiment arm changed only the settings it tested). Each
@@ -686,15 +688,20 @@ From `docs/results/README.md`, which has the details and the sources.
   preset's four changes (200 games and 400 SGD steps per generation,
   `temperature_moves = 7` and resignation) were first tested from a
   trained network, where they beat every other setting measured, and
-  then from scratch for 150 generations against `9x9-main`, the earlier
-  preset's run with the same 6×64 network and seed: 358/400, 358/400
-  and 363/400 at equal generations 50, 100 and 150 (about +370 to +400
-  Elo), 238/400 (+67) and 318/400 (+235) at equal SGD steps (generation
-  75 against 150, 125 against 250) with about 70% of the self-play
-  positions, and 341/400 (0.853, +305) for its generation 150 against
-  the earlier run's generation 250. One seed, one board size (see
-  [the headline](docs/results/README.md#headline-the-99-preset-now-trains-a-much-stronger-network)
-  and [the section](docs/results/README.md#the-99-preset-from-scratch-150-generations)).
+  then from scratch for 250 generations against `9x9-main`, the earlier
+  preset's run with the same 6×64 network and seed: 358/400, 358/400,
+  363/400 and 366/400 at equal generations 50, 100, 150 and 250 (about
+  +370 to +415 Elo), 238/400 (+67) and 318/400 (+235) at equal SGD
+  steps (generation 75 against 150, 125 against 250) with about 70% of
+  the self-play positions, and 341/400 (0.853, +305) for its generation
+  150 against the earlier run's generation 250. At generation 250 the
+  recipe run (continued from a trained 6×96 network, twice the size,
+  with 300 earlier generations behind it) beat the from-scratch 6×64
+  network 244/400 (0.610, +78): two training paths compared, not a
+  controlled test. One seed, one board size (see
+  [the headline](docs/results/README.md#headline-the-99-preset-now-trains-a-much-stronger-network),
+  [the section](docs/results/README.md#the-99-preset-from-scratch-250-generations)
+  and [the head-to-head](docs/results/README.md#the-recipe-against-the-preset-from-scratch-generation-250)).
 - **5×5: criterion met in 2 of 2 runs.** Both final networks (seeds 1 and
   2) beat generation 0 in **100 of 100** games (95% interval
   0.963–1.000), and Elo rises clearly: the mean `log.csv` rating of the
@@ -831,13 +838,17 @@ From `docs/results/README.md`, which has the details and the sources.
   plies (most are resigned) against 88, so the 200 games cost about 1.2 times the
   control's self-play and the 400 steps twice its training; it is ahead
   at equal compute too. Its parts alone gained +22 to +44 on the same pooled
-  measure. Continued to generation 200, it was still improving:
-  generation 200 beat generation 100 299/400 (0.748, about +19 Elo per
-  10 generations) and the start 361/400, while the value head's
-  fresh-game loss stayed flat and its buffer loss kept falling (see
-  [the section](docs/results/README.md#the-recipe-four-changes-together-200-generations)).
+  measure. Continued to generations 200 and 250, it was still
+  improving: generation 200 beat generation 100 299/400 (0.748) and
+  generation 250 beat 200 253/400 (0.632), about +19 Elo per 10
+  generations, and generation 250 beat the start 370/400, while the
+  value head's fresh-game loss stayed flat and its buffer loss fell, a
+  gap that widened to 0.16 by generation 200 and held there (see
+  [the section](docs/results/README.md#the-recipe-four-changes-together-250-generations)).
   It is now the 9×9 preset (see [Presets](#presets)), and from scratch
-  it beats the earlier preset (see the first 9×9 bullet above).
+  it beats the earlier preset; at generation 250 this run's 6×96
+  network beat the 6×64 one from scratch 244/400 (see the first 9×9
+  bullet above).
 - **9×9, final strength of the post-250 runs, pooled.** Each run's
   generations 46–50 against the shared start, 200 games each (1,000 per
   run, about ±31 to ±35 Elo for a difference between runs), because

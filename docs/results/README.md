@@ -13,22 +13,29 @@ The 9×9 preset's four changes (`games_per_generation` 100 → 200,
 the experiments' "recipe") were first tested by continuing from a
 trained network, where they beat every other setting measured (+170 Elo
 over the control, pooled over generations 46–50) and were still
-improving at generation 200 (299/400 against their own generation 100).
-Run from scratch for 150 generations, with the same 6×64 network, seed
+improving at generation 250 (253/400 against their own generation 200).
+Run from scratch for 250 generations, with the same 6×64 network, seed
 and random generation 0 as `9x9-main`, the earlier preset's run, the new
 preset's network beats the earlier one:
 
-- at equal generations, 358/400 at 50 and 100 and 363/400 at 150 (about
-  0.9, +370 to +400 Elo);
+- at equal generations, 358/400 at 50 and 100, 363/400 at 150 and
+  366/400 at 250 (about 0.9, +370 to +415 Elo);
 - at equal SGD steps, 238/400 (+67) with generation 75 against 150 and
   318/400 (+235) with generation 125 against 250, having made about 70%
   of the self-play positions;
-- with its last generation, 150, against the earlier run's last, 250:
-  341/400 (0.853, +305).
+- with its generation 150 against the earlier run's last, 250: 341/400
+  (0.853, +305).
+
+The two versions of the recipe, both at generation 250, were also
+played against each other: the continued run's 6×96 network, which is
+twice the size and had 300 generations of earlier training behind its
+start, beat the from-scratch 6×64 network 244/400 (0.610, +78). That
+compares two training paths, not network size or history alone.
 
 One seed and one board size, 400-game matches at 200 simulations. See
-[The 9×9 preset from scratch](#the-99-preset-from-scratch-150-generations)
-and [The recipe](#the-recipe-four-changes-together-200-generations).
+[The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations),
+[The recipe](#the-recipe-four-changes-together-250-generations) and
+[The recipe against the preset from scratch](#the-recipe-against-the-preset-from-scratch-generation-250).
 
 ## Machine
 
@@ -82,8 +89,8 @@ The 9×9 preset has since adopted the experiments' "recipe":
 `temperature_moves` 20 → 7 and `resignation = true`, validated first by
 continuing from a trained 6×96 network and then from scratch (see the
 main README's Presets section,
-[The recipe](#the-recipe-four-changes-together-200-generations) and
-[The 9×9 preset from scratch](#the-99-preset-from-scratch-150-generations)).
+[The recipe](#the-recipe-four-changes-together-250-generations) and
+[The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations)).
 Every other 9×9 run in this directory
 started from the earlier values (100 games, 200 steps,
 `temperature_moves = 20`, no resignation) and changed only the settings
@@ -994,7 +1001,7 @@ kept as written, with a later note):
 
 - **The recipe** is far ahead, +170 over the control at equal
   generations, and still gaining at 96–100. See
-  [The recipe](#the-recipe-four-changes-together-200-generations).
+  [The recipe](#the-recipe-four-changes-together-250-generations).
 - **Budget (+44) and temp7 (+37) are confirmed**: both outside the
   ±35, though smaller than their generation-50 matches against the
   control suggested (+65 and +74).
@@ -1840,7 +1847,7 @@ strong. Pooled, this arm is +44 over the control, outside that
 comparison's ±35 noise: the gain is confirmed, smaller than the +65 to
 +100 of its single matches; see [the pooled evaluation](#final-strength-of-the-post-250-runs-pooled-generations-46-to-50). Combined with
 `temperature_moves = 7` and resignation it gave by far the largest gain;
-see [The recipe](#the-recipe-four-changes-together-200-generations).
+see [The recipe](#the-recipe-four-changes-together-250-generations).
 
 ### Steps only: 100 games and 400 steps per generation
 
@@ -1937,7 +1944,7 @@ A replay ratio of 11.7 did not hurt measurably either, though the value
 head's fresh-game loss stopped following its buffer loss. One seed; no
 claim beyond that.
 
-### The recipe: four changes together (200 generations)
+### The recipe: four changes together (250 generations)
 
 Hypothesis: the three single changes that beat the control at
 generation 50 act on different things: `temperature_moves = 7` on which
@@ -1946,12 +1953,13 @@ long its games are, and the learning budget (200 games and 400 steps)
 on how much the network learns per generation. Combined, they might
 add. With resignation, 200 games should cost about the self-play time
 of the control's 100, so the learning budget comes cheaper. The run
-was given 100 generations, then continued to 200, to see whether the
-gain keeps growing. The result: by far the largest gain of the 9×9
-experiments, still growing at generation 200, more slowly. Mark has
+was given 100 generations, then continued to 200 and to 250, to see
+whether the gain keeps growing. The result: by far the largest gain of
+the 9×9 experiments, still growing at generation 250, by about as much
+per generation as over generations 100–200. Mark has
 since made these four values the 9×9 preset (`configs/9x9.cfg`, commit
 629c37f), and the preset has since been run from scratch; see
-[The 9×9 preset from scratch](#the-99-preset-from-scratch-150-generations).
+[The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations).
 
 - *Setup.* `9x9-recipe/`: the control plus `temperature_moves = 7`,
   `resignation = true` (the other `resign_*` keys at their defaults, as
@@ -1972,46 +1980,62 @@ since made these four values the 9×9 preset (`configs/9x9.cfg`, commit
   October (13 h 59 min, `recipe-continue.log`, with the host name
   redacted). It then played three 400-game matches and re-rated
   generations 1–200 against gen 200, finishing at 01:59 on 8 October.
-  The files here cover all 200 generations: `log.csv`, `progress.txt`
-  (both runs' lines), `elo.csv`, `references.csv`, `results.csv` and
-  `config.cfg` are the run's own, and `rerate/` is the re-rate over
-  generations 1–200. The re-rate made at generation 100, which this
-  section first used, is kept as `rerate-to100/`. The buffer statistics
-  (`buf.txt`, `pass.txt`, `side.txt`) are from `state.bin` at
-  generation 200 (`buf.txt`, first line); it holds the games of about
-  generations 178–200. (The section's first version used a copy at
-  generation 107; the figures were close, and are given below where
-  they are compared.)
+  `rerate/` is that re-rate over generations 1–200. The re-rate made at
+  generation 100, which this section first used, is kept as
+  `rerate-to100/`. The buffer statistics (`buf.txt`, `pass.txt`,
+  `side.txt`) are from `state.bin` at generation 200 (`buf.txt`, first
+  line); it holds the games of about generations 178–200. (The section's
+  first version used a copy at generation 107; the figures were close,
+  and are given below where they are compared.)
+- *Continued to generation 250.* `recipe-continue2.sh` resumed it again
+  on this Mac with the same binary (`train --resume --generations 250`;
+  `config.cfg` changes only in `generations`), from 08:44 to 16:38 on 8
+  October (`recipe-continue2.log`). This Mac's session was interrupted
+  after generation 237, at about 13:46, and the run was resumed from
+  there at 14:53 with `train --resume` (the fourth start in
+  `progress.txt`); resume is byte-identical by design, so the result is
+  the same run it would have been without the stop. The 50 generations
+  took 6.8 h of generation time. It then played two 400-game matches,
+  generation 250 against 200 and against the start. No re-rate was made
+  past generation 200, so the re-rate figures below stop there, and the
+  buffer statistics are still those of generation 200. The other files
+  cover all 250 generations: `log.csv`, `progress.txt` (the lines of
+  all four starts), `elo.csv`, `references.csv`, `results.csv` and
+  `config.cfg` are the run's own.
 - *Resignation behaviour* (`log.csv`). v_resign was the initial −0.90 at
   generation 1, then −0.76 to −0.84 through generation 50 (−0.76 to
   −0.78 for most of generations 7–45), −0.82 to −0.87 over generations
-  51–100 and −0.82 to −0.88 over 101–200; the resignation arm alone held
-  −0.87 to −0.90. Of the games with resignation enabled, 98.6% were
-  resigned in both halves of the run (96.2% to 100% per generation over
-  generations 1–100, 92.1% to 100% over 101–200). The false-positive
-  rate over the window was a mean of 0.048 over generations 7–100 (at
-  most 0.056; above 0.050 in 20 of those 94 generations, since v_resign
-  moves in steps of 0.01) and 0.046 over 101–200 (at most 0.058; above
-  0.050 in 12), and 0.086 at generation 3, when the window held only a
-  few dozen played-out games; the resignation arm averaged 0.041. In the
-  generation-200 buffer, 4,101 of 4,569 games were resigned, 2,934 of
-  them by Black (`pass.txt`).
+  51–100, −0.82 to −0.88 over 101–200 and −0.86 to −0.91 over 201–250;
+  the resignation arm alone held −0.87 to −0.90. Of the games with
+  resignation enabled, 98.6% were resigned in both halves of the first
+  200 generations (96.2% to 100% per generation over generations 1–100,
+  92.1% to 100% over 101–200) and 98.7% over 201–250 (95.5% to 100%).
+  The false-positive rate over the window was a mean of 0.048 over
+  generations 7–100 (at most 0.056; above 0.050 in 20 of those 94
+  generations, since v_resign moves in steps of 0.01), 0.046 over
+  101–200 (at most 0.058; above 0.050 in 12) and 0.048 over 201–250 (at
+  most 0.056; above 0.050 in 7); it was 0.086 at generation 3, when the
+  window held only a few dozen played-out games. The resignation arm
+  averaged 0.041. In the generation-200 buffer, 4,101 of 4,569 games
+  were resigned, 2,934 of them by Black (`pass.txt`).
 - *Game length.* A mean of **50.8 plies** per game over generations
   1–100 (39.5 to 66.4 per generation; 66.4 at generation 1, 47.4 at
-  100) and **45.3** over 101–200 (34.4 to 53.9; 49.7 at 200), counting
+  100), **45.3** over 101–200 (34.4 to 53.9; 49.7 at 200) and **42.4**
+  over 201–250 (34.9 to 51.0; 44.2 at 250), counting
   the 10% played out, against the control's 88.3 and the resignation
   arm's 41.4. The resigned games in the generation-200 buffer average
   39.4 plies (`buf.txt`: 161,687 positions; 44.9 at generation 107).
   Over generations 1–100, 200 games made about 10,100 positions per
   generation, 1.14 times the control's 8,830: the doubled games cost
   about the self-play of 115 played-out ones. Over 101–200 they made
-  about 9,060.
+  about 9,060, and over 201–250 about 8,470.
 - *Replay ratio.* A mean of **10.15** over generations 1–100 (7.71 to
-  12.97 per generation) and **11.40** over 101–200 (9.49 to 14.89), as
-  the games shortened, against the control's 5.80, the budget arm's
-  5.81, the resignation arm's 12.49 and the steps-only arm's 11.74. The
-  200,000-position buffer spans about 20 to 23 generations; the start's
-  buffer was flushed at generation 19.
+  12.97 per generation), **11.40** over 101–200 (9.49 to 14.89) and
+  **12.18** over 201–250 (10.05 to 14.69), as the games shortened,
+  against the control's 5.80, the budget arm's 5.81, the resignation
+  arm's 12.49 and the steps-only arm's 11.74. The 200,000-position
+  buffer spans about 20 to 23 generations; the start's buffer was
+  flushed at generation 19.
 - *Cost.* Generations 1–4 were slower (self-play 431 to 710 s, training
   308 to 474 s; the cause was not recorded). Over generations 5–100,
   self-play took 247.7 s per generation (1.23 times the control's
@@ -2020,7 +2044,8 @@ since made these four values the 9×9 preset (`configs/9x9.cfg`, commit
   447.5 s against 295.8, are 1.51 times the control's: a little more
   than the control's self-play and twice its training. Over generations
   101–200, with shorter games, self-play took 218.6 s, training 197.8 s
-  and the arena 87.0 s.
+  and the arena 87.0 s, and over 201–250 206.6 s, 196.7 s and 84.5 s
+  (8.1 minutes per generation).
 - *What the buffer holds* (`buf.txt`, `pass.txt`, `side.txt`; the
   recipe's at generation 200, the others' at generation 50):
 
@@ -2046,19 +2071,20 @@ since made these four values the 9×9 preset (`configs/9x9.cfg`, commit
   this buffer was made by generations 178–200, the control's by
   generations 27–50.
 - *Training curves.* Policy loss 2.404 at generation 1, 2.290 at 50,
-  2.228 at 100, 2.162 at 150 and 2.136 at 200 (the control's mean
-  2.390); its targets' lower entropy lowers that loss's floor too.
-  Value loss 0.38 at generation 1, 0.67 to 0.75 from about generation 15
-  to 100, and drifting down after that (a mean of 0.651 over 101–200,
-  0.621 at 200; the control 0.362, the temperature arm 0.493, the
-  resignation arm 0.444), as resigned and more balanced games filled
-  the buffer. Black's self-play win rate was 0.331 over generations
-  1–100 (0.363 over 1–25, 0.311 over 76–100) and 0.298 over 101–200,
-  against the control's 0.265, the temperature arm's 0.363 and the
-  resignation arm's 0.184. These are on different data and are not a
-  strength measure.
+  2.228 at 100, 2.162 at 150, 2.136 at 200 and 2.140 at 250 (the
+  control's mean 2.390); its targets' lower entropy lowers that loss's
+  floor too. Value loss 0.38 at generation 1, 0.67 to 0.75 from about
+  generation 15 to 100, and drifting down after that (a mean of 0.651
+  over 101–200, 0.621 at 200, a mean of 0.607 over 201–250 and 0.580 at
+  250; the control 0.362, the temperature arm 0.493, the resignation arm
+  0.444), as resigned and more balanced games filled the buffer. Black's
+  self-play win rate was 0.331 over generations 1–100 (0.363 over 1–25,
+  0.311 over 76–100), 0.298 over 101–200 and 0.270 over 201–250, against
+  the control's 0.265, the temperature arm's 0.363 and the resignation
+  arm's 0.184. These are on different data and are not a strength
+  measure.
 - *The validation loss* (`val_*` and `seen_*`, means by quarter of each
-  hundred generations):
+  hundred generations, and over 201–250 by halves):
 
   | generations | value, fresh games | value, buffer | policy, fresh games | policy, buffer |
   |---|---|---|---|---|
@@ -2070,16 +2096,22 @@ since made these four values the 9×9 preset (`configs/9x9.cfg`, commit
   | 126–150 | 0.809 | 0.664 | 2.128 | 2.134 |
   | 151–175 | 0.795 | 0.650 | 2.119 | 2.120 |
   | 176–200 | 0.797 | 0.634 | 2.100 | 2.124 |
+  | 201–225 | 0.784 | 0.620 | 2.107 | 2.098 |
+  | 226–250 | 0.768 | 0.604 | 2.100 | 2.113 |
 
-  The policy terms fall together to the end, fresh games at or slightly
-  below the buffer: learning, by the main README's reading. The value
+  The policy terms fall together to generation 200, fresh games at or
+  slightly below the buffer: learning, by the main README's reading.
+  Over 201–250 they barely moved (fresh 2.107 and 2.100, buffer 2.098
+  and 2.113), with the training loss flat at about 2.14. The value
   terms do not. Until generation 19 the buffer still held the start's
   played-out games, whose outcomes are easier to predict, so that gap
   says little. From generation 26 on, the fresh games' value loss
   stays at about 0.80 (0.815 over generations 26–50, 0.797 over
   176–200; 0.70 to 0.94 per generation over 101–200) while the
   buffer's keeps falling (0.720 to 0.634), so the gap widens slowly:
-  0.095, 0.114, 0.115, 0.124, 0.145, 0.146 and 0.163 by quarter. A gap
+  0.095, 0.114, 0.115, 0.124, 0.145, 0.146 and 0.163 by quarter. Over
+  generations 201–250 it held at 0.164 in both halves, while the fresh
+  games' loss fell a little (0.784 and 0.768): the widening stopped. A gap
   that keeps widening while the fresh loss stops falling is the main
   README's description of overfitting the buffer, here in the value
   head only, mildly, at a replay ratio of about 11. It has not stopped
@@ -2088,7 +2120,7 @@ since made these four values the 9×9 preset (`configs/9x9.cfg`, commit
   watch, not a demonstrated limit. The steps-only arm, at a replay
   ratio of 11.7, showed a gap of 0.03 to 0.05 on value losses half as
   large; the from-scratch run's is in
-  [its section](#the-99-preset-from-scratch-150-generations).
+  [its section](#the-99-preset-from-scratch-250-generations).
 
 **Matches** (400 games; see the common setup above; files in
 `9x9-recipe/`):
@@ -2104,42 +2136,47 @@ since made these four values the 9×9 preset (`configs/9x9.cfg`, commit
 | recipe gen 150 vs gen 100 (`g150-vs-g100.txt`) | 258/400 = 0.645 | 0.597-0.690 | +104 (+68 to +139) |
 | recipe gen 200 vs gen 100 (`g200-vs-g100.txt`) | 299/400 = 0.748 | 0.703-0.788 | +189 (+150 to +228) |
 | recipe gen 200 vs start (`g200-vs-start.txt`) | 361/400 = 0.902 | 0.869-0.928 | +387 (+329 to +444) |
+| recipe gen 250 vs gen 200 (`g250-vs-g200.txt`) | 253/400 = 0.632 | 0.584-0.678 | +94 (+59 to +129) |
+| recipe gen 250 vs start (`g250-vs-start.txt`) | 370/400 = 0.925 | 0.895-0.947 | +436 (+372 to +501) |
 
 Every interval excludes 0.5 by a wide margin. The gaps add up only
 roughly: +235 to generation 50 and +123 from 50 to 100 make +358, where
 generation 100 against the start measures +298, and +298 plus +189 from
 100 to 200 make +487, where generation 200 against the start measures
-+387, as expected for scores this far from 0.5. The gain per 50
-generations falls slowly in these matches: +235 over the first 50
-(against the start), +123 from 50 to 100, +104 from 100 to 150, and
-about +85 from 150 to 200 (+189 from 100 to 200, less the +104), about
-+19 Elo per 10 generations over generations 100–200. Generation 100
-against generation 50 had only 334 distinct games of 400; the two
-matches against generation 100 had 320 and 319, and generation 200
-against the start 380.
++387, and +387 plus +94 from 200 to 250 make +481, where generation 250
+against the start measures +436, as expected for scores this far from
+0.5. The gain per 50 generations fell in these matches, then held: +235
+over the first 50 (against the start), +123 from 50 to 100, +104 from
+100 to 150, about +85 from 150 to 200 (+189 from 100 to 200, less the
++104) and +94 from 200 to 250, about +19 Elo per 10 generations over
+generations 100–250. Generation 100 against generation 50 had only 334
+distinct games of 400; the two matches against generation 100 had 320
+and 319, generation 250 against 200 had 330, and the matches against
+the start 380 (generation 200) and 376 (250).
 
-**Against gen 200.** Re-rated like the other runs (`rerate/`, generations
-1–200), Elo minus `ref1`'s Elo (−103.5 in `rerate/references.csv`) is
-+104 at the start, +233 at generation 25, +303 at 50, +331 at 75, +356
-at 100, +400 at 150 and +469 at 200 (the control: +104, +152, +132 at
-0, 25 and 50). The stretch means are in the resignation section's
-table: +240 over generations 26–50 (from its own start +136; the
-control +48, the budget arm +93), +297 over 51–75, +331 over 76–100,
-+384, +412 and +431 over the next three quarters and +457 over 176–200
-(from its own start +353). The least-squares slope is +3.4 Elo per
-generation over generations 1–50, +1.75 over 51–100, +1.04 over
-101–150 and +0.83 over 151–200: still rising, more slowly. That is
-about half the gain the matches show (+113 from generation 100 to 200
-against +189), as with the other re-rates, whose 100-simulation 20-game
-matches compress the scale (see
+**Against gen 200.** Re-rated like the other runs (`rerate/`,
+generations 1–200; no re-rate was made past generation 200, so for
+generations 201–250 the matches above are the only strength measure),
+Elo minus `ref1`'s Elo (−103.5 in `rerate/references.csv`) is +104 at
+the start, +233 at generation 25, +303 at 50, +331 at 75, +356 at 100,
++400 at 150 and +469 at 200 (the control: +104, +152, +132 at 0, 25 and
+50). The stretch means are in the resignation section's table: +240 over
+generations 26–50 (from its own start +136; the control +48, the budget
+arm +93), +297 over 51–75, +331 over 76–100, +384, +412 and +431 over
+the next three quarters and +457 over 176–200 (from its own start +353).
+The least-squares slope is +3.4 Elo per generation over generations
+1–50, +1.75 over 51–100, +1.04 over 101–150 and +0.83 over 151–200:
+still rising, more slowly. That is about half the gain the matches show
+(+113 from generation 100 to 200 against +189), as with the other
+re-rates, whose 100-simulation 20-game matches compress the scale (see
 [the all-runs table](#all-post-250-runs-against-one-reference-gen-200)).
 Single generations are noisy: generation 190 is +550 and 198 is +387.
 Generations 23, 59, 111 and 187 were promoted to references
 (`rerate/references.csv`; the other arms' re-rates promoted one
 generation at most). The re-rate made at generation 100
 (`rerate-to100/`, `ref1` at −101.5) gave +102 at the start, +334 at 75
-and +360 at 100, and +334 over generations 76–100 against +331 here:
-the same checkpoints replayed again move by a few Elo.
+and +360 at 100, and +334 over generations 76–100 against +331 here: the
+same checkpoints replayed again move by a few Elo.
 
 **At equal compute.** Per generation the recipe takes 1.51 times the
 control's self-play and training time, so its generation 33 has cost
@@ -2154,10 +2191,11 @@ this start, by a wide margin**: 0.787 against the control at generation
 50 (+228 Elo), 0.725 against the budget arm, and +170 over the control
 pooled over generations 46–50 (1,000 games each; see
 [the pooled evaluation](#final-strength-of-the-post-250-runs-pooled-generations-46-to-50)).
-It was still improving at generation 200: 0.645 for generation 150 and
-0.748 for generation 200 against generation 100 (about +19 Elo per 10
-generations), 0.902 against the start (+387), and the re-rate still
-rising, though each 50 generations gain less than the last. Its parts alone gained +37
+It was still improving at generation 250: 0.645 for generation 150 and
+0.748 for generation 200 against generation 100, 0.632 for generation
+250 against 200 (+94; about +19 Elo per 10 generations over generations
+100–250), 0.925 for generation 250 against the start (+436), and the
+re-rate still rising to generation 200, where it stops. Its parts alone gained +37
 (`temperature_moves = 7`), +44 (200 games and 400 steps) and +22
 (resignation) on the same pooled measure; together they gained more
 than those three sum to (+103), though each part's figure is good to
@@ -2171,14 +2209,16 @@ alone is not the explanation: the steps-only arm (11.7) and the
 resignation arm (12.5) gained little or nothing pooled. It costs about
 1.5 times the control's compute per generation and is ahead at equal
 compute as well. What it does not show: one seed, one start (a trained
-6×96 network and its buffer), 200 generations. Over generations
+6×96 network and its buffer), 250 generations. Over generations
 100–200 the value head's fresh-game loss stayed flat while its buffer
-loss kept falling, a slowly widening gap that has not stopped the gains.
-From scratch, with the 6×64 network, the preset also trained a far
-stronger network than the earlier preset; see
-[The 9×9 preset from scratch](#the-99-preset-from-scratch-150-generations).
+loss kept falling, a slowly widening gap that has not stopped the gains
+and held at 0.164 over 201–250. From scratch, with the 6×64 network,
+the preset also trained a far stronger network than the earlier preset;
+see [The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations).
+At generation 250 this run's 6×96 network beat that one 0.610 (+78);
+see [The recipe against the preset from scratch](#the-recipe-against-the-preset-from-scratch-generation-250).
 
-### The 9×9 preset from scratch (150 generations)
+### The 9×9 preset from scratch (250 generations)
 
 Hypothesis: the recipe was measured only by continuing from a trained
 6×96 network and its full buffer. From a random network the picture
@@ -2188,9 +2228,11 @@ and doubling the steps per generation might overfit while the buffer
 is still small. So the new preset (`configs/9x9.cfg` as merged in
 629c37f) was run from scratch for its full 150 generations and compared
 with `9x9-main`, the earlier preset's run on the same network and seed
-(the 9×9 sections near the top). The result: the new preset trains a far
-stronger network, at equal generations, at equal SGD steps and with
-the two runs' final generations.
+(the 9×9 sections near the top), then continued to generation 250, as
+`9x9-main` had been, to compare the two at equal generations to the end.
+The result: the new preset trains a far stronger network, at equal
+generations (250 included), at equal SGD steps and with its generation
+150 against `9x9-main`'s 250, and it was still improving at 250.
 
 - *Setup.* `9x9-scratch/`: `train --config configs/9x9.cfg --run
   runs/9x9-scratch --set bot_simulations=100` (`scratch-recipe.sh`),
@@ -2204,6 +2246,16 @@ the two runs' final generations.
   training. It ran alone on the second Mac mini (an Apple M4 with 16
   GB), from 07:39 to 21:35 on 7 October (13 h 55 min,
   `scratch-recipe.log`, host name redacted).
+- *Continued to generation 250.* `scratch-continue.sh` resumed it on the
+  same machine with the same binaries (`train --resume --generations
+  250`; `config.cfg` changes only in `generations`), from 08:39 to 16:38
+  on 8 October (`scratch-continue.log`), at learning rate 0.002
+  throughout, and then played three 400-game matches. These 100
+  generations go beyond the preset's 150, as `9x9-main`'s continuation
+  did. The files cover generations 1–250 (`log.csv`, `progress.txt`,
+  `elo.csv`, `references.csv`, `results.csv`, `config.cfg`); the buffer
+  statistics at generation 250 are `{buf,pass,side}-250.txt`, beside
+  generation 150's.
 - *The baseline, `9x9-main`.* The reference run of the 9×9 sections
   above (generations 1–150, with the ladder arena, `arena_opponents =
   4`) and its continuation to generation 250 (with the rating-aware
@@ -2225,8 +2277,9 @@ the two runs' final generations.
   at 0.02 and 12,200 at 0.002; at 50,000, 35,600 and 14,400 against
   17,800 and 32,200.
 
-**Matches** (`scratch-eval.sh` and its log, after training, with the
-same binaries; 400 games, 200 simulations for both
+**Matches** (`scratch-eval.sh` and its log, after training, and the
+three at generation 200 and 250 from `scratch-continue.sh` and its log,
+with the same binaries; 400 games, 200 simulations for both
 sides, komi 7.5, colors alternating, `arena`'s default opening
 temperature; files in `9x9-scratch/`):
 
@@ -2237,24 +2290,35 @@ temperature; files in `9x9-scratch/`):
 | equal generations: gen 150 vs gen 150 (`g150-vs-main-g150.txt`) | 363/400 = 0.907 | 0.875-0.932 | +397 (+338 to +455) |
 | equal SGD steps: gen 75 vs gen 150 (`g75-vs-main-g150-equal-steps.txt`) | 238/400 = 0.595 | 0.546-0.642 | +67 (+32 to +101) |
 | equal SGD steps: gen 125 vs gen 250 (`g125-vs-main-g250-equal-steps.txt`) | 318/400 = 0.795 | 0.753-0.832 | +235 (+194 to +278) |
-| final: gen 150 vs gen 250 (`g150-vs-main-g250.txt`) | 341/400 = 0.853 | 0.814-0.884 | +305 (+256 to +353) |
+| against `9x9-main`'s last: gen 150 vs gen 250 (`g150-vs-main-g250.txt`) | 341/400 = 0.853 | 0.814-0.884 | +305 (+256 to +353) |
+| equal generations: gen 250 vs gen 250 (`g250-vs-main-g250.txt`) | 366/400 = 0.915 | 0.884-0.939 | +413 (+353 to +475) |
+| own progress: gen 200 vs gen 150 (`g200-vs-g150.txt`) | 263/400 = 0.657 | 0.610-0.702 | +113 (+78 to +149) |
+| own progress: gen 250 vs gen 150 (`g250-vs-g150.txt`) | 291/400 = 0.728 | 0.682-0.769 | +171 (+133 to +209) |
 
-Every interval excludes 0.5. 384 to 398 of each 400 games were
-distinct. At equal generations the new preset wins about nine games in
-ten at every point measured; scores this far from 0.5 resolve gaps
-poorly, so read the +370 to +400 as "very large", not as exact. At
+Every interval excludes 0.5. 371 to 398 of each 400 games were distinct.
+At equal generations the new preset wins about nine games in ten at
+every point measured, 250 included; scores this far from 0.5 resolve
+gaps poorly, so read the +370 to +415 as "very large", not as exact. At
 equal steps the gap grows with training, from +67 at 30,000 steps to
-+235 at 50,000, and the scratch run's last generation beats
-`9x9-main`'s last, which trained 100 generations and 20,000 steps
-longer than it, 0.853.
++235 at 50,000, and the scratch run's generation 150 beats `9x9-main`'s
+last, which trained 100 generations longer than it (though 10,000 fewer
+SGD steps: 50,000 against 60,000), 0.853. Past generation 150 the
+scratch run kept improving, more slowly: +113 by generation 200 and +171
+by 250 against its own generation 150, so about +58 from 200 to 250 by
+difference. The two routes from generation 150 to 250 disagree in size,
+as expected near 0.9: +171 directly, but only +108 by the matches
+against `9x9-main`'s generation 250 (+305 for generation 150, +413 for
+250).
 
 **The Elo curves.** Both `elo.csv` files come from the rating-aware
 arena with `arena_opponents = 2`, the 100-simulation bot (75/80 against
 generation 0 in both, the same network) and generation 0 = 0: the
-scratch run's live one (`9x9-scratch/elo.csv`) and `9x9-main`'s re-rate
-over generations 1–250 (`9x9/rerate-250/elo.csv`). Their references
-differ (the scratch run promoted generations 11, 14, 21, 25, 32, 43, 67,
-102 and 129, `9x9-scratch/references.csv`; `9x9-main`'s re-rate 23, 30,
+scratch run's live one (`9x9-scratch/elo.csv`, the refit at generation
+250, which moved the values up to 150 by at most 3) and `9x9-main`'s
+re-rate over generations 1–250 (`9x9/rerate-250/elo.csv`). Their
+references differ (the scratch run promoted generations 11, 14, 21, 25,
+32, 43, 67, 102, 129, 161, 221 and 243, `9x9-scratch/references.csv`;
+`9x9-main`'s re-rate 23, 30,
 43, 53, 78, 95, 121, 170 and 228), and one is live while the other is a
 replay, so the two scales are only roughly comparable:
 
@@ -2262,42 +2326,54 @@ replay, so the two scales are only roughly comparable:
 |---|---|---|---|---|
 | 25 | 1200.3 | 641.7 | +559 | |
 | 50 | 1599.0 | 1132.5 | +467 | +372 |
-| 75 | 1865.5 | 1393.0 | +473 | |
+| 75 | 1865.6 | 1393.0 | +473 | |
 | 100 | 1898.0 | 1532.3 | +366 | +372 |
-| 125 | 2033.1 | 1716.4 | +317 | |
-| 150 | 2124.6 | 1728.3 | +396 | +397 |
-| scratch 75 vs main 150 (equal steps) | 1865.5 | 1728.3 | +137 | +67 |
-| scratch 125 vs main 250 (equal steps) | 2033.1 | 1799.5 | +234 | +235 |
+| 125 | 2032.6 | 1716.4 | +316 | |
+| 150 | 2127.0 | 1728.3 | +399 | +397 |
+| 175 | 2111.8 | 1678.7 | +433 | |
+| 200 | 2148.4 | 1758.1 | +390 | |
+| 225 | 2224.8 | 1865.3 | +360 | |
+| 250 | 2216.5 | 1799.5 | +417 | +413 |
+| scratch 75 vs main 150 (equal steps) | 1865.6 | 1728.3 | +137 | +67 |
+| scratch 125 vs main 250 (equal steps) | 2032.6 | 1799.5 | +233 | +235 |
 
 The curves are level for the first ten generations (344.6 against
 436.2 at generation 10) and the scratch run is ahead from generation 11
-on; its peak is 2153.5 at generation 148. The differences agree with
-the matches in sign and roughly in size.
+to the end, by +236 to +522 over generations 151–250 (a mean of +391);
+its peak is 2261.4 at generation 246. Both curves rise slowly after
+150: +90 for the scratch run from 150 to 250, about half the +171 its
+own match shows, as with the re-rates above, and +71 for `9x9-main`. The
+differences agree with the matches in sign and roughly in size.
 
-- *Game length* (`log.csv`). A mean of **63.9 plies** per game over the
-  run, counting the 10% played out: 99.4 over generations 1–10 (76.9 at
-  generation 1, 108.0 at 5), then 90.2 over 1–25, 65.4 over 26–50, 59.0,
-  63.1 and 56.9 over the next three quarters and 49.1 over 126–150
-  (59.8 at 150). `9x9-main` averaged 97.8 over generations 1–10 and
-  98.5 over 1–150 (93.0 at 150, 85.9 at 250). The early games are as
-  long as `9x9-main`'s although from generation 6 on almost all of them
-  were resigned (below): the young networks become sure of the result
-  only near the end. The recipe arm, from a trained start, averaged
-  50.8 over its first 100 generations.
+- *Game length* (`log.csv`). A mean of **63.9 plies** per game over
+  generations 1–150, counting the 10% played out: 99.4 over generations
+  1–10 (76.9 at generation 1, 108.0 at 5), then 90.2 over 1–25, 65.4
+  over 26–50, 59.0, 63.1 and 56.9 over the next three quarters and 49.1
+  over 126–150 (59.8 at 150), and **46.4** over 151–250 (34.9 to 57.6
+  per generation; 44.0 at 250). `9x9-main` averaged 97.8 over
+  generations 1–10, 98.5 over 1–150 (93.0 at 150) and 90.4 over 151–250
+  (85.9 at 250). The early games are as long as `9x9-main`'s although
+  from generation 6 on almost all of them were resigned (below): the
+  young networks become sure of the result only near the end. The recipe
+  arm, from a trained start, averaged 50.8 over its first 100
+  generations.
 - *Self-play positions.* 200 games of 63.9 plies are about 12,800
   positions per generation, against `9x9-main`'s 9,850 (100 games of
   98.5): 1.30 times as many per generation, and 1.92 million against
   1.48 million over 150 generations. At equal SGD steps the scratch run
   made fewer: 1.07 million by generation 75 against 1.48 million by
   `9x9-main`'s 150 (0.73), and 1.67 million by 125 against 2.38 million
-  by 250 (0.70). Each position costs one 200-simulation search in both
-  runs, so at equal steps the new preset used about 70% of the old
-  one's self-play.
-- *Replay ratio.* A mean of **8.36** (4.74 to 13.02 per generation):
-  5.2 over generations 1–10, while the games were long, then 7.9, 8.8,
-  8.2 and 9.0 over the quarters from 26 to 125 and 10.5 over 126–150.
+  by 250 (0.70). At equal generations 250 it made 2.85 million against
+  2.38 million (1.20 times; about 9,280 per generation over 151–250
+  against `9x9-main`'s 9,040). Each position costs one 200-simulation
+  search in both runs, so at equal steps the new preset used about 70%
+  of the old one's self-play.
+- *Replay ratio.* A mean of **8.36** over generations 1–150 (4.74 to
+  13.02 per generation): 5.2 over generations 1–10, while the games were
+  long, then 7.9, 8.8, 8.2 and 9.0 over the quarters from 26 to 125 and
+  10.5 over 126–150; then **11.13** over 151–250 (8.89 to 14.65).
   `9x9-main`'s was 5.22 over generations 1–150 (4.84 to 5.50 by
-  quarter).
+  quarter) and 5.67 over 151–250.
 - *Resignation from a random network.* Generation 1's games were
   played by the random generation 0 at the initial v_resign of −0.90.
   Even so, 30% of the games with resignation enabled were resigned, and
@@ -2306,43 +2382,51 @@ the matches in sign and roughly in size.
   highest). Calibration moved v_resign to −0.91 at generation 2 (false
   positives 0.023), and the share of resigned games rose with the
   network: 0.52, 0.64, 0.77 and 0.87 in generations 2–5, and 0.92 to
-  1.00 from generation 6 on (96.8% over the run). v_resign stayed at
+  1.00 from generation 6 on (96.8% over generations 1–150, 98.8% over
+  151–250). v_resign stayed at
   −0.86 to −0.87 over generations 6–25, fell to −0.92 to −0.95 over
   64–89 (the last generations at learning rate 0.02), and was −0.80 to
-  −0.89 after the drop. The false-positive rate averaged 0.047 (0.048
-  from generation 7 on), at most 0.058 after generation 1, and above
-  0.050 in 29 later generations, since v_resign moves in steps of 0.01.
-  In the generation-150 buffer, 3,649 of 4,112 games were resigned,
-  2,618 of them by Black (`pass.txt`).
-- *What the buffer holds* (`buf.txt`, `pass.txt`, `side.txt` from each
-  run's final `state.bin`; `9x9-main`'s at generation 250 is
+  −0.89 after the drop, and −0.82 to −0.90 over 151–250. The
+  false-positive rate averaged 0.047 over generations 1–150 (0.048 from
+  generation 7 on), at most 0.058 after generation 1, and above 0.050 in
+  29 later generations, since v_resign moves in steps of 0.01; over
+  151–250 it averaged 0.048 (at most 0.058, above 0.050 in 20). In the
+  generation-150 buffer, 3,649 of 4,112 games were resigned, 2,618 of
+  them by Black (`pass.txt`); in the generation-250 buffer 3,655 of
+  4,128, 2,681 by Black (`pass-250.txt`).
+- *What the buffer holds* (`buf.txt`, `pass.txt`, `side.txt` from
+  `state.bin`; the scratch run's at generation 150, and at 250 the
+  `-250.txt` files; `9x9-main`'s at generation 250 is
   `9x9/{buf,pass,side}-250.txt`, the buffer of findings 1 and 2 of
-  [Next experiments](#next-experiments)):
+  [Next experiments](#next-experiments); the recipe's at generation 200):
 
-  | | `9x9-main`, gen 250 | scratch, gen 150 | recipe, gen 200 |
-  |---|---|---|---|
-  | games in the 200,000-position buffer | 2,262 | 4,112 | 4,569 |
-  | positions at or after the first pass | 35.4% | 7.8% | 11.0% |
-  | the same, played-out games only | 35.4% | 26.6% | 32.7% |
-  | opening positions (plies 0–19) | 22% | 36% | 39% |
-  | middle game (ply 20 to the first pass) | 43% | 56% | 50% |
-  | mean target entropy (nats) | 1.990 | 1.768 | 1.617 |
-  | Black's share of the games' wins | 0.230 | 0.284 | 0.290 |
-  | middle game, eventual loser as Black: entropy, moves visited | 2.684, 41.9 | 2.119, 41.0 | 2.007, 42.8 |
+  | | `9x9-main`, gen 250 | scratch, gen 150 | scratch, gen 250 | recipe, gen 200 |
+  |---|---|---|---|---|
+  | games in the 200,000-position buffer | 2,262 | 4,112 | 4,128 | 4,569 |
+  | positions at or after the first pass | 35.4% | 7.8% | 8.2% | 11.0% |
+  | the same, played-out games only | 35.4% | 26.6% | 27.2% | 32.7% |
+  | opening positions (plies 0–19) | 22% | 36% | 38% | 39% |
+  | middle game (ply 20 to the first pass) | 43% | 56% | 54% | 50% |
+  | mean target entropy (nats) | 1.990 | 1.768 | 1.689 | 1.617 |
+  | Black's share of the games' wins | 0.230 | 0.284 | 0.274 | 0.290 |
+  | middle game, eventual loser as Black: entropy, moves visited | 2.684, 41.9 | 2.119, 41.0 | 2.112, 42.8 | 2.007, 42.8 |
 
   The new preset's buffer is the recipe's in kind: few after-pass
   positions, over half middle game, sharper targets. Its losing side
-  still spreads its search over about 41 moves (finding 1), with lower
-  entropy.
+  still spreads its search over about 41 to 43 moves (finding 1), with
+  lower entropy. From generation 150 to 250 the buffer changed little;
+  its targets became a little sharper (1.768 to 1.689 nats).
 - *Training curves.* Policy loss 4.178 at generation 1, 2.902 at 50,
-  2.454 at 100 and 2.284 at 150 (`9x9-main`: 4.188, 3.135, 2.677,
-  2.471, and 2.403 at 250); the targets' lower entropy lowers that
-  loss's floor too. Value loss 0.611 at generation 1, 0.575 at 50,
-  0.621 at 100 and 0.695 at 150 (`9x9-main` 0.582, 0.556, 0.392,
-  0.417): it was 0.52 to 0.55 over generations 84–91 and rose after
-  the learning-rate drop (see the validation loss below). Black's self-play win rate was 0.361
-  over the run against `9x9-main`'s 0.355 over 1–150. These are on
-  different data and are not a strength measure.
+  2.454 at 100, 2.284 at 150, 2.225 at 200 and 2.191 at 250
+  (`9x9-main`: 4.188, 3.135, 2.677, 2.471, 2.420 and 2.403); the
+  targets' lower entropy lowers that loss's floor too. Value loss 0.611
+  at generation 1, 0.575 at 50, 0.621 at 100, 0.695 at 150, 0.649 at
+  200 and 0.644 at 250 (`9x9-main` 0.582, 0.556, 0.392, 0.417, 0.411
+  and 0.373): it was 0.52 to 0.55 over generations 84–91, rose after
+  the learning-rate drop (see the validation loss below) and drifted
+  down after 150. Black's self-play win rate was 0.361 over generations
+  1–150 and 0.265 over 151–250, against `9x9-main`'s 0.355 and 0.251.
+  These are on different data and are not a strength measure.
 - *The validation loss* (`val_*` and `seen_*`; generation 1 is left
   out: its `val` row measures the random generation 0 and its `seen`
   row is empty, the buffer being empty):
@@ -2357,6 +2441,10 @@ the matches in sign and roughly in size.
   | 90–100 | 0.821 | 0.550 | 2.400 | 2.466 |
   | 101–125 | 0.781 | 0.670 | 2.309 | 2.343 |
   | 126–150 | 0.786 | 0.685 | 2.259 | 2.270 |
+  | 151–175 | 0.749 | 0.673 | 2.221 | 2.228 |
+  | 176–200 | 0.755 | 0.654 | 2.184 | 2.203 |
+  | 201–225 | 0.746 | 0.649 | 2.167 | 2.170 |
+  | 226–250 | 0.746 | 0.646 | 2.147 | 2.152 |
 
   The policy terms fall together throughout, the fresh games below the
   buffer: learning. At learning rate 0.02 the value head fits the
@@ -2368,12 +2456,20 @@ the matches in sign and roughly in size.
   generation 112, the training loss with it, and the gap narrowed to
   about 0.10 (0.111 and 0.102 over the last two quarters) while the
   fresh games' loss went on falling slightly. Why the buffer's value
-  loss rose after the drop was not investigated. Unlike the recipe's
-  continuation, whose gap widened slowly at a similar replay ratio, this
-  run's last 50 generations show no widening.
+  loss rose after the drop was not investigated. Over generations
+  151–250 the gap stayed at 0.08 to 0.10 (0.076, 0.101, 0.098 and 0.100
+  by quarter), with the fresh games' value loss at about 0.75 and the
+  buffer's falling slowly (0.673 to 0.646), and the policy terms went on
+  falling together (fresh 2.221 to 2.147). Unlike the recipe's
+  continuation, whose gap widened slowly over its generations 101–200
+  at a similar replay ratio, this run's last 150 generations show no
+  widening.
 - *Cost* (`log.csv`; the machines differ, so this is indicative only).
-  A mean of 5.6 minutes per generation (4.5 to 7.2): self-play 156.4 s,
-  training 127.3 s (with the validation pass) and the arena 50.2 s.
+  A mean of 5.6 minutes per generation over generations 1–150 (4.5 to
+  7.2): self-play 156.4 s, training 127.3 s (with the validation pass)
+  and the arena 50.2 s. Over 151–250, with shorter games, 4.8 minutes
+  (4.3 to 5.7): 116.1 s, 124.2 s and 47.0 s, 8.0 h for the 100
+  generations.
   `9x9-main`, on this Mac, took 4.1 minutes over generations 1–150:
   120.9 s, 61.9 s and 61.3 s (its arena then played four ladder
   opponents and generation 0). Per unit of work the two machines ran at
@@ -2383,16 +2479,22 @@ the matches in sign and roughly in size.
   75 in 7.4 h and 125 in 11.9 h, where `9x9-main` reached 150 in 10.2 h
   and 250 in 16.3 h: at equal steps it took about 73% of the time, and
   its generation 150 (13.9 h) beat `9x9-main`'s generation 250 (16.3 h).
+  `9x9-main` took 3.7 minutes per generation over 151–250 (115.1 s,
+  61.0 s and 44.3 s); the scratch run's 250 generations took 21.9 h of
+  generation time against `9x9-main`'s 16.3 h.
 
 **Verdict.** The new 9×9 preset **trains a far stronger network from
 scratch than the earlier preset**: about 0.9 against `9x9-main` at
-equal generations (+372 to +397 Elo), 0.595 (+67) and 0.795 (+235) at
-equal SGD steps with about 70% of the self-play positions, and 0.853
-(+305) for its final generation 150 against `9x9-main`'s final
-generation 250, which had trained 100 generations longer. Resignation
-calibrated itself from a random network within a few generations, and
-the gap between the value head's fresh-game and buffer losses did not
-widen late in the run. Caveats: one seed and one board size; 400-game matches at 200
+equal generations (+372 to +413 Elo, 0.915 at generation 250), 0.595
+(+67) and 0.795 (+235) at equal SGD steps with about 70% of the
+self-play positions, and 0.853 (+305) for its generation 150 against
+`9x9-main`'s generation 250, which had trained 100 generations longer.
+Continued past the preset's 150 generations, it was still improving at
+250 (0.728 against its generation 150, +171), more slowly than before.
+Resignation calibrated itself from a random network within a few
+generations, and the gap between the value head's fresh-game and
+buffer losses did not widen late in the run, through generation 250.
+Caveats: one seed and one board size; 400-game matches at 200
 simulations, whose scores near 0.9 resolve the equal-generation gaps
 poorly; the equal-steps gap grows with training (+67 at generation 75
 against 150, +235 at 125 against 250), and at equal steps the two runs
@@ -2400,6 +2502,78 @@ had different learning-rate histories (the earlier preset drops the
 rate at 17,800 steps, the new one at 35,600), so the steps comparison
 is not a clean one; the wall times come from different machines; and
 the eye check was not run on this network.
+
+### The recipe against the preset from scratch (generation 250)
+
+Question: the same four settings were run two ways to generation 250,
+which network ends stronger? The recipe arm (`9x9-recipe/`) is a 6×96
+network that started from generation 50 of `9x9-wide96`, itself
+`9x9-main`'s generation 250 widened, so it had 300 generations of
+training on the earlier settings before its 250 on the recipe's. The
+preset from scratch (`9x9-scratch/`) is a 6×64 network with 250
+generations, all on the new settings. The result: the recipe's network
+is modestly stronger. This compares two training paths; it is not a
+controlled test of network size, history or settings.
+
+- *Setup* (`9x9-versus/`). `versus.sh` ran on this Mac with
+  `runs/bin-next` once both runs had finished, copying the scratch run
+  from the second Mac mini (host names redacted in the copy here),
+  from 17:07 to 17:48 on 8 October (`versus.log`). The arena plays only
+  networks of the same shape, so `grow --filters 96` widened the
+  scratch run's generations 150 and 250 to 6×96 (473,277 → 1,032,349
+  parameters; `value_hidden` stays 64, as in the recipe's network).
+  Widening preserves the function (each new channel copies an old one
+  and the weights reading it are split among the copies; see the main
+  README's `grow`), and `grow` checked the outputs on 8 random
+  positions: a maximum difference of 1.5e-05 and 1.2e-05, float
+  rounding (`grow-g150.txt`, `grow-g250.txt`). The widened networks play
+  as the 6×64 ones do. The
+  matches are as above: 400 games, 200 simulations for both sides, komi
+  7.5, colors alternating, `arena`'s default opening temperature.
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| recipe gen 250 vs scratch gen 250 (`recipe-g250-vs-scratch-g250.txt`) | 244/400 = 0.610 | 0.561-0.657 | +78 (+43 to +113) |
+| recipe gen 200 vs scratch gen 250 (`recipe-g200-vs-scratch-g250.txt`) | 246/400 = 0.615 | 0.566-0.661 | +81 (+46 to +116) |
+| recipe gen 250 vs scratch gen 150 (`recipe-g250-vs-scratch-g150.txt`) | 311/400 = 0.777 | 0.734-0.816 | +217 (+176 to +259) |
+
+Every interval excludes 0.5. 360, 333 and 366 of the 400 games were
+distinct.
+
+- *At generation 250 the recipe's network is ahead*, 0.610 (+78). It is
+  about twice the size (1.03 million parameters against 0.47 million)
+  and had the 300 earlier generations, so the margin is modest given
+  those advantages; which of them it comes from, these matches cannot
+  say.
+- *Recipe generations 200 and 250 score the same* against the scratch
+  run's generation 250 (0.615 and 0.610, a difference well inside the
+  noise), although generation 250 beat 200 directly 0.632 (+94). The
+  three results are not transitive: either the noise of three 400-game
+  matches (about ±35 Elo each), or generation 250's gain over 200 does
+  not carry over to this opponent; the matches cannot tell which. Only
+  333 of the generation-200 match's games were distinct.
+- *Both runs were still improving.* The scratch run gained +171 from
+  generation 150 to 250 against its own generation 150, and against the
+  recipe's generation 250 it went from −217 at 150 to −78 at 250, about
+  +139. The recipe gained +94 from 200 to 250 and +189 from 100 to 200.
+  Per generation that is about the same, +1.7 Elo for the scratch run
+  over its last 100 generations and +1.9 for the recipe over its last 50,
+  though the scratch run's own gain slowed (+113 by 200, about +58 more
+  by 250).
+- *Cost.* Over their last generations the recipe took 8.1 minutes per
+  generation on this Mac and the scratch run 4.8 on the second Mac mini
+  (indicative only: different machines), and the recipe's network also
+  carries its 300 earlier generations.
+
+**Verdict.** At generation 250 the recipe's 6×96 network, larger and
+with a longer history, is **modestly stronger** than the 6×64 network
+the preset trains from scratch (0.610, +78), and both were still
+improving at about the same rate per generation. Caveats: different
+network sizes and histories, so this is a comparison of two training
+paths, not a test of either factor; one seed each; 400-game matches at
+200 simulations; and the recipe's generations 200 and 250 scored the
+same against the scratch network, so the gap is known only to within
+the matches' noise.
 
 ### 19×19: criterion met (it runs)
 
@@ -2468,10 +2642,10 @@ scripts `tools/side.py`, `tools/pass.py` and `tools/buf.py`, for example
    Doubling the steps alone on the same games (replay ratio 11.7) did
    not; see [Steps only](#steps-only-100-games-and-400-steps-per-generation).
    Both together with `temperature_moves = 7` and resignation gained by
-   far the most; see [The recipe](#the-recipe-four-changes-together-200-generations).
+   far the most; see [The recipe](#the-recipe-four-changes-together-250-generations).
    As the 9×9 preset, from scratch, they beat the earlier preset by
    +235 Elo at equal SGD steps; see
-   [The 9×9 preset from scratch](#the-99-preset-from-scratch-150-generations).
+   [The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations).
 4. **The measurements are coarse for the effects tested.** A 100-game
    match resolves about ±70 Elo and the re-rate's noise is about ±40,
    while the effects tested so far are 30–80 Elo. The AlphaGo Zero
@@ -2506,8 +2680,8 @@ matches (`runs/agz-experiment.sh`, not in the repository).
 | 6 | Arena-only tuning of `c_puct`, and `mcts_batch` 1 against 8 (AGZ evaluated leaves in batches of 8): generation 250 against itself, 400 games per setting | cheap: arena games only, no training | done, no change: `c_puct` 0.75 to 1.25 within noise of the preset 1.5, 2.0 and 3.0 clearly worse (−45, −102 Elo); batch 1 +30 Elo, not significant; see [Arena screens](#arena-screens-of-alphago-zero-search-settings) |
 | 7 | AGZ gating (`gating = true`, 55% over 400 games) | expensive; only if regressions appear | not started |
 | 8 | `value_hidden = 256`, as in AGZ | architecture change, low priority | not started |
-| 9 | The recipe: items 1, 3 and 4 together (`temperature_moves = 7`, resignation, 200 games and 400 steps) | the three single changes that beat the control | done, 200 generations from the same start (`9x9-recipe`): beat the control 0.787 at generation 50 (+228 Elo) and the budget arm 0.725, +170 over the control pooled over generations 46–50, and still gaining at 200: 0.670 for generation 100 against 50, 0.645 for 150 and 0.748 for 200 against 100 (about +19 Elo per 10 generations), 0.902 for 200 against the start; self-play time about the control's, training twice; the value head's fresh-game loss stays flat while its buffer loss falls, a gap widening slowly (0.12 to 0.16 over generations 101–200); see [The recipe](#the-recipe-four-changes-together-200-generations). Adopted as the 9×9 preset (`configs/9x9.cfg`, commit 629c37f); see row 10 |
-| 10 | The new 9×9 preset from scratch | the recipe was validated only from a trained start | done (`9x9-scratch`, 150 generations, 6×64, seed 1, against `9x9-main`, the earlier preset's run with the same network, seed and generation 0): 0.895, 0.895 and 0.907 at equal generations 50, 100 and 150 (+372 to +397 Elo); 0.595 (+67) and 0.795 (+235) at equal SGD steps (generation 75 against 150, 125 against 250) with about 70% of the self-play positions; 0.853 (+305) for generation 150 against `9x9-main`'s 250; resignation calibrated itself from a random network within about five generations; one seed; see [The 9×9 preset from scratch](#the-99-preset-from-scratch-150-generations) |
+| 9 | The recipe: items 1, 3 and 4 together (`temperature_moves = 7`, resignation, 200 games and 400 steps) | the three single changes that beat the control | done, 250 generations from the same start (`9x9-recipe`): beat the control 0.787 at generation 50 (+228 Elo) and the budget arm 0.725, +170 over the control pooled over generations 46–50, and still gaining at 250: 0.670 for generation 100 against 50, 0.645 for 150 and 0.748 for 200 against 100, 0.632 for 250 against 200 (about +19 Elo per 10 generations over 100–250), 0.925 for 250 against the start; self-play time about the control's, training twice; the value head's fresh-game loss stays flat while its buffer loss falls, a gap widening slowly (0.12 to 0.16 over generations 101–200), then holding at 0.164 over 201–250; no re-rate past 200; see [The recipe](#the-recipe-four-changes-together-250-generations). Adopted as the 9×9 preset (`configs/9x9.cfg`, commit 629c37f); see row 10. At generation 250 its 6×96 network beat the 6×64 one from scratch 0.610 (+78); see [The recipe against the preset from scratch](#the-recipe-against-the-preset-from-scratch-generation-250) |
+| 10 | The new 9×9 preset from scratch | the recipe was validated only from a trained start | done (`9x9-scratch`, the preset's 150 generations continued to 250, 6×64, seed 1, against `9x9-main`, the earlier preset's run with the same network, seed and generation 0): 0.895, 0.895, 0.907 and 0.915 at equal generations 50, 100, 150 and 250 (+372 to +413 Elo); 0.595 (+67) and 0.795 (+235) at equal SGD steps (generation 75 against 150, 125 against 250) with about 70% of the self-play positions; 0.853 (+305) for generation 150 against `9x9-main`'s 250; still improving at 250 (0.657 for 200 and 0.728 for 250 against 150); resignation calibrated itself from a random network within about five generations; one seed; see [The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations). Against the recipe's 6×96 network at generation 250 (widened to 6×96 for the arena, which preserves its function) it scored 0.390 (−78); see [The recipe against the preset from scratch](#the-recipe-against-the-preset-from-scratch-generation-250) |
 
 Evaluation only (the algorithm unchanged): a validation loss on
 held-out fresh games each generation is merged (`validation_loss`, on by
@@ -2515,8 +2689,9 @@ default: `val_*` and `seen_*` columns in `log.csv`; see "The validation
 loss" in the main README), first measured in the steps-only and recipe
 arms (see their sections; in the recipe the fresh games' value loss
 stays flat while the buffer's falls, a gap that widened from about 0.1
-to 0.16 by generation 200, and from scratch it narrowed to about 0.1
-after the learning-rate drop). An outside
+to 0.16 by generation 200 and held there to 250, and from scratch it
+narrowed to about 0.1 after the learning-rate drop and stayed there to
+250). An outside
 reference opponent over GTP has its tools merged (the `gtp` engine and
 `tools/gtp_match.py`; see "Playing other programs via GTP" in the main
 README), with no match against GNU Go played yet. Not started: 400-game
@@ -2658,29 +2833,43 @@ matches at temperature 0 (AGZ's evaluation size).
   commands it expanded to, `next-jobs.cmds`, the controller's output
   `next-jobs.log` and its job log `next-jobs.joblog`.
 - `9x9-recipe/`: the recipe arm (`temperature_moves = 7`, resignation,
-  200 games and 400 steps per generation), generations 1–200, with the
+  200 games and 400 steps per generation), generations 1–250, with the
   same files as `9x9-steps400/` (the `log.csv` also with the `resign_*`
-  columns; `progress.txt` with the lines of both the first run and the
-  resumed one; the buffer statistics at generation 200) and the matches
+  columns; `progress.txt` with the lines of the first run and of all
+  three resumes; the buffer statistics at generation 200) and the matches
   `g25-vs-control-g25.txt`, `g50-vs-control-g50.txt`,
   `g50-vs-budget-g50.txt`, `g50-vs-start.txt`, `g100-vs-g50.txt`,
-  `g100-vs-start.txt`, `g150-vs-g100.txt`, `g200-vs-g100.txt` and
-  `g200-vs-start.txt`; the continuation's script `recipe-continue.sh`
-  and its log `recipe-continue.log`; `rerate/`, the re-rate against
-  generation 200 over generations 1–200, and `rerate-to100/`, the one
-  made at generation 100. See
-  [its section](#the-recipe-four-changes-together-200-generations).
-- `9x9-scratch/`: the 9×9 preset from scratch: `log.csv` (with the
-  `resign_*`, `val_*` and `seen_*` columns), `elo.csv`, `results.csv`,
-  `references.csv`, `config.cfg`, `progress.txt`, the command
-  `scratch-recipe.sh` and its log `scratch-recipe.log`, the six 400-game
-  matches against `9x9-main` (`g50-vs-main-g50.txt`,
-  `g100-vs-main-g100.txt`, `g150-vs-main-g150.txt`,
-  `g75-vs-main-g150-equal-steps.txt`,
+  `g100-vs-start.txt`, `g150-vs-g100.txt`, `g200-vs-g100.txt`,
+  `g200-vs-start.txt`, `g250-vs-g200.txt` and `g250-vs-start.txt`; the
+  continuations' scripts `recipe-continue.sh` (to 200) and
+  `recipe-continue2.sh` (to 250) with their logs `recipe-continue.log`
+  and `recipe-continue2.log`; `rerate/`, the re-rate against
+  generation 200 over generations 1–200 (none was made past 200), and
+  `rerate-to100/`, the one made at generation 100. See
+  [its section](#the-recipe-four-changes-together-250-generations).
+- `9x9-scratch/`: the 9×9 preset from scratch, generations 1–250:
+  `log.csv` (with the `resign_*`, `val_*` and `seen_*` columns),
+  `elo.csv`, `results.csv`, `references.csv`, `config.cfg`,
+  `progress.txt`, the command `scratch-recipe.sh` and its log
+  `scratch-recipe.log`, the six 400-game matches against `9x9-main` up
+  to generation 150 (`g50-vs-main-g50.txt`, `g100-vs-main-g100.txt`,
+  `g150-vs-main-g150.txt`, `g75-vs-main-g150-equal-steps.txt`,
   `g125-vs-main-g250-equal-steps.txt`, `g150-vs-main-g250.txt`) with
-  their script `scratch-eval.sh` and log `scratch-eval.log`, and the
-  buffer statistics `buf.txt`, `pass.txt` and `side.txt` at generation
-  150.
+  their script `scratch-eval.sh` and log `scratch-eval.log`; the
+  continuation to 250, `scratch-continue.sh` and its log
+  `scratch-continue.log`, with its matches `g200-vs-g150.txt`,
+  `g250-vs-g150.txt` and `g250-vs-main-g250.txt`; and the buffer
+  statistics `buf.txt`, `pass.txt` and `side.txt` at generation 150 and
+  `buf-250.txt`, `pass-250.txt` and `side-250.txt` at 250.
+- `9x9-versus/`: the recipe against the preset from scratch at
+  generation 250: the script `versus.sh` (host names redacted) and its
+  log `versus.log`, the `grow` outputs `grow-g150.txt` and
+  `grow-g250.txt` (the scratch networks widened to 6×96; the widened
+  checkpoints are not in the repository), and the three 400-game
+  matches `recipe-g250-vs-scratch-g250.txt`,
+  `recipe-g200-vs-scratch-g250.txt` and
+  `recipe-g250-vs-scratch-g150.txt`. See
+  [its section](#the-recipe-against-the-preset-from-scratch-generation-250).
 - `9x9/log-250.csv`, `9x9/config-250.cfg` and `9x9/{buf,pass,side}-250.txt`:
   `9x9-main` continued to generation 250: its `log.csv` over generations
   1–250 (the first 150 rows are `9x9/log.csv`), its `config.cfg` as
