@@ -1275,15 +1275,16 @@ void InferenceHub::dispatcherLoop() {
     std::unique_lock<std::mutex> lock(mutex_);
     for (;;) {
         // 1. Wait until a slot has completed, or a slot is free and requests
-        //    wait (or they must be failed), or the hub stops with nothing in flight.
+        //    wait (or they must be failed: after a failure or once the hub
+        //    stops), or the hub stops with nothing in flight.
         dispatcherWake_.wait(lock, [&] {
-            return anyCompleted() || (!queue_.empty() && (anyFree() || !failed_.empty())) ||
+            return anyCompleted() || (!queue_.empty() && (anyFree() || !failed_.empty() || stop_)) ||
                    (stop_ && !anyBusy());
         });
         // 2. Hand back every completed batch.
         for (size_t i = 0; i < slots_.size(); ++i)
             if (slots_[i].busy && slots_[i].completed) finish(slots_[i], static_cast<int>(i), lock);
-        /* ... after a failure, every waiting request fails too ... */
+        /* ... after a failure, or once the hub stops, every queued request fails ... */
         // 3. While a slot is free and requests wait: whole requests from the
         //    front of the queue, up to maxBatch positions, into one batch.
         for (size_t i = 0; i < slots_.size() && !queue_.empty() && failed_.empty(); ++i) {
@@ -1304,7 +1305,7 @@ void InferenceHub::dispatcherLoop() {
     }
 }
 ```
-*src/inference_hub.cpp:137 — `InferenceHub::dispatcherLoop` (abridged)*
+*src/inference_hub.cpp:146 — `InferenceHub::dispatcherLoop` (abridged)*
 
 There are two slots, so one pass runs on the GPU while the next one
 fills. The flush policy is greedy: a pass is submitted as soon as a slot
@@ -1420,13 +1421,17 @@ differently, within a measured 1e-5 of the CPU on the network's outputs.
 Nor is it reproducible across machines or macOS versions, since the OS
 compiles the shaders. The `gpu:` line a run prints names both.
 
-**What it buys.** *Pending: the timed comparison (task A9 of the plan)
-needs the machine otherwise idle and has not been run yet.* A first
-measurement, made beside a training run that kept the CPU busy: 36
-threads sending batch-8 requests through the hub reached 22,200 network
-evaluations per second on 9×9 6×96, in passes of about 100 positions.
-The spike measured 14,500 for 18 CPU workers. The design expects
-self-play about 1.6–1.9× faster.
+**What it buys.** On the M5 Max, with the machine otherwise idle
+(`docs/results/bench.txt`), 36 threads sending batch-8 requests through
+the hub evaluate 27,200 positions per second on 9×9 6×96. Their passes
+average 93 positions. 18 CPU workers manage 15,000, so the hub is 1.8×
+faster. In a real 200-game generation, self-play took 89 s instead of 143
+s (1.60×) and the whole generation 138 s instead of 194 s (1.40×).
+Training is still on the CPU. The arena did not gain: at generation 1 it
+is a single 20-game match, whose 20 searches, split between two networks,
+are too few to fill the passes. In that generation every move and every
+loss came out the same with both backends. The last-bit differences were
+there, but none tipped a decision.
 
 ---
 
@@ -2930,7 +2935,7 @@ see again in place.
 | Terminal positions scored by the rules | `Mcts::isTerminal`, `Mcts::terminalValue` — `src/mcts.cpp:41, 52` |
 | Virtual loss and batched search | `Mcts::search`, `Mcts::addVirtualLoss` — `src/mcts.cpp:213, 108` |
 | The evaluator seam | `Evaluator` — `include/azgo/evaluator.hpp:18`; `LocalEvaluator::evaluate` — `src/evaluator.cpp:19` |
-| Batching leaves across workers on the GPU | `InferenceHub::dispatcherLoop` — `src/inference_hub.cpp:137`; `gemm_simd` — `src/metal/kernels.metal:58` |
+| Batching leaves across workers on the GPU | `InferenceHub::dispatcherLoop` — `src/inference_hub.cpp:146`; `gemm_simd` — `src/metal/kernels.metal:58` |
 | Dirichlet root noise | `Mcts::setRootPriors` — `src/mcts.cpp:351`; `dirichlet` — `src/rng.cpp:122` |
 | Temperature | `Mcts::selectAction` — `src/mcts.cpp:314`; `playSelfPlayGame` — `src/selfplay.cpp:50` |
 | Tree reuse and compaction | `Mcts::advance` — `src/mcts.cpp:368` |

@@ -228,3 +228,102 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 # and 1; the 19x19 preset's 10x128 network, 1 generation (4 games, 3 steps);
 # and the full 5x5 preset with BLAS for 30 generations (checkpoints 1-30
 # identical; an earlier version of the branch, with 16-row bands).
+
+# =============================================================================
+# GPU inference with backend = metal (2026-10-09)
+# =============================================================================
+# Machine: Apple M5 Max, 18 CPU cores, 40-core GPU, 128 GB, macOS 27.0.1;
+# shaders b7b31a09. Branch metal-backend (Metal plan, task A9), build-metal
+# (Release, -DAZ_USE_METAL=ON). Conditions: the training job 9x9-scratch96
+# was paused (SIGSTOP/SIGCONT, with Mark's go-ahead) for each measurement:
+# 159 s for the two bench runs, 195 s and 138 s for the two generations.
+#
+# ---- bench --sizes 9,19 --backend all --seconds 3 (6x64 preset; 19x19 preset) ----
+# The metal row: one synchronous GPU pass of 8 on one thread; the train
+# step stays on the CPU with metal. "2-slot": both of the hub runner's
+# slots kept full. The hub table: N threads sending batch-8 requests of
+# random positions through one hub (inference_batch 256); "slots busy" is
+# the summed time from begin to done over both slots, per slot and second.
+# "cpu (blas)": 18 workers, each its own BLAS Network::infer at batch 8.
+#   gpu: Apple M5 Max, macOS 27.0.1, shaders b7b31a09
+#   
+#   size   blocks x filters  backend       evals/s  train-step ms
+#   9x9    6 x 64            naive             427          311.9
+#   9x9    6 x 64            blas             4198           29.0
+#   9x9    6 x 64            metal            3749              -
+#   19x19  10 x 128          naive              15         6515.4
+#   19x19  10 x 128          blas              385          509.3
+#   19x19  10 x 128          metal            1018              -
+#   
+#   size   blocks x filters   batch   sync evals/s   2-slot evals/s    ms/pass
+#   9x9    6 x 64                 8           3828             7755       2.09
+#   9x9    6 x 64               144          40478            57746       3.56
+#   9x9    6 x 64               256          49618            63318       5.16
+#   19x19  10 x 128               8           1010             1824       7.92
+#   19x19  10 x 128             144           2679             2778      53.76
+#   19x19  10 x 128             256           2788             2831      91.81
+#   
+#   size   blocks x filters  evaluator       threads      evals/s  mean pass slots busy
+#   9x9    6 x 64            cpu (blas)           18        32369          8          -
+#   9x9    6 x 64            metal hub            18        34793       50.0        98%
+#   9x9    6 x 64            metal hub            36        46897       91.8        98%
+#   9x9    6 x 64            metal hub            72        57417      181.3        98%
+#   19x19  10 x 128          cpu (blas)           18          863          8          -
+#   19x19  10 x 128          metal hub            18         2742       50.9       100%
+#   19x19  10 x 128          metal hub            36         2743      102.7        99%
+#   19x19  10 x 128          metal hub            72         2782      193.4        99%
+#   
+#   size   random-playout moves/s
+#   9x9                    633964
+#   19x19                  201708
+#
+# ---- bench --sizes 9 --backend all --seconds 3, 6x96 (the 9x9 preset with filters = 96) ----
+#   gpu: Apple M5 Max, macOS 27.0.1, shaders b7b31a09
+#   
+#   size   blocks x filters  backend       evals/s  train-step ms
+#   9x9    6 x 96            naive             202          447.1
+#   9x9    6 x 96            blas             2796           48.0
+#   9x9    6 x 96            metal            2908              -
+#   
+#   size   blocks x filters   batch   sync evals/s   2-slot evals/s    ms/pass
+#   9x9    6 x 96                 8           2902             5920       2.76
+#   9x9    6 x 96               144          24493            30409       5.88
+#   9x9    6 x 96               256          26481            30418       9.67
+#   
+#   size   blocks x filters  evaluator       threads      evals/s  mean pass slots busy
+#   9x9    6 x 96            cpu (blas)           18        14958          8          -
+#   9x9    6 x 96            metal hub            18        23085       49.7        99%
+#   9x9    6 x 96            metal hub            36        27220       92.9        99%
+#   9x9    6 x 96            metal hub            72        29392      186.6        99%
+#   
+#   size   random-playout moves/s
+#   9x9                    628128
+#
+# ---- One real 9x9 6x96 generation, blas against metal ----
+# train --config configs/9x9.cfg --init-from <copy of 9x9-recipe gen_0250.azn>
+#       --set filters=96 --set backend=blas|metal --generations 1
+# (seed 1, 200 games, 200 simulations, mcts_batch 8, resignation; workers 0:
+# 18 threads with blas, 36 with metal; train_threads 0 = 18 for both; the
+# arena at generation 1 is one 20-game match against generation 0.)
+#                 selfplay_s   train_s (incl. validation)   arena_s   wall (time -p)
+#   blas            142.747          39.335                  12.038      194.23 s
+#   metal            89.180          37.173                  11.779      138.27 s
+#   speedup           1.60x           1.06x                   1.02x        1.40x
+# Every other log.csv column is identical between the two runs (avg_length
+# 49.35, policy_loss 2.23369, value_loss 0.39413, val_policy_loss 2.08466,
+# val_value_loss 0.73322, arena 0.20, Elo -225.7), and so are gen_0001.azn,
+# results.csv and the SGF: the GPU's last-bit differences changed no move in
+# this generation. state.bin differs in 118 bytes within its last 4 KB (the
+# search values it keeps for resignation calibration).
+#
+# Against the spec's acceptance (docs/superpowers/specs/2026-10-09-metal-gpu-backend-design.md):
+#   hub, 36 workers x batch 8, 6x96:   27,220 evals/s   target >= 25,000   met
+#   self-play phase:                   1.60x faster      target >= 1.6x     met (just)
+#   arena phase:                       1.02x faster      target >= 1.3x     NOT met
+#   whole generation:                  1.40x faster      target >= 1.4x     met (just)
+# The arena misses: at generation 1 it is a single 20-game match (20
+# searches at once, split between two networks, so passes stay small and
+# the GPU idles between them) and takes 12 s either way. The spec's levers,
+# in order: more workers (3-4x cores), a larger inference_batch, three
+# slots, kernel fusion, implicit GEMM. Not attempted here (the plan says to
+# report, not optimize, in this task).

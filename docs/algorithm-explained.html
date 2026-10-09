@@ -1423,15 +1423,16 @@ public:
     std::unique_lock&lt;std::mutex&gt; lock(mutex_);
     for (;;) {
         // 1. Wait until a slot has completed, or a slot is free and requests
-        //    wait (or they must be failed), or the hub stops with nothing in flight.
+        //    wait (or they must be failed: after a failure or once the hub
+        //    stops), or the hub stops with nothing in flight.
         dispatcherWake_.wait(lock, [&amp;] {
-            return anyCompleted() || (!queue_.empty() &amp;&amp; (anyFree() || !failed_.empty())) ||
+            return anyCompleted() || (!queue_.empty() &amp;&amp; (anyFree() || !failed_.empty() || stop_)) ||
                    (stop_ &amp;&amp; !anyBusy());
         });
         // 2. Hand back every completed batch.
         for (size_t i = 0; i &lt; slots_.size(); ++i)
             if (slots_[i].busy &amp;&amp; slots_[i].completed) finish(slots_[i], static_cast&lt;int&gt;(i), lock);
-        /* ... after a failure, every waiting request fails too ... */
+        /* ... after a failure, or once the hub stops, every queued request fails ... */
         // 3. While a slot is free and requests wait: whole requests from the
         //    front of the queue, up to maxBatch positions, into one batch.
         for (size_t i = 0; i &lt; slots_.size() &amp;&amp; !queue_.empty() &amp;&amp; failed_.empty(); ++i) {
@@ -1451,7 +1452,7 @@ public:
         /* ... return once stopped with nothing in flight ... */
     }
 }</code></pre>
-<span class="src">src/inference_hub.cpp:137 — <code>InferenceHub::dispatcherLoop</code> (abridged)</span>
+<span class="src">src/inference_hub.cpp:146 — <code>InferenceHub::dispatcherLoop</code> (abridged)</span>
 <p>There are two slots, so one pass runs on the GPU while the next one fills. The flush policy is greedy: a pass is submitted as soon as a slot is free and anything waits. There is no timer and no "wait until every worker has asked". Under load, requests pile up while both slots are busy, so the next pass takes all of them and batches grow by themselves. Under light load nobody waits for company that may never come. And nothing can deadlock: a worker waits only for its own request, and a request only for a slot, which the GPU frees. To keep the GPU fed, <code>workers = 0</code> means twice the cores with <code>metal</code>. A worker waiting for the GPU uses no CPU, so one group of searches runs on the CPU while the other waits on the GPU.</p>
 <p><strong>Why timing cannot change a game.</strong> Which requests share a pass, in what order, and how large it is depend on thread scheduling and differ from run to run. The results do not, because every kernel computes a position's outputs from that position alone, with the same sequence of operations wherever it sits in the batch. The copies, batch norm with its running statistics, ReLU, the skip add and tanh are one thread per element. <code>im2col</code> pads with zeros, never with a neighbouring sample's board. The products are the interesting case. A gemm tiles C into 64×64 blocks, one per threadgroup, and walks K in steps of 16 through fast threadgroup memory. The scalar version, from the spike, makes the tiling easy to see:</p>
 <pre><code>kernel void gemm_tiled(device const float* A [[buffer(0)]],
@@ -1503,7 +1504,7 @@ public:
 <span class="src">src/metal/kernels.metal:58 — <code>gemm_simd</code> (abridged)</span>
 <p>Every 8×8 output block runs the same instructions over the same k order, wherever it lies, and K is never split across threadgroups. A split would add partial sums in an order that depends on the shape, and so on the batch. So an output element's bits depend only on its row of op(A) and its column of op(B). In a convolution, a sample's outputs read only its own columns of the im2col matrix. In a Linear layer they read only its own row of activations. The weights are the other operand and the same for everyone. A position therefore gets the same bits alone, in a batch of 8 or of 256, first or last. Every game is a pure function of the seed, the generation, its index and the weights, exactly as on the CPU. Accelerate cannot promise that: the spike found a position's outputs alone and in a batch of 256 differing in 4 of 4 tries. That is harmless on the CPU, where each worker evaluates only its own batches, but it is why the project offers no CPU batching evaluator.</p>
 <p>The tests hold the hub to this. <code>tests/test_metal.cpp</code> checks positions alone, in batches of 8, 144 and 256, at the first and last slot and among random companions: bitwise identical for every kernel and the whole network. The hub has a chaos mode for tests, which caps each pass at a random size, delays submissions and shuffles requests within a pass. With it on, every request's outputs must equal its positions evaluated alone, bitwise. This runs in every build with a CPU stand-in runner on the naive backend, which is batch-independent by construction (<code>tests/test_inference_hub.cpp</code>). End to end, self-play through the hub plays exactly the games of per-worker <code>LocalEvaluator</code>s. A tiny metal run writes byte-identical checkpoints, <code>state.bin</code>, ratings and SGF for 1, 3 and 8 workers, for <code>inference_batch</code> 8 and 256, and with chaos on. A metal run is not bit-identical to a <code>blas</code> run: the GPU rounds some sums differently, within a measured 1e-5 of the CPU on the network's outputs. Nor is it reproducible across machines or macOS versions, since the OS compiles the shaders. The <code>gpu:</code> line a run prints names both.</p>
-<p><strong>What it buys.</strong> <em>Pending: the timed comparison (task A9 of the plan) needs the machine otherwise idle and has not been run yet.</em> A first measurement, made beside a training run that kept the CPU busy: 36 threads sending batch-8 requests through the hub reached 22,200 network evaluations per second on 9×9 6×96, in passes of about 100 positions. The spike measured 14,500 for 18 CPU workers. The design expects self-play about 1.6–1.9× faster.</p>
+<p><strong>What it buys.</strong> On the M5 Max, with the machine otherwise idle (<code>docs/results/bench.txt</code>), 36 threads sending batch-8 requests through the hub evaluate 27,200 positions per second on 9×9 6×96. Their passes average 93 positions. 18 CPU workers manage 15,000, so the hub is 1.8× faster. In a real 200-game generation, self-play took 89 s instead of 143 s (1.60×) and the whole generation 138 s instead of 194 s (1.40×). Training is still on the CPU. The arena did not gain: at generation 1 it is a single 20-game match, whose 20 searches, split between two networks, are too few to fill the passes. In that generation every move and every loss came out the same with both backends. The last-bit differences were there, but none tipped a decision.</p>
 </section>
 
 <section id="selfplay">
@@ -2302,7 +2303,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>The evaluator seam</dt>
   <dd><code>Evaluator</code> <span class="loc">— include/azgo/evaluator.hpp:18</span>; <code>LocalEvaluator::evaluate</code> <span class="loc">— src/evaluator.cpp:19</span></dd>
   <dt>Batching leaves across workers on the GPU</dt>
-  <dd><code>InferenceHub::dispatcherLoop</code> <span class="loc">— src/inference_hub.cpp:137</span>; <code>gemm_simd</code> <span class="loc">— src/metal/kernels.metal:58</span></dd>
+  <dd><code>InferenceHub::dispatcherLoop</code> <span class="loc">— src/inference_hub.cpp:146</span>; <code>gemm_simd</code> <span class="loc">— src/metal/kernels.metal:58</span></dd>
   <dt>Dirichlet root noise</dt>
   <dd><code>Mcts::setRootPriors</code> <span class="loc">— src/mcts.cpp:351</span>; <code>dirichlet</code> <span class="loc">— src/rng.cpp:122</span></dd>
   <dt>Temperature</dt>

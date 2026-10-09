@@ -2595,17 +2595,54 @@ Generation 2 took more than twice as long as generation 1. Its self-play
 games were 2.5 times longer (364.5 plies on average; the cap is 722).
 Two generations say nothing about strength, and none is claimed.
 
-### GPU inference with `backend = metal` (pending)
+### GPU inference with `backend = metal`
 
-The timed comparison is task A9 of the
-[Metal plan](../superpowers/plans/2026-10-09-metal-gpu-backend.md) and
-needs the training jobs paused, so it has not been run. It will cover:
-- `bench --backend metal`: raw GPU passes at batches 8, 144 and 256, and
-  the hub under 18, 36 and 72 threads;
-- one 6×96 9×9 generation with `blas` and with `metal`, compared on
-  `selfplay_s`, `arena_s`, `train_s` and the losses.
+Task A9 of the [Metal plan](../superpowers/plans/2026-10-09-metal-gpu-backend.md),
+on the M5 Max under macOS 27.0.1, with the training job paused
+(`bench.txt`, last section).
 
-What is known so far, all on the M5 Max under macOS 27.0.1:
+Throughput: batch-8 requests from N threads through one hub, against 18
+CPU workers each evaluating its own batches of 8 with BLAS.
+
+| network | 18 CPU workers | hub, 18 threads | hub, 36 | hub, 72 |
+|---|---|---|---|---|
+| 9×9 6×64 | 32,369 | 34,793 | 46,897 (1.45×) | 57,417 |
+| 9×9 6×96 | 14,958 | 23,085 | 27,220 (1.82×) | 29,392 |
+| 19×19 10×128 | 863 | 2,742 | 2,743 (3.2×) | 2,782 |
+
+The hub's passes average 50, 93 and 187 positions at 18, 36 and 72
+threads on 6×96. Its slots are busy 98–100% of the time. The GPU alone,
+both slots kept full with passes of 256, reaches 30,400 positions/s on
+6×96. The hub at 36 threads gets within 11% of that.
+
+One real generation of the 9×9 preset at 6×96, started from a copy of
+9x9-recipe generation 250, with the same seed:
+
+| backend | selfplay_s | train_s | arena_s | wall |
+|---|---|---|---|---|
+| blas (18 workers) | 142.7 | 39.3 | 12.0 | 194.2 s |
+| metal (36 workers) | 89.2 | 37.2 | 11.8 | 138.3 s |
+| speedup | 1.60× | 1.06× | 1.02× | 1.40× |
+
+All other `log.csv` columns came out identical (policy loss 2.23369,
+value loss 0.39413, validation losses, the arena score). So did the new
+checkpoint, `results.csv` and the SGF: the GPU's last-bit differences
+changed no move in this generation. They were not expected to be
+identical, and over more generations they will not be.
+
+Against the design's acceptance:
+- hub ≥ 25k evals/s at 36 workers: met.
+- self-play ≥ 1.6×: met, just (1.60×).
+- whole generation ≥ 1.4×: met, just (1.40×).
+- arena ≥ 1.3×: **not met** (1.02×). At generation 1 the arena is one
+  20-game match: 20 searches at once, split between two networks, too
+  few to fill the passes.
+
+The spec's levers, in order: more workers (3–4× cores), a larger
+`inference_batch`, three slots, kernel fusion, implicit GEMM. None was
+tried yet.
+
+Correctness, all on the same machine:
 
 - *Correctness, measured.* Positions get bitwise the same outputs alone
   and in any batch, through every kernel, the whole network and the hub.
@@ -2615,12 +2652,6 @@ What is known so far, all on the M5 Max under macOS 27.0.1:
   1e-5), the validation losses within 1.1e-7 relative.
   `analyze --backend metal` prints the same digits as `--backend blas` on
   the README's example.
-- *Throughput, preliminary.* It was measured beside a training run that
-  kept the CPU busy, so it is not a benchmark. 36 threads sending batch-8
-  requests through the hub reached 22,200 evaluations/s on 6×96 (passes
-  of about 100 positions), and 72 threads 23,200. The spike measured
-  14,500 for 18 CPU workers with the CPU idle
-  ([metal-bench.txt](metal-bench.txt)).
 
 ## Next experiments
 

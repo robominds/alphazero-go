@@ -1043,18 +1043,30 @@ search into large GPU passes, and MCTS is unchanged. The kernels are
 batch-independent by construction and by test, so results stay
 independent of timing.
 
-*Measured speedup: pending.* The timed comparison of a generation with
-`blas` and with `metal` needs the machine otherwise idle and has not been
-run yet. A first measurement, taken beside a training run, reached 22,200
-network evaluations per second through the hub on 9×9 6×96 (36 threads,
-batch-8 requests). The spike measured 14,500 for 18 CPU workers. The
-design's targets are a hub throughput of at least 25,000 evaluations per
-second and self-play at least 1.6× faster.
+Measured on the M5 Max with the machine otherwise idle
+(`docs/results/bench.txt`):
+
+- **Throughput.** 36 threads sending batch-8 requests through the hub
+  evaluate 27,200 positions per second on 9×9 6×96 (passes of about 93
+  positions). 18 CPU workers manage 15,000, so the hub is 1.8× faster. On
+  the 6×64 preset it reaches 46,900 against 32,400 (1.45×). The 19×19
+  10×128 network gains most: 2,740 against 860 (3.2×).
+- **A real generation**, 9×9 6×96, 200 games:
+  - self-play takes 89 s instead of 143 s (1.60×);
+  - the arena, a single 20-game match at generation 1, 12 s either way;
+  - the generation, training included, 138 s instead of 194 s (1.40×).
+
+  Every move, loss and the new checkpoint came out the same with both
+  backends in that generation.
+
+The self-play, throughput and whole-generation targets of the design are
+met; the arena's (1.3×) is not. Too few searches run at once in a 20-game
+match between two networks to fill the GPU's passes.
 
 Next is training on the GPU (phase B of the
 [plan](docs/superpowers/plans/2026-10-09-metal-gpu-backend.md)): the
 backward pass, the losses and SGD as kernels, opt-in with
-`gpu_training = true`. The CPU's other cores came first. The training
+`gpu_training = true`, and a better-fed arena. The CPU's other cores came first. The training
 step runs on all of them (`train_threads`), 4.6× faster for 6×96 on 9×9.
 
 ## Authorship
