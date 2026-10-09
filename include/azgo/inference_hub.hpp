@@ -67,25 +67,31 @@ class InferenceHub;
 // arrays stay valid because the caller is blocked. Throws
 // std::runtime_error("GPU inference failed: ...") if the runner failed this
 // or any earlier batch.
+// Made only by InferenceHub::makeEvaluator, which checks maxRequest.
 class BatchingEvaluator : public Evaluator {
 public:
-    BatchingEvaluator(InferenceHub& hub, int maxRequest);
     int boardSize() const override;
     int history() const override;
     int maxBatch() const override { return maxRequest_; }
     void evaluate(const float* input, int B, float* logits, float* values) override;
 private:
+    friend class InferenceHub;
+    BatchingEvaluator(InferenceHub& hub, int maxRequest);
     InferenceHub& hub_;
     int maxRequest_;
 };
 
 // One per network per phase. Thread-safe; any number of BatchingEvaluators,
-// which must all be destroyed before the hub.
+// which must all be destroyed before the hub. Should a thread still be
+// inside evaluate when the hub is destroyed, the destructor stops starting
+// new passes, fails the requests still queued ("inference hub shut down"),
+// lets the passes in flight finish, and waits until every such thread has
+// left the hub before freeing anything.
 class InferenceHub {
 public:
     // options.maxBatch must be in [1, runner->maxBatch()].
     InferenceHub(std::unique_ptr<BatchRunner> runner, const NetConfig& cfg, InferenceHubOptions options);
-    ~InferenceHub();   // stops the dispatcher after any batch in flight completes
+    ~InferenceHub();   // waits for passes in flight and for threads still in evaluate
     InferenceHub(const InferenceHub&) = delete;
     InferenceHub& operator=(const InferenceHub&) = delete;
 
@@ -136,6 +142,8 @@ private:
 
     mutable std::mutex mutex_;
     std::condition_variable dispatcherWake_;
+    std::condition_variable drained_;   // the destructor waits on it for submitters_ == 0
+    int submitters_ = 0;                // threads inside submit
     std::deque<Request*> queue_;
     std::vector<Slot> slots_;
     std::string failed_;             // set once a batch fails: every later request fails

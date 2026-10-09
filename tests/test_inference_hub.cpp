@@ -75,7 +75,30 @@ public:
     float* input(int slot) override { return slots_[slot]->input.data(); }
     const float* logits(int slot) const override { return slots_[slot]->logits.data(); }
     const float* values(int slot) const override { return slots_[slot]->values.data(); }
+    // begin throws on batch `n` (1-based), a std::runtime_error or, with
+    // nonStd, an int; 0: never.
+    void throwOnBatch(int n, bool nonStd = false) {
+        throwBatch_ = n;
+        throwNonStd_ = nonStd;
+    }
+    // Closed: batches wait in their helper thread until open() (for
+    // shutdown tests). begun() counts begin calls.
+    void close() { gateOpen_ = false; }
+    void open() {
+        {
+            std::lock_guard<std::mutex> lock(gateMutex_);
+            gateOpen_ = true;
+        }
+        gate_.notify_all();
+    }
+    int begun() const { return begun_.load(); }
+
     void begin(int slot, int B, std::function<void(int, std::string)> done) override {
+        if (throwBatch_ > 0 && begun_.load() + 1 == throwBatch_) {
+            ++begun_;
+            if (throwNonStd_) throw 42;
+            throw std::runtime_error("test runner refused batch " + std::to_string(throwBatch_));
+        }
         SlotState& st = *slots_[slot];
         {
             std::lock_guard<std::mutex> lock(st.mutex);
@@ -114,6 +137,10 @@ private:
                 number = st.batchNumber;
                 done = std::move(st.done);
             }
+            {
+                std::unique_lock<std::mutex> lock(gateMutex_);
+                gate_.wait(lock, [&] { return gateOpen_.load(); });
+            }
             std::string error;
             if (number == failBatch_) {
                 error = "test runner failed on batch " + std::to_string(number);
@@ -140,6 +167,11 @@ private:
     int maxBatch_;
     int failBatch_;
     std::atomic<int> begun_{0};
+    int throwBatch_ = 0;
+    bool throwNonStd_ = false;
+    std::atomic<bool> gateOpen_{true};
+    std::mutex gateMutex_;
+    std::condition_variable gate_;
     std::vector<std::unique_ptr<SlotState>> slots_;
 };
 
@@ -479,8 +511,89 @@ void test_worker_evaluators_cpu_is_local() {
 
 } // namespace
 
+// A runner whose begin throws (an encoding error, an allocation failure)
+// fails that batch like a failed pass: its requests and every later one
+// throw with the runner's text, and the dispatcher lives on to shut down.
+void test_hub_runner_begin_throws() {
+    const NetConfig cfg = tinyConfig();
+    const size_t in = static_cast<size_t>(cfg.planes()) * cfg.area();
+    for (bool nonStd : {false, true}) {
+        auto runner = std::make_unique<CpuTestRunner>(nullptr, cfg, 16);
+        runner->throwOnBatch(2, nonStd);
+        InferenceHubOptions o;
+        o.maxBatch = 16;
+        InferenceHub hub(std::move(runner), cfg, o);
+        std::atomic<int> failures{0};
+        runThreads(4, 30, [&](int) {
+            auto ev = hub.makeEvaluator(4);
+            std::vector<float> x(4 * in, 1.0f), logits(4 * cfg.actions()), values(4);
+            bool failed = false;
+            for (int r = 0; r < 50; ++r) {
+                try {
+                    ev->evaluate(x.data(), 4, logits.data(), values.data());
+                    assert(!failed);
+                } catch (const std::runtime_error& e) {
+                    const std::string what = e.what();
+                    assert(what.rfind("GPU inference failed: runner: ", 0) == 0);
+                    assert(what.find(nonStd ? "unknown exception" : "test runner refused batch 2") !=
+                           std::string::npos);
+                    failed = true;
+                }
+            }
+            assert(failed);
+            ++failures;
+        });
+        assert(failures == 4);
+    }
+}
+
+// Threads still inside evaluate when the hub is destroyed (the contract is
+// broken, but the hub must not crash): passes in flight complete, queued
+// requests fail with "inference hub shut down", and the destructor waits
+// for every thread to leave before freeing the hub.
+void test_hub_shutdown_with_threads_inside() {
+    const NetConfig cfg = tinyConfig();
+    const size_t in = static_cast<size_t>(cfg.planes()) * cfg.area();
+    auto runner = std::make_unique<CpuTestRunner>(nullptr, cfg, 8);
+    CpuTestRunner& r = *runner;
+    r.close();
+    InferenceHubOptions o;
+    o.maxBatch = 8;   // one request of 8 per pass: 2 in flight, the rest queued
+    auto hub = std::make_unique<InferenceHub>(std::move(runner), cfg, o);
+    std::atomic<int> served{0}, shutDown{0};
+    std::vector<std::unique_ptr<Evaluator>> evs;
+    for (int t = 0; t < 6; ++t) evs.push_back(hub->makeEvaluator(8));
+    std::vector<std::thread> threads;
+    for (int t = 0; t < 6; ++t) {
+        threads.emplace_back([&, t] {
+            std::vector<float> x(8 * in, static_cast<float>(t)), logits(8 * cfg.actions()), values(8);
+            try {
+                evs[t]->evaluate(x.data(), 8, logits.data(), values.data());
+                assert(values[0] == static_cast<float>(t));
+                ++served;
+            } catch (const std::runtime_error& e) {
+                assert(std::string(e.what()) == "GPU inference failed: inference hub shut down");
+                ++shutDown;
+            }
+        });
+    }
+    // Both slots busy (and closed), the other requests queued behind them.
+    for (int i = 0; i < 2000 && r.begun() < 2; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(r.begun() == 2);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));   // let the rest reach the queue
+    std::thread destroyer([&] { hub.reset(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    r.open();   // the two passes in flight finish
+    destroyer.join();
+    for (auto& th : threads) th.join();
+    assert(served == 2 && shutDown == 4);
+}
+
 int main() {
     test_hub_single_request();
+    test_hub_runner_begin_throws();
+    test_hub_shutdown_with_threads_inside();
     test_hub_outputs_equal_alone_under_chaos();
     test_hub_refuses_oversized_request();
     test_hub_failure_reaches_every_waiter();

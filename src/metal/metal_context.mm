@@ -241,6 +241,22 @@ GpuBuffer MetalContext::newBuffer(size_t bytes) {
 }
 
 std::string MetalContext::description() const { return impl_->description; }
+void runInPool(const std::function<void()>& fn) {
+    std::exception_ptr error;
+    @autoreleasepool {
+        try {
+            fn();
+        } catch (...) {
+            error = std::current_exception();
+        }
+    }
+    if (error) std::rethrow_exception(error);
+}
+
+size_t MetalContext::currentAllocatedSize() const {
+    return static_cast<size_t>(impl_->device.currentAllocatedSize);
+}
+
 size_t MetalContext::recommendedWorkingSet() const {
     return static_cast<size_t>(impl_->device.recommendedMaxWorkingSetSize);
 }

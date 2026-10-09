@@ -49,33 +49,23 @@ public:
 
     void begin(int slot, int B, std::function<void(int slot, std::string error)> done) override {
         GpuWorkspace& ws = *workspaces_.at(slot);
-        std::string error;
-        @autoreleasepool {
-            try {
-                CommandBatch batch;
-                network_.encodeForward(batch, ws, weights_, B);
-                {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    ++inFlight_;
-                }
-                try {
-                    batch.commit([this, slot, done](const std::string& err) {
-                        done(slot, err);
-                        std::lock_guard<std::mutex> lock(mutex_);
-                        --inFlight_;
-                        idle_.notify_all();   // under the lock: the destructor may free us right after
-                    });
-                } catch (...) {
-                    std::lock_guard<std::mutex> lock(mutex_);
-                    --inFlight_;   // never committed: no handler will run
-                    throw;
-                }
-            } catch (const std::exception& e) {
-                error = e.what();
+        // An exception (encoding refused) leaves the pool before it is
+        // rethrown; the hub turns it into a failed batch.
+        runInPool([&] {
+            CommandBatch batch;
+            network_.encodeForward(batch, ws, weights_, B);
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                ++inFlight_;
             }
-        }
-        // Thrown after the pool: the hub turns it into a failed batch.
-        if (!error.empty()) throw std::runtime_error(error);
+            // A fresh batch commits exactly once, so commit cannot throw here.
+            batch.commit([this, slot, done](const std::string& err) {
+                done(slot, err);
+                std::lock_guard<std::mutex> lock(mutex_);
+                --inFlight_;
+                idle_.notify_all();   // under the lock: the destructor may free us right after
+            });
+        });
     }
 
 private:
@@ -100,13 +90,17 @@ std::unique_ptr<BatchRunner> makeMetalRunner(const Network& net, int maxBatch) {
     const double need = static_cast<double>(kInferenceSlots) *
                             GpuWorkspace::bytesFor(cfg, maxBatch, GpuWorkspace::Purpose::Inference) +
                         static_cast<double>(layout.paramFloats + layout.bufferFloats) * sizeof(float);
+    // What the process already holds counts too: an arena match builds a
+    // hub for each network.
+    const double used = static_cast<double>(ctx.currentAllocatedSize());
     const double have = static_cast<double>(ctx.recommendedWorkingSet());
-    if (need > have)
-        throw std::runtime_error("metal: inference needs " +
-                                 std::to_string(static_cast<long long>(need / 1e6)) + " MB of GPU memory at inference_batch " + std::to_string(maxBatch) +
-                                 ", more than the GPU's recommended working set of " +
-                                 std::to_string(static_cast<long long>(have / 1e6)) +
-                                 " MB; lower inference_batch");
+    if (used + need > have)
+        throw std::runtime_error(
+            "metal: inference needs " + std::to_string(static_cast<long long>(need / 1e6)) +
+            " MB of GPU memory at inference_batch " + std::to_string(maxBatch) + ", which with the " +
+            std::to_string(static_cast<long long>(used / 1e6)) + " MB already in use exceeds the GPU's " +
+            "recommended working set of " + std::to_string(static_cast<long long>(have / 1e6)) +
+            " MB; lower inference_batch");
     return std::make_unique<MetalBatchRunner>(net, maxBatch);
 }
 

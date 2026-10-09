@@ -82,6 +82,8 @@ public:
     GpuBuffer newBuffer(size_t bytes);   // throws std::runtime_error naming the bytes on failure
     std::string description() const;     // device, macOS version, shader hash
     std::string deviceName() const;
+    // Bytes the device has allocated so far, all buffers of the process.
+    size_t currentAllocatedSize() const;
     // Metal's estimate of how much memory the GPU can use without hurting
     // performance (device.recommendedMaxWorkingSetSize), in bytes.
     size_t recommendedWorkingSet() const;
@@ -93,6 +95,13 @@ private:
     MetalContext();
     std::unique_ptr<Impl> impl_;
 };
+
+// Runs fn inside an autorelease pool, so the Metal objects it creates are
+// released when it returns. An exception from fn is caught inside the pool
+// and rethrown after the pool is closed (unwinding through @autoreleasepool
+// would skip popping it). Every entry point that calls Metal goes through it
+// or follows the same pattern.
+void runInPool(const std::function<void()>& fn);
 
 // Failure injection for tests (metal_probe::failCommandBuffersAfter): after n
 // more command buffers complete normally, the next one reports a failure as

@@ -115,6 +115,11 @@ void failCommandBuffersAfter(int n);
 // std::logic_error naming the first tensor the layout does not know.
 void checkUpload(const Network& layoutNet, const Network& net);
 
+// Uploads net, then encodes one forward pass of a GPU network built for
+// encodeAs (a stand-in for a GPU port that lags behind the CPU network):
+// throws std::logic_error naming every uploaded tensor the pass never reads.
+void checkForwardReadsEveryTensor(const Network& net, const NetConfig& encodeAs);
+
 } // namespace metal_probe
 #endif
 

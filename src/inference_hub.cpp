@@ -67,10 +67,15 @@ InferenceHub::InferenceHub(std::unique_ptr<BatchRunner> runner, const NetConfig&
 
 InferenceHub::~InferenceHub() {
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
         stop_ = true;
+        dispatcherWake_.notify_all();
+        // Threads still in evaluate (a broken contract, but not a crash):
+        // the dispatcher fails their queued requests and finishes the ones
+        // in flight; wait until the last has left submit, so none touches
+        // the mutex after it is gone.
+        drained_.wait(lock, [&] { return submitters_ == 0; });
     }
-    dispatcherWake_.notify_all();
     dispatcher_.join();   // returns once no batch is in flight
 }
 
@@ -78,7 +83,7 @@ std::unique_ptr<Evaluator> InferenceHub::makeEvaluator(int maxRequest) {
     if (maxRequest < 1 || maxRequest > maxBatch_)
         throw std::invalid_argument("InferenceHub: requests of " + std::to_string(maxRequest) +
                                     " positions do not fit batches of " + std::to_string(maxBatch_));
-    return std::make_unique<BatchingEvaluator>(*this, maxRequest);
+    return std::unique_ptr<Evaluator>(new BatchingEvaluator(*this, maxRequest));
 }
 
 InferenceHub::Stats InferenceHub::stats() const {
@@ -90,9 +95,13 @@ void InferenceHub::submit(Request& r) {
     std::unique_lock<std::mutex> lock(mutex_);
     if (!failed_.empty()) throw std::runtime_error("GPU inference failed: " + failed_);
     if (stop_) throw std::logic_error("InferenceHub: evaluate after shutdown");
+    ++submitters_;
     queue_.push_back(&r);
     dispatcherWake_.notify_one();
     r.wake.wait(lock, [&] { return r.done; });
+    // The last thread out lets a waiting destructor go on (under the lock,
+    // so the destructor cannot free the hub before we let go of it).
+    if (--submitters_ == 0 && stop_) drained_.notify_all();
     if (!r.error.empty()) throw std::runtime_error("GPU inference failed: " + r.error);
 }
 
@@ -153,9 +162,10 @@ void InferenceHub::dispatcherLoop() {
     };
     for (;;) {
         // 1. Wait until a slot has completed, or a slot is free and requests
-        //    wait (or they must be failed), or the hub stops with nothing in flight.
+        //    wait (or they must be failed: after a failure or once the hub
+        //    stops), or the hub stops with nothing in flight.
         dispatcherWake_.wait(lock, [&] {
-            return anyCompleted() || (!queue_.empty() && (anyFree() || !failed_.empty())) ||
+            return anyCompleted() || (!queue_.empty() && (anyFree() || !failed_.empty() || stop_)) ||
                    (stop_ && !anyBusy());
         });
 
@@ -164,9 +174,11 @@ void InferenceHub::dispatcherLoop() {
             if (slots_[i].busy && slots_[i].completed) finish(slots_[i], static_cast<int>(i), lock);
 
         // After a failure, nothing new runs: every waiting request fails too.
-        if (!failed_.empty()) {
+        // After shutdown began, neither: the queued requests fail.
+        if (!failed_.empty() || stop_) {
+            const std::string why = failed_.empty() ? std::string("inference hub shut down") : failed_;
             while (!queue_.empty()) {
-                fail(*queue_.front(), failed_);
+                fail(*queue_.front(), why);
                 queue_.pop_front();
             }
         }
@@ -223,6 +235,8 @@ void InferenceHub::dispatcherLoop() {
                 });
             } catch (const std::exception& e) {
                 error = std::string("runner: ") + e.what();
+            } catch (...) {
+                error = "runner: unknown exception";
             }
             lock.lock();
             if (!error.empty()) {   // begin never started: the batch fails as if the runner had said so
@@ -231,13 +245,7 @@ void InferenceHub::dispatcherLoop() {
             }
         }
 
-        if (stop_ && !anyBusy()) {
-            while (!queue_.empty()) {
-                fail(*queue_.front(), "inference hub shut down");
-                queue_.pop_front();
-            }
-            return;
-        }
+        if (stop_ && !anyBusy()) return;   // the queue was emptied above
     }
 }
 

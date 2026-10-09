@@ -60,26 +60,22 @@ void download(const GpuBuffer& b, float* dst, size_t count) {
 
 } // namespace
 
-std::string deviceName() {
-    @autoreleasepool {
-        return MetalContext::instance().deviceName();
-    }
-}
+std::string deviceName() { return MetalContext::instance().deviceName(); }   // pooled inside
 
 void fill(float* data, size_t n, float value, size_t tail) {
-    @autoreleasepool {
+    runInPool([&] {
         GpuBuffer b = upload(data, n + tail);
         CommandBatch batch;
         const FillParams p{static_cast<az_uint>(n), value};
         batch.dispatch("fill", {b}, p, {n, 1, 1});
         batch.commitAndWait();
         download(b, data, n + tail);
-    }
+    });
 }
 
 void gemm(bool transA, bool transB, int M, int N, int K, float alpha, const float* A, const float* B,
           float beta, float* C) {
-    @autoreleasepool {
+    runInPool([&] {
         const size_t mn = static_cast<size_t>(M) * N;
         GpuBuffer a = upload(A, static_cast<size_t>(M) * K);
         GpuBuffer b = upload(B, static_cast<size_t>(K) * N);
@@ -93,33 +89,33 @@ void gemm(bool transA, bool transB, int M, int N, int K, float alpha, const floa
         checkGuard(a, static_cast<size_t>(M) * K);
         checkGuard(b, static_cast<size_t>(K) * N);
         download(c, C, mn);
-    }
+    });
 }
 
 void transposeInput(const float* input, int B, int planes, int area, float* out) {
-    @autoreleasepool {
+    runInPool([&] {
         const size_t count = static_cast<size_t>(B) * planes * area;
         GpuBuffer in = upload(input, count), o = upload(nullptr, count);
         CommandBatch batch;
         encodeTransposeInput(batch, in, B, planes, area, o);
         batch.commitAndWait();
         download(o, out, count);
-    }
+    });
 }
 
 void im2col3(const float* in, int C, int B, int n, float* col) {
-    @autoreleasepool {
+    runInPool([&] {
         const size_t count = static_cast<size_t>(C) * B * n * n;
         GpuBuffer x = upload(in, count), c = upload(nullptr, count * 9);
         CommandBatch batch;
         encodeIm2col3(batch, x, C, B, n, c);
         batch.commitAndWait();
         download(c, col, count * 9);
-    }
+    });
 }
 
 void convForward(const Conv2d& conv, const float* x, int B, int n, float* y) {
-    @autoreleasepool {
+    runInPool([&] {
         const size_t M = static_cast<size_t>(B) * n * n;
         GpuBuffer w = upload(conv.w.data(), conv.w.size());
         GpuBuffer in = upload(x, static_cast<size_t>(conv.cin) * M);
@@ -129,11 +125,11 @@ void convForward(const Conv2d& conv, const float* x, int B, int n, float* y) {
         encodeConvForward(batch, conv.k, conv.cin, conv.cout, w, in, B, n, col, out);
         batch.commitAndWait();
         download(out, y, static_cast<size_t>(conv.cout) * M);
-    }
+    });
 }
 
 void bnInfer(const BatchNorm2d& bn, const float* x, int M, float* y) {
-    @autoreleasepool {
+    runInPool([&] {
         const size_t count = static_cast<size_t>(bn.c) * M;
         GpuBuffer gamma = upload(bn.gamma.data(), bn.c), beta = upload(bn.beta.data(), bn.c);
         GpuBuffer mean = upload(bn.runMean.data(), bn.c), var = upload(bn.runVar.data(), bn.c);
@@ -142,42 +138,42 @@ void bnInfer(const BatchNorm2d& bn, const float* x, int M, float* y) {
         encodeBnInfer(batch, bn.c, M, gamma, beta, mean, var, in, out);
         batch.commitAndWait();
         download(out, y, count);
-    }
+    });
 }
 
 void relu(float* x, size_t count) {
-    @autoreleasepool {
+    runInPool([&] {
         GpuBuffer b = upload(x, count);
         CommandBatch batch;
         encodeRelu(batch, b, count);
         batch.commitAndWait();
         download(b, x, count);
-    }
+    });
 }
 
 void addInto(float* dst, const float* src, size_t count) {
-    @autoreleasepool {
+    runInPool([&] {
         GpuBuffer d = upload(dst, count), s = upload(src, count);
         CommandBatch batch;
         encodeAddInto(batch, d, s, count);
         batch.commitAndWait();
         download(d, dst, count);
-    }
+    });
 }
 
 void policyFlatten(const float* act, int B, int A, float* flat) {
-    @autoreleasepool {
+    runInPool([&] {
         const size_t count = static_cast<size_t>(2) * B * A;
         GpuBuffer in = upload(act, count), out = upload(nullptr, count);
         CommandBatch batch;
         encodePolicyFlatten(batch, in, B, A, out);
         batch.commitAndWait();
         download(out, flat, count);
-    }
+    });
 }
 
 void linearForward(const Linear& fc, const float* x, int B, float* y) {
-    @autoreleasepool {
+    runInPool([&] {
         GpuBuffer w = upload(fc.w.data(), fc.w.size()), b = upload(fc.b.data(), fc.b.size());
         GpuBuffer in = upload(x, static_cast<size_t>(B) * fc.in);
         GpuBuffer out = upload(nullptr, static_cast<size_t>(B) * fc.out);
@@ -185,17 +181,17 @@ void linearForward(const Linear& fc, const float* x, int B, float* y) {
         encodeLinearForward(batch, fc.in, fc.out, w, b, in, B, out);
         batch.commitAndWait();
         download(out, y, static_cast<size_t>(B) * fc.out);
-    }
+    });
 }
 
 void tanhInPlace(float* x, size_t count) {
-    @autoreleasepool {
+    runInPool([&] {
         GpuBuffer b = upload(x, count);
         CommandBatch batch;
         encodeTanh(batch, b, count);
         batch.commitAndWait();
         download(b, x, count);
-    }
+    });
 }
 
 // ---------------------------------------------------------------- hooks
@@ -210,10 +206,21 @@ uint64_t hubChaosSeed() { return gHubChaosSeed; }
 void failCommandBuffersAfter(int n) { setCommandBufferFailureAfter(n); }
 
 void checkUpload(const Network& layoutNet, const Network& net) {
-    @autoreleasepool {
+    runInPool([&] {
         GpuWeights weights(ParamLayout::of(const_cast<Network&>(layoutNet)));
         weights.upload(net);
-    }
+    });
+}
+
+void checkForwardReadsEveryTensor(const Network& net, const NetConfig& encodeAs) {
+    runInPool([&] {
+        GpuWeights weights(ParamLayout::of(const_cast<Network&>(net)));
+        weights.upload(net);
+        GpuNetwork network(encodeAs);
+        GpuWorkspace ws(encodeAs, 1, GpuWorkspace::Purpose::Inference);
+        CommandBatch batch;
+        network.encodeForward(batch, ws, weights, 1);
+    });
 }
 
 } // namespace metal_probe

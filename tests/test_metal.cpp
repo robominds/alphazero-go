@@ -853,6 +853,26 @@ void test_unknown_tensor_refused() {
     assert(threw);
 }
 
+// The other half of the same guard: a tensor the layout knows (the network
+// has it) but the GPU forward pass never reads, as when a CPU layer gains a
+// tensor its GPU port does not use yet. Here the network has an ownership
+// head and the GPU network is built without one: the first encode refuses,
+// naming the unread tensors, instead of evaluating a different network.
+void test_unread_tensor_refused() {
+    const NetConfig withHead = netConfig(9, 1, 8, true), plain = netConfig(9, 1, 8);
+    const Network net(withHead, 1);
+    metal_probe::checkForwardReadsEveryTensor(net, withHead);   // the full port reads everything
+    bool threw = false;
+    try {
+        metal_probe::checkForwardReadsEveryTensor(net, plain);
+    } catch (const std::logic_error& e) {
+        const std::string what = e.what();
+        threw = what.find("ownership.conv.w") != std::string::npos &&
+                what.find("ownership.bn.runVar") != std::string::npos;
+    }
+    assert(threw);
+}
+
 // The inference workspace of the 9x9 6x96 network at batch 256 is ~100 MB
 // (the spec's estimate), most of it the shared im2col buffer.
 void test_inference_workspace_size() {
@@ -1322,6 +1342,7 @@ int main() {
     test_infer_repeat_bitwise();
     test_two_networks_bitwise();
     test_unknown_tensor_refused();
+    test_unread_tensor_refused();
     test_inference_workspace_size();
     test_metal_hub_outputs_equal_alone_under_chaos();
     test_metal_hub_vs_cpu();

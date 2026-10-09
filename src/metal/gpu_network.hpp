@@ -12,6 +12,7 @@
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #pragma once
 #include <string>
+#include <vector>
 #include "azgo/network.hpp"
 #include "azgo/param_layout.hpp"
 #include "metal_context.hpp"
@@ -27,13 +28,21 @@ public:
     // std::logic_error naming any tensor whose name or size the layout does
     // not know (a layer added on the CPU without a GPU port), or that net lacks.
     void upload(const Network& net);
-    BufView param(const std::string& name) const;    // a params() tensor; throws if unknown
-    BufView buffer(const std::string& name) const;   // a buffers() tensor; throws if unknown
+    // A params() or buffers() tensor; throws if unknown. Each call marks the
+    // tensor as read by the GPU network.
+    BufView param(const std::string& name) const;
+    BufView buffer(const std::string& name) const;
+    // Throws std::logic_error naming every tensor that no param() or buffer()
+    // call has asked for. After a whole forward pass has been encoded, an
+    // unread tensor is a CPU layer the GPU does not evaluate: uploaded, but
+    // silently skipped, so the GPU would compute a different network.
+    void checkEveryTensorRead() const;
     const ParamLayout& layout() const { return layout_; }
     size_t bytes() const { return params_.bytes() + buffers_.bytes(); }
 private:
     ParamLayout layout_;
     GpuBuffer params_, buffers_;
+    mutable std::vector<char> paramRead_, bufferRead_;
 };
 
 // One batch's activations for up to maxBatch positions, channel-major

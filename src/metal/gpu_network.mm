@@ -21,7 +21,9 @@ namespace azgo {
 GpuWeights::GpuWeights(const ParamLayout& layout)
     : layout_(layout),
       params_(MetalContext::instance().newBuffer(layout.paramFloats * sizeof(float))),
-      buffers_(MetalContext::instance().newBuffer(layout.bufferFloats * sizeof(float))) {}
+      buffers_(MetalContext::instance().newBuffer(layout.bufferFloats * sizeof(float))),
+      paramRead_(layout.params.size(), 0),
+      bufferRead_(layout.buffers.size(), 0) {}
 
 namespace {
 
@@ -59,15 +61,32 @@ void GpuWeights::upload(const Network& net) {
 }
 
 BufView GpuWeights::param(const std::string& name) const {
-    for (const ParamLayout::Entry& e : layout_.params)
-        if (e.name == name) return BufView(params_, e.offset * sizeof(float));
+    for (size_t i = 0; i < layout_.params.size(); ++i) {
+        if (layout_.params[i].name != name) continue;
+        paramRead_[i] = 1;
+        return BufView(params_, layout_.params[i].offset * sizeof(float));
+    }
     throw std::logic_error("GPU network: no parameter '" + name + "'");
 }
 
 BufView GpuWeights::buffer(const std::string& name) const {
-    for (const ParamLayout::Entry& e : layout_.buffers)
-        if (e.name == name) return BufView(buffers_, e.offset * sizeof(float));
+    for (size_t i = 0; i < layout_.buffers.size(); ++i) {
+        if (layout_.buffers[i].name != name) continue;
+        bufferRead_[i] = 1;
+        return BufView(buffers_, layout_.buffers[i].offset * sizeof(float));
+    }
     throw std::logic_error("GPU network: no buffer '" + name + "'");
+}
+
+void GpuWeights::checkEveryTensorRead() const {
+    std::string unread;
+    for (size_t i = 0; i < layout_.params.size(); ++i)
+        if (!paramRead_[i]) unread += (unread.empty() ? "" : ", ") + layout_.params[i].name;
+    for (size_t i = 0; i < layout_.buffers.size(); ++i)
+        if (!bufferRead_[i]) unread += (unread.empty() ? "" : ", ") + layout_.buffers[i].name;
+    if (!unread.empty())
+        throw std::logic_error("GPU network: the forward pass reads no tensor " + unread +
+                               " (a layer without a GPU port?)");
 }
 
 // ---------------------------------------------------------------- GpuWorkspace
@@ -214,12 +233,15 @@ void GpuNetwork::encodeForward(CommandBatch& batch, GpuWorkspace& ws, const GpuW
         norm("ownership.bn", 1, ws.convOut, ws.ownership);
         encodeTanh(batch, ws.ownership, static_cast<size_t>(M));
     }
+    // Every tensor the network uploaded must have been read by some layer
+    // above, or the GPU is evaluating a different network than the CPU's.
+    w.checkEveryTensorRead();
 }
 
 void GpuNetwork::infer(GpuWorkspace& ws, const GpuWeights& w, const float* input, int B, float* logits,
                        float* values, float* ownership) const {
     if (ownership && !cfg_.ownership) throw std::invalid_argument("GpuNetwork: no ownership head");
-    @autoreleasepool {
+    runInPool([&] {
         const size_t inFloats = static_cast<size_t>(B) * cfg_.planes() * cfg_.area();
         if (B >= 1 && B <= ws.maxBatch())   // else encodeForward throws
             std::memcpy(ws.stage.input.data(), input, inFloats * sizeof(float));
@@ -231,7 +253,7 @@ void GpuNetwork::infer(GpuWorkspace& ws, const GpuWeights& w, const float* input
         if (ownership)
             std::memcpy(ownership, ws.ownership.data(),
                         static_cast<size_t>(B) * cfg_.area() * sizeof(float));
-    }
+    });
 }
 
 // ---------------------------------------------------------------- MetalInference
@@ -254,10 +276,12 @@ struct MetalInference::Impl {
 
 MetalInference::MetalInference(const Network& net, int maxBatch) {
     MetalContext::instance();   // throws the reason when the GPU is unusable
-    impl_ = std::make_unique<Impl>(net, maxBatch);
+    runInPool([&] { impl_ = std::make_unique<Impl>(net, maxBatch); });
 }
 
-MetalInference::~MetalInference() = default;
+MetalInference::~MetalInference() {
+    runInPool([&] { impl_.reset(); });
+}
 
 void MetalInference::infer(const float* input, int B, float* logits, float* values, float* ownership) {
     try {
