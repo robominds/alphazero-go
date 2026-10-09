@@ -1319,6 +1319,22 @@ and a request only for a slot, which the GPU frees. To keep the GPU fed,
 the GPU uses no CPU, so one group of searches runs on the CPU while the
 other waits on the GPU.
 
+**The arena feeds the hub too.** An arena match is a poor customer. In
+each game only the side to move searches, so a 20-game match between two
+networks keeps about ten searches waiting on each hub, and its last
+seconds run with a few long games and nearly empty passes. Such a
+match ran barely faster on the GPU than on the CPU (1.02× at generation
+1), and a generation played its matches one after another. But they do
+not depend on each other: every opponent was
+chosen from the ratings before the round. So `runArenaRound` hands
+them over as one wave, and `playMatches` puts every game of every match
+in one pool of workers with one hub per network. The new network plays
+in every match, so its hub collects its searches from all of them. Each
+game keeps its own seed and its result is stored by match and game
+index, so the files are byte for byte those of matches played one at a
+time. Only the promotion games wait for a second wave, because whether
+they happen depends on the first.
+
 **Why timing cannot change a game.** Which requests share a pass, in
 what order, and how large it is depend on thread scheduling and differ
 from run to run. The results do not, because every kernel computes a
@@ -2213,7 +2229,7 @@ GameOutcome playArenaGame(WorkerContext& ctx, const ArenaConfig& cfg, int n, uin
     return {matchScore(game.resultForBlack(), aIsBlack), game.moves()};
 }
 ```
-*src/arena.cpp:38 — `playArenaGame` (abridged)*
+*src/arena.cpp:35 — `playArenaGame` (abridged)*
 
 **Opening diversity.** Without noise, search is deterministic up to
 random tie-breaks, and two fixed networks would replay nearly the same
@@ -2272,7 +2288,7 @@ std::vector<int> selectOpponents(int generation, const std::map<int, double>& ra
     return out;
 }
 ```
-*src/arena.cpp:214 — `selectOpponents` (abridged)*
+*src/arena.cpp:325 — `selectOpponents` (abridged)*
 
 The candidates are the **references**: a frozen set of players that
 starts as generation 0 plus the fixed players, and only grows.
@@ -2319,7 +2335,8 @@ bigger than the run's is refused.
 `state.bin` records a hash of each file, so a resumed run cannot swap one
 under an old ID.
 Selection, matches, refit and promotion are one function,
-`runArenaRound` (`src/arena_round.cpp`). Training uses it, and so does
+`runArenaRound` (`src/arena_round.cpp`), which plays the matches that do
+not depend on each other at once (chapter 03). Training uses it, and so does
 `train --run DIR --rerate`, which replays the arena over a finished
 run's checkpoints into `DIR/rerate/`. With gating off, the arena never
 feeds back into training, so a re-rated run measures exactly the
@@ -2661,7 +2678,7 @@ GenerationStats Trainer::runGeneration() {
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:552 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:563 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not.
@@ -2934,7 +2951,7 @@ see again in place.
 | Backup and the sign flip | `Mcts::backup` — `src/mcts.cpp:201` |
 | Terminal positions scored by the rules | `Mcts::isTerminal`, `Mcts::terminalValue` — `src/mcts.cpp:41, 52` |
 | Virtual loss and batched search | `Mcts::search`, `Mcts::addVirtualLoss` — `src/mcts.cpp:213, 108` |
-| The evaluator seam | `Evaluator` — `include/azgo/evaluator.hpp:18`; `LocalEvaluator::evaluate` — `src/evaluator.cpp:19` |
+| The evaluator seam | `Evaluator` — `include/azgo/evaluator.hpp:18`; `LocalEvaluator::evaluate` — `src/evaluator.cpp:20` |
 | Batching leaves across workers on the GPU | `InferenceHub::dispatcherLoop` — `src/inference_hub.cpp:146`; `gemm_simd` — `src/metal/kernels.metal:58` |
 | Dirichlet root noise | `Mcts::setRootPriors` — `src/mcts.cpp:351`; `dirichlet` — `src/rng.cpp:122` |
 | Temperature | `Mcts::selectAction` — `src/mcts.cpp:314`; `playSelfPlayGame` — `src/selfplay.cpp:50` |
@@ -2947,18 +2964,18 @@ see again in place.
 | Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:112`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:104` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:21` |
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:111` |
-| Arena and opening diversity | `playArenaGame`, `playMatch` — `src/arena.cpp:38, 108` |
-| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:214, 242` |
-| Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:23, 40` |
+| Arena and opening diversity | `playArenaGame`, `playMatches` — `src/arena.cpp:35, 197` |
+| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:325, 353` |
+| Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:31, 54` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:136, 109` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:552` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:148, 121` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:563` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
 | Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:225` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:475` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:486` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |
 
 ---

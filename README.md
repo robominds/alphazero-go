@@ -148,6 +148,18 @@ from every game, into one GPU pass of at most `inference_batch` positions
 (default 256; 1–1024 and at least `mcts_batch`). Two passes are in flight,
 so one computes while the next fills.
 
+An arena round plays its matches in waves rather than one after another.
+The fixed players' calibrations form one wave, every opponent of the new
+generation the next, and a promotion's calibration games the last, since
+they depend on the round's result. A wave's games share one pool of
+workers, with one set of evaluators per network for the whole wave: with
+`metal`, one hub per network. The new network plays in every match, so its
+hub gathers its searches from all of them into the same passes. Every game
+keeps its seed, and results are added in the same order, so the result
+files are identical to matches played one at a time
+([the design](docs/superpowers/specs/2026-10-10-arena-gpu-design.md)).
+`--rerate` plays its rounds the same way.
+
 With `metal`, `workers = 0` means twice the hardware threads: a worker
 waiting for the GPU uses no CPU, so two groups of searches take turns. A
 run prints which GPU it uses when it starts, resumes or re-rates:
@@ -1024,6 +1036,8 @@ python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-mai
 - [`docs/superpowers/specs/2026-10-09-metal-gpu-backend-design.md`](docs/superpowers/specs/2026-10-09-metal-gpu-backend-design.md)
   and [`docs/superpowers/plans/2026-10-09-metal-gpu-backend.md`](docs/superpowers/plans/2026-10-09-metal-gpu-backend.md)
   — the Metal GPU backend: hand-written kernels, the batching evaluator and why timing cannot change a game.
+- [`docs/superpowers/specs/2026-10-10-arena-gpu-design.md`](docs/superpowers/specs/2026-10-10-arena-gpu-design.md)
+  — an arena round's independent matches played at once, one hub per network.
 
 `python3 tools/check_citations.py` checks that every `file:line` citation
 in both explainers still points at the quoted definition.
