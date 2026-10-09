@@ -67,3 +67,164 @@ int main(int argc, char** argv) {
         }
     }
 }
+
+
+# ======================================================================
+# Multithreaded training step (2026-10-08, train_threads)
+# ======================================================================
+#
+# Machine: Apple M5 Max, 18 CPU cores, 128 GB; macOS 27.0.1. Branch
+# train-threads (docs/superpowers/specs/2026-10-08-multithreaded-training-design.md).
+# The 9x9-scratch96 run (6x96, 18 workers, nice'd) was using every core; it
+# was paused (SIGSTOP, then SIGCONT) for each CPU timing below: 67, 31, 83,
+# 48 and 41 s. bench's step = trainStep + the SGD update on a pool of the
+# given size over a single-threaded backend, batch 256, random {0,1}
+# planes and one-hot targets; "before" is main's code.
+#
+# ---- Phase profile, one thread (ms per step, mean of 6 steps) ----
+# A scratch program wrapped the backend to time every gemm/im2col/col2im call
+# inside the real trainStep; batch norm and ReLU were timed alone at the
+# trunk's size (per layer; x13 = the trunk's layers). "before" = main's
+# libazgo, "after" = this branch's, both without a pool.
+#
+# before, 6x96:
+#   backend blas  6x96  B=256  9x9  (ms per step, mean of 6)
+#     batch assembly (sample)         0.39
+#     trainStep total               426.88
+#     optimizer step                  0.15
+#     forward+loss (Probe)          136.35
+#     col2im                        61.74  (fwd only    0.00; calls/step 12)
+#     gemm conv dW                  33.94  (fwd only    0.00; calls/step 15)
+#     gemm conv dX                  49.64  (fwd only    0.00; calls/step 14)
+#     gemm conv fwd                 39.10  (fwd only   38.91; calls/step 15)
+#     gemm linear (fwd+bwd)          0.04  (fwd only    0.02; calls/step 9)
+#     im2col                       135.13  (fwd only   66.56; calls/step 26)
+#     BN fwd per trunk layer         2.217  x13 =   28.83
+#     BN bwd per trunk layer         1.289  x13 =   16.76
+#     ReLU fwd per trunk layer       0.104  x13 =    1.35
+#     ReLU bwd per trunk layer       5.802  x13 =   75.43
+#     backend total in trainStep    319.60 (forward part 105.49)
+# before, 6x64:
+#   backend blas  6x64  B=256  9x9  (ms per step, mean of 6)
+#     batch assembly (sample)         0.38
+#     trainStep total               266.44
+#     optimizer step                  0.07
+#     forward+loss (Probe)           85.10
+#     col2im                        40.59  (fwd only    0.00; calls/step 12)
+#     gemm conv dW                  17.99  (fwd only    0.00; calls/step 15)
+#     gemm conv dX                  27.10  (fwd only    0.00; calls/step 14)
+#     gemm conv fwd                 19.92  (fwd only   19.95; calls/step 15)
+#     gemm linear (fwd+bwd)          0.04  (fwd only    0.02; calls/step 9)
+#     im2col                        89.81  (fwd only   44.61; calls/step 26)
+#     BN fwd per trunk layer         1.491  x13 =   19.38
+#     BN bwd per trunk layer         0.851  x13 =   11.07
+#     ReLU fwd per trunk layer       0.069  x13 =    0.90
+#     ReLU bwd per trunk layer       3.875  x13 =   50.37
+#     backend total in trainStep    195.44 (forward part 64.58)
+# after, 6x96 (one thread, no pool):
+#   backend blas  6x96  B=256  9x9  (ms per step, mean of 6)
+#     batch assembly (sample)         0.40
+#     trainStep total               323.28
+#     optimizer step                  0.15
+#     forward+loss (Probe)          128.16
+#     col2im                        30.78  (fwd only    0.00; calls/step 12)
+#     gemm conv dW                  33.68  (fwd only    0.00; calls/step 15)
+#     gemm conv dX                  51.55  (fwd only    0.00; calls/step 14)
+#     gemm conv fwd                 38.40  (fwd only   38.40; calls/step 15)
+#     gemm linear (fwd+bwd)          0.04  (fwd only    0.02; calls/step 9)
+#     im2col                       115.63  (fwd only   57.56; calls/step 26)
+#     BN fwd per trunk layer         2.190  x13 =   28.47
+#     BN bwd per trunk layer         1.281  x13 =   16.65
+#     ReLU fwd per trunk layer       0.104  x13 =    1.35
+#     ReLU bwd per trunk layer       0.155  x13 =    2.02
+#     backend total in trainStep    270.08 (forward part 95.97)
+# after, 6x64 (one thread, no pool):
+#   backend blas  6x64  B=256  9x9  (ms per step, mean of 6)
+#     batch assembly (sample)         0.39
+#     trainStep total               197.08
+#     optimizer step                  0.08
+#     forward+loss (Probe)           79.28
+#     col2im                        20.39  (fwd only    0.00; calls/step 12)
+#     gemm conv dW                  17.57  (fwd only    0.00; calls/step 15)
+#     gemm conv dX                  27.05  (fwd only    0.00; calls/step 14)
+#     gemm conv fwd                 19.61  (fwd only   19.46; calls/step 15)
+#     gemm linear (fwd+bwd)          0.04  (fwd only    0.02; calls/step 9)
+#     im2col                        77.03  (fwd only   38.60; calls/step 26)
+#     BN fwd per trunk layer         1.453  x13 =   18.89
+#     BN bwd per trunk layer         0.852  x13 =   11.07
+#     ReLU fwd per trunk layer       0.069  x13 =    0.89
+#     ReLU bwd per trunk layer       0.103  x13 =    1.34
+#     backend total in trainStep    161.68 (forward part 58.07)
+#
+# ---- Training step by thread count (final code) ----
+#   ./build-blas/bench --sizes 9 --backend blas --seconds 2 --configs DIR \
+#       --train-threads 1,2,4,8,18 --train-batch 256
+# with DIR/9x9.cfg = configs/9x9.cfg (6x64) or the same with filters = 96.
+size   blocks x filters  backend   batch  threads  train-step ms  speedup
+9x9    6 x 64            blas        256        1          200.6    1.00x
+9x9    6 x 64            blas        256        2          122.9    1.63x
+9x9    6 x 64            blas        256        4           79.3    2.53x
+9x9    6 x 64            blas        256        8           60.9    3.29x
+9x9    6 x 64            blas        256       18           52.1    3.85x
+9x9    6 x 96            blas        256        1          323.1    1.00x
+9x9    6 x 96            blas        256        2          200.5    1.61x
+9x9    6 x 96            blas        256        4          133.0    2.43x
+9x9    6 x 96            blas        256        8          105.6    3.06x
+9x9    6 x 96            blas        256       18           92.9    3.48x
+#   ./build-blas/bench ... --backend naive --seconds 1 (same tables)
+size   blocks x filters  backend   batch  threads  train-step ms  speedup
+9x9    6 x 64            naive       256        1         2018.4    1.00x
+9x9    6 x 64            naive       256        2         1189.4    1.70x
+9x9    6 x 64            naive       256        4          764.7    2.64x
+9x9    6 x 64            naive       256        8          664.4    3.04x
+9x9    6 x 64            naive       256       18          571.3    3.53x
+9x9    6 x 96            naive       256        1         4362.1    1.00x
+9x9    6 x 96            naive       256        2         2433.3    1.79x
+9x9    6 x 96            naive       256        4         1519.4    2.87x
+9x9    6 x 96            naive       256        8         1049.8    4.16x
+9x9    6 x 96            naive       256       18          835.3    5.22x
+#
+# Against the old one-thread step (266.4 and 426.9 ms above): 6x64 5.1x,
+# 6x96 4.6x on 18 threads (BLAS). bench's first table (batch 128, all cores)
+# now reads, for 9x9 BLAS: 6x64 28.9 ms, 6x96 47.4 ms.
+#
+# ---- Per operation on 18 threads, 6x96 B=256 (ms per call) ----
+# Scratch program: one call of each conv gemm shape unsplit on one thread,
+# then cut by rows (bands of H rows, remainder merged) or by columns (blocks
+# of W columns) on the pool; im2col, col2im and batch norm without and with
+# the pool.
+#   6x96 B=256 9x9, 18 threads (ms)
+#     fwd  unsplit 1T    3.45
+#     dW   unsplit 1T    2.74
+#     dX   unsplit 1T    4.06
+#     rows H=16  fwd    4.72  dW    3.75  dX    1.41
+#     rows H=32  fwd    3.83  dW    3.19  dX    1.57
+#     rows H=48  fwd    3.66  dW    2.98  dX    1.52
+#     cols W=256  fwd    1.41  dX    1.52
+#     cols W=512  fwd    1.48  dX    1.59
+#     cols W=1024 fwd    1.59  dX    1.55
+#     cols W=2048 fwd    1.93  dX    1.84
+#     im2col 1T    4.76   pooled    0.41
+#     col2im 1T    2.53   pooled    0.36
+#     BN fwd 1T    2.43   pooled    0.22
+#     BN bwd 1T    1.30   pooled    0.16
+# Row bands re-read the whole column matrix per band, and on Accelerate the
+# forward and dW bands were slower than one call; the first version, with
+# 16-row bands for every conv gemm, gave 6x64 83.9 ms and 6x96 141.7 ms on
+# 18 threads. The final code cuts the forward and dX gemms into 512-column
+# blocks and runs dW as one call beside them (the naive backend cuts dW
+# into 16-row bands after packing once).
+#
+# ---- Determinism ----
+# Accelerate, column blocks and row bands against the unsplit call: a sweep
+# of ~11,000 conv shapes (boards 5-19, 8-256 filters, batches 1-256) found
+# every column block (128-1024 columns, >= 8 rows) and row band (8-32 rows)
+# bitwise equal; single-row bands and column splits of 1-2-row products and
+# of some small-batch dW gemms were not, and are not used. Old (main) against
+# new train binary, byte-identical checkpoints, state.bin, results.csv (and
+# elo.csv, references.csv, log.csv without the timing columns): 5x5 preset
+# 3 generations (40 games, 50 steps) naive and BLAS; 9x9 at batch 256, 2
+# generations, BLAS 6x64 and 6x96 and naive 6x64, each with train_threads 0
+# and 1; the 19x19 preset's 10x128 network, 1 generation (4 games, 3 steps);
+# and the full 5x5 preset with BLAS for 30 generations (checkpoints 1-30
+# identical; an earlier version of the branch, with 16-row bands).

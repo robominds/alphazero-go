@@ -56,7 +56,9 @@ evaluations/s (`bench.txt`, last table).
 The values are from `configs/*.cfg`. The comments in those files give
 the reasons. All three presets use:
 
-- `backend = blas`, `workers = 0` (every core);
+- `backend = blas`, `workers = 0` (every core), `train_threads` unset
+  (0: the training phase on every core too; added 2026-10-08, it does
+  not change results);
 - `history = 8`, `mcts_batch = 8`, `c_puct = 1.5`;
 - `dirichlet_scale = 10`, `noise_fraction = 0.25`;
 - momentum 0.9, `weight_decay = 1e-4`;

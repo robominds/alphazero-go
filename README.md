@@ -94,6 +94,24 @@ $ ./build-blas/train --run runs/5x5-seed1 --resume --set blocks=4
 error: cannot change architecture keys on resume: blocks
 ```
 
+**Threads.** `workers` (0 = every core) is how many self-play and arena
+games run at once, one per thread. `train_threads` (0 = every core, the
+default; otherwise 1–256) is how many threads share the training phase:
+the validation loss and every SGD step, from assembling the batch to the
+optimizer update. A run's results do not depend on either. Self-play
+seeds each game from its index, and the training step cuts its work into
+chunks fixed by the tensors' shapes: a channel, a block of 512 gemm
+columns, 32k elements, 16 samples. Every value is computed by one chunk
+with the same operations in the same order as on one thread, and batch
+sums stay serial. So checkpoints, `state.bin` and the ratings are
+byte-identical for every `train_threads`, and identical to the
+single-threaded code before the key existed. Both keys are tunable on
+resume. The presets leave both at 0. On an 18-core M5 Max a 9×9 training
+step at batch 256 takes 52 ms (6×64) and 93 ms (6×96) with all cores,
+against 266 and 427 ms on one core before
+([the design](docs/superpowers/specs/2026-10-08-multithreaded-training-design.md),
+`docs/results/bench.txt`).
+
 `bot_simulations` and `reference_networks` cannot change on resume
 either: bot k is arena player −k and the reference networks come after
 the bots, so both lists are fixed for the life of a run. `state.bin`
@@ -173,8 +191,12 @@ Policy prior, % of legal moves ("." below 1%):
 ```
 
 **`bench`** measures network throughput (inference at the search batch of
-8 on one thread; a training step at batch 128) and the raw rules engine
-(`docs/results/bench.txt`):
+8 on one thread; a training step at batch 128 on every core, as
+`train_threads = 0` runs it) and the raw rules engine
+(`docs/results/bench.txt`). `--train-threads 1,2,4,8` adds a table of the
+training step's time at each thread count, at batch `--train-batch`
+(default 256). The table below is from the M4 before the step was
+multithreaded:
 
 ```
 $ ./build-blas/bench
@@ -187,6 +209,20 @@ size   blocks x filters  backend       evals/s  train-step ms
 size   random-playout moves/s
 5x5                   1306178
 ...
+```
+
+On the M5 Max, with a 6×96 variant of the 9×9 preset
+(`--configs DIR`, a directory holding a `9x9.cfg` with `filters = 96`):
+
+```
+$ ./build-blas/bench --sizes 9 --backend blas --configs DIR --train-threads 1,2,4,8,18
+...
+size   blocks x filters  backend   batch  threads  train-step ms  speedup
+9x9    6 x 96            blas        256        1          323.1    1.00x
+9x9    6 x 96            blas        256        2          200.5    1.61x
+9x9    6 x 96            blas        256        4          133.0    2.43x
+9x9    6 x 96            blas        256        8          105.6    3.06x
+9x9    6 x 96            blas        256       18           92.9    3.48x
 ```
 
 ### Growing a network
@@ -670,6 +706,9 @@ run's `config.cfg` records the values it used, and `--resume` keeps the
 run's own `config.cfg`, so resuming an older run does not pick up the
 new preset.
 
+Every preset leaves `workers` and `train_threads` at 0 (all cores);
+neither changes a run's results (see Threads above).
+
 No preset has a bot or a reference network (see Reference networks
 above); the reference runs in `docs/results/` were made with one
 100-simulation bot or none.
@@ -916,6 +955,8 @@ python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-mai
   — resignation in self-play, with AlphaGo Zero's false-positive calibration.
 - [`docs/superpowers/specs/2026-10-05-validation-loss-design.md`](docs/superpowers/specs/2026-10-05-validation-loss-design.md)
   — the validation loss: the network scored on each generation's fresh games before it trains on them.
+- [`docs/superpowers/specs/2026-10-08-multithreaded-training-design.md`](docs/superpowers/specs/2026-10-08-multithreaded-training-design.md)
+  — the training step on every core (`train_threads`), bit for bit the single-threaded result.
 
 `python3 tools/check_citations.py` checks that every `file:line` citation
 in both explainers still points at the quoted definition.
@@ -928,7 +969,11 @@ batching `Evaluator` would then gather leaves from all worker threads into
 batches of 64–256 for the GPU, leaving MCTS unchanged. On Apple Silicon the
 BLAS backend already runs on the CPU's matrix units, and the spec estimates
 the M4 GPU's additional gain at roughly 2× and only at large batch sizes,
-which is why v1 stops at the CPU.
+which is why v1 stops at the CPU. `docs/results/metal-bench.txt` measured
+it on an M5 Max: a gemm-only Metal backend gains nothing, and only a
+whole-network port pays off. The CPU's other cores came first. The
+training step now runs on all of them (`train_threads`), 4.6× faster for
+6×96 on 9×9.
 
 ## Authorship
 
