@@ -643,11 +643,17 @@ GenerationStats Trainer::runGeneration() {
     // generator of the run and nothing is written to the network; the
     // buffer sample has its own generator (kPhaseValidation). Its time counts
     // as training time.
+    //
+    // The network passes from here to the end of training run on a pool of
+    // train_threads threads (layers.hpp): batches of 256 are wide enough to
+    // share among cores, and every value is computed in a fixed chunk, so
+    // the result does not depend on the thread count.
+    ThreadPool trainPool(cfg_.effectiveTrainThreads());
     double validationSeconds = 0;
     if (cfg_.validationLoss) {
         const auto validationStart = Clock::now();
-        std::unique_ptr<Backend> backend = makeBackend(cfg_.backend, workers);
-        Workspace ws(net_.config(), cfg_.batchSize, *backend);
+        std::unique_ptr<Backend> backend = makeBackend(cfg_.backend, 1);
+        Workspace ws(net_.config(), cfg_.batchSize, *backend, &trainPool);
         const HeldOutLoss fresh = heldOutLoss(net_, ws, allPositions(records), cfg_.history);
         stats.valPolicyLoss = fresh.policyLoss;
         stats.valValueLoss = fresh.valueLoss;
@@ -672,17 +678,16 @@ GenerationStats Trainer::runGeneration() {
     const auto trainStart = Clock::now();
     const float lr = LrSchedule::parse(cfg_.lrSchedule).at(g);
     {
-        // The naive backend splits gemm rows over `workers` threads here; each
-        // output element is still computed by one thread, so results match.
-        std::unique_ptr<Backend> backend = makeBackend(cfg_.backend, workers);
-        Workspace ws(net_.config(), cfg_.batchSize, *backend);
+        // A single-threaded backend: the pool splits the gemms (gemmRowBlocks).
+        std::unique_ptr<Backend> backend = makeBackend(cfg_.backend, 1);
+        Workspace ws(net_.config(), cfg_.batchSize, *backend, &trainPool);
         SgdMomentum opt(net_, cfg_.momentum, cfg_.weightDecay);
         opt.velocity() = state_.velocity;
         Rng rng(deriveSeed(cfg_.seed, static_cast<uint64_t>(g), kPhaseTrain));
         TrainingBatch batch;
         double policySum = 0, valueSum = 0, ownershipSum = 0;
         for (int s = 0; s < cfg_.trainSteps; ++s) {
-            state_.buffer.sample(cfg_.batchSize, cfg_.history, rng, batch);
+            state_.buffer.sample(cfg_.batchSize, cfg_.history, rng, batch, &trainPool);
             // The batch always carries ownership targets; only a network
             // with the head learns from them, with weight ownership_weight.
             const LossStats loss = net_.trainStep(
@@ -695,7 +700,7 @@ GenerationStats Trainer::runGeneration() {
                 throw std::runtime_error("non-finite loss at generation " + std::to_string(g) +
                                          " step " + std::to_string(s) +
                                          "; last good state kept");
-            opt.step(net_, lr);
+            opt.step(net_, lr, &trainPool);
             policySum += loss.policyLoss;
             valueSum += loss.valueLoss;
             ownershipSum += loss.ownershipLoss;

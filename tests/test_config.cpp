@@ -550,6 +550,30 @@ static void test_validation_loss_key() {
     for (const char* name : {"5x5.cfg", "9x9.cfg", "19x19.cfg"}) assert(loadConfigFile(preset(name)).validationLoss);
 }
 
+// train_threads: threads of the training step; 0 = every core. The result
+// does not depend on it, so it is tunable on resume.
+static void test_train_threads_key() {
+    Config c;
+    assert(c.trainThreads == 0);
+    assert(c.effectiveTrainThreads() >= 1);
+    // With the run settings, after workers.
+    assert(contains(configToString(c), "workers = 0\ntrain_threads = 0\nbackend = "));
+    c = parseConfigText("train_threads = 7\n", "t.cfg");
+    assert(c.trainThreads == 7 && c.effectiveTrainThreads() == 7);
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    Config o;
+    applyOverride(o, "train_threads=256");
+    assert(o.trainThreads == 256);
+    assert(contains(errorOf("train_threads = -1"), "t.cfg:1: train_threads: "));
+    assert(contains(errorOf("train_threads = 257"), "t.cfg:1: train_threads: "));
+    assert(contains(errorOf("train_threads = two"), "t.cfg:1: train_threads: "));
+    Config a;
+    assert(architectureDiff(a, c).empty() && resumeLockedDiff(a, c).empty());
+    // A config.cfg written before the key existed, and every preset, use every core.
+    assert(parseConfigText("filters = 96\n", "old.cfg").trainThreads == 0);
+    for (const char* name : {"5x5.cfg", "9x9.cfg", "19x19.cfg"}) assert(loadConfigFile(preset(name)).trainThreads == 0);
+}
+
 int main() {
     test_defaults();
     test_presets_load();
@@ -565,6 +589,7 @@ int main() {
     test_random_symmetry_keys();
     test_resignation_keys();
     test_validation_loss_key();
+    test_train_threads_key();
     test_errors_name_key_and_line();
     test_hand_edited_files();
     std::printf("test_config: all tests passed\n");

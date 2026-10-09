@@ -1573,7 +1573,41 @@ static void test_validation_loss_prints_nan() {
     assert(out.str().find(" val p ") != std::string::npos);
 }
 
+// train_threads changes how the training phase's network passes are spread
+// over cores, never the result: train_threads 1 and 4 write the same bytes,
+// on a network wide enough (32 filters) for the gemms to be cut into row
+// bands, with BLAS when it is built. It is tunable: a run resumed with a
+// different value continues exactly as the uninterrupted one.
+static void test_train_threads_change_nothing() {
+    TempDir one("train_threads1"), four("train_threads4"), resumed("train_threads_resumed");
+    Config c = tinyConfig();
+    c.filters = 32;
+    c.batchSize = 40;
+    if (blasAvailable()) c.backend = "blas";
+    c.trainThreads = 1;
+    startQuiet(c, one)->runUntil(2);
+    c.trainThreads = 4;
+    startQuiet(c, four)->runUntil(2);
+    startQuiet(c, resumed)->runUntil(1);
+    {
+        std::unique_ptr<Trainer> t = resumeQuiet(resumed, {"train_threads=2"});
+        assert(t->config().trainThreads == 2);
+        t->runUntil(2);
+    }
+    assert(readFile(resumed.file("config.cfg")).find("train_threads = 2\n") != std::string::npos);
+    for (const TempDir* other : {&four, &resumed}) {
+        for (const char* f : {"checkpoints/gen_0001.azn", "checkpoints/gen_0002.azn", "state.bin", "results.csv",
+                              "elo.csv", "references.csv"})
+            assert(readFile(one.file(f)) == readFile(other->file(f)));
+        for (int i = 0; i < 2; ++i)
+            for (const char* column : {"policy_loss", "value_loss", "val_policy_loss", "val_value_loss",
+                                       "seen_policy_loss", "seen_value_loss"})
+                assert(logRow(one.str(), i).at(column) == logRow(other->str(), i).at(column));
+    }
+}
+
 int main() {
+    test_train_threads_change_nothing();
     test_start_new_writes_run_files();
     test_two_generations();
     test_resume_is_byte_identical();

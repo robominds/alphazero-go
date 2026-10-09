@@ -177,6 +177,7 @@ const KeyEntry kKeys[] = {
      [](const Config& c) { return std::to_string(c.seed); }},
     {"generations", false, intKey<&Config::generations, 1, 1000000>, printInt<&Config::generations>},
     {"workers", false, intKey<&Config::workers, 0, 256>, printInt<&Config::workers>},
+    {"train_threads", false, intKey<&Config::trainThreads, 0, 256>, printInt<&Config::trainThreads>},
     {"backend", false,
      [](Config& c, const std::string& v) -> std::string {
          if (v != "naive" && v != "blas") return "expected naive|blas, got " + quoted(v);
@@ -341,6 +342,7 @@ int Config::effectiveMaxMoves() const {
 }
 
 int Config::effectiveWorkers() const { return resolveWorkers(workers); }
+int Config::effectiveTrainThreads() const { return resolveWorkers(trainThreads); }
 
 Config parseConfigText(const std::string& text, const std::string& sourceName, const Config& base) {
     Config cfg = base;
