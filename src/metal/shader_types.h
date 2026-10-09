@@ -39,4 +39,15 @@ struct FillParams {
     float value;
 };
 
+// gemm_simd: row-major C[M x N] = alpha * op(A) * op(B) + beta * C, as
+// Backend::gemm. op(A) is M x K (A stored K x M when transA), op(B) is K x N
+// (B stored N x K when transB). C is not read when beta == 0.
+AZ_CONSTANT az_uint kGemmTile = 64;    // a threadgroup computes a 64 x 64 tile of C
+AZ_CONSTANT az_uint kGemmStepK = 16;   // K advances 16 at a time through threadgroup memory
+struct GemmParams {
+    az_uint M, N, K;
+    az_uint transA, transB;
+    float alpha, beta;
+};
+
 #endif // AZGO_SHADER_TYPES_H

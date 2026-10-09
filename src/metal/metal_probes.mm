@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "azgo/metal.hpp"
+#include "gpu_layers.hpp"
 #include "metal_context.hpp"
 #include "shader_types.h"
 
@@ -44,6 +45,22 @@ void fill(float* data, size_t n, float value, size_t tail) {
         batch.dispatch("fill", {b}, p, {n, 1, 1});
         batch.commitAndWait();
         download(b, data, n + tail);
+    }
+}
+
+void gemm(bool transA, bool transB, int M, int N, int K, float alpha, const float* A, const float* B,
+          float beta, float* C) {
+    @autoreleasepool {
+        const size_t mn = static_cast<size_t>(M) * N;
+        GpuBuffer a = upload(A, static_cast<size_t>(M) * K);
+        GpuBuffer b = upload(B, static_cast<size_t>(K) * N);
+        // With beta == 0 the GPU's C starts as zeros, not the caller's values:
+        // the kernel must not read it, and NaN on the host must not matter.
+        GpuBuffer c = upload(beta == 0.0f ? nullptr : C, mn);
+        CommandBatch batch;
+        encodeGemm(batch, transA, transB, M, N, K, alpha, a, b, beta, c);
+        batch.commitAndWait();
+        download(c, C, mn);
     }
 }
 

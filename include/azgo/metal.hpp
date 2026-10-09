@@ -43,6 +43,12 @@ std::string deviceName();
 // them are copied to the GPU and back, so a test can check the tail is untouched.
 void fill(float* data, size_t n, float value, size_t tail = 0);
 
+// Backend::gemm on the GPU (gemm_simd): row-major
+// C[M x N] = alpha * op(A) * op(B) + beta * C, tightly packed; C is read only
+// when beta != 0.
+void gemm(bool transA, bool transB, int M, int N, int K, float alpha, const float* A, const float* B,
+          float beta, float* C);
+
 } // namespace metal_probe
 #endif
 
