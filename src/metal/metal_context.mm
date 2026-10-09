@@ -2,9 +2,11 @@
 // file that talks to Metal's Objective-C API. Everything above it is C++.
 //
 // Errors never cross into C++ as Objective-C exceptions: each function checks
-// Metal's NSError results and statuses and throws a C++ exception itself. Every
-// entry point runs inside @autoreleasepool, because Metal hands out
-// autoreleased objects and no thread here has a run loop to drain them.
+// Metal's NSError results and statuses and throws a C++ exception itself.
+// Every function that calls Metal does so inside @autoreleasepool, because
+// Metal hands out autoreleased objects and no thread here has a run loop to
+// drain them. No C++ exception is thrown from inside a pool (unwinding would
+// skip popping it): errors are noted inside and thrown after the pool closes.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #import <Foundation/Foundation.h>
@@ -133,58 +135,65 @@ std::string osVersion() {
 
 } // namespace
 
-MetalContext::MetalContext() : impl_(std::make_unique<Impl>()) {
-    @autoreleasepool {
-        Impl& m = *impl_;
-        m.device = MTLCreateSystemDefaultDevice();
-        if (!m.device) throw std::runtime_error("no Metal device");
-        const std::string name = m.device.name.UTF8String;
-        // The gemm is built on simdgroup matrices, which arrived with Apple 7.
-        if (![m.device supportsFamily:MTLGPUFamilyApple7])
-            throw std::runtime_error(name +
-                                     " lacks Apple GPU family 7 (simdgroup matrices; M1 or later)");
-        m.queue = [m.device newCommandQueue];
-        if (!m.queue) throw std::runtime_error("could not create a Metal command queue");
+namespace {
 
-        MTLCompileOptions* options = [MTLCompileOptions new];
-        options.mathMode = MTLMathModeSafe;   // no fast-math reassociation
-        NSError* error = nil;
-        id<MTLLibrary> library = [m.device newLibraryWithSource:@(kShaderSource)
-                                                         options:options
-                                                           error:&error];
-        if (!library) throw std::runtime_error("shader compile failed: " + text(error));
+// Creates the device, queue, library and pipelines into m. Returns the reason
+// the GPU is unusable, or "" on success. Runs inside an autorelease pool, so
+// it reports errors instead of throwing.
+std::string createContext(MetalContext::Impl& m) {
+    m.device = MTLCreateSystemDefaultDevice();
+    if (!m.device) return "no Metal device";
+    const std::string name = m.device.name.UTF8String;
+    // The gemm is built on simdgroup matrices, which arrived with Apple 7.
+    if (![m.device supportsFamily:MTLGPUFamilyApple7])
+        return name + " lacks Apple GPU family 7 (simdgroup matrices; M1 or later)";
+    m.queue = [m.device newCommandQueue];
+    if (!m.queue) return "could not create a Metal command queue";
 
-        for (const KernelSpec& k : kKernels) {
-            id<MTLFunction> fn = [library newFunctionWithName:@(k.name)];
-            if (!fn)
-                throw std::runtime_error(std::string("kernel ") + k.name + " not found in the shaders");
-            NSError* e = nil;
-            id<MTLComputePipelineState> state =
-                [m.device newComputePipelineStateWithFunction:fn error:&e];
-            if (!state) throw std::runtime_error(std::string("pipeline ") + k.name + ": " + text(e));
-            const size_t need = k.threads.x * k.threads.y * k.threads.z;
-            // Adapting a threadgroup to the device would silently change a
-            // reduction's order, so a device that cannot run the fixed size is refused.
-            if (state.maxTotalThreadsPerThreadgroup < need)
-                throw std::runtime_error(std::string("kernel ") + k.name + " needs " +
-                                         std::to_string(need) + " threads per threadgroup; " + name +
-                                         " allows " +
-                                         std::to_string(state.maxTotalThreadsPerThreadgroup));
-            // The gemm divides its threadgroup into simdgroups of 32 lanes.
-            if (state.threadExecutionWidth != 32)
-                throw std::runtime_error(std::string("kernel ") + k.name + ": SIMD width " +
-                                         std::to_string(state.threadExecutionWidth) + ", expected 32");
-            auto impl = std::make_unique<Pipeline::Impl>();
-            impl->name = k.name;
-            impl->threads = k.threads;
-            impl->state = state;
-            m.pipelines[k.name] = std::make_unique<Pipeline>(std::move(impl));
-        }
+    MTLCompileOptions* options = [MTLCompileOptions new];
+    options.mathMode = MTLMathModeSafe;   // no fast-math reassociation
+    NSError* error = nil;
+    id<MTLLibrary> library = [m.device newLibraryWithSource:@(kShaderSource) options:options error:&error];
+    if (!library) return "shader compile failed: " + text(error);
 
-        char hash[16];
-        std::snprintf(hash, sizeof hash, "%08x", fnv1a(kShaderSource, std::strlen(kShaderSource)));
-        m.description = name + ", macOS " + osVersion() + ", shaders " + hash;
+    for (const KernelSpec& k : kKernels) {
+        id<MTLFunction> fn = [library newFunctionWithName:@(k.name)];
+        if (!fn) return std::string("kernel ") + k.name + " not found in the shaders";
+        NSError* e = nil;
+        id<MTLComputePipelineState> state = [m.device newComputePipelineStateWithFunction:fn error:&e];
+        if (!state) return std::string("pipeline ") + k.name + ": " + text(e);
+        const size_t need = k.threads.x * k.threads.y * k.threads.z;
+        // Adapting a threadgroup to the device would silently change a
+        // reduction's order, so a device that cannot run the fixed size is refused.
+        if (state.maxTotalThreadsPerThreadgroup < need)
+            return std::string("kernel ") + k.name + " needs " + std::to_string(need) +
+                   " threads per threadgroup; " + name + " allows " +
+                   std::to_string(state.maxTotalThreadsPerThreadgroup);
+        // The gemm divides its threadgroup into simdgroups of 32 lanes.
+        if (state.threadExecutionWidth != 32)
+            return std::string("kernel ") + k.name + ": SIMD width " +
+                   std::to_string(state.threadExecutionWidth) + ", expected 32";
+        auto impl = std::make_unique<Pipeline::Impl>();
+        impl->name = k.name;
+        impl->threads = k.threads;
+        impl->state = state;
+        m.pipelines[k.name] = std::make_unique<Pipeline>(std::move(impl));
     }
+
+    char hash[16];
+    std::snprintf(hash, sizeof hash, "%08x", fnv1a(kShaderSource, std::strlen(kShaderSource)));
+    m.description = name + ", macOS " + osVersion() + ", shaders " + hash;
+    return "";
+}
+
+} // namespace
+
+MetalContext::MetalContext() : impl_(std::make_unique<Impl>()) {
+    std::string error;
+    @autoreleasepool {
+        error = createContext(*impl_);
+    }
+    if (!error.empty()) throw std::runtime_error(error);
 }
 
 MetalContext::~MetalContext() = default;
@@ -218,23 +227,25 @@ const Pipeline& MetalContext::pipeline(const std::string& name) const {
 }
 
 GpuBuffer MetalContext::newBuffer(size_t bytes) {
+    auto impl = std::make_unique<GpuBuffer::Impl>();
+    // Metal refuses a zero-length buffer; one float keeps data() valid.
+    const size_t length = bytes == 0 ? sizeof(float) : bytes;
     @autoreleasepool {
-        // Metal refuses a zero-length buffer; one float keeps data() valid.
-        const size_t length = bytes == 0 ? sizeof(float) : bytes;
-        id<MTLBuffer> b = [impl_->device newBufferWithLength:length
-                                                    options:MTLResourceStorageModeShared];
-        if (!b)
-            throw std::runtime_error("metal: could not allocate a buffer of " + std::to_string(bytes) +
-                                     " bytes");
-        std::memset(b.contents, 0, length);   // never hand out uninitialized memory
-        auto impl = std::make_unique<GpuBuffer::Impl>();
-        impl->buffer = b;
-        return GpuBuffer(std::move(impl), bytes);
+        impl->buffer = [impl_->device newBufferWithLength:length options:MTLResourceStorageModeShared];
     }
+    if (!impl->buffer)
+        throw std::runtime_error("metal: could not allocate a buffer of " + std::to_string(bytes) +
+                                 " bytes");
+    std::memset(impl->buffer.contents, 0, length);   // never hand out uninitialized memory
+    return GpuBuffer(std::move(impl), bytes);
 }
 
 std::string MetalContext::description() const { return impl_->description; }
-std::string MetalContext::deviceName() const { return impl_->device.name.UTF8String; }
+std::string MetalContext::deviceName() const {
+    @autoreleasepool {
+        return impl_->device.name.UTF8String;
+    }
+}
 
 // ---------------------------------------------------------------- CommandBatch
 
@@ -245,13 +256,14 @@ struct CommandBatch::Impl {
 };
 
 CommandBatch::CommandBatch() : impl_(std::make_unique<Impl>()) {
+    MetalContext& ctx = MetalContext::instance();
     @autoreleasepool {
-        MetalContext& ctx = MetalContext::instance();
         impl_->commands = [ctx.impl().queue commandBuffer];
-        if (!impl_->commands) throw std::runtime_error("metal: could not create a command buffer");
-        impl_->encoder = [impl_->commands computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
-        if (!impl_->encoder) throw std::runtime_error("metal: could not create a compute encoder");
+        if (impl_->commands)
+            impl_->encoder = [impl_->commands computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
     }
+    if (!impl_->commands) throw std::runtime_error("metal: could not create a command buffer");
+    if (!impl_->encoder) throw std::runtime_error("metal: could not create a compute encoder");
 }
 
 CommandBatch::~CommandBatch() {
@@ -264,16 +276,24 @@ CommandBatch::~CommandBatch() {
 
 namespace {
 
-void bind(id<MTLComputeCommandEncoder> enc, const Pipeline& p, std::initializer_list<BufView> buffers,
-          const void* params, size_t paramBytes) {
-    [enc setComputePipelineState:p.impl().state];
-    NSUInteger index = 0;
+// Throws std::logic_error for an argument that has no buffer behind it.
+// Called before the autorelease pool opens.
+void checkBuffers(const Pipeline& p, std::initializer_list<BufView> buffers) {
+    int index = 0;
     for (const BufView& v : buffers) {
         if (!v.buffer || !v.buffer->data())
             throw std::logic_error("kernel " + p.name() + ": buffer " + std::to_string(index) +
                                    " is empty");
-        [enc setBuffer:v.buffer->impl().buffer offset:v.offset atIndex:index++];
+        ++index;
     }
+}
+
+void bind(id<MTLComputeCommandEncoder> enc, const Pipeline& p, std::initializer_list<BufView> buffers,
+          const void* params, size_t paramBytes) {
+    [enc setComputePipelineState:p.impl().state];
+    NSUInteger index = 0;
+    for (const BufView& v : buffers)
+        [enc setBuffer:v.buffer->impl().buffer offset:v.offset atIndex:index++];
     if (paramBytes > 0) [enc setBytes:params length:paramBytes atIndex:index];
 }
 
@@ -283,8 +303,9 @@ void CommandBatch::dispatch(const std::string& kernel, std::initializer_list<Buf
                             const void* params, size_t paramBytes, Size3 threads) {
     if (impl_->committed) throw std::logic_error("CommandBatch: dispatch after commit");
     if (threads.x == 0 || threads.y == 0 || threads.z == 0) return;
+    const Pipeline& p = MetalContext::instance().pipeline(kernel);
+    checkBuffers(p, buffers);
     @autoreleasepool {
-        const Pipeline& p = MetalContext::instance().pipeline(kernel);
         bind(impl_->encoder, p, buffers, params, paramBytes);
         [impl_->encoder dispatchThreads:mtl(threads) threadsPerThreadgroup:mtl(p.threads())];
     }
@@ -294,8 +315,9 @@ void CommandBatch::dispatchGroups(const std::string& kernel, std::initializer_li
                                   const void* params, size_t paramBytes, Size3 groups) {
     if (impl_->committed) throw std::logic_error("CommandBatch: dispatch after commit");
     if (groups.x == 0 || groups.y == 0 || groups.z == 0) return;
+    const Pipeline& p = MetalContext::instance().pipeline(kernel);
+    checkBuffers(p, buffers);
     @autoreleasepool {
-        const Pipeline& p = MetalContext::instance().pipeline(kernel);
         bind(impl_->encoder, p, buffers, params, paramBytes);
         [impl_->encoder dispatchThreadgroups:mtl(groups) threadsPerThreadgroup:mtl(p.threads())];
     }
@@ -303,14 +325,16 @@ void CommandBatch::dispatchGroups(const std::string& kernel, std::initializer_li
 
 void CommandBatch::commitAndWait() {
     if (impl_->committed) throw std::logic_error("CommandBatch: committed twice");
+    std::string error;
     @autoreleasepool {
         impl_->committed = true;
         [impl_->encoder endEncoding];
         [impl_->commands commit];
         [impl_->commands waitUntilCompleted];
         if (impl_->commands.status != MTLCommandBufferStatusCompleted)
-            throw std::runtime_error("metal: command buffer failed: " + text(impl_->commands.error));
+            error = "metal: command buffer failed: " + text(impl_->commands.error);
     }
+    if (!error.empty()) throw std::runtime_error(error);
 }
 
 void CommandBatch::commit(std::function<void(const std::string& error)> onDone) {

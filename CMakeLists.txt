@@ -14,7 +14,10 @@ option(AZ_USE_BLAS "Use BLAS for gemm (Accelerate on macOS, OpenBLAS elsewhere)"
 
 # Metal runs the network on the Apple GPU. Everything that stays on the CPU
 # with backend = metal (training in Phase A, the bots, grow) uses BLAS, which
-# on macOS is Accelerate, so Metal turns BLAS on.
+# on macOS is Accelerate, so Metal turns BLAS on. It does so with a normal
+# variable that shadows the cached option for this configuration only: the
+# cache (and so `cmake -L` or ccmake) may still show AZ_USE_BLAS OFF, but the
+# build uses BLAS, and switching Metal off again restores the cached choice.
 if(AZ_USE_METAL)
   if(NOT APPLE)
     message(FATAL_ERROR "AZ_USE_METAL=ON needs macOS (Metal is Apple's GPU API)")

@@ -256,7 +256,11 @@ With beta = 0, C is never read. Every 8×8 output block runs the same
 instruction sequence over the same k order wherever it lies, so an
 element's bits depend only on its row of op(A) and its column of op(B):
 not on M, N, its tile, its neighbours or the run. The spike measured
-the forward and dX products bitwise equal to Accelerate on every shape.
+the forward and dX products bitwise equal to Accelerate on every shape it
+tried; task A2 found the same for every stem and block convolution of the
+presets, but not for the 1×1 head convolutions with one or two output rows
+(0.0054% of all elements differ, within tolerance), where Accelerate sums
+in another order.
 The scalar-tiled kernel (`gemm_tiled`) is not shipped. The explainer
 uses it, from `tools/metal_bench`, to introduce tiling.
 

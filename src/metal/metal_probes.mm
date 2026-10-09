@@ -5,7 +5,10 @@
 // never calls them.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
+#include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <string>
 #include <stdexcept>
 
 #include "azgo/layers.hpp"
@@ -22,14 +25,35 @@ namespace metal_probe {
 
 namespace {
 
-// A new buffer holding a copy of count floats from src (zeros if src is null).
-GpuBuffer upload(const float* src, size_t count) {
-    GpuBuffer b = MetalContext::instance().newBuffer(count * sizeof(float));
+// Every probe buffer is followed by a guard of NaNs with a recognizable
+// payload. A kernel that writes past its output's end overwrites the guard,
+// which download (or checkGuard) reports; one that reads past an operand's
+// end picks up NaN, which then shows in the results.
+constexpr size_t kGuardFloats = 1024;
+constexpr uint32_t kGuardBits = 0x7fc0beefu;
+
+// A new buffer holding a copy of count floats from src (zeros if src is
+// null), then `guard` guard floats.
+GpuBuffer upload(const float* src, size_t count, size_t guard = kGuardFloats) {
+    GpuBuffer b = MetalContext::instance().newBuffer((count + guard) * sizeof(float));
     if (src && count > 0) std::memcpy(b.data(), src, count * sizeof(float));
+    uint32_t* tail = reinterpret_cast<uint32_t*>(b.data() + count);
+    for (size_t i = 0; i < guard; ++i) tail[i] = kGuardBits;
     return b;
 }
 
+// Throws std::logic_error if anything wrote into the guard after count floats.
+void checkGuard(const GpuBuffer& b, size_t count) {
+    const size_t total = b.bytes() / sizeof(float);
+    const uint32_t* tail = reinterpret_cast<const uint32_t*>(b.data() + count);
+    for (size_t i = 0; i + count < total; ++i)
+        if (tail[i] != kGuardBits)
+            throw std::logic_error("metal probe: a kernel wrote " + std::to_string(i) +
+                                   " floats past the end of its buffer");
+}
+
 void download(const GpuBuffer& b, float* dst, size_t count) {
+    checkGuard(b, count);
     if (count > 0) std::memcpy(dst, b.data(), count * sizeof(float));
 }
 
@@ -58,12 +82,15 @@ void gemm(bool transA, bool transB, int M, int N, int K, float alpha, const floa
         const size_t mn = static_cast<size_t>(M) * N;
         GpuBuffer a = upload(A, static_cast<size_t>(M) * K);
         GpuBuffer b = upload(B, static_cast<size_t>(K) * N);
-        // With beta == 0 the GPU's C starts as zeros, not the caller's values:
-        // the kernel must not read it, and NaN on the host must not matter.
-        GpuBuffer c = upload(beta == 0.0f ? nullptr : C, mn);
+        // C goes up as given, NaNs and all, even with beta == 0 (when the
+        // kernel must not read it). Its guard covers a whole 64-row tile past
+        // the last row, so a write-back that ignores M lands in it.
+        GpuBuffer c = upload(C, mn, static_cast<size_t>(kGemmTile) * std::max(N, 1) + kGuardFloats);
         CommandBatch batch;
         encodeGemm(batch, transA, transB, M, N, K, alpha, a, b, beta, c);
         batch.commitAndWait();
+        checkGuard(a, static_cast<size_t>(M) * K);
+        checkGuard(b, static_cast<size_t>(K) * N);
         download(c, C, mn);
     }
 }
