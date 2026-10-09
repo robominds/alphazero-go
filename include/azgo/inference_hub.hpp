@@ -30,6 +30,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "azgo/backend.hpp"
 #include "azgo/evaluator.hpp"
 #include "azgo/network.hpp"
 #include "azgo/rng.hpp"
@@ -141,6 +142,30 @@ private:
     bool stop_ = false;
     Stats stats_;
     std::thread dispatcher_;
+};
+
+// One evaluator per worker for one network, whatever the backend. For naive
+// and blas: a LocalEvaluator per worker with its own single-threaded backend
+// and workspace (each worker evaluates its own batches, as always). For
+// metal: one InferenceHub with the Metal runner, batches of up to
+// inferenceBatch positions, and a BatchingEvaluator per worker. Self-play and
+// the arena only see Evaluators. Throws std::invalid_argument for an unknown
+// or unavailable backend (metal in a build without Metal: "backend 'metal'
+// not available: rebuild with -DAZ_USE_METAL=ON (macOS only)").
+class WorkerEvaluators {
+public:
+    WorkerEvaluators(const Network& net, const std::string& backend, int workers, int maxRequest,
+                     int inferenceBatch);
+    ~WorkerEvaluators();
+    Evaluator& forWorker(int worker);
+    int workers() const { return static_cast<int>(evaluators_.size()); }
+    InferenceHub* hub() { return hub_.get(); }   // null for the CPU backends
+private:
+    // Declared in this order so the evaluators go first, then the hub, then
+    // the backends the LocalEvaluators used.
+    std::vector<std::unique_ptr<Backend>> backends_;
+    std::unique_ptr<InferenceHub> hub_;
+    std::vector<std::unique_ptr<Evaluator>> evaluators_;
 };
 
 } // namespace azgo

@@ -18,6 +18,7 @@ struct BatchNorm2d;   // azgo/layers.hpp
 struct Conv2d;
 struct Linear;
 class Network;        // azgo/network.hpp
+class BatchRunner;    // azgo/inference_hub.hpp
 
 // True when this binary was built with -DAZ_USE_METAL=ON.
 bool metalBuilt();
@@ -36,6 +37,14 @@ bool metalAvailable(std::string* why = nullptr);
 std::string metalDescription();
 
 #ifdef AZ_USE_METAL
+// The GPU behind an InferenceHub: net's weights uploaded once, two slots
+// (kInferenceSlots) of up to maxBatch positions each, a forward pass per
+// batch in one command buffer, completed asynchronously. Throws
+// std::runtime_error ("metal: inference needs N MB ...; lower
+// inference_batch") when the slots would not fit the GPU's recommended
+// working set, before allocating them.
+std::unique_ptr<BatchRunner> makeMetalRunner(const Network& net, int maxBatch);
+
 // Test probes: each copies host arrays in, runs one command buffer and copies
 // the results out. They exist so tests (and bench) can check a kernel against
 // its CPU counterpart; the program itself never calls them. Each throws

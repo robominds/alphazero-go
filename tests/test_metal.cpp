@@ -16,12 +16,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <thread>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 #include "azgo/backend.hpp"
+#include "azgo/inference_hub.hpp"
 #include "azgo/layers.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/network.hpp"
@@ -849,6 +852,132 @@ void test_inference_workspace_size() {
     assert(mb > 85.0 && mb < 115.0);
 }
 
+// ---------------------------------------------------------------- the hub on the GPU
+
+// Positions evaluated one at a time on the GPU: the reference for the hub.
+struct GpuPool {
+    NetConfig cfg;
+    int count;
+    std::vector<float> input, logits, values;
+    size_t in() const { return static_cast<size_t>(cfg.planes()) * cfg.area(); }
+    GpuPool(const Network& net, int count_, uint64_t seed) : cfg(net.config()), count(count_) {
+        Rng rng(seed);
+        input = randomPositions(rng, cfg, count);
+        logits.resize(static_cast<size_t>(count) * cfg.actions());
+        values.resize(count);
+        metal_probe::InferNet alone(net, 1);
+        for (int i = 0; i < count; ++i)
+            alone.infer(input.data() + i * in(), 1, logits.data() + i * cfg.actions(), values.data() + i);
+    }
+};
+
+// test_inference_hub's chaos test with the Metal runner: every request's
+// outputs equal its positions evaluated alone on the GPU, bitwise, whatever
+// batches the hub made of them.
+void test_metal_hub_outputs_equal_alone_under_chaos() {
+    const NetConfig cfg = netConfig(9, 2, 16);
+    const Network net = randomNetwork(cfg, 501);
+    const GpuPool pool(net, 300, 502);
+    const size_t in = pool.in(), L = static_cast<size_t>(cfg.actions());
+    for (int clients : {1, 4, 32}) {
+        for (int maxBatch : {8, 64, 512}) {
+            for (uint64_t chaos : {0ull, 11ull, 12ull, 13ull}) {
+                InferenceHubOptions o;
+                o.maxBatch = maxBatch;
+                o.chaosSeed = chaos;
+                InferenceHub hub(makeMetalRunner(net, maxBatch), cfg, o);
+                std::atomic<long long> positions{0};
+                std::vector<std::thread> threads;
+                for (int t = 0; t < clients; ++t) {
+                    threads.emplace_back([&, t] {
+                        auto ev = hub.makeEvaluator(8);
+                        Rng rng(deriveSeed(503, static_cast<uint64_t>(t), chaos,
+                                           static_cast<uint64_t>(maxBatch)));
+                        std::vector<float> x(8 * in), logits(8 * L), values(8);
+                        for (int r = 0; r < 100; ++r) {
+                            const int B = 1 + rng.below(8);
+                            int picks[8];
+                            for (int b = 0; b < B; ++b) {
+                                picks[b] = rng.below(pool.count);
+                                std::copy_n(pool.input.data() + picks[b] * in, in, x.data() + b * in);
+                            }
+                            ev->evaluate(x.data(), B, logits.data(), values.data());
+                            for (int b = 0; b < B; ++b) {
+                                assert(bitwiseEqual(logits.data() + b * L,
+                                                    pool.logits.data() + picks[b] * L, L));
+                                assert(bitwiseEqual(&values[b], &pool.values[picks[b]], 1));
+                            }
+                            positions += B;
+                        }
+                    });
+                }
+                for (auto& th : threads) th.join();
+                assert(hub.stats().positions == positions.load());
+            }
+        }
+    }
+}
+
+// The hub's outputs against Network::infer with BLAS.
+// Measured on an M5 Max (macOS 27.0.1), 20 seeds: worst maxErr 6.5e-6 (ceiling
+// 1e-5), in the values, for the reason test_infer_vs_cpu gives.
+void test_metal_hub_vs_cpu() {
+    auto blas = makeBackend("blas");
+    MaxErr err("hub vs CPU", 1e-5);
+    for (int seed = 0; seed < gSeeds; ++seed) {
+        const NetConfig cfg = netConfig(9, 6, 32);
+        const Network net = randomNetwork(cfg, 504 + seed);
+        Rng rng(505 + 1000 * seed);
+        const int B = 8, clients = 8;
+        const size_t L = cfg.actions();
+        std::vector<std::vector<float>> x(clients), logits(clients), values(clients);
+        for (int t = 0; t < clients; ++t) {
+            x[t] = randomPositions(rng, cfg, B);
+            logits[t].resize(B * L);
+            values[t].resize(B);
+        }
+        {
+            InferenceHubOptions o;
+            o.maxBatch = 64;
+            InferenceHub hub(makeMetalRunner(net, 64), cfg, o);
+            std::vector<std::thread> threads;
+            for (int t = 0; t < clients; ++t)
+                threads.emplace_back([&, t] {
+                    auto ev = hub.makeEvaluator(B);
+                    ev->evaluate(x[t].data(), B, logits[t].data(), values[t].data());
+                });
+            for (auto& th : threads) th.join();
+        }
+        Workspace ws(cfg, B, *blas);
+        for (int t = 0; t < clients; ++t) {
+            std::vector<float> refL(B * L), refV(B);
+            net.infer(ws, x[t].data(), B, refL.data(), refV.data());
+            err.add(logits[t].data(), refL.data(), refL.size());
+            err.add(values[t].data(), refV.data(), refV.size());
+        }
+    }
+}
+
+// A runner whose two slots would not fit the GPU's recommended working set
+// is refused before anything is allocated, with a message that names the
+// size and the remedy.
+void test_metal_runner_memory_check() {
+    const NetConfig cfg = netConfig(19, 10, 128, false, 256);
+    const Network net(cfg, 1);
+    bool threw = false;
+    try {
+        makeMetalRunner(net, 1 << 20);
+    } catch (const std::runtime_error& e) {
+        const std::string what = e.what();
+        std::printf("test_metal: %s\n", what.c_str());
+        threw = what.find("lower inference_batch") != std::string::npos &&
+                what.find("MB") != std::string::npos;
+    }
+    assert(threw);
+    auto ok = makeMetalRunner(net, 8);   // a sane batch fits
+    assert(ok->slots() == kInferenceSlots && ok->maxBatch() == 8);
+}
+
 } // namespace
 
 #endif // AZ_USE_METAL
@@ -889,6 +1018,9 @@ int main() {
     test_two_networks_bitwise();
     test_unknown_tensor_refused();
     test_inference_workspace_size();
+    test_metal_hub_outputs_equal_alone_under_chaos();
+    test_metal_hub_vs_cpu();
+    test_metal_runner_memory_check();
 #endif
     std::printf("test_metal: all tests passed\n");
     return 0;

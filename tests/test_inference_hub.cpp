@@ -27,6 +27,7 @@
 #include <vector>
 #include "azgo/backend.hpp"
 #include "azgo/inference_hub.hpp"
+#include "azgo/metal.hpp"
 #include "azgo/network.hpp"
 #include "azgo/parallel.hpp"
 #include "azgo/rng.hpp"
@@ -345,8 +346,18 @@ void test_hub_shutdown() {
             ev->evaluate(x.data(), 2, logits.data(), values.data());
         }
     }
-    const int after = threadCount();
-    assert(before < 0 || after == before);
+    // A joined thread can take a moment to leave the kernel's thread list,
+    // and the system may add or retire a worker thread of its own, so the
+    // count is allowed to settle. A leak would leave 300 threads (each hub
+    // has a dispatcher and the runner two helpers), far beyond any noise.
+    int after = threadCount();
+    for (int tries = 0; before >= 0 && after > before && tries < 100; ++tries) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        after = threadCount();
+    }
+    if (before >= 0 && after > before)
+        std::printf("test_inference_hub: %d threads before, %d after\n", before, after);
+    assert(before < 0 || after <= before);
 }
 
 // 64 threads x 1,000 requests with chaos: every row comes back to its own
@@ -424,6 +435,48 @@ void test_selfplay_through_hub_equals_local() {
     }
 }
 
+// WorkerEvaluators with a CPU backend is today's code: one LocalEvaluator
+// (own backend and workspace) per worker, giving exactly the outputs of a
+// LocalEvaluator built by hand. With metal in a build without Metal it
+// refuses with the not-built message; with Metal, the workers share a hub.
+void test_worker_evaluators_cpu_is_local() {
+    const NetConfig cfg = tinyConfig();
+    const Network net(cfg, 91);
+    const Pool pool(net, 8, 92);
+    std::vector<std::string> backends = {"naive"};
+    if (blasAvailable()) backends.push_back("blas");
+    for (const std::string& name : backends) {
+        WorkerEvaluators evs(net, name, 3, 8, 256);
+        assert(evs.workers() == 3 && evs.hub() == nullptr);
+        auto be = makeBackend(name, 1);
+        LocalEvaluator direct(net, *be, 8);
+        std::vector<float> l1(8 * cfg.actions()), v1(8), l2(l1.size()), v2(8);
+        direct.evaluate(pool.input.data(), 8, l1.data(), v1.data());
+        for (int w = 0; w < 3; ++w) {
+            Evaluator& ev = evs.forWorker(w);
+            assert(dynamic_cast<LocalEvaluator*>(&ev) != nullptr);
+            assert(&ev != &evs.forWorker((w + 1) % 3));   // one per worker
+            ev.evaluate(pool.input.data(), 8, l2.data(), v2.data());
+            assert(std::memcmp(l1.data(), l2.data(), l1.size() * sizeof(float)) == 0);
+            assert(std::memcmp(v1.data(), v2.data(), v1.size() * sizeof(float)) == 0);
+        }
+    }
+    if (!metalBuilt()) {
+        bool threw = false;
+        try {
+            WorkerEvaluators evs(net, "metal", 2, 8, 256);
+        } catch (const std::invalid_argument& e) {
+            threw = std::string(e.what()) ==
+                    "backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON (macOS only)";
+        }
+        assert(threw);
+    } else if (metalAvailable()) {
+        WorkerEvaluators evs(net, "metal", 2, 8, 256);
+        assert(evs.hub() != nullptr && evs.hub()->maxBatch() == 256);
+        assert(dynamic_cast<BatchingEvaluator*>(&evs.forWorker(1)) != nullptr);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -434,6 +487,7 @@ int main() {
     test_hub_shutdown();
     test_hub_stress();
     test_selfplay_through_hub_equals_local();
+    test_worker_evaluators_cpu_is_local();
     std::printf("test_inference_hub: all tests passed\n");
     return 0;
 }

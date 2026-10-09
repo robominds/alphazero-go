@@ -82,6 +82,9 @@ public:
     GpuBuffer newBuffer(size_t bytes);   // throws std::runtime_error naming the bytes on failure
     std::string description() const;     // device, macOS version, shader hash
     std::string deviceName() const;
+    // Metal's estimate of how much memory the GPU can use without hurting
+    // performance (device.recommendedMaxWorkingSetSize), in bytes.
+    size_t recommendedWorkingSet() const;
 
     struct Impl;
     Impl& impl() const { return *impl_; }

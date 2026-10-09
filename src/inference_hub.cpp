@@ -14,6 +14,8 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "azgo/metal.hpp"
+
 namespace azgo {
 
 namespace {
@@ -237,6 +239,39 @@ void InferenceHub::dispatcherLoop() {
             return;
         }
     }
+}
+
+// ---------------------------------------------------------------- WorkerEvaluators
+
+WorkerEvaluators::WorkerEvaluators(const Network& net, const std::string& backend, int workers,
+                                   int maxRequest, int inferenceBatch) {
+    if (workers < 1) throw std::invalid_argument("WorkerEvaluators: workers must be >= 1");
+    if (backend == "metal") {
+#ifdef AZ_USE_METAL
+        InferenceHubOptions options;
+        options.maxBatch = inferenceBatch;
+        hub_ = std::make_unique<InferenceHub>(makeMetalRunner(net, inferenceBatch), net.config(), options);
+        for (int w = 0; w < workers; ++w) evaluators_.push_back(hub_->makeEvaluator(maxRequest));
+#else
+        (void)inferenceBatch;
+        throw std::invalid_argument(
+            "backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON (macOS only)");
+#endif
+        return;
+    }
+    // naive and blas: exactly the per-worker evaluators self-play always had.
+    for (int w = 0; w < workers; ++w) {
+        backends_.push_back(makeBackend(backend, 1));
+        evaluators_.push_back(std::make_unique<LocalEvaluator>(net, *backends_.back(), maxRequest));
+    }
+}
+
+WorkerEvaluators::~WorkerEvaluators() {
+    evaluators_.clear();   // before the hub they may point into
+}
+
+Evaluator& WorkerEvaluators::forWorker(int worker) {
+    return *evaluators_.at(static_cast<size_t>(worker));
 }
 
 } // namespace azgo

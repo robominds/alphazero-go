@@ -241,6 +241,10 @@ GpuBuffer MetalContext::newBuffer(size_t bytes) {
 }
 
 std::string MetalContext::description() const { return impl_->description; }
+size_t MetalContext::recommendedWorkingSet() const {
+    return static_cast<size_t>(impl_->device.recommendedMaxWorkingSetSize);
+}
+
 std::string MetalContext::deviceName() const {
     @autoreleasepool {
         return impl_->device.name.UTF8String;

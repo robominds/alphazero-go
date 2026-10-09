@@ -6,6 +6,7 @@
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #include "gpu_network.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
@@ -69,27 +70,62 @@ BufView GpuWeights::buffer(const std::string& name) const {
 
 // ---------------------------------------------------------------- GpuWorkspace
 
+namespace {
+
+// The floats of each inference buffer, for up to maxBatch positions.
+struct WorkspaceSizes {
+    size_t stageInput, input, col, convOut, trunk, policyAct, policyFlat, logits, valueAct, valueHidden,
+        values, ownership;
+    size_t total() const {
+        return stageInput + input + col + convOut + 3 * trunk + policyAct + policyFlat + logits + valueAct +
+               valueHidden + values + ownership;
+    }
+};
+
+WorkspaceSizes workspaceSizes(const NetConfig& cfg, int maxBatch) {
+    const size_t M = static_cast<size_t>(maxBatch) * cfg.area();   // pixels per channel
+    const size_t F = static_cast<size_t>(cfg.filters);
+    WorkspaceSizes z;
+    z.stageInput = z.input = static_cast<size_t>(cfg.planes()) * M;
+    // One im2col buffer serves every 3x3 conv (stem: planes inputs, blocks: F inputs).
+    z.col = static_cast<size_t>(std::max(cfg.planes(), cfg.filters)) * 9 * M;
+    z.convOut = std::max<size_t>(F, 2) * M;   // the policy conv has 2 outputs even if F == 1
+    z.trunk = F * M;
+    z.policyAct = z.policyFlat = 2 * M;
+    z.logits = static_cast<size_t>(maxBatch) * cfg.actions();
+    z.valueAct = M;
+    z.valueHidden = static_cast<size_t>(maxBatch) * cfg.valueHidden;
+    z.values = static_cast<size_t>(maxBatch);
+    z.ownership = cfg.ownership ? M : 0;
+    return z;
+}
+
+} // namespace
+
 GpuWorkspace::GpuWorkspace(const NetConfig& cfg, int maxBatch, Purpose purpose)
     : cfg_(cfg), maxBatch_(maxBatch) {
     (void)purpose;   // Phase A has inference workspaces only
     if (maxBatch < 1) throw std::invalid_argument("GpuWorkspace: maxBatch must be >= 1");
     MetalContext& ctx = MetalContext::instance();
     auto floats = [&ctx](size_t count) { return ctx.newBuffer(count * sizeof(float)); };
-    const size_t M = static_cast<size_t>(maxBatch) * cfg.area();   // pixels per channel
-    const size_t F = static_cast<size_t>(cfg.filters);
-    stage.input = floats(static_cast<size_t>(cfg.planes()) * M);
-    input = floats(static_cast<size_t>(cfg.planes()) * M);
-    // One im2col buffer serves every 3x3 conv (stem: planes inputs, blocks: F inputs).
-    col = floats(static_cast<size_t>(std::max(cfg.planes(), cfg.filters)) * 9 * M);
-    convOut = floats(std::max<size_t>(F, 2) * M);   // the policy conv has 2 outputs even if F == 1
-    for (GpuBuffer& t : trunk) t = floats(F * M);
-    policyAct = floats(2 * M);
-    policyFlat = floats(2 * M);
-    logits = floats(static_cast<size_t>(maxBatch) * cfg.actions());
-    valueAct = floats(M);
-    valueHidden = floats(static_cast<size_t>(maxBatch) * cfg.valueHidden);
-    values = floats(static_cast<size_t>(maxBatch));
-    if (cfg.ownership) ownership = floats(M);
+    const WorkspaceSizes z = workspaceSizes(cfg, maxBatch);
+    stage.input = floats(z.stageInput);
+    input = floats(z.input);
+    col = floats(z.col);
+    convOut = floats(z.convOut);
+    for (GpuBuffer& t : trunk) t = floats(z.trunk);
+    policyAct = floats(z.policyAct);
+    policyFlat = floats(z.policyFlat);
+    logits = floats(z.logits);
+    valueAct = floats(z.valueAct);
+    valueHidden = floats(z.valueHidden);
+    values = floats(z.values);
+    if (cfg.ownership) ownership = floats(z.ownership);
+}
+
+size_t GpuWorkspace::bytesFor(const NetConfig& cfg, int maxBatch, Purpose purpose) {
+    (void)purpose;
+    return workspaceSizes(cfg, maxBatch).total() * sizeof(float);
 }
 
 size_t GpuWorkspace::bytes() const {

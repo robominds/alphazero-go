@@ -30,6 +30,7 @@ public:
     BufView param(const std::string& name) const;    // a params() tensor; throws if unknown
     BufView buffer(const std::string& name) const;   // a buffers() tensor; throws if unknown
     const ParamLayout& layout() const { return layout_; }
+    size_t bytes() const { return params_.bytes() + buffers_.bytes(); }
 private:
     ParamLayout layout_;
     GpuBuffer params_, buffers_;
@@ -46,6 +47,9 @@ public:
     const NetConfig& config() const { return cfg_; }
     int maxBatch() const { return maxBatch_; }
     size_t bytes() const;   // GPU memory held
+    // What a workspace of this shape holds, without allocating it (for the
+    // memory check before a hub is built).
+    static size_t bytesFor(const NetConfig& cfg, int maxBatch, Purpose purpose);
 
     struct {
         GpuBuffer input;    // [B][planes][area]: the batch as the evaluator receives it
