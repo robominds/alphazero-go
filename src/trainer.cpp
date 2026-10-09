@@ -678,7 +678,7 @@ GenerationStats Trainer::runGeneration() {
     const auto trainStart = Clock::now();
     const float lr = LrSchedule::parse(cfg_.lrSchedule).at(g);
     {
-        // A single-threaded backend: the pool splits the gemms (gemmRowBlocks).
+        // A single-threaded backend: the pool splits the gemms (gemmColumns).
         std::unique_ptr<Backend> backend = makeBackend(cfg_.backend, 1);
         Workspace ws(net_.config(), cfg_.batchSize, *backend, &trainPool);
         SgdMomentum opt(net_, cfg_.momentum, cfg_.weightDecay);

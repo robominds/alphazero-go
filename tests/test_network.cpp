@@ -567,13 +567,13 @@ static std::vector<unsigned char> trainingFingerprint(const NetConfig& cfg, cons
 }
 
 // A training step on a pool of 1, 2, 3 or 7 threads gives exactly the
-// bits of one without a pool, on 5x5 and 9x9 networks wide enough (32
-// filters) that the gemms are cut into row bands, and with batches that
-// span several chunks of every kind; with the naive backend and, when
-// built, BLAS.
+// bits of one without a pool, on 5x5 and 9x9 networks with batches wide
+// enough that the convolutions' gemms are cut into column blocks (over
+// 1024 pixels) and that span several chunks of every kind; with the naive
+// backend and, when built, BLAS.
 static void test_thread_pool_gives_identical_bits() {
     struct Case { int n, blocks, filters, B; bool ownership; };
-    const Case cases[] = {{5, 2, 32, 40, true}, {9, 1, 32, 24, false}, {9, 1, 48, 17, true}};
+    const Case cases[] = {{5, 2, 32, 48, true}, {9, 1, 32, 24, false}, {9, 1, 48, 17, true}};
     std::vector<std::unique_ptr<Backend>> backends;
     backends.push_back(makeBackend("naive", 1));
     if (blasAvailable()) backends.push_back(makeBackend("blas", 1));

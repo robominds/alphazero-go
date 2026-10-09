@@ -249,16 +249,16 @@ static void test_strided_gemm() {
     if (blasAvailable()) checkStridedMatchesPacked(*makeBackend("blas"));
 }
 
-// gemmRowBlocks with any pool (1, 2, 3 or 7 threads) gives the bits of one
-// plain gemm call. The shapes are a convolution's three gemms (forward, dW
-// accumulated with beta = 1, dX) and the stem's, at several board sizes,
-// widths and batches, including the presets' (5x5 3x32 B=128, 9x9 6x64 and
-// 6x96 B=256, 19x19 10x128) and odd tails like a validation pass's last
-// batch. For the naive backend this holds by construction; for Accelerate
-// it is a measurement (a 5,000-shape sweep in development found no
-// exception for bands of 8, 16 or 32 rows; single rows do differ, which is
-// why no band is thinner than kGemmRowBlock).
-static void checkRowBlocksMatchUnsplit(const Backend& be, bool large) {
+// gemmColumns with any pool (1, 2, 3 or 7 threads) gives the bits of one
+// plain gemm call. The shapes are the split gemms of a convolution (the
+// forward product, the stem's, and the input gradient of 3x3 and 1x1
+// convs) at several board sizes, widths and batches, including the
+// presets' (5x5 3x32 B=128, 9x9 6x64 and 6x96 B=256, 19x19 10x128) and odd
+// tails like a validation pass's last batch. For the naive backend this
+// holds by construction; for Accelerate it is a measurement (an ~11,000-
+// shape sweep in development found no exception for blocks of 128 to 1024
+// columns with at least 8 rows). Also: how a shape is cut.
+static void checkColumnBlocksMatchUnsplit(const Backend& be, bool large) {
     struct Conv { int n, F, B; };
     const Conv convs[] = {{5, 8, 16},  {5, 32, 128}, {5, 32, 7},  {7, 48, 33},  {9, 64, 256},
                           {9, 96, 256}, {9, 96, 100}, {9, 64, 3},  {9, 100, 64}, {13, 80, 16},
@@ -276,10 +276,11 @@ static void checkRowBlocksMatchUnsplit(const Backend& be, bool large) {
         const G gemms[] = {
             {false, false, c.F, Mpix, 9 * c.F, 0.0f},     // forward
             {false, false, c.F, Mpix, 9 * planes, 0.0f},  // stem forward
-            {false, true, c.F, 9 * c.F, Mpix, 1.0f},      // dW (accumulates)
-            {false, true, c.F, 9 * planes, Mpix, 1.0f},   // stem dW
+            {false, false, 2, Mpix, c.F, 0.0f},           // policy head forward: one block
             {true, false, 9 * c.F, Mpix, c.F, 0.0f},      // dX into the columns
             {true, false, c.F, Mpix, 2, 0.0f},            // 1x1 policy conv dX
+            {true, false, c.F, Mpix, 1, 0.0f},            // 1x1 value conv dX
+            {true, false, 9 * c.F, Mpix, c.F, 0.5f},      // beta != 0 too
         };
         for (const G& g : gemms) {
             std::vector<float> A = randomVector(rng, static_cast<size_t>(g.M) * g.K);
@@ -289,9 +290,9 @@ static void checkRowBlocksMatchUnsplit(const Backend& be, bool large) {
             be.gemm(g.tA, g.tB, g.M, g.N, g.K, 1.0f, A.data(), B.data(), g.beta, expected.data());
             for (ThreadPool* pool : pools) {
                 std::vector<float> C = C0;
-                gemmRowBlocks(be, pool, g.tA, g.tB, g.M, g.N, g.K, 1.0f, A.data(), B.data(), g.beta, C.data());
+                gemmColumns(be, pool, g.tA, g.tB, g.M, g.N, g.K, 1.0f, A.data(), B.data(), g.beta, C.data());
                 if (std::memcmp(C.data(), expected.data(), C.size() * sizeof(float)) != 0) {
-                    std::printf("%s row blocks differ: n=%d F=%d B=%d M=%d N=%d K=%d threads=%d\n", be.name(),
+                    std::printf("%s column blocks differ: n=%d F=%d B=%d M=%d N=%d K=%d threads=%d\n", be.name(),
                                 c.n, c.F, c.B, g.M, g.N, g.K, pool->threads());
                     assert(false);
                 }
@@ -300,10 +301,14 @@ static void checkRowBlocksMatchUnsplit(const Backend& be, bool large) {
     }
 }
 
-static void test_row_blocks_match_unsplit_gemm() {
+static void test_column_blocks_match_unsplit_gemm() {
+    // The cut: N / 512 blocks, the remainder in the last; small or flat products stay whole.
+    assert(gemmColumnBlockCount(64, 20736) == 40);
+    assert(gemmColumnBlockCount(64, 1023) == 1 && gemmColumnBlockCount(64, 1024) == 2);
+    assert(gemmColumnBlockCount(2, 20736) == 1 && gemmColumnBlockCount(8, 20736) == 40);
     NaiveBackend naive;
-    checkRowBlocksMatchUnsplit(naive, false);
-    if (blasAvailable()) checkRowBlocksMatchUnsplit(*makeBackend("blas"), true);
+    checkColumnBlocksMatchUnsplit(naive, false);
+    if (blasAvailable()) checkColumnBlocksMatchUnsplit(*makeBackend("blas"), true);
 }
 
 // The definitions of im2col and col2im as first written (plain loops). The
@@ -374,7 +379,7 @@ int main() {
     test_make_backend();
     test_blas_matches_naive();
     test_strided_gemm();
-    test_row_blocks_match_unsplit_gemm();
+    test_column_blocks_match_unsplit_gemm();
     test_im2col_col2im_match_definition_bitwise();
     std::printf("test_backend: all tests passed\n");
     return 0;

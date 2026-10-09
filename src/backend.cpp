@@ -1,6 +1,7 @@
 #include "azgo/backend.hpp"
 #include "azgo/parallel.hpp"
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <stdexcept>
 #include <thread>
@@ -181,23 +182,29 @@ void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alp
     for (std::thread& t : pool) t.join();
 }
 
-// ---------------------------------------------------------------- row blocks
+// ---------------------------------------------------------------- column blocks
 
-void gemmRowBlocks(const Backend& be, ThreadPool* pool, bool transA, bool transB, int M, int N, int K,
-                   float alpha, const float* A, const float* B, float beta, float* C) {
-    const int lda = transA ? M : K, ldb = transB ? K : N;
-    if (pool == nullptr || M < 2 * kGemmRowBlock) {
-        be.gemm(transA, transB, M, N, K, alpha, A, lda, B, ldb, beta, C, N);
-        return;
-    }
-    const int bands = M / kGemmRowBlock;   // the last band takes the remainder
-    parallelChunks(pool, bands, [&](int band) {
-        const int r0 = band * kGemmRowBlock;
-        const int rows = band == bands - 1 ? M - r0 : kGemmRowBlock;
-        // Rows r0.. of op(A): further rows of A, or further columns when A
-        // is stored transposed. B is shared by every band.
-        const float* a = transA ? A + r0 : A + static_cast<size_t>(r0) * K;
-        be.gemm(transA, transB, rows, N, K, alpha, a, lda, B, ldb, beta, C + static_cast<size_t>(r0) * N, N);
+int gemmColumnBlockCount(int M, int N) {
+    if (M < kGemmMinSplitRows) return 1;
+    return std::max(1, N / kGemmColumnBlock);
+}
+
+void gemmColumnBlock(const Backend& be, int block, int blocks, bool transA, bool transB, int M, int N, int K,
+                     float alpha, const float* A, const float* B, float beta, float* C) {
+    assert(blocks >= 1 && block >= 0 && block < blocks);
+    const int j0 = block * kGemmColumnBlock;
+    const int width = blocks == 1 ? N : (block == blocks - 1 ? N - j0 : kGemmColumnBlock);
+    // Columns j0.. of op(B): further columns of B, or further rows when B is
+    // stored transposed. A is shared by every block.
+    const float* b = transB ? B + static_cast<size_t>(j0) * K : B + j0;
+    be.gemm(transA, transB, M, width, K, alpha, A, transA ? M : K, b, transB ? K : N, beta, C + j0, N);
+}
+
+void gemmColumns(const Backend& be, ThreadPool* pool, bool transA, bool transB, int M, int N, int K,
+                 float alpha, const float* A, const float* B, float beta, float* C) {
+    const int blocks = pool ? gemmColumnBlockCount(M, N) : 1;
+    parallelChunks(pool, blocks, [&](int block) {
+        gemmColumnBlock(be, block, blocks, transA, transB, M, N, K, alpha, A, B, beta, C);
     });
 }
 

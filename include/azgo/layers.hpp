@@ -17,7 +17,7 @@ namespace azgo {
 //
 // Every operation takes an optional ThreadPool (null: one thread, as
 // inference in search uses them). With a pool the work is cut into chunks
-// fixed by the shapes alone (a channel, a band of gemm rows, a run of
+// fixed by the shapes alone (a channel, a block of gemm columns, a run of
 // kElementChunk elements) and every output value is computed by exactly one
 // chunk with the same operations in the same order as without a pool, so
 // the bits do not depend on the pool or its size.

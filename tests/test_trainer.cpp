@@ -1575,14 +1575,14 @@ static void test_validation_loss_prints_nan() {
 
 // train_threads changes how the training phase's network passes are spread
 // over cores, never the result: train_threads 1 and 4 write the same bytes,
-// on a network wide enough (32 filters) for the gemms to be cut into row
-// bands, with BLAS when it is built. It is tunable: a run resumed with a
+// with batches wide enough (48 x 25 pixels) for the convolutions' gemms to
+// be cut into column blocks, with BLAS when it is built. It is tunable: a run resumed with a
 // different value continues exactly as the uninterrupted one.
 static void test_train_threads_change_nothing() {
     TempDir one("train_threads1"), four("train_threads4"), resumed("train_threads_resumed");
     Config c = tinyConfig();
     c.filters = 32;
-    c.batchSize = 40;
+    c.batchSize = 48;
     if (blasAvailable()) c.backend = "blas";
     c.trainThreads = 1;
     startQuiet(c, one)->runUntil(2);

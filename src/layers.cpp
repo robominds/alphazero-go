@@ -42,7 +42,7 @@ void Conv2d::forward(const Backend& be, const float* x, int B, int n, float* col
         columns = col;
     }
     // y [cout][M] = w [cout][cin*k*k] . columns [cin*k*k][M]
-    gemmRowBlocks(be, pool, false, false, cout, M, cin * k * k, 1.0f, w.data(), columns, 0.0f, y);
+    gemmColumns(be, pool, false, false, cout, M, cin * k * k, 1.0f, w.data(), columns, 0.0f, y);
 }
 
 void Conv2d::backward(const Backend& be, const float* x, const float* col, const float* dy,
@@ -50,19 +50,24 @@ void Conv2d::backward(const Backend& be, const float* x, const float* col, const
     const int M = B * n * n;
     const int K = cin * k * k;
     const float* columns = k == 1 ? x : col;
-    // y = w . columns, so dL/dw = dy . columns^T (summed over all M pixels),
-    // accumulated into gw (beta = 1).
-    gemmRowBlocks(be, pool, false, true, cout, K, M, 1.0f, dy, columns, 1.0f, gw.data());
-    if (dx == nullptr) return;
-    if (k == 1) {
-        // dL/dx = w^T . dy directly: the columns ARE x.
-        gemmRowBlocks(be, pool, true, false, cin, M, cout, 1.0f, w.data(), dy, 0.0f, dx);
-    } else {
-        // dL/dcolumns = w^T . dy, then fold the columns back onto the pixels
-        // they were copied from; col2im sums overlapping patches.
-        gemmRowBlocks(be, pool, true, false, K, M, cout, 1.0f, w.data(), dy, 0.0f, dcol);
-        col2imChannels(be, pool, dcol, cin, B, n, k, dx);
-    }
+    // dL/dx = w^T . dy: for a 1x1 conv directly (the columns ARE x); for a
+    // 3x3 conv into dcol, whose columns col2im then folds back onto the
+    // pixels they were copied from (summing overlapping patches).
+    float* dIn = k == 1 ? dx : dcol;
+    const int rows = k == 1 ? cin : K;
+    const int blocks = dx == nullptr ? 0 : (pool ? gemmColumnBlockCount(rows, M) : 1);
+    // Chunk 0: y = w . columns, so dL/dw = dy . columns^T (summed over all M
+    // pixels), accumulated into gw (beta = 1), as one call. Chunks 1..: the
+    // column blocks of dL/dx, beside it on the pool. Without a pool, the
+    // two gemms in that order.
+    parallelChunks(pool, 1 + blocks, [&](int chunk) {
+        if (chunk == 0) {
+            be.gemm(false, true, cout, K, M, 1.0f, dy, columns, 1.0f, gw.data());
+        } else {
+            gemmColumnBlock(be, chunk - 1, blocks, true, false, rows, M, cout, 1.0f, w.data(), dy, 0.0f, dIn);
+        }
+    });
+    if (dx != nullptr && k != 1) col2imChannels(be, pool, dcol, cin, B, n, k, dx);
 }
 
 // ---------------------------------------------------------------- BatchNorm2d
