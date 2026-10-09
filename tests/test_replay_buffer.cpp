@@ -9,6 +9,7 @@
 #include <vector>
 #include "azgo/encode.hpp"
 #include "azgo/game.hpp"
+#include "azgo/parallel.hpp"
 #include "azgo/replay_buffer.hpp"
 #include "azgo/symmetry.hpp"
 
@@ -435,6 +436,28 @@ static void test_locate_and_encode_training_sample() {
             }
 }
 
+// Sampling on a pool draws the same positions and symmetries, in the same
+// order, and leaves the generator in the same state: the batch is the same
+// bytes for any thread count.
+static void test_sample_on_a_pool_is_identical() {
+    ReplayBuffer buf(1000);
+    for (int t = 0; t < 7; ++t) buf.add(lengthGame(3 + t, t));
+    ThreadPool p2(2), p5(5);
+    for (int B : {1, 16, 37}) {
+        Rng r0(77), r2(77), r5(77);
+        TrainingBatch a, b, c;
+        buf.sample(B, 3, r0, a);
+        buf.sample(B, 3, r2, b, &p2);
+        buf.sample(B, 3, r5, c, &p5);
+        for (const TrainingBatch* x : {&b, &c}) {
+            assert(x->size == a.size && x->input == a.input && x->pi == a.pi && x->z == a.z &&
+                   x->ownership == a.ownership);
+        }
+        const uint64_t next = r0.next();
+        assert(r2.next() == next && r5.next() == next);
+    }
+}
+
 int main() {
     test_add_evicts_oldest_games();
     test_oversized_game_is_kept_alone();
@@ -452,6 +475,7 @@ int main() {
     test_old_layout_that_does_not_replay();
     test_resigned_flag_round_trip();
     test_locate_and_encode_training_sample();
+    test_sample_on_a_pool_is_identical();
     std::printf("test_replay_buffer: all tests passed\n");
     return 0;
 }

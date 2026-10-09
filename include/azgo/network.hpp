@@ -42,17 +42,26 @@ struct BufferView { std::string name; float* value; size_t size; };
 // 0 when no ownership target was given.
 struct LossStats { float policyLoss = 0; float valueLoss = 0; float ownershipLoss = 0; };
 
+class ThreadPool;   // azgo/parallel.hpp
+
 // Per-thread activation and scratch storage for up to maxBatch samples.
+// With a pool, every pass through this workspace spreads its layers over the
+// pool's threads (the training step, the validation loss); without one
+// (search, where each worker has its own workspace) it runs on the caller's
+// thread. The bits are the same either way and for any pool size (see
+// layers.hpp); the pool must outlive the workspace's use.
 class Workspace {
 public:
-    Workspace(const NetConfig& cfg, int maxBatch, const Backend& backend);
+    Workspace(const NetConfig& cfg, int maxBatch, const Backend& backend, ThreadPool* pool = nullptr);
     int maxBatch() const { return maxBatch_; }
     const Backend& backend() const { return *backend_; }
+    ThreadPool* pool() const { return pool_; }
 private:
     friend class Network;
     NetConfig cfg_;
     int maxBatch_;
     const Backend* backend_;
+    ThreadPool* pool_;
     // Activation buffers (Task 7). All are channel-major [C][B][area] unless
     // noted, sized for maxBatch, allocated once here and never resized.
     struct BlockBuffers {
@@ -70,6 +79,7 @@ private:
     std::vector<float> valueXhat_, valueInvStd_, valueAct_;      // valueAct_ [1][B][area] = [B][area]
     std::vector<float> valueHidden_;              // [B][valueHidden]
     std::vector<float> values_;                   // [B] (after tanh)
+    std::vector<double> logZ_;                    // [B]: log of the softmax normalizer (loss)
     // Ownership head, allocated only when cfg.ownership. ownership_ is
     // [1][B][area] = [B][area], after tanh.
     std::vector<float> ownershipXhat_, ownershipInvStd_, ownership_;

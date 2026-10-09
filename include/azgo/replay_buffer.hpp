@@ -17,6 +17,8 @@
 
 namespace azgo {
 
+class ThreadPool;   // azgo/parallel.hpp
+
 struct TrainingBatch {
     int size = 0;
     std::vector<float> input;   // [size][planes][area]
@@ -49,8 +51,10 @@ public:
     const GameRecord& game(size_t i) const { return games_[i]; }   // 0 = oldest
 
     // B samples uniformly over positions (with replacement), each with a
-    // uniformly random symmetry. Asserts positions() > 0.
-    void sample(int B, int history, Rng& rng, TrainingBatch& out) const;
+    // uniformly random symmetry. Asserts positions() > 0. Every draw is
+    // made first, in sample order; then the samples are encoded, on the
+    // pool if one is given (each writes only its own rows).
+    void sample(int B, int history, Rng& rng, TrainingBatch& out, ThreadPool* pool = nullptr) const;
     // encodeTrainingSample of game(gameIndex).
     void encodeSample(size_t gameIndex, int ply, int history, int sym,
                       float* input, float* pi, float* z, float* ownership = nullptr) const;

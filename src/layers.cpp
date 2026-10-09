@@ -1,4 +1,5 @@
 #include "azgo/layers.hpp"
+#include "azgo/parallel.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -31,35 +32,36 @@ size_t Conv2d::colSize(int B, int n) const {
     return k == 1 ? 0 : static_cast<size_t>(cin) * k * k * B * n * n;
 }
 
-void Conv2d::forward(const Backend& be, const float* x, int B, int n, float* col, float* y) const {
+void Conv2d::forward(const Backend& be, const float* x, int B, int n, float* col, float* y,
+                     ThreadPool* pool) const {
     const int M = B * n * n;
     // A 1x1 convolution needs no unfolding: x [cin][M] already is the column matrix.
     const float* columns = x;
     if (k != 1) {
-        be.im2col(x, cin, B, n, k, col);
+        im2colChannels(be, pool, x, cin, B, n, k, col);
         columns = col;
     }
     // y [cout][M] = w [cout][cin*k*k] . columns [cin*k*k][M]
-    be.gemm(false, false, cout, M, cin * k * k, 1.0f, w.data(), columns, 0.0f, y);
+    gemmRowBlocks(be, pool, false, false, cout, M, cin * k * k, 1.0f, w.data(), columns, 0.0f, y);
 }
 
 void Conv2d::backward(const Backend& be, const float* x, const float* col, const float* dy,
-                      int B, int n, float* dcol, float* dx) {
+                      int B, int n, float* dcol, float* dx, ThreadPool* pool) {
     const int M = B * n * n;
     const int K = cin * k * k;
     const float* columns = k == 1 ? x : col;
     // y = w . columns, so dL/dw = dy . columns^T (summed over all M pixels),
     // accumulated into gw (beta = 1).
-    be.gemm(false, true, cout, K, M, 1.0f, dy, columns, 1.0f, gw.data());
+    gemmRowBlocks(be, pool, false, true, cout, K, M, 1.0f, dy, columns, 1.0f, gw.data());
     if (dx == nullptr) return;
     if (k == 1) {
         // dL/dx = w^T . dy directly: the columns ARE x.
-        be.gemm(true, false, cin, M, cout, 1.0f, w.data(), dy, 0.0f, dx);
+        gemmRowBlocks(be, pool, true, false, cin, M, cout, 1.0f, w.data(), dy, 0.0f, dx);
     } else {
         // dL/dcolumns = w^T . dy, then fold the columns back onto the pixels
         // they were copied from; col2im sums overlapping patches.
-        be.gemm(true, false, K, M, cout, 1.0f, w.data(), dy, 0.0f, dcol);
-        be.col2im(dcol, cin, B, n, k, dx);
+        gemmRowBlocks(be, pool, true, false, K, M, cout, 1.0f, w.data(), dy, 0.0f, dcol);
+        col2imChannels(be, pool, dcol, cin, B, n, k, dx);
     }
 }
 
@@ -71,21 +73,24 @@ BatchNorm2d::BatchNorm2d(int c_)
     assert(c > 0);
 }
 
-void BatchNorm2d::forwardInfer(const float* x, int M, float* y) const {
-    for (int ch = 0; ch < c; ++ch) {
+// Each channel is one chunk: its statistics, sums and outputs involve no
+// other channel, so the loops below run unchanged whichever thread has it.
+
+void BatchNorm2d::forwardInfer(const float* x, int M, float* y, ThreadPool* pool) const {
+    parallelChunks(pool, c, [&](int ch) {
         // Fold the fixed statistics into one scale and shift per channel.
         const float scale = gamma[ch] / std::sqrt(runVar[ch] + kEps);
         const float shift = beta[ch] - scale * runMean[ch];
         const float* xc = x + static_cast<size_t>(ch) * M;
         float* yc = y + static_cast<size_t>(ch) * M;
         for (int i = 0; i < M; ++i) yc[i] = scale * xc[i] + shift;
-    }
+    });
 }
 
 void BatchNorm2d::forwardTrain(const float* x, int M, float* y, float* xhat, float* invStd,
-                               bool updateRunning) {
+                               bool updateRunning, ThreadPool* pool) {
     assert(M > 1);
-    for (int ch = 0; ch < c; ++ch) {
+    parallelChunks(pool, c, [&](int ch) {
         const float* xc = x + static_cast<size_t>(ch) * M;
         // Two passes in double: mean first, then the variance around it
         // (the one-pass E[x^2] - E[x]^2 loses precision when the mean is large).
@@ -113,12 +118,12 @@ void BatchNorm2d::forwardTrain(const float* x, int M, float* y, float* xhat, flo
             runMean[ch] = (1.0f - kMomentum) * runMean[ch] + kMomentum * static_cast<float>(mean);
             runVar[ch] = (1.0f - kMomentum) * runVar[ch] + kMomentum * static_cast<float>(unbiased);
         }
-    }
+    });
 }
 
 void BatchNorm2d::backward(const float* dy, const float* xhat, const float* invStd, int M,
-                           float* dx) {
-    for (int ch = 0; ch < c; ++ch) {
+                           float* dx, ThreadPool* pool) {
+    parallelChunks(pool, c, [&](int ch) {
         const float* dyc = dy + static_cast<size_t>(ch) * M;
         const float* xh = xhat + static_cast<size_t>(ch) * M;
         double sumDy = 0.0, sumDyXhat = 0.0;
@@ -136,7 +141,7 @@ void BatchNorm2d::backward(const float* dy, const float* xhat, const float* invS
         const float sDy = static_cast<float>(sumDy), sDyXhat = static_cast<float>(sumDyXhat);
         float* dxc = dx + static_cast<size_t>(ch) * M;
         for (int i = 0; i < M; ++i) dxc[i] = scale * (fM * dyc[i] - sDy - xh[i] * sDyXhat);
-    }
+    });
 }
 
 // ---------------------------------------------------------------- Linear
@@ -174,14 +179,23 @@ void Linear::backward(const Backend& be, const float* x, const float* dy, int B,
 
 // ---------------------------------------------------------------- ReLU
 
-void reluForward(float* x, size_t count) {
-    for (size_t i = 0; i < count; ++i) x[i] = x[i] > 0.0f ? x[i] : 0.0f;
+void reluForward(float* x, size_t count, ThreadPool* pool) {
+    parallelRanges(pool, count, kElementChunk, [&](size_t begin, size_t end) {
+        for (size_t i = begin; i < end; ++i) x[i] = x[i] > 0.0f ? x[i] : 0.0f;
+    });
 }
 
-void reluBackward(const float* y, float* dy, size_t count) {
+void reluBackward(const float* y, float* dy, size_t count, ThreadPool* pool) {
     // relu'(x) is 1 where the output is positive, 0 elsewhere; the output
-    // tells us which, so the pre-activation need not be kept.
-    for (size_t i = 0; i < count; ++i) dy[i] = y[i] > 0.0f ? dy[i] : 0.0f;
+    // tells us which, so the pre-activation need not be kept. Loading dy
+    // unconditionally lets the compiler turn the choice into a vector select
+    // (as a conditional load it stayed a mispredicted branch per element).
+    parallelRanges(pool, count, kElementChunk, [&](size_t begin, size_t end) {
+        for (size_t i = begin; i < end; ++i) {
+            const float g = dy[i];
+            dy[i] = y[i] > 0.0f ? g : 0.0f;
+        }
+    });
 }
 
 } // namespace azgo

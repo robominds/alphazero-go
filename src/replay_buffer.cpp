@@ -6,9 +6,14 @@
 #include <string>
 #include <utility>
 #include "azgo/encode.hpp"
+#include "azgo/parallel.hpp"
 #include "azgo/symmetry.hpp"
 
 namespace azgo {
+
+namespace {
+constexpr size_t kSampleChunk = 16;   // samples encoded per chunk on a pool
+} // namespace
 
 ReplayBuffer::ReplayBuffer(size_t capacityPositions) : capacity_(capacityPositions) {
     assert(capacity_ >= 1);
@@ -94,7 +99,7 @@ std::pair<size_t, int> ReplayBuffer::locate(size_t position) const {
     return {g, static_cast<int>(position - firstPosition_[g])};
 }
 
-void ReplayBuffer::sample(int B, int history, Rng& rng, TrainingBatch& out) const {
+void ReplayBuffer::sample(int B, int history, Rng& rng, TrainingBatch& out, ThreadPool* pool) const {
     assert(positions_ > 0 && B >= 1);
     assert(positions_ <= static_cast<size_t>(INT_MAX));
     const int n = games_.front().boardSize;
@@ -106,14 +111,20 @@ void ReplayBuffer::sample(int B, int history, Rng& rng, TrainingBatch& out) cons
     out.pi.resize(B * piStride);
     out.z.resize(B);
     out.ownership.resize(B * area);
-    for (int b = 0; b < B; ++b) {
+    // The draws, in the order they were always made: position, then symmetry.
+    std::vector<std::pair<size_t, int>> draws(static_cast<size_t>(B));
+    for (auto& [global, sym] : draws) {
         // Uniform over positions, not games: long games are sampled more.
-        const size_t global = static_cast<size_t>(rng.below(static_cast<int>(positions_)));
-        const int sym = rng.below(kNumSymmetries);
-        const auto [g, ply] = locate(global);
-        encodeSample(g, ply, history, sym, out.input.data() + b * inputStride,
-                     out.pi.data() + b * piStride, out.z.data() + b, out.ownership.data() + b * area);
+        global = static_cast<size_t>(rng.below(static_cast<int>(positions_)));
+        sym = rng.below(kNumSymmetries);
     }
+    parallelRanges(pool, static_cast<size_t>(B), kSampleChunk, [&](size_t b0, size_t b1) {
+        for (size_t b = b0; b < b1; ++b) {
+            const auto [g, ply] = locate(draws[b].first);
+            encodeSample(g, ply, history, draws[b].second, out.input.data() + b * inputStride,
+                         out.pi.data() + b * piStride, out.z.data() + b, out.ownership.data() + b * area);
+        }
+    });
 }
 
 // Layout: u64 capacity, u64 totalAdded (two's complement of the i64), u32 games,

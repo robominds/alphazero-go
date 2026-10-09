@@ -12,6 +12,8 @@
 
 namespace azgo {
 
+class ThreadPool;   // azgo/parallel.hpp
+
 // SGD with momentum and L2 weight decay:
 //   g' = grad + weightDecay * w   (only for params with decay == true)
 //   v  = momentum * v + g'
@@ -19,7 +21,9 @@ namespace azgo {
 class SgdMomentum {
 public:
     SgdMomentum(Network& net, float momentum, float weightDecay);
-    void step(Network& net, float lr);
+    // Each parameter is updated on its own, so with a pool (chunks of
+    // kElementChunk elements per parameter tensor) the bits are unchanged.
+    void step(Network& net, float lr, ThreadPool* pool = nullptr);
     std::vector<std::vector<float>>& velocity() { return velocity_; }   // one per param, params() order
     const std::vector<std::vector<float>>& velocity() const { return velocity_; }
 private:

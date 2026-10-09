@@ -4,11 +4,14 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 #include "azgo/backend.hpp"
 #include "azgo/network.hpp"
+#include "azgo/optimizer.hpp"
+#include "azgo/parallel.hpp"
 #include "azgo/rng.hpp"
 
 using namespace azgo;
@@ -522,6 +525,75 @@ static void test_infer_loss_matches_infer_outputs() {
     assert(probe.valueLoss != s.valueLoss);
 }
 
+// Everything a training step produces, as raw bytes: the losses, every
+// gradient, the running statistics, the inference outputs and loss, and,
+// after two SGD steps, the parameters and the momentum.
+static std::vector<unsigned char> trainingFingerprint(const NetConfig& cfg, const Backend& be, int B,
+                                                      ThreadPool* pool) {
+    std::vector<unsigned char> out;
+    auto append = [&out](const void* p, size_t bytes) {
+        const unsigned char* c = static_cast<const unsigned char*>(p);
+        out.insert(out.end(), c, c + bytes);
+    };
+    Network net(cfg, 17);
+    Workspace ws(cfg, B, be, pool);
+    SgdMomentum opt(net, 0.9f, 1e-4f);
+    Rng rng(18);
+    for (int step = 0; step < 2; ++step) {
+        Batch batch = randomBatch(cfg, B, rng);
+        const std::vector<float> own = randomOwnership(cfg, B, rng);
+        const LossStats s = net.trainStep(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B,
+                                          cfg.ownership ? own.data() : nullptr, 1.5f);
+        append(&s, sizeof s);
+        for (const ParamView& p : net.params()) append(p.grad, p.size * sizeof(float));
+        opt.step(net, 0.05f, pool);
+    }
+    for (const ParamView& p : net.params()) append(p.value, p.size * sizeof(float));
+    for (const std::vector<float>& v : opt.velocity()) append(v.data(), v.size() * sizeof(float));
+    for (const BufferView& b : net.buffers()) append(b.value, b.size * sizeof(float));
+    Batch batch = randomBatch(cfg, B, rng);
+    const std::vector<float> own = randomOwnership(cfg, B, rng);
+    std::vector<float> logits(static_cast<size_t>(B) * cfg.actions()), values(B), owners(static_cast<size_t>(B) * cfg.area());
+    net.infer(ws, batch.input.data(), B, logits.data(), values.data(), cfg.ownership ? owners.data() : nullptr);
+    append(logits.data(), logits.size() * sizeof(float));
+    append(values.data(), values.size() * sizeof(float));
+    append(owners.data(), owners.size() * sizeof(float));
+    const LossStats held = net.inferLoss(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B,
+                                         cfg.ownership ? own.data() : nullptr);
+    append(&held, sizeof held);
+    const LossStats probe = net.computeLoss(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B);
+    append(&probe, sizeof probe);
+    return out;
+}
+
+// A training step on a pool of 1, 2, 3 or 7 threads gives exactly the
+// bits of one without a pool, on 5x5 and 9x9 networks wide enough (32
+// filters) that the gemms are cut into row bands, and with batches that
+// span several chunks of every kind; with the naive backend and, when
+// built, BLAS.
+static void test_thread_pool_gives_identical_bits() {
+    struct Case { int n, blocks, filters, B; bool ownership; };
+    const Case cases[] = {{5, 2, 32, 40, true}, {9, 1, 32, 24, false}, {9, 1, 48, 17, true}};
+    std::vector<std::unique_ptr<Backend>> backends;
+    backends.push_back(makeBackend("naive", 1));
+    if (blasAvailable()) backends.push_back(makeBackend("blas", 1));
+    ThreadPool p1(1), p2(2), p3(3), p7(7);
+    for (const std::unique_ptr<Backend>& be : backends) {
+        for (const Case& c : cases) {
+            NetConfig cfg = makeConfig(c.n, 2, c.blocks, c.filters, 16);
+            cfg.ownership = c.ownership;
+            const std::vector<unsigned char> reference = trainingFingerprint(cfg, *be, c.B, nullptr);
+            for (ThreadPool* pool : {&p1, &p2, &p3, &p7}) {
+                if (trainingFingerprint(cfg, *be, c.B, pool) != reference) {
+                    std::printf("%s %dx%d %dx%d B=%d: %d threads differ\n", be->name(), c.n, c.n, c.blocks,
+                                c.filters, c.B, pool->threads());
+                    assert(false);
+                }
+            }
+        }
+    }
+}
+
 int main() {
     test_whole_network_gradient_check();
     test_param_names_order_and_decay();
@@ -536,6 +608,7 @@ int main() {
     test_ownership_weight_zero_trains_nothing();
     test_sgd_reduces_ownership_loss();
     test_infer_loss_matches_infer_outputs();
+    test_thread_pool_gives_identical_bits();
     std::printf("test_network: all tests passed\n");
     return 0;
 }

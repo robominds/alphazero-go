@@ -3,6 +3,7 @@
 #include <cassert>
 #include <climits>
 #include "azgo/encode.hpp"
+#include "azgo/parallel.hpp"
 
 namespace azgo {
 
@@ -46,13 +47,17 @@ HeldOutLoss heldOutLoss(const Network& net, Workspace& ws, const std::vector<Pos
     double policySum = 0, valueSum = 0, ownershipSum = 0;
     for (size_t start = 0; start < positions.size(); start += static_cast<size_t>(maxBatch)) {
         const int B = static_cast<int>(std::min(positions.size() - start, static_cast<size_t>(maxBatch)));
-        for (int b = 0; b < B; ++b) {
-            const PositionRef& p = positions[start + static_cast<size_t>(b)];
-            assert(p.game && p.game->boardSize == cfg.boardSize);
-            encodeTrainingSample(*p.game, p.ply, history, 0, input.data() + b * inputStride,
-                                 pi.data() + b * piStride, z.data() + b,
-                                 ownership ? owners.data() + b * area : nullptr);
-        }
+        // Encoding writes each position's own rows, so it can use the
+        // workspace's pool; inferLoss does too.
+        parallelRanges(ws.pool(), static_cast<size_t>(B), 16, [&](size_t b0, size_t b1) {
+            for (size_t b = b0; b < b1; ++b) {
+                const PositionRef& p = positions[start + b];
+                assert(p.game && p.game->boardSize == cfg.boardSize);
+                encodeTrainingSample(*p.game, p.ply, history, 0, input.data() + b * inputStride,
+                                     pi.data() + b * piStride, z.data() + b,
+                                     ownership ? owners.data() + b * area : nullptr);
+            }
+        });
         const LossStats loss =
             net.inferLoss(ws, input.data(), pi.data(), z.data(), B, ownership ? owners.data() : nullptr);
         policySum += static_cast<double>(loss.policyLoss) * B;

@@ -3,6 +3,7 @@
 #include <cassert>
 #include <cmath>
 #include "azgo/board.hpp"
+#include "azgo/parallel.hpp"
 #include "azgo/rng.hpp"
 
 namespace azgo {
@@ -14,8 +15,8 @@ bool NetConfig::operator==(const NetConfig& o) const {
 
 // ---------------------------------------------------------------- Workspace
 
-Workspace::Workspace(const NetConfig& cfg, int maxBatch, const Backend& backend)
-    : cfg_(cfg), maxBatch_(maxBatch), backend_(&backend) {
+Workspace::Workspace(const NetConfig& cfg, int maxBatch, const Backend& backend, ThreadPool* pool)
+    : cfg_(cfg), maxBatch_(maxBatch), backend_(&backend), pool_(pool) {
     assert(maxBatch >= 1);
     const size_t M = static_cast<size_t>(maxBatch) * cfg.area();    // pixels per channel
     const size_t F = static_cast<size_t>(cfg.filters);
@@ -52,6 +53,7 @@ Workspace::Workspace(const NetConfig& cfg, int maxBatch, const Backend& backend)
     valueAct_.resize(M);
     valueHidden_.resize(hidden);
     values_.resize(maxBatch);
+    logZ_.resize(maxBatch);
 
     dTrunk_.resize(trunk);
     dTmp_.resize(trunk);
@@ -205,10 +207,25 @@ LossStats Network::inferLoss(Workspace& ws, const float* input, const float* pi,
     return loss(ws, pi, z, ownership, 0.0f, B, false);
 }
 
+namespace {
+
+// Samples per chunk of a per-sample loop on the pool.
+constexpr size_t kSampleChunk = 16;
+
+// dst[j] += src[j] for j < count, in fixed chunks on the pool.
+void addInto(float* dst, const float* src, size_t count, ThreadPool* pool) {
+    parallelRanges(pool, count, kElementChunk, [&](size_t begin, size_t end) {
+        for (size_t j = begin; j < end; ++j) dst[j] += src[j];
+    });
+}
+
+} // namespace
+
 void Network::forward(Workspace& ws, const float* input, int B, Mode mode) {
     assert(B >= 1 && B <= ws.maxBatch_);
     assert(ws.cfg_ == cfg_);
     const Backend& be = *ws.backend_;
+    ThreadPool* pool = ws.pool_;
     const int n = cfg_.boardSize, A = cfg_.area(), P = cfg_.planes();
     const int M = B * A;
     const size_t trunk = static_cast<size_t>(cfg_.filters) * M;
@@ -217,56 +234,59 @@ void Network::forward(Workspace& ws, const float* input, int B, Mode mode) {
 
     // [B][planes][A] -> [planes][B][A]. Channel-major lets a conv treat the
     // whole batch as one wide matrix: one gemm per layer, not one per sample.
-    for (int b = 0; b < B; ++b)
-        for (int p = 0; p < P; ++p)
+    parallelChunks(pool, P, [&](int p) {
+        for (int b = 0; b < B; ++b)
             std::copy(input + (static_cast<size_t>(b) * P + p) * A,
                       input + (static_cast<size_t>(b) * P + p + 1) * A,
                       ws.input_.data() + (static_cast<size_t>(p) * B + b) * A);
+    });
 
     auto norm = [&](BatchNorm2d& bn, const float* x, float* y, float* xhat, float* invStd) {
-        if (mode == Mode::Infer) bn.forwardInfer(x, M, y);
-        else bn.forwardTrain(x, M, y, xhat, invStd, mode == Mode::Train);
+        if (mode == Mode::Infer) bn.forwardInfer(x, M, y, pool);
+        else bn.forwardTrain(x, M, y, xhat, invStd, mode == Mode::Train, pool);
     };
 
     // Stem: conv3x3 -> BN -> ReLU.
-    stemConv_.forward(be, ws.input_.data(), B, n, col, convOut);
+    stemConv_.forward(be, ws.input_.data(), B, n, col, convOut, pool);
     norm(stemBn_, convOut, ws.stemOut_.data(), ws.stemXhat_.data(), ws.stemInvStd_.data());
-    reluForward(ws.stemOut_.data(), trunk);
+    reluForward(ws.stemOut_.data(), trunk, pool);
 
     // Residual blocks: conv -> BN -> ReLU -> conv -> BN -> + input -> ReLU.
     const float* x = ws.stemOut_.data();
     for (size_t i = 0; i < blocks_.size(); ++i) {
         ResidualBlock& blk = blocks_[i];
         Workspace::BlockBuffers& buf = ws.blocks_[i];
-        blk.conv1.forward(be, x, B, n, col, convOut);
+        blk.conv1.forward(be, x, B, n, col, convOut, pool);
         norm(blk.bn1, convOut, buf.act1.data(), buf.xhat1.data(), buf.invStd1.data());
-        reluForward(buf.act1.data(), trunk);
-        blk.conv2.forward(be, buf.act1.data(), B, n, col, convOut);
+        reluForward(buf.act1.data(), trunk, pool);
+        blk.conv2.forward(be, buf.act1.data(), B, n, col, convOut, pool);
         norm(blk.bn2, convOut, buf.out.data(), buf.xhat2.data(), buf.invStd2.data());
-        for (size_t j = 0; j < trunk; ++j) buf.out[j] += x[j];   // the skip connection
-        reluForward(buf.out.data(), trunk);
+        addInto(buf.out.data(), x, trunk, pool);                 // the skip connection
+        reluForward(buf.out.data(), trunk, pool);
         x = buf.out.data();
     }
 
     // Policy head: conv1x1 (F -> 2) -> BN -> ReLU -> per-sample flatten -> Linear.
-    policyConv_.forward(be, x, B, n, col, convOut);
+    policyConv_.forward(be, x, B, n, col, convOut, pool);
     norm(policyBn_, convOut, ws.policyAct_.data(), ws.policyXhat_.data(), ws.policyInvStd_.data());
-    reluForward(ws.policyAct_.data(), 2 * static_cast<size_t>(M));
+    reluForward(ws.policyAct_.data(), 2 * static_cast<size_t>(M), pool);
     // [2][B][A] -> [B][2A], feature index c * A + p.
-    for (int b = 0; b < B; ++b)
-        for (int c = 0; c < 2; ++c)
-            std::copy(ws.policyAct_.data() + (static_cast<size_t>(c) * B + b) * A,
-                      ws.policyAct_.data() + (static_cast<size_t>(c) * B + b + 1) * A,
-                      ws.policyFlat_.data() + static_cast<size_t>(b) * 2 * A + static_cast<size_t>(c) * A);
+    parallelRanges(pool, static_cast<size_t>(B), kSampleChunk, [&](size_t b0, size_t b1) {
+        for (size_t b = b0; b < b1; ++b)
+            for (int c = 0; c < 2; ++c)
+                std::copy(ws.policyAct_.data() + (static_cast<size_t>(c) * B + b) * A,
+                          ws.policyAct_.data() + (static_cast<size_t>(c) * B + b + 1) * A,
+                          ws.policyFlat_.data() + b * 2 * A + static_cast<size_t>(c) * A);
+    });
     policyFc_.forward(be, ws.policyFlat_.data(), B, ws.logits_.data());
 
     // Value head: conv1x1 (F -> 1) -> BN -> ReLU -> Linear(A -> V) -> ReLU -> Linear(V -> 1) -> tanh.
-    valueConv_.forward(be, x, B, n, col, convOut);
+    valueConv_.forward(be, x, B, n, col, convOut, pool);
     norm(valueBn_, convOut, ws.valueAct_.data(), ws.valueXhat_.data(), ws.valueInvStd_.data());
-    reluForward(ws.valueAct_.data(), M);
+    reluForward(ws.valueAct_.data(), M, pool);
     // With a single channel, [1][B][A] already is [B][A]: one row per sample.
     valueFc1_.forward(be, ws.valueAct_.data(), B, ws.valueHidden_.data());
-    reluForward(ws.valueHidden_.data(), static_cast<size_t>(B) * cfg_.valueHidden);
+    reluForward(ws.valueHidden_.data(), static_cast<size_t>(B) * cfg_.valueHidden, pool);
     valueFc2_.forward(be, ws.valueHidden_.data(), B, ws.values_.data());
     for (int b = 0; b < B; ++b) ws.values_[b] = std::tanh(ws.values_[b]);
 
@@ -274,40 +294,55 @@ void Network::forward(Workspace& ws, const float* input, int B, Mode mode) {
     // ReLU and no linear layer: each point's owner is read off the trunk's
     // features at that point. [1][B][A] already is [B][A].
     if (cfg_.ownership) {
-        ownershipConv_.forward(be, x, B, n, col, convOut);
+        ownershipConv_.forward(be, x, B, n, col, convOut, pool);
         norm(ownershipBn_, convOut, ws.ownership_.data(), ws.ownershipXhat_.data(),
              ws.ownershipInvStd_.data());
-        for (int j = 0; j < M; ++j) ws.ownership_[j] = std::tanh(ws.ownership_[j]);
+        parallelRanges(pool, static_cast<size_t>(M), kElementChunk, [&](size_t begin, size_t end) {
+            for (size_t j = begin; j < end; ++j) ws.ownership_[j] = std::tanh(ws.ownership_[j]);
+        });
     }
 }
 
 LossStats Network::loss(Workspace& ws, const float* pi, const float* z, const float* ownership,
                         float ownershipWeight, int B, bool withGradients) const {
     const int actions = cfg_.actions();
+    // Per sample, on the pool: the softmax normalizer and, for training, the
+    // gradients, which belong to their sample alone.
+    parallelRanges(ws.pool_, static_cast<size_t>(B), kSampleChunk, [&](size_t b0, size_t b1) {
+        for (size_t b = b0; b < b1; ++b) {
+            const float* logits = ws.logits_.data() + b * actions;
+            const float* target = pi + b * actions;
+            // log softmax(l)_a = l_a - logSumExp(l). Subtracting the largest
+            // logit before exp keeps every exponent <= 0, so nothing overflows.
+            const float maxLogit = *std::max_element(logits, logits + actions);
+            double sumExp = 0.0;
+            for (int a = 0; a < actions; ++a) sumExp += std::exp(static_cast<double>(logits[a]) - maxLogit);
+            const double logZ = maxLogit + std::log(sumExp);
+            ws.logZ_[b] = logZ;
+
+            if (withGradients) {
+                // Cross-entropy through softmax: dL/dlogit = softmax - pi (pi sums to 1).
+                float* d = ws.dLogits_.data() + b * actions;
+                for (int a = 0; a < actions; ++a) {
+                    d[a] = static_cast<float>((std::exp(logits[a] - logZ) - target[a]) / B);
+                }
+                // (z - v)^2 with v = tanh(u): dL/du = 2 (v - z) * (1 - v^2).
+                const double v = ws.values_[b];
+                ws.dValues_[b] = static_cast<float>(2.0 * (v - z[b]) * (1.0 - v * v) / B);
+            }
+        }
+    });
+    // The batch sums run serially, sample by sample: one fixed order of
+    // additions, so one rounding, however many threads there are.
     double policySum = 0.0, valueSum = 0.0;
     for (int b = 0; b < B; ++b) {
         const float* logits = ws.logits_.data() + static_cast<size_t>(b) * actions;
         const float* target = pi + static_cast<size_t>(b) * actions;
-        // log softmax(l)_a = l_a - logSumExp(l). Subtracting the largest
-        // logit before exp keeps every exponent <= 0, so nothing overflows.
-        const float maxLogit = *std::max_element(logits, logits + actions);
-        double sumExp = 0.0;
-        for (int a = 0; a < actions; ++a) sumExp += std::exp(static_cast<double>(logits[a]) - maxLogit);
-        const double logZ = maxLogit + std::log(sumExp);
+        const double logZ = ws.logZ_[b];
         for (int a = 0; a < actions; ++a) policySum -= target[a] * (logits[a] - logZ);
 
         const double v = ws.values_[b];
         valueSum += (z[b] - v) * (z[b] - v);
-
-        if (withGradients) {
-            // Cross-entropy through softmax: dL/dlogit = softmax - pi (pi sums to 1).
-            float* d = ws.dLogits_.data() + static_cast<size_t>(b) * actions;
-            for (int a = 0; a < actions; ++a) {
-                d[a] = static_cast<float>((std::exp(logits[a] - logZ) - target[a]) / B);
-            }
-            // (z - v)^2 with v = tanh(u): dL/du = 2 (v - z) * (1 - v^2).
-            ws.dValues_[b] = static_cast<float>(2.0 * (v - z[b]) * (1.0 - v * v) / B);
-        }
     }
     LossStats stats;
     stats.policyLoss = static_cast<float>(policySum / B);
@@ -333,6 +368,7 @@ LossStats Network::loss(Workspace& ws, const float* pi, const float* z, const fl
 
 void Network::backward(Workspace& ws, int B, bool withOwnership) {
     const Backend& be = *ws.backend_;
+    ThreadPool* pool = ws.pool_;
     const int n = cfg_.boardSize, A = cfg_.area(), F = cfg_.filters;
     const int M = B * A;
     const size_t trunk = static_cast<size_t>(F) * M;
@@ -345,32 +381,34 @@ void Network::backward(Workspace& ws, int B, bool withOwnership) {
 
     // Value head, from the loss back to the trunk output. (1x1 convs ignore col.)
     valueFc2_.backward(be, ws.valueHidden_.data(), ws.dValues_.data(), B, ws.dValueHidden_.data());
-    reluBackward(ws.valueHidden_.data(), ws.dValueHidden_.data(), static_cast<size_t>(B) * cfg_.valueHidden);
+    reluBackward(ws.valueHidden_.data(), ws.dValueHidden_.data(), static_cast<size_t>(B) * cfg_.valueHidden, pool);
     valueFc1_.backward(be, ws.valueAct_.data(), ws.dValueHidden_.data(), B, ws.dValueAct_.data());
-    reluBackward(ws.valueAct_.data(), ws.dValueAct_.data(), M);
+    reluBackward(ws.valueAct_.data(), ws.dValueAct_.data(), M, pool);
     valueBn_.backward(ws.dValueAct_.data(), ws.valueXhat_.data(), ws.valueInvStd_.data(), M,
-                      ws.dValueAct_.data());
-    valueConv_.backward(be, trunkOut, col, ws.dValueAct_.data(), B, n, dcol, dTrunk);
+                      ws.dValueAct_.data(), pool);
+    valueConv_.backward(be, trunkOut, col, ws.dValueAct_.data(), B, n, dcol, dTrunk, pool);
 
     // Policy head.
     policyFc_.backward(be, ws.policyFlat_.data(), ws.dLogits_.data(), B, ws.dPolicyFlat_.data());
-    for (int b = 0; b < B; ++b)                   // [B][2A] -> [2][B][A], undoing the flatten
-        for (int c = 0; c < 2; ++c)
-            std::copy(ws.dPolicyFlat_.data() + static_cast<size_t>(b) * 2 * A + static_cast<size_t>(c) * A,
-                      ws.dPolicyFlat_.data() + static_cast<size_t>(b) * 2 * A + static_cast<size_t>(c + 1) * A,
-                      ws.dPolicyAct_.data() + (static_cast<size_t>(c) * B + b) * A);
-    reluBackward(ws.policyAct_.data(), ws.dPolicyAct_.data(), 2 * static_cast<size_t>(M));
+    parallelRanges(pool, static_cast<size_t>(B), kSampleChunk, [&](size_t b0, size_t b1) {
+        for (size_t b = b0; b < b1; ++b)          // [B][2A] -> [2][B][A], undoing the flatten
+            for (int c = 0; c < 2; ++c)
+                std::copy(ws.dPolicyFlat_.data() + b * 2 * A + static_cast<size_t>(c) * A,
+                          ws.dPolicyFlat_.data() + b * 2 * A + static_cast<size_t>(c + 1) * A,
+                          ws.dPolicyAct_.data() + (static_cast<size_t>(c) * B + b) * A);
+    });
+    reluBackward(ws.policyAct_.data(), ws.dPolicyAct_.data(), 2 * static_cast<size_t>(M), pool);
     policyBn_.backward(ws.dPolicyAct_.data(), ws.policyXhat_.data(), ws.policyInvStd_.data(), M,
-                       ws.dPolicyAct_.data());
-    policyConv_.backward(be, trunkOut, col, ws.dPolicyAct_.data(), B, n, dcol, dTmp);
-    for (size_t j = 0; j < trunk; ++j) dTrunk[j] += dTmp[j];   // the trunk feeds both heads
+                       ws.dPolicyAct_.data(), pool);
+    policyConv_.backward(be, trunkOut, col, ws.dPolicyAct_.data(), B, n, dcol, dTmp, pool);
+    addInto(dTrunk, dTmp, trunk, pool);           // the trunk feeds both heads
 
     // Ownership head: through tanh (already in dOwnership_), BN and the 1x1 conv.
     if (withOwnership) {
         ownershipBn_.backward(ws.dOwnership_.data(), ws.ownershipXhat_.data(),
-                              ws.ownershipInvStd_.data(), M, ws.dOwnership_.data());
-        ownershipConv_.backward(be, trunkOut, col, ws.dOwnership_.data(), B, n, dcol, dTmp);
-        for (size_t j = 0; j < trunk; ++j) dTrunk[j] += dTmp[j];
+                              ws.ownershipInvStd_.data(), M, ws.dOwnership_.data(), pool);
+        ownershipConv_.backward(be, trunkOut, col, ws.dOwnership_.data(), B, n, dcol, dTmp, pool);
+        addInto(dTrunk, dTmp, trunk, pool);
     }
 
     // Residual blocks in reverse; dTrunk holds dL/d(block output). The
@@ -380,24 +418,24 @@ void Network::backward(Workspace& ws, int B, bool withOwnership) {
         ResidualBlock& blk = blocks_[i];
         Workspace::BlockBuffers& buf = ws.blocks_[i];
         const float* in = i == 0 ? ws.stemOut_.data() : ws.blocks_[i - 1].out.data();
-        reluBackward(buf.out.data(), dTrunk, trunk);           // now dL/d(bn2 output + skip)
-        blk.bn2.backward(dTrunk, buf.xhat2.data(), buf.invStd2.data(), M, dTmp);
-        be.im2col(buf.act1.data(), F, B, n, 3, col);
-        blk.conv2.backward(be, buf.act1.data(), col, dTmp, B, n, dcol, dTmp2);
-        reluBackward(buf.act1.data(), dTmp2, trunk);
-        blk.bn1.backward(dTmp2, buf.xhat1.data(), buf.invStd1.data(), M, dTmp2);
-        be.im2col(in, F, B, n, 3, col);
-        blk.conv1.backward(be, in, col, dTmp2, B, n, dcol, dTmp);
+        reluBackward(buf.out.data(), dTrunk, trunk, pool);     // now dL/d(bn2 output + skip)
+        blk.bn2.backward(dTrunk, buf.xhat2.data(), buf.invStd2.data(), M, dTmp, pool);
+        im2colChannels(be, pool, buf.act1.data(), F, B, n, 3, col);
+        blk.conv2.backward(be, buf.act1.data(), col, dTmp, B, n, dcol, dTmp2, pool);
+        reluBackward(buf.act1.data(), dTmp2, trunk, pool);
+        blk.bn1.backward(dTmp2, buf.xhat1.data(), buf.invStd1.data(), M, dTmp2, pool);
+        im2colChannels(be, pool, in, F, B, n, 3, col);
+        blk.conv1.backward(be, in, col, dTmp2, B, n, dcol, dTmp, pool);
         // The skip path passes dTrunk to the block input unchanged; the conv
         // path adds its own contribution.
-        for (size_t j = 0; j < trunk; ++j) dTrunk[j] += dTmp[j];
+        addInto(dTrunk, dTmp, trunk, pool);
     }
 
     // Stem. No gradient is needed for the input planes themselves.
-    reluBackward(ws.stemOut_.data(), dTrunk, trunk);
-    stemBn_.backward(dTrunk, ws.stemXhat_.data(), ws.stemInvStd_.data(), M, dTrunk);
-    be.im2col(ws.input_.data(), cfg_.planes(), B, n, 3, col);
-    stemConv_.backward(be, ws.input_.data(), col, dTrunk, B, n, dcol, nullptr);
+    reluBackward(ws.stemOut_.data(), dTrunk, trunk, pool);
+    stemBn_.backward(dTrunk, ws.stemXhat_.data(), ws.stemInvStd_.data(), M, dTrunk, pool);
+    im2colChannels(be, pool, ws.input_.data(), cfg_.planes(), B, n, 3, col);
+    stemConv_.backward(be, ws.input_.data(), col, dTrunk, B, n, dcol, nullptr, pool);
 }
 
 } // namespace azgo

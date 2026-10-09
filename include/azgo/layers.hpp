@@ -14,6 +14,18 @@
 namespace azgo {
 
 // All activations are channel-major: [channels][M] with M = B * n * n.
+//
+// Every operation takes an optional ThreadPool (null: one thread, as
+// inference in search uses them). With a pool the work is cut into chunks
+// fixed by the shapes alone (a channel, a band of gemm rows, a run of
+// kElementChunk elements) and every output value is computed by exactly one
+// chunk with the same operations in the same order as without a pool, so
+// the bits do not depend on the pool or its size.
+
+class ThreadPool;   // azgo/parallel.hpp
+
+// Elements per chunk of an elementwise loop (ReLU, sums) on a pool.
+constexpr size_t kElementChunk = size_t(1) << 15;
 
 struct Conv2d {
     int cin = 0, cout = 0, k = 1;        // k is 1 or 3; 'same' padding; no bias (BN follows)
@@ -24,11 +36,12 @@ struct Conv2d {
     size_t colSize(int B, int n) const;  // floats needed for the im2col buffer (0 when k == 1)
     // x [cin][M] -> y [cout][M]. col is scratch of colSize(B, n) (unused if k == 1) and
     // must be passed unchanged to backward.
-    void forward(const Backend& be, const float* x, int B, int n, float* col, float* y) const;
+    void forward(const Backend& be, const float* x, int B, int n, float* col, float* y,
+                 ThreadPool* pool = nullptr) const;
     // Accumulates gw += dW. Writes dx (overwrite) unless dx == nullptr.
     // dcol is scratch of colSize(B, n).
     void backward(const Backend& be, const float* x, const float* col, const float* dy,
-                  int B, int n, float* dcol, float* dx);
+                  int B, int n, float* dcol, float* dx, ThreadPool* pool = nullptr);
 };
 
 struct BatchNorm2d {
@@ -39,13 +52,14 @@ struct BatchNorm2d {
     BatchNorm2d() = default;
     explicit BatchNorm2d(int c);
     // y = gamma * (x - runMean) / sqrt(runVar + eps) + beta
-    void forwardInfer(const float* x, int M, float* y) const;
+    void forwardInfer(const float* x, int M, float* y, ThreadPool* pool = nullptr) const;
     // Batch statistics (biased variance). Saves xhat [c][M] and invStd [c].
     // If updateRunning, updates runMean and runVar (unbiased variance M/(M-1)).
     void forwardTrain(const float* x, int M, float* y, float* xhat, float* invStd,
-                      bool updateRunning);
+                      bool updateRunning, ThreadPool* pool = nullptr);
     // Accumulates ggamma, gbeta; writes dx (overwrite); dx may alias dy (Network relies on it).
-    void backward(const float* dy, const float* xhat, const float* invStd, int M, float* dx);
+    void backward(const float* dy, const float* xhat, const float* invStd, int M, float* dx,
+                  ThreadPool* pool = nullptr);
 };
 
 struct Linear {
@@ -59,7 +73,7 @@ struct Linear {
     void backward(const Backend& be, const float* x, const float* dy, int B, float* dx);
 };
 
-void reluForward(float* x, size_t count);                  // in place
-void reluBackward(const float* y, float* dy, size_t count); // dy *= (y > 0), y = relu output
+void reluForward(float* x, size_t count, ThreadPool* pool = nullptr);                   // in place
+void reluBackward(const float* y, float* dy, size_t count, ThreadPool* pool = nullptr);  // dy *= (y > 0), y = relu output
 
 } // namespace azgo
