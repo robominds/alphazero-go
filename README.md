@@ -31,8 +31,11 @@ cmake --build build-blas -j
 ctest --test-dir build-blas --output-on-failure
 ```
 
-Each build has 27 component tests plus an integration smoke test (28 in
-ctest; `ctest -N | tail -1` prints `Total Tests: 28`). The smoke test
+Each build has 28 component tests plus an integration smoke test (29 in
+ctest; `ctest -N | tail -1` prints `Total Tests: 29`). The GPU tests,
+`test_metal`, run only in a build configured with `-DAZ_USE_METAL=ON` on an
+Apple-silicon Mac (the Metal backend is work in progress); elsewhere ctest
+reports them as Skipped. The smoke test
 also runs `tools/gtp_match.py`, so it needs `python3` on the path.
 
 **The presets in `configs/` say `backend = blas`**, because BLAS is 2.9×

@@ -9,7 +9,25 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+option(AZ_USE_METAL "GPU inference and training with Metal (macOS; implies AZ_USE_BLAS)" OFF)
 option(AZ_USE_BLAS "Use BLAS for gemm (Accelerate on macOS, OpenBLAS elsewhere)" OFF)
+
+# Metal runs the network on the Apple GPU. Everything that stays on the CPU
+# with backend = metal (training in Phase A, the bots, grow) uses BLAS, which
+# on macOS is Accelerate, so Metal turns BLAS on.
+if(AZ_USE_METAL)
+  if(NOT APPLE)
+    message(FATAL_ERROR "AZ_USE_METAL=ON needs macOS (Metal is Apple's GPU API)")
+  endif()
+  if(NOT AZ_USE_BLAS)
+    message(STATUS "AZ_USE_METAL=ON turns AZ_USE_BLAS on (CPU work uses Accelerate)")
+    set(AZ_USE_BLAS ON)
+  endif()
+  enable_language(OBJCXX)
+  set(CMAKE_OBJCXX_STANDARD 17)
+  set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+  set(CMAKE_OBJCXX_EXTENSIONS OFF)
+endif()
 
 find_package(Threads REQUIRED)
 
@@ -23,11 +41,41 @@ file(GLOB AZGO_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
 if(NOT AZ_USE_BLAS)
   list(REMOVE_ITEM AZGO_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/backend_blas.cpp)
 endif()
+# src/metal/*.cpp is portable (what a build without Metal answers when asked
+# about it) and always compiled; the Objective-C++ in src/metal/*.mm only
+# with AZ_USE_METAL.
+file(GLOB AZGO_METAL_PORTABLE CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/*.cpp)
+list(APPEND AZGO_SOURCES ${AZGO_METAL_PORTABLE})
+if(AZ_USE_METAL)
+  file(GLOB AZGO_METAL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/*.mm)
+  list(APPEND AZGO_SOURCES ${AZGO_METAL_SOURCES})
+endif()
 
 add_library(azgo STATIC ${AZGO_SOURCES})
 target_include_directories(azgo PUBLIC include)
 target_compile_options(azgo PRIVATE -Wall -Wextra)
 target_link_libraries(azgo PUBLIC Threads::Threads)
+
+if(AZ_USE_METAL)
+  # The kernels are compiled by the OS at run time (newLibraryWithSource), so
+  # the build needs no `metal` shader compiler, which only Xcode ships: the
+  # Command Line Tools suffice. CMake embeds the source as one C++ raw string,
+  # with shader_types.h (the parameter structs shared with the C++ side)
+  # pasted where kernels.metal includes it. Editing either file re-runs
+  # configure on the next build.
+  set(AZGO_METAL_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/metal)
+  file(READ ${AZGO_METAL_DIR}/shader_types.h AZGO_SHADER_TYPES)
+  file(READ ${AZGO_METAL_DIR}/kernels.metal AZGO_KERNELS)
+  string(REPLACE "#include \"shader_types.h\"" "${AZGO_SHADER_TYPES}" AZGO_METAL_SOURCE "${AZGO_KERNELS}")
+  configure_file(${CMAKE_CURRENT_SOURCE_DIR}/cmake/azgo_metal_kernels.inc.in
+                 ${CMAKE_BINARY_DIR}/generated/azgo_metal_kernels.inc @ONLY)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+               ${AZGO_METAL_DIR}/shader_types.h ${AZGO_METAL_DIR}/kernels.metal)
+  target_include_directories(azgo PRIVATE ${CMAKE_BINARY_DIR}/generated)
+  target_compile_options(azgo PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+  target_link_libraries(azgo PUBLIC "-framework Metal" "-framework Foundation")
+  target_compile_definitions(azgo PUBLIC AZ_USE_METAL)
+endif()
 
 if(AZ_USE_BLAS)
   if(APPLE)
@@ -64,6 +112,9 @@ foreach(test_src ${AZGO_TESTS})
   target_compile_definitions(${test_name} PRIVATE AZGO_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   add_test(NAME ${test_name} COMMAND ${test_name})
 endforeach()
+# test_metal returns 77 where Metal is not built or not usable: CTest then
+# reports it as Skipped, not failed.
+set_tests_properties(test_metal PROPERTIES SKIP_RETURN_CODE 77)
 
 # ---- Apps ------------------------------------------------------------------
 
