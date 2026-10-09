@@ -8,6 +8,7 @@
 //   analyze --checkpoint runs/nine/checkpoints/gen_0040.azn --moves "E5 C3 pass"
 //   analyze --checkpoint gen_0040.azn --sgf game.sgf --simulations 800
 //   analyze --checkpoint gen_0040.azn --moves "E5 C3" --random-symmetry
+//   analyze --checkpoint gen_0040.azn --moves "E5 C3" --backend metal
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -27,7 +28,9 @@
 #include "azgo/encode.hpp"
 #include "azgo/evaluator.hpp"
 #include "azgo/game.hpp"
+#include "azgo/inference_hub.hpp"
 #include "azgo/mcts.hpp"
+#include "azgo/metal.hpp"
 #include "azgo/network.hpp"
 #include "azgo/rng.hpp"
 #include "azgo/sgf.hpp"
@@ -46,7 +49,8 @@ const char* const kUsage =
     "is given. --random-symmetry makes the search evaluate each position under a\n"
     "random one of the 8 board symmetries, as AlphaGo Zero did, so each node's\n"
     "priors come from one random transform; the raw network output printed above\n"
-    "the search always sees the board as it is.\n";
+    "the search always sees the board as it is. --backend is naive, blas or metal\n"
+    "(the GPU; a build with -DAZ_USE_METAL=ON).\n";
 
 constexpr char kColumns[] = "ABCDEFGHJKLMNOPQRST";   // GTP skips I
 constexpr int kMctsBatch = 8;
@@ -136,6 +140,9 @@ int main(int argc, char** argv) {
         if (simulations < 1) throw std::invalid_argument("--simulations must be at least 1");
         float komi = static_cast<float>(args->getDouble("komi", 7.5));
         const std::string ckpt = args->get("checkpoint");
+        // Before anything is read: an unavailable backend is refused with the
+        // message that says how to get it.
+        azgo::checkBackendAvailable(args->get("backend", "naive"));
 
         const azgo::Network net = azgo::loadNetwork(ckpt);
         const azgo::NetConfig& nc = net.config();
@@ -192,23 +199,38 @@ int main(int argc, char** argv) {
         std::printf("%s\n", board.toString().c_str());
 
         // ---- The raw network --------------------------------------------------
-        std::unique_ptr<azgo::Backend> backend = azgo::makeBackend(args->get("backend", "naive"), 1);
-        azgo::LocalEvaluator evaluator(net, *backend, kMctsBatch);
+        // The search's evaluator: a LocalEvaluator for naive and blas, a
+        // one-evaluator hub on the GPU for metal.
+        const std::string backendName = args->get("backend", "naive");
+        azgo::WorkerEvaluators evaluators(net, backendName, 1, kMctsBatch, kMctsBatch);
+        azgo::Evaluator& evaluator = evaluators.forWorker(0);
         const int actions = n * n + 1;
         std::vector<float> input(static_cast<size_t>(azgo::numPlanes(nc.history)) * n * n);
         azgo::encodeGame(game, nc.history, 0, input.data());
-        std::vector<float> logits(static_cast<size_t>(actions));
+        std::vector<float> logits(static_cast<size_t>(actions)), owner(static_cast<size_t>(n) * n);
         float value = 0;
-        evaluator.evaluate(input.data(), 1, logits.data(), &value);
+        if (backendName == "metal") {
+#ifdef AZ_USE_METAL
+            // One GPU pass gives the value, the policy and the ownership map.
+            azgo::MetalInference gpu(net, 1);
+            gpu.infer(input.data(), 1, logits.data(), &value, nc.ownership ? owner.data() : nullptr);
+#endif
+        } else {
+            evaluator.evaluate(input.data(), 1, logits.data(), &value);
+        }
         std::printf("Value (side to move): %+.2f\n\n", value);
 
         if (nc.ownership) {
             // The evaluator interface carries no ownership, so ask the network
-            // directly; it answers for the side to move, the map is Black's.
-            azgo::Workspace ws(nc, 1, *backend);
-            std::vector<float> headLogits(static_cast<size_t>(actions)), owner(static_cast<size_t>(n) * n);
-            float headValue = 0;
-            net.infer(ws, input.data(), 1, headLogits.data(), &headValue, owner.data());
+            // directly (the GPU pass above already did); it answers for the
+            // side to move, the map is Black's.
+            if (backendName != "metal") {
+                std::unique_ptr<azgo::Backend> backend = azgo::makeBackend(backendName, 1);
+                azgo::Workspace ws(nc, 1, *backend);
+                std::vector<float> headLogits(static_cast<size_t>(actions));
+                float headValue = 0;
+                net.infer(ws, input.data(), 1, headLogits.data(), &headValue, owner.data());
+            }
             if (board.toMove() == azgo::Color::White)
                 for (float& o : owner) o = -o;
             std::printf("Ownership, Black + / White - (9 = certain, \".\" below 0.1):\n");

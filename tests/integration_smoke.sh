@@ -425,6 +425,20 @@ if [ "$METAL" = "metal=ON" ]; then
     out="$("$BUILD/arena" --a "$MCK/gen_0003.azn" --b-bot 8 --mcts-batch 8 --inference-batch 4 --backend metal 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "arena with --inference-batch below the mcts batch exited $status, expected 1"
     echo "$out" | grep -q 'inference-batch 4 is below the mcts batch 8' || fail "unexpected arena error: $out"
+
+    echo "== metal: analyze and gtp on the GPU =="
+    out="$("$BUILD/analyze" --checkpoint "$MCK/gen_0003.azn" --moves "C3 D4 B2 C4 D3 B4" --simulations 16 --backend metal)"
+    echo "$out" | grep -q '^Value (side to move): ' || fail "analyze --backend metal printed no value"
+    echo "$out" | grep -q '^Policy prior' || fail "analyze --backend metal printed no policy"
+    echo "$out" | grep -q '^MCTS value' || fail "analyze --backend metal printed no search"
+    # The training run has an ownership head here only if TINY gave it one;
+    # the ownership run from above does.
+    out="$("$BUILD/analyze" --checkpoint "$W/owner_run/checkpoints/gen_0001.azn" --moves "C3 D4" --simulations 8 --backend metal)"
+    echo "$out" | grep -q '^Ownership, Black + / White - ' || fail "analyze --backend metal printed no ownership map"
+    printf '%s\n' 'boardsize 5' 'play b C3' 'genmove w' 'quit' \
+        | "$BUILD/gtp" --checkpoint "$MCK/gen_0003.azn" --simulations 8 --backend metal > "$W/gtp-metal.out" 2> /dev/null \
+        || fail "gtp --backend metal failed"
+    grep -Eqx '= ([A-E][1-5]|pass)' "$W/gtp-metal.out" || fail "gtp --backend metal played no move"
 else
     echo "== metal: refused in a build without it =="
     NOT_BUILT="backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON (macOS only)"
@@ -442,6 +456,14 @@ else
     out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --games 2 --backend metal 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "arena --backend metal without Metal exited $status, expected 1"
     echo "$out" | grep -qF "$NOT_BUILT" || fail "arena did not say metal is not built: $out"
+    status=0
+    out="$("$BUILD/analyze" --checkpoint "$CK/gen_0003.azn" --moves "C3 D4" --backend metal 2>&1)" || status=$?
+    [ "$status" -eq 1 ] || fail "analyze --backend metal without Metal exited $status, expected 1"
+    echo "$out" | grep -qF "$NOT_BUILT" || fail "analyze did not say metal is not built: $out"
+    status=0
+    out="$(echo quit | "$BUILD/gtp" --checkpoint "$CK/gen_0003.azn" --backend metal 2>&1)" || status=$?
+    [ "$status" -eq 1 ] || fail "gtp --backend metal without Metal exited $status, expected 1"
+    echo "$out" | grep -qF "$NOT_BUILT" || fail "gtp did not say metal is not built: $out"
 fi
 
 echo "integration_smoke: all checks passed"

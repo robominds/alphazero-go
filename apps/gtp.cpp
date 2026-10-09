@@ -8,6 +8,7 @@
 //
 //   gtp --checkpoint runs/nine/checkpoints/gen_0040.azn
 //   gtp --checkpoint gen_0040.azn --simulations 800 --backend blas --random-symmetry
+//   gtp --checkpoint gen_0040.azn --simulations 800 --backend metal
 //   echo "genmove b" | gtp --checkpoint gen_0040.azn
 #include <cstdio>
 #include <exception>
@@ -18,6 +19,7 @@
 #include <vector>
 
 #include "azgo/backend.hpp"
+#include "azgo/inference_hub.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/evaluator.hpp"
 #include "azgo/gtp.hpp"
@@ -41,7 +43,8 @@ const char* const kUsage =
     "--komi applies until the controller sends komi. --random-symmetry evaluates\n"
     "each position under a random one of the 8 board symmetries, as AlphaGo Zero\n"
     "did; --seed (>= 0) seeds it and the tie-breaks. --c-puct is in (0, 100],\n"
-    "--mcts-batch in [1, 256].\n";
+    "--mcts-batch in [1, 256]. --backend is naive, blas or metal (the GPU; a build\n"
+    "with -DAZ_USE_METAL=ON).\n";
 
 int usageError(const std::string& message) {
     std::fprintf(stderr, "error: %s\n\n%s", message.c_str(), kUsage);
@@ -90,10 +93,14 @@ int main(int argc, char** argv) {
         opts.seed = static_cast<uint64_t>(seed);
 
         const std::string ckpt = args->get("checkpoint");
+        const std::string backendName = args->get("backend", "naive");
+        azgo::checkBackendAvailable(backendName);   // before anything is read
         const azgo::Network net = azgo::loadNetwork(ckpt);   // errors name the file
         const int n = net.config().boardSize;
-        std::unique_ptr<azgo::Backend> backend = azgo::makeBackend(args->get("backend", "naive"), 1);
-        azgo::LocalEvaluator evaluator(net, *backend, opts.search.batchSize);
+        // naive, blas: a LocalEvaluator; metal: a one-evaluator hub on the GPU.
+        azgo::WorkerEvaluators evaluators(net, backendName, 1, opts.search.batchSize,
+                                          opts.search.batchSize);
+        azgo::Evaluator& evaluator = evaluators.forWorker(0);
         // The version names what is playing, so a controller's records
         // (SGF PB/PW) say which network and budget a game was played with.
         opts.version = baseName(ckpt) + ", " + std::to_string(opts.search.simulations) + " simulations" +

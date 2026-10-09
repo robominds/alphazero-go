@@ -32,7 +32,9 @@
 #include "azgo/backend.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/config.hpp"
+#include "azgo/game.hpp"
 #include "azgo/inference_hub.hpp"
+#include "azgo/mcts.hpp"
 #include "azgo/layers.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/network.hpp"
@@ -1235,6 +1237,52 @@ void test_metal_validation_vs_cpu() {
     assert(worst <= 1e-5);
 }
 
+// ---------------------------------------------------------------- analyze and gtp
+
+// The GPU network called directly, one evaluate per pass: the reference for
+// a search through a hub.
+class DirectGpuEvaluator : public Evaluator {
+public:
+    DirectGpuEvaluator(const Network& net, int maxBatch)
+        : cfg_(net.config()), gpu_(net, maxBatch), max_(maxBatch) {}
+    int boardSize() const override { return cfg_.boardSize; }
+    int history() const override { return cfg_.history; }
+    int maxBatch() const override { return max_; }
+    void evaluate(const float* input, int B, float* logits, float* values) override {
+        gpu_.infer(input, B, logits, values);
+    }
+private:
+    NetConfig cfg_;
+    MetalInference gpu_;
+    int max_;
+};
+
+// analyze and gtp search through a hub with one evaluator (WorkerEvaluators,
+// workers = 1). That search must visit exactly what a search on the GPU
+// network called directly visits, bitwise, with and without random symmetry.
+void test_single_search_hub_matches_alone() {
+    const NetConfig cfg = netConfig(9, 2, 16);
+    const Network net = randomNetwork(cfg, 701);
+    Game game(9, 7.5f, defaultMaxMoves(9));
+    for (const char* m : {"E5", "C3", "G7", "D4"}) game.play(parseAction(m, 9));
+    for (bool symmetry : {false, true}) {
+        MctsConfig mc;
+        mc.simulations = 64;
+        mc.batchSize = 8;
+        mc.randomSymmetry = symmetry;
+        WorkerEvaluators hubbed(net, "metal", 1, mc.batchSize, mc.batchSize);
+        DirectGpuEvaluator direct(net, mc.batchSize);
+        Mcts a(mc, hubbed.forWorker(0)), b(mc, direct);
+        Rng ra(5), rb(5);
+        a.search(game, ra);
+        b.search(game, rb);
+        assert(a.rootVisits() == b.rootVisits());
+        const float va = a.rootValue(), vb = b.rootValue();
+        assert(std::memcmp(&va, &vb, sizeof va) == 0);
+        assert(a.rootTotalVisits() >= 64);
+    }
+}
+
 } // namespace
 
 #endif // AZ_USE_METAL
@@ -1285,6 +1333,7 @@ int main() {
     test_metal_runs_are_reproducible();
     test_metal_rerate_reproduces_live();
     test_gpu_failure_keeps_last_good_state();
+    test_single_search_hub_matches_alone();
 #endif
     std::printf("test_metal: all tests passed\n");
     return 0;
