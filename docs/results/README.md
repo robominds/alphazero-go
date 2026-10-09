@@ -59,6 +59,10 @@ the reasons. All three presets use:
 - `backend = blas`, `workers = 0` (every core), `train_threads` unset
   (0: the training phase on every core too; added 2026-10-08, it does
   not change results);
+- `bn_calibrate` unset (true: a new run's generation 0 has its batch
+  norm calibrated; added 2026-10-10, after every run on this page, so
+  their generation 0 was uncalibrated and a new run with the same seed
+  starts elsewhere; `--set bn_calibrate=false` reproduces them);
 - `history = 8`, `mcts_batch = 8`, `c_puct = 1.5`;
 - `dirichlet_scale = 10`, `noise_fraction = 0.25`;
 - momentum 0.9, `weight_decay = 1e-4`;

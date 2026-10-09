@@ -511,7 +511,7 @@ void Network::forward(Workspace& ws, const float* input, int B, Mode mode) {
     /* ... policy head, value head and (chapter 06) the ownership head ... */
 }
 ```
-*src/network.cpp:224 — `Network::forward` (abridged)*
+*src/network.cpp:228 — `Network::forward` (abridged)*
 
 With this layout the column matrix of a batch is just wider: M = B·n²
 columns instead of n², and one gemm computes the layer for every sample
@@ -527,7 +527,7 @@ minibatch, per channel, over all B·n² values:
 
 ```cpp
 void BatchNorm2d::forwardTrain(const float* x, int M, float* y, float* xhat, float* invStd,
-                               bool updateRunning, ThreadPool* pool) {
+                               bool updateRunning, ThreadPool* pool, float momentum) {
     assert(M > 1);
     parallelChunks(pool, c, [&](int ch) {
         /* ... mean and biased variance of channel ch over its M values, in double ... */
@@ -538,13 +538,17 @@ void BatchNorm2d::forwardTrain(const float* x, int M, float* y, float* xhat, flo
             // Inference sees one position at a time, so it needs population
             // estimates: unbiased variance, exponential moving averages.
             const double unbiased = var * M / (M - 1);
-            runMean[ch] = (1.0f - kMomentum) * runMean[ch] + kMomentum * static_cast<float>(mean);
-            runVar[ch] = (1.0f - kMomentum) * runVar[ch] + kMomentum * static_cast<float>(unbiased);
+            runMean[ch] = (1.0f - momentum) * runMean[ch] + momentum * static_cast<float>(mean);
+            runVar[ch] = (1.0f - momentum) * runVar[ch] + momentum * static_cast<float>(unbiased);
         }
     });
 }
 ```
 *src/layers.cpp:99 — `BatchNorm2d::forwardTrain` (abridged)*
+
+A training step passes `momentum = kMomentum = 0.1`, so each batch moves
+the running averages a tenth of the way; generation 0's calibration,
+below, passes 1.
 
 In inference — every evaluation during search — it uses the running
 averages collected during training instead, which reduce to one fixed
@@ -573,12 +577,76 @@ usual" information the network relies on. Forget to update the running
 statistics during training, and inference normalizes with the initial
 mean 0 and variance 1, so every layer sees activations at a scale it was
 never trained on. Neither bug crashes and both still produce legal
-moves. That is why `Network` has three explicit modes — `Infer` (running
-statistics), `Train` (batch statistics, running statistics updated) and
-`Probe` (batch statistics, nothing updated, for gradient checks) — and
-why `tests/test_network.cpp` checks that inference is per-sample: the
-same position evaluated alone and inside a batch of four gives the same
-output.
+moves. That is why `Network` has explicit modes — `Infer` (running
+statistics), `Train` (batch statistics, running statistics updated),
+`Probe` (batch statistics, nothing updated, for gradient checks) and
+`Calibrate` (below) — and why `tests/test_network.cpp` checks that
+inference is per-sample: the same position evaluated alone and inside a
+batch of four gives the same output.
+
+**Generation 0: statistics nobody has collected yet.** The second bug
+happens even with correct code, once: at the very start of a run.
+Generation 0 is a freshly initialized network that has never taken a
+training step, so its running statistics are still mean 0 and variance
+1, and self-play, the arena and the validation loss all evaluate it in
+inference mode. Its batch norms then do almost nothing. He
+initialization keeps a convolution's output at roughly its input's
+scale, but each residual block adds its output to its input, and the
+first block's input is not normalized at all. Through the 21 convolutions of a 10×128
+network the activations grew until the value head's tanh saturated:
++1.00 at the empty board and everywhere else, with a policy whose
+entropy was 0.009 nats (uniform over 82 moves is 4.41). On a 9×9 run
+that was enough to wreck the start: search trusted a value that never
+moved, the games ended after about 18 plies, mostly in early pass-pass
+endings whose exact Tromp-Taylor scores dominated the search, and the
+value loss went to 0.00 on those games. Training never recovered, with or without
+resignation. The 6×64 and 6×96 runs never saw it: with fewer blocks the
+unnormalized activations stayed small enough, by luck of scale.
+
+The fix is to give generation 0 the statistics training mode would use.
+When a run starts from a random network (not one given with
+`--init-from`, and never on resume), `Trainer::startNew` runs one
+training-mode pass over a fixed batch of 256 positions and *sets* every
+batch norm's running mean and variance to the statistics of its own
+input in that pass. That is the same update as a training step's, with
+`momentum = 1`:
+
+```cpp
+void calibrateBatchNorm(Network& net, uint64_t seed, int threads) {
+    const NetConfig& cfg = net.config();
+    const std::vector<float> input =
+        bnCalibrationPositions(cfg.boardSize, cfg.history, seed, kBnCalibrationPositions);
+    // Naive, not the run's backend: BLAS (and the GPU) round differently,
+    // and generation 0 must not depend on the backend. Every value is
+    // computed by one chunk of the pool in a fixed order (layers.hpp), so
+    // it does not depend on the thread count either.
+    std::unique_ptr<Backend> backend = makeBackend("naive", 1);
+    ThreadPool pool(threads);
+    Workspace ws(cfg, kBnCalibrationPositions, *backend, &pool);
+    net.calibrateBatchNorm(ws, input.data(), kBnCalibrationPositions);
+}
+```
+*src/bn_calibration.cpp:33 — `calibrateBatchNorm`*
+
+The positions come from random games (uniformly random legal moves),
+one game per position, stopped at lengths spread evenly from the empty
+board to n² moves, and encoded with their history planes like any
+self-play position. Their generator is seeded by
+`deriveSeed(seed, 0, kPhaseBatchNorm)`, so generation 0 is still a pure
+function of the seed. One pass is exact: each layer's statistics come
+from its own input, which the layers below produced with batch
+statistics, so afterwards inference mode on that batch computes what
+training mode computes, up to the unbiased-variance factor M/(M − 1).
+The same 10×128 network then has a value of 0.47 at the empty board, a
+median |value| of about 0.65 on other random positions (a few come close
+to ±1), and a policy entropy of 3.86 nats.
+It is still a random function — on some positions its value is large —
+but it is the normalized random network that training starts from, not a
+saturated one. AlphaGo Zero's paper does not describe its first
+network's batch norm statistics. This is not a change to the algorithm,
+only to how a network that has never trained is evaluated. Generation 0
+of a new run therefore differs from generation 0 of a run made before
+calibration existed, and `bn_calibrate = false` restores the old one.
 
 **Residual blocks.** Each block computes `relu(x + F(x))`, where F is
 two convolutions: the block learns a *correction* to its input rather
@@ -762,7 +830,7 @@ void Network::backward(Workspace& ws, int B, bool withOwnership) {
     /* ... stem backward; no gradient needed for the input planes ... */
 }
 ```
-*src/network.cpp:369 — `Network::backward` (abridged)*
+*src/network.cpp:374 — `Network::backward` (abridged)*
 
 One memory detail: all 3×3 convolutions share a single `im2col` buffer,
 so by the time the backward pass reaches a convolution its columns have
@@ -2103,7 +2171,7 @@ network, next to its 1,032,349) and is optional (`ownership = true`):
         });
     }
 ```
-*src/network.cpp:224 — `Network::forward` (abridged)*
+*src/network.cpp:228 — `Network::forward` (abridged)*
 
 The loss gains a third term, the squared error averaged over the n²
 points and weighted by `w = ownership_weight` (1.5 by default):
@@ -2683,7 +2751,7 @@ GenerationStats Trainer::runGeneration() {
     /* ... statistics, SGF, then every record into the buffer in index order ... */
 }
 ```
-*src/trainer.cpp:567 — `Trainer::runGeneration` (abridged)*
+*src/trainer.cpp:583 — `Trainer::runGeneration` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not.
@@ -2947,9 +3015,10 @@ see again in place.
 | Convolution as im2col + gemm | `Conv2d::forward`, `Conv2d::backward` — `src/layers.cpp:35, 48`; `Backend::im2col`, `Backend::col2im` — `src/backend.cpp:20, 56` |
 | The compute backend seam | `Backend` — `include/azgo/backend.hpp:20`; `NaiveBackend::gemm` — `src/backend.cpp:145` |
 | Batch norm, training vs. inference | `BatchNorm2d::forwardTrain`, `BatchNorm2d::forwardInfer`, `BatchNorm2d::backward` — `src/layers.cpp:99, 88, 133` |
-| Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:224, 369` |
+| Batch norm calibration of generation 0 | `bnCalibrationPositions`, `calibrateBatchNorm` — `src/bn_calibration.cpp:12, 33` |
+| Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:228, 374` |
 | Growing a network (deeper or wider) without changing its function | `growBlocks`, `widenFilters` — `src/grow.cpp:17, 159` |
-| The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:306, 185` |
+| The loss | `Network::loss`, `Network::trainStep` — `src/network.cpp:311, 185` |
 | Gradient checking | `checkGradient` — `tests/test_layers.cpp:36` |
 | PUCT selection | `Mcts::selectEdge` — `src/mcts.cpp:57` |
 | Legal masking, superko in the tree | `Mcts::expand` — `src/mcts.cpp:150` |
@@ -2974,13 +3043,13 @@ see again in place.
 | Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:31, 54` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:152, 125` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:567` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:153, 126` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:583` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
 | Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:225` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:490` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:506` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |
 
 ---

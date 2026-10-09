@@ -304,6 +304,56 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 9x9    6 x 96            blas        256       18           92.9    3.48x
 ```
 
+### Batch norm calibration of generation 0
+
+A new run's generation 0 is a randomly initialized network, and
+self-play, the arena and the validation loss evaluate it with batch norm
+in inference mode, which normalizes with the running statistics. A
+network that has never trained has the initial ones (mean 0, variance
+1), so its batch norms do not normalize at all, and through a deep trunk
+the activations grow block after block. A 10×128 network on 9×9
+saturated: value +1.00 at the empty board and everywhere else, a policy
+with 0.009 nats of entropy, a validation policy loss of 19 at generation
+1, games of about 18 plies ending in early passes, value loss 0.00, and
+no recovery, with or without resignation. The 6×64 and 6×96 runs escaped
+by luck of scale.
+
+`bn_calibrate = true` (the default) fixes this when the run starts.
+Before saving `gen_0000.azn`, the trainer runs one training-mode
+forward pass over 256 fixed positions and sets every batch norm layer's
+running mean and variance to the statistics of its own input in that
+pass (the unbiased variance, as training's update uses; a running
+average with momentum 1). The positions come from random games of
+uniformly random legal moves, one per position, stopped at lengths
+spread from the empty board to n² moves and encoded with their history
+planes. They are seeded by `deriveSeed(seed, 0, kPhaseBatchNorm)`, and
+the pass runs on the CPU with the naive backend on `train_threads`
+threads, so `gen_0000.azn` is the same bytes for any `workers`,
+`train_threads` and `backend`. Generation 0 then plays like the
+normalized random network training starts from: the same 10×128
+network has a value of 0.47 at the empty board, a median |value| of
+about 0.65 on other random positions, and 3.86 nats of policy entropy
+(uniform: 4.41). The pass takes about 2 s for 10×128 on 9×9.
+
+What it changes and what it does not:
+- A new run from a preset gets a calibrated generation 0, so its
+  generation 0, and with it every later generation, differs from those of a
+  run made before the key existed with the same seed.
+  `--set bn_calibrate=false` gives the old generation 0 back, byte for
+  byte, and the rest of the run with it.
+- `--init-from` uses the given network as it is: a grown or trained
+  network has running statistics of its own.
+- `--resume` and `--rerate` never calibrate. A `config.cfg` written
+  before the key existed is read as `bn_calibrate = false` (what that
+  run did), and `--resume` writes it so. The key is read only when a run
+  starts; changing it on resume changes nothing.
+
+It is not part of AlphaGo Zero's description, which does not say how its
+first network's batch norm statistics were set; it changes only how a
+network that has never trained is evaluated
+([the design](docs/superpowers/specs/2026-10-10-bn-calibration-design.md),
+explainer chapter 01).
+
 ### Growing a network
 
 A trained network can be made deeper or wider without losing what it
@@ -638,9 +688,11 @@ How to read them:
 - The policy loss cannot fall below the entropy of the targets (about
   1.99 nats on 9×9, `tools/buf.py`), so compare changes, not levels.
 - In a run started from scratch, generation 1's `val` row measures the
-  random generation-0 network, whose batch-norm running statistics are
-  still their initial values, so its numbers are not comparable with
-  later rows. With `--init-from` generation 0 is the given network
+  random generation-0 network, so its numbers are not comparable with
+  later rows. In a run made before batch norm calibration (above), or
+  with `bn_calibrate = false`, that network's running statistics are
+  still their initial values and its `val` row is far higher still
+  (policy 19.0 for a 10×128 network on 9×9). With `--init-from` generation 0 is the given network
   instead. With `--buffer-from`, generation 1's `seen` row is measured
   on the donor's games, which generation 0 never trained on, so it is a
   held-out number too.
@@ -787,6 +839,13 @@ new preset.
 
 Every preset leaves `workers` and `train_threads` at 0 (all cores);
 neither changes a run's results (see Threads above).
+
+Every preset also leaves `bn_calibrate` at its default, true: a new run
+starts from a generation 0 whose batch norm is calibrated (see Batch
+norm calibration of generation 0 above). The reference runs in
+`docs/results/` predate it, so a new run with a preset and the same seed
+starts from a different generation 0 than they did. Resuming or
+re-rating them is unaffected.
 
 No preset has a bot or a reference network (see Reference networks
 above); the reference runs in `docs/results/` were made with one
@@ -1041,6 +1100,8 @@ python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-mai
   — the Metal GPU backend: hand-written kernels, the batching evaluator and why timing cannot change a game.
 - [`docs/superpowers/specs/2026-10-10-arena-gpu-design.md`](docs/superpowers/specs/2026-10-10-arena-gpu-design.md)
   — an arena round's independent matches played at once, one hub per network.
+- [`docs/superpowers/specs/2026-10-10-bn-calibration-design.md`](docs/superpowers/specs/2026-10-10-bn-calibration-design.md)
+  — batch norm calibration of a new run's generation 0, so a deep random network does not saturate in inference mode.
 
 `python3 tools/check_citations.py` checks that every `file:line` citation
 in both explainers still points at the quoted definition.
