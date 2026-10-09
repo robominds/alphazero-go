@@ -3,8 +3,10 @@
 // becomes a gemm once im2col copies every k x k input patch into a column,
 // so a layer is "unfold, multiply" forward and "multiply, fold back" (col2im)
 // backward. Keeping gemm/im2col/col2im behind this small interface lets the
-// same layer code run on plain C++ loops, on BLAS (Apple Accelerate uses the
-// CPU's matrix units), or on a GPU backend later.
+// same layer code run on plain C++ loops or on BLAS (Apple Accelerate uses
+// the CPU's matrix units). The GPU backend, metal, does not plug in here: a
+// GPU only pays off on whole forward passes, so it has its own layers
+// (src/metal/) behind the batching evaluator (azgo/inference_hub.hpp).
 #pragma once
 #include <memory>
 #include <string>
@@ -14,7 +16,7 @@ namespace azgo {
 class ThreadPool;   // azgo/parallel.hpp
 
 // Where the arithmetic happens. Layers call only these operations, so a
-// different backend (BLAS today, Metal on the GPU later) needs no layer changes.
+// different CPU backend (naive loops, BLAS) needs no layer changes.
 class Backend {
 public:
     virtual ~Backend() = default;
@@ -72,8 +74,22 @@ bool blasAvailable();  // true when built with -DAZ_USE_BLAS=ON
 
 // "naive" or "blas". threads applies to naive only; BLAS is kept
 // single-threaded (our worker threads supply the parallelism).
-// Throws std::invalid_argument for an unknown name or unavailable BLAS.
+// Throws std::invalid_argument for an unknown name or unavailable BLAS, and
+// for "metal", which runs whole forward passes on the GPU
+// (WorkerEvaluators, azgo/inference_hub.hpp), not one operation at a time.
 std::unique_ptr<Backend> makeBackend(const std::string& name, int threads = 1);
+
+// The backend for the work that stays on the CPU: "blas" for "metal"
+// (training, the bots, grow), any other name unchanged.
+std::string cpuBackendName(const std::string& name);
+
+// Throws std::invalid_argument unless `name` can run in this build on this
+// machine: "backend 'blas' not available: rebuild with -DAZ_USE_BLAS=ON",
+// "backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON (macOS
+// only)", or "backend 'metal': no usable Metal GPU (<reason>)". For metal it
+// creates the GPU context, compiling the shaders, so a run can refuse before
+// it writes anything.
+void checkBackendAvailable(const std::string& name);
 
 // How a convolution's gemms are spread over a ThreadPool. The forward
 // product (y = w . columns) and the input gradient (dcolumns = w^T . dy)

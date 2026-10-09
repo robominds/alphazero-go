@@ -10,6 +10,8 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "azgo/metal.hpp"
+#include "azgo/validation.hpp"
 #include "gpu_layers.hpp"
 
 namespace azgo {
@@ -231,5 +233,49 @@ void GpuNetwork::infer(GpuWorkspace& ws, const GpuWeights& w, const float* input
                         static_cast<size_t>(B) * cfg_.area() * sizeof(float));
     }
 }
+
+// ---------------------------------------------------------------- MetalInference
+
+struct MetalInference::Impl {
+    GpuNetwork network;
+    GpuWeights weights;
+    GpuWorkspace workspace;
+    std::vector<float> logits, values, ownership;   // one batch's outputs on the CPU
+    Impl(const Network& net, int maxBatch)
+        : network(net.config()),
+          weights(ParamLayout::of(const_cast<Network&>(net))),
+          workspace(net.config(), maxBatch, GpuWorkspace::Purpose::Inference),
+          logits(static_cast<size_t>(maxBatch) * net.config().actions()),
+          values(static_cast<size_t>(maxBatch)),
+          ownership(net.config().ownership ? static_cast<size_t>(maxBatch) * net.config().area() : 0) {
+        weights.upload(net);
+    }
+};
+
+MetalInference::MetalInference(const Network& net, int maxBatch) {
+    MetalContext::instance();   // throws the reason when the GPU is unusable
+    impl_ = std::make_unique<Impl>(net, maxBatch);
+}
+
+MetalInference::~MetalInference() = default;
+
+void MetalInference::infer(const float* input, int B, float* logits, float* values, float* ownership) {
+    try {
+        impl_->network.infer(impl_->workspace, impl_->weights, input, B, logits, values, ownership);
+    } catch (const std::runtime_error& e) {
+        throw std::runtime_error(std::string("GPU inference failed: ") + e.what());
+    }
+}
+
+LossStats MetalInference::inferLoss(const float* input, const float* pi, const float* z, int B,
+                                    const float* ownership) {
+    Impl& m = *impl_;
+    const NetConfig& cfg = m.network.config();
+    float* owners = cfg.ownership ? m.ownership.data() : nullptr;
+    infer(input, B, m.logits.data(), m.values.data(), owners);
+    return lossFromOutputs(cfg, m.logits.data(), m.values.data(), owners, pi, z, ownership, B);
+}
+
+size_t MetalInference::bytes() const { return impl_->workspace.bytes(); }
 
 } // namespace azgo

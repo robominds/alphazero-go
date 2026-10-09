@@ -19,6 +19,7 @@
 #include "azgo/checkpoint.hpp"
 #include "azgo/config.hpp"
 #include "azgo/elo.hpp"
+#include "azgo/metal.hpp"
 #include "azgo/network.hpp"
 #include "azgo/run_state.hpp"
 #include "azgo/selfplay.hpp"
@@ -1606,7 +1607,60 @@ static void test_train_threads_change_nothing() {
     }
 }
 
+// backend = metal in a build without Metal: start, resume and re-rate refuse
+// before writing anything, with the message that says how to get it.
+static void test_metal_unavailable_writes_nothing() {
+    if (metalBuilt()) return;   // tests/test_metal.cpp covers a Metal build
+    const std::string notBuilt = "backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON";
+    TempDir dir("metal_unbuilt");
+    Config c = tinyConfig();
+    c.backend = "metal";
+    bool threw = false;
+    try {
+        Trainer::startNew(c, dir.str());
+    } catch (const std::exception& e) {
+        threw = std::string(e.what()).find(notBuilt) != std::string::npos;
+    }
+    assert(threw);
+    assert(!fs::exists(statePath(dir.str())) && !fs::exists(configPath(dir.str())));
+    assert(!fs::exists(checkpointPath(dir.str(), 0)));
+
+    // An existing run: resume and re-rate with metal refuse and change nothing.
+    startQuiet(tinyConfig(), dir)->runUntil(1);
+    const std::string config = readFile(configPath(dir.str())), state = readFile(statePath(dir.str()));
+    for (int which = 0; which < 2; ++which) {
+        threw = false;
+        try {
+            if (which == 0) Trainer::resume(dir.str(), {"backend=metal"});
+            else rerateRun(dir.str(), {"backend=metal"}, nullptr);
+        } catch (const std::exception& e) {
+            threw = std::string(e.what()).find(notBuilt) != std::string::npos;
+        }
+        assert(threw);
+    }
+    assert(readFile(configPath(dir.str())) == config && readFile(statePath(dir.str())) == state);
+    assert(!fs::exists(dir.file("rerate")));
+}
+
+// Switching backends on resume is allowed (the algorithm is the same) but
+// changes the last bits from then on, and the trainer says so.
+static void test_backend_switch_prints_note() {
+    if (!blasAvailable()) return;
+    TempDir dir("switch");
+    startQuiet(tinyConfig(), dir)->runUntil(1);
+    std::ostringstream quiet;
+    Trainer::resume(dir.str(), {}, &quiet);
+    assert(quiet.str().find("note:") == std::string::npos);   // nothing changed, nothing said
+    std::ostringstream out;
+    std::unique_ptr<Trainer> t = Trainer::resume(dir.str(), {"backend=blas"}, &out);
+    assert(out.str() == "note: backend changed from naive to blas; from here on results differ in the\n"
+                        "last bits from a run that kept naive\n");
+    assert(t->config().backend == "blas");
+}
+
 int main() {
+    test_metal_unavailable_writes_nothing();
+    test_backend_switch_prints_note();
     test_train_threads_change_nothing();
     test_start_new_writes_run_files();
     test_two_generations();

@@ -16,6 +16,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <system_error>
+#include <unistd.h>
 #include <atomic>
 #include <thread>
 #include <limits>
@@ -23,12 +28,17 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "azgo/arena.hpp"
 #include "azgo/backend.hpp"
+#include "azgo/checkpoint.hpp"
+#include "azgo/config.hpp"
 #include "azgo/inference_hub.hpp"
 #include "azgo/layers.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/network.hpp"
 #include "azgo/rng.hpp"
+#include "azgo/run_state.hpp"
+#include "azgo/trainer.hpp"
 
 using namespace azgo;
 
@@ -978,6 +988,253 @@ void test_metal_runner_memory_check() {
     assert(ok->slots() == kInferenceSlots && ok->maxBatch() == 8);
 }
 
+// ---------------------------------------------------------------- backend = metal in a run
+
+namespace fs = std::filesystem;
+
+// A 5x5 run small enough that a generation takes a fraction of a second,
+// with the ownership head so the GPU validation pass covers it too.
+Config metalRunConfig() {
+    Config c;
+    c.backend = "metal";
+    c.boardSize = 5;
+    c.history = 2;
+    c.blocks = 1;
+    c.filters = 8;
+    c.valueHidden = 8;
+    c.ownership = true;
+    c.gamesPerGeneration = 4;
+    c.simulations = 8;
+    c.mctsBatch = 4;
+    c.temperatureMoves = 4;
+    c.bufferPositions = 1000;
+    c.trainSteps = 4;
+    c.batchSize = 16;
+    c.arenaGames = 2;
+    c.arenaSimulations = 4;
+    c.arenaOpponents = 2;
+    c.workers = 2;
+    c.sgfPerGeneration = 1;
+    c.botSimulations = {8};
+    c.calibrationGames = 2;
+    return c;
+}
+
+struct RunDir {
+    fs::path path;
+    explicit RunDir(const std::string& name)
+        : path(fs::temp_directory_path() / ("azgo_test_metal_" + std::to_string(getpid()) + "_" + name)) {
+        fs::remove_all(path);
+    }
+    ~RunDir() {
+        std::error_code ec;
+        fs::remove_all(path, ec);
+    }
+    std::string str() const { return path.string(); }
+    std::string file(const std::string& rel) const { return (path / rel).string(); }
+};
+
+std::string readBytes(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    assert(in && "file should exist");
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+std::unique_ptr<Trainer> startRun(const Config& c, const RunDir& dir) {
+    std::ostringstream startup;
+    std::unique_ptr<Trainer> t = Trainer::startNew(c, dir.str(), {}, &startup);
+    // The device line, as the spec gives it.
+    assert(startup.str() == "gpu: " + metalDescription() + " (inference: self-play, arena, validation)\n");
+    t->setLog(nullptr);
+    return t;
+}
+
+// Everything a run produced that must not depend on workers, batching or
+// timing: every checkpoint, state.bin, the rating files, the SGF and log.csv
+// without its three timing columns.
+std::string runFingerprint(const RunDir& dir, int generations) {
+    std::string out;
+    for (int g = 0; g <= generations; ++g) out += readBytes(checkpointPath(dir.str(), g));
+    for (const char* f : {"state.bin", "results.csv", "references.csv", "elo.csv"})
+        out += readBytes(dir.file(f));
+    std::vector<std::string> sgf;
+    for (const auto& e : fs::directory_iterator(dir.file("sgf"))) sgf.push_back(e.path().string());
+    std::sort(sgf.begin(), sgf.end());
+    assert(!sgf.empty());
+    for (const std::string& f : sgf) out += readBytes(f);
+    std::istringstream log(readBytes(dir.file("log.csv")));
+    for (std::string row; std::getline(log, row);) {
+        std::vector<std::string> fields(1);
+        for (char ch : row) {
+            if (ch == ',') fields.emplace_back();
+            else fields.back() += ch;
+        }
+        for (size_t i = 0; i < fields.size(); ++i)
+            if (i < 9 || i > 11) out += fields[i] + ",";   // drop selfplay_s, train_s, arena_s
+        out += "\n";
+    }
+    return out;
+}
+
+// The determinism contract end to end: the same files for 1, 3 and 8
+// workers, batches capped at 8 or 256, and the hub's chaos mode on.
+void test_metal_run_independent_of_workers_and_batching() {
+    struct Variant { int workers, inferenceBatch; uint64_t chaos; };
+    const Variant variants[] = {{1, 256, 0}, {3, 8, 0}, {8, 256, 7}, {3, 8, 9}};
+    std::string reference;
+    for (const Variant& v : variants) {
+        RunDir dir("independent");
+        Config c = metalRunConfig();
+        c.workers = v.workers;
+        c.inferenceBatch = v.inferenceBatch;
+        metal_probe::setHubChaosSeed(v.chaos);
+        startRun(c, dir)->runUntil(2);
+        metal_probe::setHubChaosSeed(0);
+        const std::string fp = runFingerprint(dir, 2);
+        if (reference.empty()) reference = fp;
+        assert(fp == reference);
+    }
+}
+
+void test_metal_resume_is_byte_identical() {
+    RunDir a("resume_a"), b("resume_b");
+    startRun(metalRunConfig(), a)->runUntil(4);
+    startRun(metalRunConfig(), b)->runUntil(2);
+    {
+        std::ostringstream out;
+        std::unique_ptr<Trainer> t = Trainer::resume(b.str(), {}, &out);
+        assert(out.str() == "gpu: " + metalDescription() + " (inference: self-play, arena, validation)\n");
+        t->setLog(nullptr);
+        t->runUntil(4);
+    }
+    assert(runFingerprint(a, 4) == runFingerprint(b, 4));   // validation columns included
+}
+
+void test_metal_runs_are_reproducible() {
+    RunDir a("repro_a"), b("repro_b");
+    startRun(metalRunConfig(), a)->runUntil(2);
+    startRun(metalRunConfig(), b)->runUntil(2);
+    assert(runFingerprint(a, 2) == runFingerprint(b, 2));
+}
+
+void test_metal_rerate_reproduces_live() {
+    RunDir dir("rerate");
+    startRun(metalRunConfig(), dir)->runUntil(3);
+    std::ostringstream log;
+    assert(rerateRun(dir.str(), {}, &log) == 3);
+    assert(log.str().rfind("gpu: " + metalDescription(), 0) == 0);
+    for (const char* f : {"results.csv", "elo.csv", "references.csv"})
+        assert(readBytes(dir.file(std::string("rerate/") + f)) == readBytes(dir.file(f)));
+}
+
+// A GPU failure in generation 2's self-play: the generation fails with the
+// spec's message, state.bin still says generation 1, and a resume
+// reproduces the uninterrupted run byte for byte.
+void test_gpu_failure_keeps_last_good_state() {
+    RunDir broken("fail"), clean("fail_clean");
+    startRun(metalRunConfig(), clean)->runUntil(2);
+    {
+        std::unique_ptr<Trainer> t = startRun(metalRunConfig(), broken);
+        t->runUntil(1);
+        metal_probe::failCommandBuffersAfter(5);
+        bool threw = false;
+        try {
+            t->runGeneration();
+        } catch (const std::runtime_error& e) {
+            threw = std::string(e.what()).rfind("GPU inference failed: ", 0) == 0;
+        }
+        metal_probe::failCommandBuffersAfter(0);
+        assert(threw);
+    }
+    assert(loadTrainingState(statePath(broken.str())).generation == 1);
+    assert(!fs::exists(checkpointPath(broken.str(), 2)));
+    {
+        std::ostringstream out;
+        std::unique_ptr<Trainer> t = Trainer::resume(broken.str(), {}, &out);
+        t->setLog(nullptr);
+        t->runUntil(2);
+    }
+    assert(runFingerprint(broken, 2) == runFingerprint(clean, 2));
+}
+
+// Arena matches on the GPU: network against network (random symmetry on one
+// side, different per-side batches) and against a bot give the same result
+// for 1 and 5 workers.
+void test_metal_arena_matches() {
+    NetConfig shape;
+    shape.boardSize = 5;
+    shape.history = 2;
+    shape.blocks = 1;
+    shape.filters = 8;
+    shape.valueHidden = 8;
+    const Network a = randomNetwork(shape, 601), b = randomNetwork(shape, 602);
+    ArenaConfig cfg;
+    cfg.games = 10;
+    cfg.simulations = 12;
+    cfg.mctsBatch = 4;
+    cfg.temperatureMoves = 2;
+    ArenaPlayer pa = ArenaPlayer::network(a, 0, true), pb = ArenaPlayer::network(b);
+    pb.mctsBatch = 2;
+    auto same = [](const MatchResult& x, const MatchResult& y) {
+        return x.scoreA == y.scoreA && x.winsA == y.winsA && x.winsB == y.winsB && x.draws == y.draws &&
+               x.distinctGames == y.distinctGames;
+    };
+    const MatchResult one = playMatch(pa, pb, cfg, 3, 1, "metal", 8);
+    assert(same(one, playMatch(pa, pb, cfg, 3, 5, "metal", 8)));
+    assert(same(one, playMatch(pa, pb, cfg, 3, 5, "metal", 256)));
+    const ArenaPlayer bot = ArenaPlayer::bot(16);
+    assert(same(playMatch(pa, bot, cfg, 4, 1, "metal", 8), playMatch(pa, bot, cfg, 4, 5, "metal", 8)));
+    bool threw = false;   // the inference batch must hold each side's batch
+    try {
+        playMatch(pa, pb, cfg, 3, 1, "metal", 2);
+    } catch (const std::invalid_argument& e) {
+        threw = std::string(e.what()).find("inference batch") != std::string::npos;
+    }
+    assert(threw);
+}
+
+// The GPU validation path (forward on the GPU, loss terms by
+// lossFromOutputs) against Network::inferLoss with BLAS, on batches of 20
+// and 32 like the validation pass's batches. Not on single positions: one
+// whose saturated value matches its z has a value loss near 1e-8, which a
+// float value cannot resolve (seed 5 of 20 gave 9.129e-9 against 9.140e-9).
+// Measured on an M5 Max (macOS 27.0.1), 20 seeds: worst relative error 1.1e-7 (ceiling 1e-5).
+void test_metal_validation_vs_cpu() {
+    auto blas = makeBackend("blas");
+    double worst = 0.0;
+    for (int seed = 0; seed < gSeeds; ++seed) {
+        for (bool ownership : {false, true}) {
+            const NetConfig cfg = netConfig(9, 2, 16, ownership);
+            const Network net = randomNetwork(cfg, 603 + seed);
+            MetalInference gpu(net, 32);
+            Workspace ws(cfg, 32, *blas);
+            Rng rng(604 + 1000 * seed);
+            for (int B : {20, 32}) {
+                const std::vector<float> x = randomPositions(rng, cfg, B);
+                std::vector<float> pi(static_cast<size_t>(B) * cfg.actions(), 0.0f), z(B), t(B * cfg.area());
+                for (int i = 0; i < B; ++i) {
+                    pi[i * cfg.actions() + rng.below(cfg.actions())] = 1.0f;
+                    z[i] = rng.below(2) ? 1.0f : -1.0f;
+                }
+                for (float& v : t) v = static_cast<float>(rng.below(3)) - 1.0f;
+                const float* own = ownership ? t.data() : nullptr;
+                const LossStats ref = net.inferLoss(ws, x.data(), pi.data(), z.data(), B, own);
+                const LossStats got = gpu.inferLoss(x.data(), pi.data(), z.data(), B, own);
+                auto rel = [](float a, float r) {
+                    return std::fabs(a - r) / std::max(std::fabs(r), 1e-30f);
+                };
+                worst = std::max({worst, (double)rel(got.policyLoss, ref.policyLoss),
+                                  (double)rel(got.valueLoss, ref.valueLoss)});
+                if (ownership) worst = std::max(worst, (double)rel(got.ownershipLoss, ref.ownershipLoss));
+            }
+        }
+    }
+    std::printf("test_metal: %-34s relErr %.2e (ceiling 1e-05)\n", "validation loss vs CPU", worst);
+    assert(worst <= 1e-5);
+}
+
 } // namespace
 
 #endif // AZ_USE_METAL
@@ -1021,6 +1278,13 @@ int main() {
     test_metal_hub_outputs_equal_alone_under_chaos();
     test_metal_hub_vs_cpu();
     test_metal_runner_memory_check();
+    test_metal_validation_vs_cpu();
+    test_metal_arena_matches();
+    test_metal_run_independent_of_workers_and_batching();
+    test_metal_resume_is_byte_identical();
+    test_metal_runs_are_reproducible();
+    test_metal_rerate_reproduces_live();
+    test_gpu_failure_keeps_last_good_state();
 #endif
     std::printf("test_metal: all tests passed\n");
     return 0;

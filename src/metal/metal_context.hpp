@@ -94,6 +94,11 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// Failure injection for tests (metal_probe::failCommandBuffersAfter): after n
+// more command buffers complete normally, the next one reports a failure as
+// if the GPU had; n = 0 disables it.
+void setCommandBufferFailureAfter(int n);
+
 // One command buffer with one compute encoder whose dispatches run in order,
 // each seeing the previous ones' results (serial dispatch, default hazard
 // tracking). Encode kernels with dispatch, then commit once.

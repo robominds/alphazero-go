@@ -7,6 +7,7 @@
 // derived from (seed, generation, phase, index), so a run is reproducible for a
 // seed, independent of the worker count, and a resumed run continues
 // byte-identically to one that was never interrupted.
+#include <iostream>
 #include <memory>
 #include <ostream>
 #include <string>
@@ -71,9 +72,12 @@ public:
     // with each reference network's path and hash); with `init` also init.txt
     // recording where the start came from. Every fixed player (bot or
     // reference network) plays calibration_games against generation 0.
-    // Optimizer momentum starts at zero either way.
+    // Optimizer momentum starts at zero either way. Refuses an unavailable
+    // backend (checkBackendAvailable) before writing anything; with metal it
+    // prints the device line to `log` (null: silent):
+    //   gpu: Apple M5 Max, macOS 27.0.1, shaders 3f1c9a07 (inference: self-play, arena, validation)
     static std::unique_ptr<Trainer> startNew(const Config& cfg, const std::string& runDir,
-                                             const RunInit& init = {});
+                                             const RunInit& init = {}, std::ostream* log = &std::cout);
     // Loads config.cfg, applies overrides, refuses (ConfigError listing keys)
     // if an architecture key, bot_simulations or reference_networks changed,
     // or if a reference network's file no longer matches the hash in
@@ -83,9 +87,13 @@ public:
     // (possibly overridden) resignation keys. Rewrites config.cfg with the
     // overridden values, and gives a log.csv written before the
     // ownership_loss, resignation or validation columns existed those
-    // columns (empty).
+    // columns (empty). Refuses an unavailable backend first, like startNew,
+    // and prints to `log` the device line with metal and, when backend
+    // differs from the saved config.cfg, a note that the results' last bits
+    // will differ from a run that kept the old one.
     static std::unique_ptr<Trainer> resume(const std::string& runDir,
-                                           const std::vector<std::string>& overrides);
+                                           const std::vector<std::string>& overrides,
+                                           std::ostream* log = &std::cout);
 
     int generation() const { return state_.generation; }
     const Config& config() const { return cfg_; }
@@ -121,7 +129,9 @@ private:
 // generation; never touches state.bin or config.cfg. With gating off, a run's
 // checkpoints do not depend on its arena, so this is exactly what a live run
 // would have measured. Progress lines go to `log` (nullptr = silent), the
-// fixed players' calibration first. Returns the last generation replayed.
+// device line first with metal, then the fixed players' calibration. An
+// unavailable backend is refused before anything is written. Returns the
+// last generation replayed.
 int rerateRun(const std::string& runDir, const std::vector<std::string>& overrides,
               std::ostream* log);
 

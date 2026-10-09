@@ -32,6 +32,12 @@ void parallelFor(int count, int workers, const std::function<void(int index, int
 // workers <= 0 means std::thread::hardware_concurrency() (at least 1).
 int resolveWorkers(int workers);
 
+// The same for a run whose network evaluations go to a GPU (backend =
+// metal): workers <= 0 means twice the hardware threads. A worker waiting for
+// the GPU uses no CPU, so two groups of searches alternate between the CPU
+// and the GPU. An explicit count is used as given; results do not depend on it.
+int resolveWorkers(int workers, bool gpu);
+
 // resolveWorkers(threads), but never more than the hardware's thread count
 // (when it is known): extra pool threads would only take turns on the same
 // cores. The training step's result does not depend on the count.

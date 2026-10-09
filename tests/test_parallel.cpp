@@ -56,6 +56,13 @@ static void test_resolve_workers() {
     assert(resolveWorkers(-2) >= 1);
     assert(resolveWorkers(3) == 3);
     assert(resolveWorkers(1) == 1);
+    // A GPU backend: workers = 0 is twice the hardware threads, so one group
+    // of searches runs on the CPU while the other waits for the GPU. Explicit
+    // values are used as given.
+    assert(resolveWorkers(0, true) == 2 * resolveWorkers(0));
+    assert(resolveWorkers(-1, true) == 2 * resolveWorkers(0));
+    assert(resolveWorkers(3, true) == 3);
+    assert(resolveWorkers(0, false) == resolveWorkers(0));
 }
 
 // The pool's threads persist across runs; every chunk of every run is

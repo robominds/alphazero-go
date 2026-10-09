@@ -13,6 +13,7 @@
 // generator the run uses, and changes nothing the run produces.
 #pragma once
 #include <cstddef>
+#include <functional>
 #include <vector>
 #include "azgo/network.hpp"
 #include "azgo/replay_buffer.hpp"
@@ -54,5 +55,25 @@ std::vector<PositionRef> samplePositions(const ReplayBuffer& buffer, int count, 
 // written; the network is read like in search.
 HeldOutLoss heldOutLoss(const Network& net, Workspace& ws, const std::vector<PositionRef>& positions,
                         int history);
+
+// The loss terms of one batch: input [B][planes][area], pi [B][actions],
+// z [B], ownership targets [B][area] or null.
+using BatchLossFn = std::function<LossStats(const float* input, const float* pi, const float* z, int B,
+                                            const float* ownership)>;
+
+// heldOutLoss with the batch's loss computed by lossOf (the GPU's, with
+// backend = metal), in batches of maxBatch, encoding on pool (may be null).
+// The overload above is this with Network::inferLoss on ws.
+HeldOutLoss heldOutLoss(const NetConfig& cfg, int maxBatch, ThreadPool* pool, const BatchLossFn& lossOf,
+                        const std::vector<PositionRef>& positions, int history);
+
+// Network::inferLoss's loss terms from outputs already computed: logits
+// [B][actions], values [B] (after tanh), ownership [B][area] (after tanh, or
+// null without the head), against pi, z and the ownership targets (null: no
+// ownership term). The same formulas in the same order, so on the CPU
+// network's own outputs it gives inferLoss's bits exactly.
+LossStats lossFromOutputs(const NetConfig& cfg, const float* logits, const float* values,
+                          const float* ownership, const float* pi, const float* z, const float* targets,
+                          int B);
 
 } // namespace azgo

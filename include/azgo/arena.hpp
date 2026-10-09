@@ -77,12 +77,20 @@ MctsConfig arenaSearchConfig(const ArenaPlayer& player, const ArenaConfig& cfg);
 // also allowed), or an odd or < 2 game count. Bots are capped at 100000
 // simulations here too. Game i uses Rng(deriveSeed(seed, i)). Deterministic
 // for a seed.
+// Each network player's evaluators come from WorkerEvaluators: per worker a
+// backend and LocalEvaluator for naive and blas; with metal one batching hub
+// per network player, whose passes hold at most inferenceBatch positions
+// (each side's MCTS batch must fit, else std::invalid_argument). workers <= 0
+// means resolveWorkers(workers, backendName == "metal"); never more than
+// cfg.games threads. Results do not depend on workers or inferenceBatch.
 MatchResult playMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& cfg,
-                      uint64_t seed, int workers, const std::string& backendName);
+                      uint64_t seed, int workers, const std::string& backendName,
+                      int inferenceBatch = 256);
 
 // Two networks: the same as playMatch(ArenaPlayer::network(a), ArenaPlayer::network(b), ...).
 MatchResult playMatch(const Network& a, const Network& b, const ArenaConfig& cfg,
-                      uint64_t seed, int workers, const std::string& backendName);
+                      uint64_t seed, int workers, const std::string& backendName,
+                      int inferenceBatch = 256);
 
 // The rated reference with the highest rating, ties to the larger player ID.
 // References missing from `ratings` are skipped; throws std::invalid_argument

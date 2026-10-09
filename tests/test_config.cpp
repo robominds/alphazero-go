@@ -579,8 +579,56 @@ static void test_train_threads_key() {
     for (const char* name : {"5x5.cfg", "9x9.cfg", "19x19.cfg"}) assert(loadConfigFile(preset(name)).trainThreads == 0);
 }
 
+// backend = metal parses in every build (config files stay portable; a run
+// checks availability when it starts). inference_batch caps a GPU pass, must
+// hold the largest request (mcts_batch), and workers = 0 means twice the
+// cores with metal, so more searches are in flight than one batch holds.
+static void test_metal_backend_and_inference_batch() {
+    Config c = parseConfigText("backend = metal\n", "t.cfg");
+    assert(c.backend == "metal");
+    assert(contains(configToString(c), "\nbackend = metal\n"));
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    assert(contains(errorOf("backend = gpu"), "expected naive|blas|metal"));
+    Config d;
+    assert(d.inferenceBatch == 256);
+    // Printed after mcts_batch.
+    assert(contains(configToString(d), "mcts_batch = 8\ninference_batch = 256\n"));
+    Config o;
+    applyOverride(o, "inference_batch=1024");
+    assert(o.inferenceBatch == 1024);
+    assert(configToString(parseConfigText(configToString(o), "rt")) == configToString(o));
+    assert(contains(errorOf("inference_batch = 0"), "t.cfg:1: inference_batch: "));
+    assert(contains(errorOf("inference_batch = 1025"), "t.cfg:1: inference_batch: "));
+    // Tunable: results do not depend on it.
+    assert(architectureDiff(d, o).empty() && resumeLockedDiff(d, o).empty());
+    // Below the largest request: refused, naming both values.
+    Config small;
+    small.mctsBatch = 16;
+    small.inferenceBatch = 8;
+    bool threw = false;
+    try {
+        checkConsistency(small);
+    } catch (const ConfigError& e) {
+        threw = contains(e.what(), "inference_batch (8)") && contains(e.what(), "mcts_batch (16)");
+    }
+    assert(threw);
+    small.inferenceBatch = 16;
+    checkConsistency(small);
+    // workers = 0: twice the cores with metal, the cores otherwise.
+    const int cores = resolveWorkers(0);
+    Config w;
+    assert(w.effectiveWorkers() == cores);
+    w.backend = "metal";
+    assert(w.effectiveWorkers() == 2 * cores);
+    w.workers = 5;
+    assert(w.effectiveWorkers() == 5);
+    // A config.cfg written before the key existed gets the default.
+    assert(parseConfigText("filters = 96\n", "old.cfg").inferenceBatch == 256);
+}
+
 int main() {
     test_defaults();
+    test_metal_backend_and_inference_batch();
     test_presets_load();
     test_missing_file();
     test_round_trip();

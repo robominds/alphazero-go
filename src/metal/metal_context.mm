@@ -253,6 +253,32 @@ std::string MetalContext::deviceName() const {
 
 // ---------------------------------------------------------------- CommandBatch
 
+namespace {
+
+std::mutex gInjectMutex;
+int gInjectAfter = -1;   // -1: off; otherwise command buffers left before the failing one
+
+// Whether this command buffer is the one to fail (called once per commit).
+bool injectFailure() {
+    std::lock_guard<std::mutex> lock(gInjectMutex);
+    if (gInjectAfter < 0) return false;
+    if (gInjectAfter > 0) {
+        --gInjectAfter;
+        return false;
+    }
+    gInjectAfter = -1;   // one failure, then normal again
+    return true;
+}
+
+const char* const kInjected = "injected failure (test)";
+
+} // namespace
+
+void setCommandBufferFailureAfter(int n) {
+    std::lock_guard<std::mutex> lock(gInjectMutex);
+    gInjectAfter = n > 0 ? n : -1;
+}
+
 struct CommandBatch::Impl {
     id<MTLCommandBuffer> commands;
     id<MTLComputeCommandEncoder> encoder;
@@ -330,6 +356,7 @@ void CommandBatch::dispatchGroups(const std::string& kernel, std::initializer_li
 void CommandBatch::commitAndWait() {
     if (impl_->committed) throw std::logic_error("CommandBatch: committed twice");
     std::string error;
+    const bool inject = injectFailure();
     @autoreleasepool {
         impl_->committed = true;
         [impl_->encoder endEncoding];
@@ -337,6 +364,8 @@ void CommandBatch::commitAndWait() {
         [impl_->commands waitUntilCompleted];
         if (impl_->commands.status != MTLCommandBufferStatusCompleted)
             error = "metal: command buffer failed: " + text(impl_->commands.error);
+        else if (inject)
+            error = std::string("metal: command buffer failed: ") + kInjected;
     }
     if (!error.empty()) throw std::runtime_error(error);
 }
@@ -348,10 +377,13 @@ void CommandBatch::commit(std::function<void(const std::string& error)> onDone) 
         [impl_->encoder endEncoding];
         // The handler only reports the status: no C++ exception may unwind
         // through Metal's thread.
+        const bool inject = injectFailure();
         [impl_->commands addCompletedHandler:^(id<MTLCommandBuffer> cb) {
             std::string error;
             if (cb.status != MTLCommandBufferStatusCompleted)
                 error = "command buffer failed: " + text(cb.error);
+            else if (inject)
+                error = std::string("command buffer failed: ") + kInjected;
             onDone(error);
         }];
         [impl_->commands commit];

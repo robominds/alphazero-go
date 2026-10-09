@@ -32,7 +32,10 @@ struct Config {
     // capped at it. Changes speed only: the result is bitwise the same for
     // every value.
     int trainThreads = 0;
-    std::string backend = "naive";     // naive | blas
+    // naive | blas | metal. metal: self-play, arena and validation inference
+    // on the GPU through batching hubs; training and everything else on the
+    // CPU with BLAS. Parsed in every build; a run checks it is available.
+    std::string backend = "naive";
     // game
     int boardSize = 9;
     float komi = 7.5f;
@@ -47,6 +50,9 @@ struct Config {
     int gamesPerGeneration = 100;
     int simulations = 200;
     int mctsBatch = 8;
+    // Most positions per GPU pass (backend = metal), at least mcts_batch.
+    // Changes speed only: results do not depend on it.
+    int inferenceBatch = 256;
     float cPuct = 1.5f;
     float dirichletScale = 10.0f;
     float noiseFraction = 0.25f;
@@ -91,7 +97,7 @@ struct Config {
 
     NetConfig netConfig() const;
     int effectiveMaxMoves() const;     // maxMoves or 2 * n * n
-    int effectiveWorkers() const;      // resolveWorkers(workers)
+    int effectiveWorkers() const;      // resolveWorkers(workers, backend == "metal")
     int effectiveTrainThreads() const; // resolveTrainThreads(trainThreads): capped at the core count
 };
 
@@ -121,7 +127,8 @@ std::vector<std::string> resumeLockedDiff(const Config& a, const Config& b);
 // them once every override is applied. ConfigError if resignation is on
 // with ownership (a resigned game has no final position to take ownership
 // targets from) or with resign_disabled_fraction = 0 (no games to measure
-// false positives on), or resign_min_games exceeds resign_window.
+// false positives on), resign_min_games exceeds resign_window, or
+// inference_batch is below mcts_batch (a request must fit in one GPU pass).
 void checkConsistency(const Config& cfg);
 
 } // namespace azgo

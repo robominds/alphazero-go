@@ -1,6 +1,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <utility>
 #include <vector>
 #include "azgo/backend.hpp"
@@ -166,8 +167,53 @@ static void test_sample_positions_uses_only_its_rng() {
     assert(samplePositions(buf, 0, a).empty());
 }
 
+// lossFromOutputs computes Network::inferLoss's terms from outputs already
+// in hand (the GPU validation path). Fed the CPU network's own outputs, it
+// must give inferLoss's bits exactly, so the two formulas cannot drift.
+static void test_loss_from_outputs_equals_infer_loss() {
+    for (int n : {5, 9}) {
+        for (bool ownership : {false, true}) {
+            NetConfig cfg = tinyNet(ownership);
+            cfg.boardSize = n;
+            const Network net(cfg, 31 + n);
+            NaiveBackend be;
+            const int maxBatch = 8;
+            Workspace ws(cfg, maxBatch, be);
+            Rng rng(41 + n);
+            const size_t area = cfg.area(), actions = cfg.actions();
+            for (int B : {1, 5, 8}) {   // 5: a partial batch of the workspace
+                std::vector<float> input(B * cfg.planes() * area), pi(B * actions, 0.0f), z(B),
+                    targets(B * area);
+                for (float& x : input) x = static_cast<float>(rng.below(2));
+                for (int b = 0; b < B; ++b) {
+                    pi[b * actions + rng.below(static_cast<int>(actions))] += 0.75f;
+                    pi[b * actions + rng.below(static_cast<int>(actions))] += 0.25f;
+                    z[b] = rng.below(2) ? 1.0f : -1.0f;
+                }
+                for (float& t : targets) t = static_cast<float>(rng.below(3)) - 1.0f;
+                const float* own = ownership ? targets.data() : nullptr;
+                std::vector<float> logits(B * actions), values(B), owners(ownership ? B * area : 0);
+                net.infer(ws, input.data(), B, logits.data(), values.data(),
+                          ownership ? owners.data() : nullptr);
+                const LossStats ref = net.inferLoss(ws, input.data(), pi.data(), z.data(), B, own);
+                const LossStats got = lossFromOutputs(cfg, logits.data(), values.data(),
+                                                      ownership ? owners.data() : nullptr, pi.data(), z.data(),
+                                                      own, B);
+                assert(std::memcmp(&ref, &got, sizeof ref) == 0);
+                // Without targets the ownership term is 0, as for inferLoss.
+                if (ownership) {
+                    const LossStats noTargets = lossFromOutputs(cfg, logits.data(), values.data(),
+                                                                owners.data(), pi.data(), z.data(), nullptr, B);
+                    assert(noTargets.ownershipLoss == 0.0f && noTargets.policyLoss == ref.policyLoss);
+                }
+            }
+        }
+    }
+}
+
 int main() {
     test_all_positions_in_game_then_ply_order();
+    test_loss_from_outputs_equals_infer_loss();
     test_held_out_loss_matches_hand_computation();
     test_held_out_loss_of_nothing();
     test_sample_positions_uses_only_its_rng();

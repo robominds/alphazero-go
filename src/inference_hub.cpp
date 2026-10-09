@@ -250,6 +250,7 @@ WorkerEvaluators::WorkerEvaluators(const Network& net, const std::string& backen
 #ifdef AZ_USE_METAL
         InferenceHubOptions options;
         options.maxBatch = inferenceBatch;
+        options.chaosSeed = metal_probe::hubChaosSeed();   // a test hook; 0 in every run
         hub_ = std::make_unique<InferenceHub>(makeMetalRunner(net, inferenceBatch), net.config(), options);
         for (int w = 0; w < workers; ++w) evaluators_.push_back(hub_->makeEvaluator(maxRequest));
 #else

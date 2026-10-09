@@ -7,11 +7,15 @@
 # and resignation: a run with it, and its refusal alongside the ownership head,
 # and the GTP engine: a scripted session and a two-game match through tools/gtp_match.py.
 #
-# usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR
+# and backend = metal: with metal=ON a run on the GPU (start, resume, re-rate) and arena
+# matches on it; with metal=OFF the refusals, which write nothing.
+#
+# usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR [metal=ON|metal=OFF]
 set -euo pipefail
 
 BUILD="$(cd "${1:?usage: integration_smoke.sh BUILD_DIR SOURCE_DIR}" && pwd)"
 SRC="$(cd "${2:?usage: integration_smoke.sh BUILD_DIR SOURCE_DIR}" && pwd)"
+METAL="${3:-metal=OFF}"
 W="$(mktemp -d "${TMPDIR:-/tmp}/azgo_smoke.XXXXXX")"
 trap 'rm -rf "$W"' EXIT
 
@@ -392,5 +396,52 @@ status=0
 out="$(python3 "$SRC/tools/gtp_match.py" --a "$ENGINE" --b "$ENGINE" --size 9 --out "$W/match9" 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "gtp_match on a size the engine refuses exited $status, expected 1"
 echo "$out" | grep -q "refused 'boardsize 9': unacceptable size" || fail "unexpected gtp_match error: $out"
+
+if [ "$METAL" = "metal=ON" ]; then
+    echo "== metal: a run on the GPU, resumed and re-rated =="
+    MRUN="$W/metal"
+    GPU_LINE='^gpu: .+, macOS [0-9.]+, shaders [0-9a-f]{8} \(inference: self-play, arena, validation\)$'
+    out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$MRUN" "${TINY[@]}" --set backend=metal --generations 2)"
+    echo "$out" | grep -Eq "$GPU_LINE" || fail "train --set backend=metal printed no device line"
+    test -s "$MRUN/checkpoints/gen_0002.azn" || fail "metal run wrote no gen_0002.azn"
+    grep -q '^backend = metal$' "$MRUN/config.cfg" || fail "config.cfg does not record backend = metal"
+    out="$("$BUILD/train" --run "$MRUN" --resume --generations 3)"
+    echo "$out" | grep -Eq "$GPU_LINE" || fail "the resumed metal run printed no device line"
+    test -s "$MRUN/checkpoints/gen_0003.azn" || fail "resumed metal run wrote no gen_0003.azn"
+    out="$("$BUILD/train" --run "$MRUN" --rerate)"
+    echo "$out" | grep -Eq "$GPU_LINE" || fail "the metal re-rate printed no device line"
+    # Gating is off, so the replay plays exactly the live arena games, on the GPU too.
+    cmp -s "$MRUN/rerate/results.csv" "$MRUN/results.csv" || fail "metal re-rate differs from the live results"
+
+    echo "== metal: arena on the GPU =="
+    MCK="$MRUN/checkpoints"
+    out="$("$BUILD/arena" --a "$MCK/gen_0000.azn" --b "$MCK/gen_0003.azn" --games 4 --simulations 4 --workers 3 --backend metal)"
+    echo "$out" | grep -Eq '^A .* scored' || fail "arena --backend metal printed no score line"
+    one="$("$BUILD/arena" --a "$MCK/gen_0000.azn" --b "$MCK/gen_0003.azn" --games 4 --simulations 4 --workers 1 --backend metal --inference-batch 8)"
+    [ "$out" = "$one" ] || fail "arena --backend metal depends on --workers or --inference-batch: '$out' vs '$one'"
+    out="$("$BUILD/arena" --a "$MCK/gen_0003.azn" --b-bot 8 --games 4 --simulations 4 --workers 2 --backend metal)"
+    echo "$out" | grep -q 'vs B bot(8 simulations): A scored' || fail "arena --backend metal against a bot printed no score line"
+    status=0
+    out="$("$BUILD/arena" --a "$MCK/gen_0003.azn" --b-bot 8 --mcts-batch 8 --inference-batch 4 --backend metal 2>&1)" || status=$?
+    [ "$status" -eq 1 ] || fail "arena with --inference-batch below the mcts batch exited $status, expected 1"
+    echo "$out" | grep -q 'inference-batch 4 is below the mcts batch 8' || fail "unexpected arena error: $out"
+else
+    echo "== metal: refused in a build without it =="
+    NOT_BUILT="backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON (macOS only)"
+    status=0
+    out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/nometal" "${TINY[@]}" --set backend=metal --generations 1 2>&1)" || status=$?
+    [ "$status" -eq 1 ] || fail "train --set backend=metal without Metal exited $status, expected 1"
+    echo "$out" | grep -qF "$NOT_BUILT" || fail "train did not say metal is not built: $out"
+    test ! -e "$W/nometal/state.bin" || fail "a refused metal run wrote state.bin"
+    test ! -e "$W/nometal/config.cfg" || fail "a refused metal run wrote config.cfg"
+    status=0
+    out="$("$BUILD/train" --run "$RUN" --resume --set backend=metal 2>&1)" || status=$?
+    [ "$status" -eq 1 ] || fail "resume --set backend=metal without Metal exited $status, expected 1"
+    grep -q '^backend = naive$' "$RUN/config.cfg" || fail "a refused metal resume rewrote config.cfg"
+    status=0
+    out="$("$BUILD/arena" --a "$CK/gen_0003.azn" --b-bot 8 --games 2 --backend metal 2>&1)" || status=$?
+    [ "$status" -eq 1 ] || fail "arena --backend metal without Metal exited $status, expected 1"
+    echo "$out" | grep -qF "$NOT_BUILT" || fail "arena did not say metal is not built: $out"
+fi
 
 echo "integration_smoke: all checks passed"

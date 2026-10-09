@@ -9,15 +9,13 @@
 // in this header, which is plain C++17.
 #pragma once
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include "azgo/network.hpp"
 
 namespace azgo {
 
-struct BatchNorm2d;   // azgo/layers.hpp
-struct Conv2d;
-struct Linear;
-class Network;        // azgo/network.hpp
 class BatchRunner;    // azgo/inference_hub.hpp
 
 // True when this binary was built with -DAZ_USE_METAL=ON.
@@ -44,6 +42,28 @@ std::string metalDescription();
 // inference_batch") when the slots would not fit the GPU's recommended
 // working set, before allocating them.
 std::unique_ptr<BatchRunner> makeMetalRunner(const Network& net, int maxBatch);
+
+// The whole network's inference forward on the GPU, synchronously: weights
+// uploaded once, one workspace for up to maxBatch positions. For the
+// validation loss (and analyze); search goes through the hub. Errors
+// (a failed command buffer) throw std::runtime_error("GPU inference failed: ...").
+class MetalInference {
+public:
+    MetalInference(const Network& net, int maxBatch);
+    ~MetalInference();
+    MetalInference(const MetalInference&) = delete;
+    MetalInference& operator=(const MetalInference&) = delete;
+    // Network::infer's arguments; ownership needs a network with the head.
+    void infer(const float* input, int B, float* logits, float* values, float* ownership = nullptr);
+    // Network::inferLoss: the forward pass here, the loss terms on the CPU
+    // (lossFromOutputs, azgo/validation.hpp).
+    LossStats inferLoss(const float* input, const float* pi, const float* z, int B,
+                        const float* ownership = nullptr);
+    size_t bytes() const;   // the GPU memory of the activations
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
 
 // Test probes: each copies host arrays in, runs one command buffer and copies
 // the results out. They exist so tests (and bench) can check a kernel against
@@ -77,21 +97,19 @@ void policyFlatten(const float* act, int B, int A, float* flat);       // [2][B]
 void linearForward(const Linear& fc, const float* x, int B, float* y);  // Linear::forward
 void tanhInPlace(float* x, size_t count);                               // x = tanh(x)
 
-// The whole network's inference forward on the GPU (GpuNetwork): weights
-// uploaded once, one workspace for up to maxBatch positions. infer has
-// Network::infer's arguments; ownership needs a network with the head.
-class InferNet {
-public:
-    InferNet(const Network& net, int maxBatch);
-    ~InferNet();
-    InferNet(const InferNet&) = delete;
-    InferNet& operator=(const InferNet&) = delete;
-    void infer(const float* input, int B, float* logits, float* values, float* ownership = nullptr);
-    size_t bytes() const;   // the GPU memory of the activations
-private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-};
+// MetalInference under its test name.
+using InferNet = MetalInference;
+
+// Chaos mode for the hubs that WorkerEvaluators creates from now on (0: off;
+// see InferenceHubOptions::chaosSeed). A test hook: a run's own settings
+// never turn it on, and it touches none of the run's random streams.
+void setHubChaosSeed(uint64_t seed);
+uint64_t hubChaosSeed();
+
+// Failure injection: after n more command buffers complete normally, the
+// next one reports a failure through the normal error path (as a GPU fault
+// would); later ones run normally again. n = 0 disables it.
+void failCommandBuffersAfter(int n);
 
 // Uploads net into weights laid out for layoutNet (ParamLayout::of): throws
 // std::logic_error naming the first tensor the layout does not know.

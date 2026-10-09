@@ -50,6 +50,11 @@ int resolveWorkers(int workers) {
     return hw > 0 ? static_cast<int>(hw) : 1;
 }
 
+int resolveWorkers(int workers, bool gpu) {
+    if (workers > 0 || !gpu) return resolveWorkers(workers);
+    return 2 * resolveWorkers(0);
+}
+
 int resolveTrainThreads(int threads) {
     const int resolved = resolveWorkers(threads);
     const unsigned hw = std::thread::hardware_concurrency();   // 0 if unknown

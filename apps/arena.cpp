@@ -9,6 +9,8 @@
 //   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0040.azn --a-random-symmetry
 //   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0040.azn --a-c-puct 3
 //   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0040.azn --a-mcts-batch 1
+//   arena --a runs/nine/checkpoints/gen_0040.azn --b runs/nine/checkpoints/gen_0020.azn --backend metal
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -19,6 +21,7 @@
 #include <vector>
 
 #include "azgo/arena.hpp"
+#include "azgo/backend.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/elo.hpp"
 #include "azgo/network.hpp"
@@ -33,8 +36,13 @@ const char* const kUsage =
     "             [--workers 0] [--backend naive] [--seed 1] [--random-symmetry]\n"
     "             [--a-random-symmetry] [--b-random-symmetry] [--c-puct 1.5] [--mcts-batch 8]\n"
     "             [--a-c-puct X] [--b-c-puct X] [--a-mcts-batch N] [--b-mcts-batch N]\n"
+    "             [--inference-batch 256]\n"
     "\n"
-    "Colors alternate: A plays Black in even-numbered games. --workers 0 uses every core.\n"
+    "Colors alternate: A plays Black in even-numbered games. --workers 0 uses every core\n"
+    "(twice as many threads with --backend metal).\n"
+    "--backend is naive, blas or metal. metal evaluates every worker's positions together on the\n"
+    "GPU, at most --inference-batch (1-1024, at least each side's mcts batch) per pass; it needs a\n"
+    "build with -DAZ_USE_METAL=ON. Results do not depend on --workers or --inference-batch.\n"
     "--b-bot SIMS makes B a uniform bot: MCTS with equal priors and value 0, searching\n"
     "SIMS simulations per move (1-100000) on A's board size.\n"
     "--a-simulations and --b-simulations (1-100000) override --simulations for one side, so a\n"
@@ -113,7 +121,8 @@ int main(int argc, char** argv) {
             std::vector<std::string>{"a", "b", "b-bot", "games", "simulations", "a-simulations",
                                      "b-simulations", "komi", "c-puct", "mcts-batch",
                                      "a-c-puct", "b-c-puct", "a-mcts-batch", "b-mcts-batch",
-                                     "temperature-moves", "workers", "backend", "seed"},
+                                     "temperature-moves", "workers", "backend", "seed",
+                                     "inference-batch"},
             std::vector<std::string>{"help", "random-symmetry", "a-random-symmetry",
                                      "b-random-symmetry"});
     } catch (const std::invalid_argument& e) {
@@ -144,6 +153,17 @@ int main(int argc, char** argv) {
         const int workers = args->getInt("workers", 0);
         const int seed = args->getInt("seed", 1);
         const std::string backend = args->get("backend", "naive");
+        const int inferenceBatch = args->getInt("inference-batch", 256);
+        if (inferenceBatch < 1 || inferenceBatch > 1024)
+            throw std::invalid_argument("--inference-batch must be in [1, 1024]");
+        const int largestBatch = std::max(batchA, batchB);
+        if (inferenceBatch < largestBatch)
+            throw std::invalid_argument("--inference-batch " + std::to_string(inferenceBatch) +
+                                        " is below the mcts batch " + std::to_string(largestBatch) +
+                                        ": every search request must fit in one GPU pass");
+        // Before any checkpoint is read: an unavailable backend is refused
+        // with the message that says how to get it.
+        azgo::checkBackendAvailable(backend);
         const int botSims = args->getInt("b-bot", 0);
         if (cfg.games < 2 || cfg.games % 2 != 0)
             throw std::invalid_argument("--games must be even and at least 2 (colors are balanced)");
@@ -205,7 +225,7 @@ int main(int argc, char** argv) {
 
         const azgo::MatchResult r =
             azgo::playMatch(playerA, playerB, cfg, static_cast<uint64_t>(seed),
-                            azgo::resolveWorkers(workers), backend);
+                            azgo::resolveWorkers(workers, backend == "metal"), backend, inferenceBatch);
         const std::pair<double, double> ci = azgo::wilsonInterval(r.scoreA, r.games);
         std::printf("A %s vs B %s: A scored %g/%d = %.3f (95%% CI %.3f-%.3f), distinct games %d\n",
                     labelA.c_str(), nameB.c_str(), r.scoreA, r.games, r.scoreA / r.games,

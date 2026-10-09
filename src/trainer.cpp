@@ -23,6 +23,8 @@
 #include "azgo/evaluator.hpp"
 #include "azgo/game.hpp"
 #include "azgo/grow.hpp"
+#include "azgo/inference_hub.hpp"
+#include "azgo/metal.hpp"
 #include "azgo/optimizer.hpp"
 #include "azgo/parallel.hpp"
 #include "azgo/selfplay.hpp"
@@ -35,6 +37,13 @@ namespace azgo {
 namespace fs = std::filesystem;
 
 namespace {
+
+// With backend = metal: which GPU, OS and shaders a run uses, so two runs'
+// logs show whether they ran the same arithmetic.
+void printDeviceLine(const Config& cfg, std::ostream* log) {
+    if (log && cfg.backend == "metal")
+        *log << "gpu: " << metalDescription() << " (inference: self-play, arena, validation)\n";
+}
 
 const char* const kLogHeader =
     "generation,games,avg_length,pass_rate,black_win_rate,policy_loss,value_loss,"
@@ -187,7 +196,8 @@ MatchFn runMatches(const Config& cfg, const std::string& runDir, int liveGenerat
                 players[i] = ArenaPlayer::network(*loaded[i]);
             }
         }
-        return playMatch(players[0], players[1], ac, seed, cfg.effectiveWorkers(), cfg.backend);
+        return playMatch(players[0], players[1], ac, seed, cfg.effectiveWorkers(), cfg.backend,
+                         cfg.inferenceBatch);
     };
 }
 
@@ -353,8 +363,10 @@ Trainer::Trainer(const Config& cfg, const std::string& runDir, Network net, Trai
       log_(&std::cout) {}
 
 std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string& runDir,
-                                           const RunInit& init) {
+                                           const RunInit& init, std::ostream* log) {
     checkConsistency(cfg);
+    checkBackendAvailable(cfg.backend);
+    printDeviceLine(cfg, log);
     try {
         LrSchedule::parse(cfg.lrSchedule);
     } catch (const std::invalid_argument& e) {
@@ -449,7 +461,7 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
 }
 
 std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
-                                         const std::vector<std::string>& overrides) {
+                                         const std::vector<std::string>& overrides, std::ostream* log) {
     if (!fs::exists(statePath(runDir)))
         throw ConfigError(runDir + " does not contain a run (no state.bin); start one with --config");
 
@@ -469,6 +481,7 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
         throw ConfigError("cannot change architecture keys on resume: " + keys);
     }
     checkConsistency(cfg);
+    checkBackendAvailable(cfg.backend);
 
     // A version-1 state.bin (written before bots existed) adopts the
     // configured bots and gets each as a reference.
@@ -509,6 +522,11 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     // a state.bin from before resignation has no window and gets
     // resign_threshold_initial.
     state.resignThreshold = calibrateResignThreshold(state.resignWindow, resignCalibration(cfg));
+    printDeviceLine(cfg, log);
+    if (log && saved.backend != cfg.backend)
+        *log << "note: backend changed from " << saved.backend << " to " << cfg.backend
+             << "; from here on results differ in the\nlast bits from a run that kept " << saved.backend
+             << "\n";
     // Rewritten only after every check passed, so a refused resume leaves the
     // run directory untouched.
     writeFileAtomically(configPath(runDir), configToString(cfg));
@@ -556,21 +574,20 @@ GenerationStats Trainer::runGeneration() {
         sp.resignThreshold = state_.resignThreshold;
         sp.resignDisabledFraction = cfg_.resignDisabledFraction;
 
-        // One single-threaded backend and evaluator per worker; the network
-        // itself is shared read-only.
-        std::vector<std::unique_ptr<Backend>> backends;
-        std::vector<std::unique_ptr<LocalEvaluator>> evaluators;
-        for (int w = 0; w < workers; ++w) {
-            backends.push_back(makeBackend(cfg_.backend, 1));
-            evaluators.push_back(
-                std::make_unique<LocalEvaluator>(selfPlayNet, *backends.back(), cfg_.mctsBatch));
-        }
+        // One evaluator per worker; the network itself is shared read-only.
+        // naive, blas: a single-threaded backend and workspace per worker.
+        // metal: one batching hub that gathers every worker's leaves into
+        // GPU passes; a position's outputs do not depend on its batch, so
+        // the games are the same either way (azgo/inference_hub.hpp).
+        const int selfPlayWorkers = std::min(workers, numGames);
+        WorkerEvaluators evaluators(selfPlayNet, cfg_.backend, selfPlayWorkers, cfg_.mctsBatch,
+                                    cfg_.inferenceBatch);
         // Game i's randomness depends only on i, and its record is stored at
         // index i, so the result does not depend on which thread played it.
-        parallelFor(numGames, workers, [&](int i, int w) {
+        parallelFor(numGames, selfPlayWorkers, [&](int i, int w) {
             Rng rng(deriveSeed(cfg_.seed, static_cast<uint64_t>(g), kPhaseSelfPlay,
                                static_cast<uint64_t>(i)));
-            records[static_cast<size_t>(i)] = playSelfPlayGame(*evaluators[static_cast<size_t>(w)], sp, rng);
+            records[static_cast<size_t>(i)] = playSelfPlayGame(evaluators.forWorker(w), sp, rng);
         });
     }
 
@@ -655,9 +672,34 @@ GenerationStats Trainer::runGeneration() {
     double validationSeconds = 0;
     if (cfg_.validationLoss) {
         const auto validationStart = Clock::now();
-        std::unique_ptr<Backend> backend = makeBackend(cfg_.backend, 1);
-        Workspace ws(net_.config(), cfg_.batchSize, *backend, &trainPool);
-        const HeldOutLoss fresh = heldOutLoss(net_, ws, allPositions(records), cfg_.history);
+        // The loss of one batch: on the CPU pool, or with metal the forward
+        // pass on the GPU and the loss terms on the CPU (lossFromOutputs).
+        std::unique_ptr<Backend> backend;
+        std::unique_ptr<Workspace> ws;
+#ifdef AZ_USE_METAL
+        std::unique_ptr<MetalInference> gpu;
+#endif
+        BatchLossFn lossOf;
+        if (cfg_.backend == "metal") {
+#ifdef AZ_USE_METAL
+            gpu = std::make_unique<MetalInference>(net_, cfg_.batchSize);
+            lossOf = [&](const float* input, const float* pi, const float* z, int B, const float* own) {
+                return gpu->inferLoss(input, pi, z, B, own);
+            };
+#else
+            throw std::logic_error("backend 'metal' in a build without Metal");   // refused at start
+#endif
+        } else {
+            backend = makeBackend(cfg_.backend, 1);
+            ws = std::make_unique<Workspace>(net_.config(), cfg_.batchSize, *backend, &trainPool);
+            lossOf = [&](const float* input, const float* pi, const float* z, int B, const float* own) {
+                return net_.inferLoss(*ws, input, pi, z, B, own);
+            };
+        }
+        auto measure = [&](const std::vector<PositionRef>& positions) {
+            return heldOutLoss(net_.config(), cfg_.batchSize, &trainPool, lossOf, positions, cfg_.history);
+        };
+        const HeldOutLoss fresh = measure(allPositions(records));
         stats.valPolicyLoss = fresh.policyLoss;
         stats.valValueLoss = fresh.valueLoss;
         stats.valOwnershipLoss = fresh.ownershipLoss;
@@ -665,8 +707,8 @@ GenerationStats Trainer::runGeneration() {
             // As many positions as the fresh games have, so both means are
             // equally noisy.
             Rng rng(deriveSeed(cfg_.seed, static_cast<uint64_t>(g), kPhaseValidation));
-            const HeldOutLoss seen = heldOutLoss(
-                net_, ws, samplePositions(state_.buffer, static_cast<int>(fresh.positions), rng), cfg_.history);
+            const HeldOutLoss seen =
+                measure(samplePositions(state_.buffer, static_cast<int>(fresh.positions), rng));
             stats.seenPolicyLoss = seen.policyLoss;
             stats.seenValueLoss = seen.valueLoss;
             stats.seenOwnershipLoss = seen.ownershipLoss;
@@ -682,7 +724,8 @@ GenerationStats Trainer::runGeneration() {
     const float lr = LrSchedule::parse(cfg_.lrSchedule).at(g);
     {
         // A single-threaded backend: the pool splits the gemms (gemmColumns).
-        std::unique_ptr<Backend> backend = makeBackend(cfg_.backend, 1);
+        // Training stays on the CPU with metal too (BLAS).
+        std::unique_ptr<Backend> backend = makeBackend(cpuBackendName(cfg_.backend), 1);
         Workspace ws(net_.config(), cfg_.batchSize, *backend, &trainPool);
         SgdMomentum opt(net_, cfg_.momentum, cfg_.weightDecay);
         opt.velocity() = state_.velocity;
@@ -860,7 +903,8 @@ int rerateRun(const std::string& runDir, const std::vector<std::string>& overrid
     while (fs::exists(checkpointPath(runDir, last + 1))) ++last;
 
     // Fail on an unavailable backend before anything is written.
-    makeBackend(cfg.backend, 1);
+    checkBackendAvailable(cfg.backend);
+    printDeviceLine(cfg, log);
 
     // Each reference network is read once. When the replay uses the run's
     // own list (config.cfg's), its files must still be the ones the live run

@@ -133,8 +133,14 @@ target_include_directories(train PRIVATE ${CMAKE_SOURCE_DIR}/apps)
 
 # End-to-end check of all the executables. ctest does not build targets:
 # run `cmake --build build` first, as the usual workflow does.
+if(AZ_USE_METAL)
+  set(AZGO_SMOKE_METAL metal=ON)
+else()
+  set(AZGO_SMOKE_METAL metal=OFF)
+endif()
 add_test(NAME integration_smoke
-         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration_smoke.sh ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR})
+         COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration_smoke.sh ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR}
+                 ${AZGO_SMOKE_METAL})
 
 foreach(app arena analyze bench grow gtp)
   add_executable(${app} apps/${app}.cpp)

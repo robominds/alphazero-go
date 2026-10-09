@@ -180,7 +180,8 @@ const KeyEntry kKeys[] = {
     {"train_threads", false, intKey<&Config::trainThreads, 0, 256>, printInt<&Config::trainThreads>},
     {"backend", false,
      [](Config& c, const std::string& v) -> std::string {
-         if (v != "naive" && v != "blas") return "expected naive|blas, got " + quoted(v);
+         if (v != "naive" && v != "blas" && v != "metal")
+             return "expected naive|blas|metal, got " + quoted(v);
          c.backend = v;
          return "";
      },
@@ -202,6 +203,7 @@ const KeyEntry kKeys[] = {
      printInt<&Config::gamesPerGeneration>},
     {"simulations", false, intKey<&Config::simulations, 1, 100000>, printInt<&Config::simulations>},
     {"mcts_batch", false, intKey<&Config::mctsBatch, 1, 256>, printInt<&Config::mctsBatch>},
+    {"inference_batch", false, intKey<&Config::inferenceBatch, 1, 1024>, printInt<&Config::inferenceBatch>},
     {"c_puct", false, [](Config& c, const std::string& v) { return parseFloat(v, 0, 100, c.cPuct, true); },
      printFloat<&Config::cPuct>},
     {"dirichlet_scale", false,
@@ -341,7 +343,7 @@ int Config::effectiveMaxMoves() const {
     return maxMoves > 0 ? maxMoves : defaultMaxMoves(boardSize);
 }
 
-int Config::effectiveWorkers() const { return resolveWorkers(workers); }
+int Config::effectiveWorkers() const { return resolveWorkers(workers, backend == "metal"); }
 int Config::effectiveTrainThreads() const { return resolveTrainThreads(trainThreads); }
 
 Config parseConfigText(const std::string& text, const std::string& sourceName, const Config& base) {
@@ -404,6 +406,10 @@ void checkConsistency(const Config& cfg) {
     if (cfg.resignation && cfg.resignDisabledFraction <= 0.0f)
         throw ConfigError("resignation = true needs resign_disabled_fraction > 0: false positives are "
                           "measured on the games played out with resignation disabled");
+    if (cfg.inferenceBatch < cfg.mctsBatch)
+        throw ConfigError("inference_batch (" + std::to_string(cfg.inferenceBatch) +
+                          ") is below mcts_batch (" + std::to_string(cfg.mctsBatch) +
+                          "): every search request must fit in one GPU pass");
     if (cfg.resignMinGames > cfg.resignWindow)
         throw ConfigError("resign_min_games (" + std::to_string(cfg.resignMinGames) +
                           ") exceeds resign_window (" + std::to_string(cfg.resignWindow) +

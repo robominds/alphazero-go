@@ -2,9 +2,18 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <memory>
+#include <set>
 #include <stdexcept>
+#include <string>
 #include <vector>
 #include "azgo/arena.hpp"
+#include "azgo/backend.hpp"
+#include "azgo/evaluator.hpp"
+#include "azgo/game.hpp"
+#include "azgo/metal.hpp"
+#include "azgo/parallel.hpp"
+#include "azgo/rng.hpp"
 
 using namespace azgo;
 
@@ -481,8 +490,110 @@ static void test_rejects_bad_setup() {
     assert(throwsInvalid(a, a, cfg));
 }
 
+// The match as playMatch played it before WorkerEvaluators, written out
+// independently: every worker owns, per network player, its own
+// single-threaded backend and LocalEvaluator, and per bot a UniformEvaluator.
+static MatchResult perWorkerMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& cfg,
+                                  uint64_t seed, int workers, const std::string& backend) {
+    const NetConfig shape = (a.net ? a.net : b.net)->config();
+    const int n = shape.boardSize;
+    struct Side {
+        std::unique_ptr<Backend> backend;
+        std::unique_ptr<Evaluator> evaluator;
+        MctsConfig mcts;
+    };
+    auto makeSide = [&](const ArenaPlayer& p) {
+        Side s;
+        s.mcts = arenaSearchConfig(p, cfg);
+        if (p.net) {
+            s.backend = makeBackend(backend, 1);
+            s.evaluator = std::make_unique<LocalEvaluator>(*p.net, *s.backend, s.mcts.batchSize);
+        } else {
+            s.evaluator = std::make_unique<UniformEvaluator>(n, shape.history, 0.0f, s.mcts.batchSize);
+        }
+        return s;
+    };
+    std::vector<Side> sideA, sideB;
+    for (int w = 0; w < workers; ++w) {
+        sideA.push_back(makeSide(a));
+        sideB.push_back(makeSide(b));
+    }
+    std::vector<double> scores(cfg.games);
+    std::vector<std::vector<int>> moves(cfg.games);
+    parallelFor(cfg.games, workers, [&](int index, int w) {
+        Rng rng(deriveSeed(seed, static_cast<uint64_t>(index)));
+        const bool aIsBlack = index % 2 == 0;
+        Game game(n, cfg.komi, cfg.maxMoves > 0 ? cfg.maxMoves : defaultMaxMoves(n));
+        Mcts searchA(sideA[w].mcts, *sideA[w].evaluator), searchB(sideB[w].mcts, *sideB[w].evaluator);
+        while (!game.isTerminal()) {
+            Mcts& mover = (game.board().toMove() == Color::Black) == aIsBlack ? searchA : searchB;
+            mover.search(game, rng);
+            const float temperature = game.moveCount() < cfg.temperatureMoves ? 1.0f : 0.0f;
+            const int action = mover.selectAction(temperature, rng);
+            game.play(action);
+            if (searchA.nodeCount() > 0) searchA.advance(action);
+            if (searchB.nodeCount() > 0) searchB.advance(action);
+        }
+        scores[index] = matchScore(game.resultForBlack(), aIsBlack);
+        moves[index] = game.moves();
+    });
+    MatchResult r;
+    r.games = cfg.games;
+    for (double s : scores) {
+        r.scoreA += s;
+        if (s == 1.0) ++r.winsA;
+        else if (s == 0.0) ++r.winsB;
+        else ++r.draws;
+    }
+    r.distinctGames = static_cast<int>(std::set<std::vector<int>>(moves.begin(), moves.end()).size());
+    return r;
+}
+
+// playMatch now builds its evaluators through WorkerEvaluators. With the CPU
+// backends that must be exactly the old per-worker evaluators: the same
+// results for network against network (random symmetry, per-side batches)
+// and against a bot. With metal in a build without Metal, it refuses.
+static void test_worker_evaluators_match_per_worker_loop() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22);
+    ArenaConfig cfg = tinyArena();
+    cfg.temperatureMoves = 2;
+    std::vector<std::string> backends = {"naive"};
+    if (blasAvailable()) backends.push_back("blas");
+    for (const std::string& be : backends) {
+        for (int workers : {1, 3}) {
+            ArenaPlayer pa = ArenaPlayer::network(a, 0, true), pb = ArenaPlayer::network(b);
+            pb.mctsBatch = 2;
+            assert(sameResult(playMatch(pa, pb, cfg, 7, workers, be),
+                              perWorkerMatch(pa, pb, cfg, 7, workers, be)));
+            const ArenaPlayer bot = ArenaPlayer::bot(12);
+            assert(sameResult(playMatch(pa, bot, cfg, 8, workers, be),
+                              perWorkerMatch(pa, bot, cfg, 8, workers, be)));
+        }
+    }
+    if (!metalBuilt()) {
+        bool threw = false;
+        try {
+            playMatch(a, b, cfg, 1, 1, "metal");
+        } catch (const std::invalid_argument& e) {
+            threw = std::string(e.what()).find("-DAZ_USE_METAL=ON") != std::string::npos;
+        }
+        assert(threw);
+    }
+    // inference_batch must hold each network side's batch.
+    bool threw = false;
+    try {
+        ArenaPlayer pa = ArenaPlayer::network(a);
+        pa.mctsBatch = 16;
+        playMatch(pa, ArenaPlayer::network(b), cfg, 1, 1, "naive", 8);
+    } catch (const std::invalid_argument& e) {
+        threw = std::string(e.what()).find("inference batch") != std::string::npos;
+    }
+    assert(threw);
+}
+
 int main() {
     test_gate();
+    test_worker_evaluators_match_per_worker_loop();
     test_match_score();
     test_deterministic_across_workers_and_runs();
     test_random_symmetry_matches();
