@@ -245,13 +245,14 @@ int threadCount() {
 #endif
 }
 
+// slots: the runner's passes in flight; an arena wave's hubs run with one.
 std::unique_ptr<InferenceHub> makeHub(const Network* net, const NetConfig& cfg, int maxBatch,
-                                      uint64_t chaos, int failBatch = 0) {
+                                      uint64_t chaos, int failBatch = 0, int slots = kInferenceSlots) {
     InferenceHubOptions o;
     o.maxBatch = maxBatch;
     o.chaosSeed = chaos;
     return std::make_unique<InferenceHub>(
-        std::make_unique<CpuTestRunner>(net, cfg, maxBatch, kInferenceSlots, failBatch), cfg, o);
+        std::make_unique<CpuTestRunner>(net, cfg, maxBatch, slots, failBatch), cfg, o);
 }
 
 // ---------------------------------------------------------------- tests
@@ -273,8 +274,8 @@ void test_hub_single_request() {
 
 // Every request's outputs equal its positions evaluated alone, bitwise, for
 // 1, 4 and 32 client threads, batches capped at 8, 64 and 512, and chaos off
-// and on with three seeds.
-void test_hub_outputs_equal_alone_under_chaos() {
+// and on with three seeds, with the runner's two slots or one.
+void test_hub_outputs_equal_alone_under_chaos(int slots) {
     const NetConfig cfg = tinyConfig();
     const Network net(cfg, 3);
     const Pool pool(net, 300, 4);
@@ -282,7 +283,7 @@ void test_hub_outputs_equal_alone_under_chaos() {
     for (int clients : {1, 4, 32}) {
         for (int maxBatch : {8, 64, 512}) {
             for (uint64_t chaos : {0ull, 11ull, 12ull, 13ull}) {
-                auto hub = makeHub(&net, cfg, maxBatch, chaos);
+                auto hub = makeHub(&net, cfg, maxBatch, chaos, 0, slots);
                 std::atomic<long long> positions{0};
                 runThreads(clients, 60, [&](int t) {
                     auto ev = hub->makeEvaluator(8);
@@ -329,10 +330,11 @@ void test_hub_refuses_oversized_request() {
 
 // The runner fails the third batch: every request of that batch and every
 // later one throws with the runner's text, and no thread is left waiting.
-void test_hub_failure_reaches_every_waiter() {
+// With two slots or one.
+void test_hub_failure_reaches_every_waiter(int slots) {
     const NetConfig cfg = tinyConfig();
     for (uint64_t chaos : {0ull, 21ull}) {
-        auto hub = makeHub(nullptr, cfg, 64, chaos, 3);
+        auto hub = makeHub(nullptr, cfg, 64, chaos, 3, slots);
         std::atomic<int> failures{0};
         const size_t in = static_cast<size_t>(cfg.planes()) * cfg.area();
         runThreads(8, 30, [&](int) {
@@ -357,12 +359,13 @@ void test_hub_failure_reaches_every_waiter() {
 }
 
 // The hub shuts down cleanly: after a burst with the evaluators gone, its
-// destructor joins the dispatcher; 100 hubs leave no thread behind.
-void test_hub_shutdown() {
+// destructor joins the dispatcher; 100 hubs leave no thread behind. With
+// two slots or one.
+void test_hub_shutdown(int slots) {
     const NetConfig cfg = tinyConfig();
     const size_t in = static_cast<size_t>(cfg.planes()) * cfg.area();
     {
-        auto hub = makeHub(nullptr, cfg, 32, 31);
+        auto hub = makeHub(nullptr, cfg, 32, 31, 0, slots);
         runThreads(16, 30, [&](int) {
             auto ev = hub->makeEvaluator(8);
             std::vector<float> x(8 * in, 2.0f), logits(8 * cfg.actions()), values(8);
@@ -371,7 +374,7 @@ void test_hub_shutdown() {
     }
     const int before = threadCount();
     for (int i = 0; i < 100; ++i) {
-        auto hub = makeHub(nullptr, cfg, 8, i % 2 ? 0 : 41 + i);
+        auto hub = makeHub(nullptr, cfg, 8, i % 2 ? 0 : 41 + i, 0, slots);
         if (i % 3 == 0) {
             auto ev = hub->makeEvaluator(2);
             std::vector<float> x(2 * in, 1.0f), logits(2 * cfg.actions()), values(2);
@@ -380,8 +383,9 @@ void test_hub_shutdown() {
     }
     // A joined thread can take a moment to leave the kernel's thread list,
     // and the system may add or retire a worker thread of its own, so the
-    // count is allowed to settle. A leak would leave 300 threads (each hub
-    // has a dispatcher and the runner two helpers), far beyond any noise.
+    // count is allowed to settle. A leak would leave 200-300 threads (each
+    // hub has a dispatcher and the runner a helper per slot), far beyond any
+    // noise.
     int after = threadCount();
     for (int tries = 0; before >= 0 && after > before && tries < 100; ++tries) {
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -394,12 +398,12 @@ void test_hub_shutdown() {
 
 // 64 threads x 1,000 requests with chaos: every row comes back to its own
 // request, none lost or duplicated (each position carries a unique marker,
-// which the marker runner echoes).
-void test_hub_stress() {
+// which the marker runner echoes). With two slots or one.
+void test_hub_stress(int slots) {
     const NetConfig cfg = tinyConfig();
     const size_t in = static_cast<size_t>(cfg.planes()) * cfg.area();
     const int L = cfg.actions();
-    auto hub = makeHub(nullptr, cfg, 256, 51);
+    auto hub = makeHub(nullptr, cfg, 256, 51, 0, slots);
     std::atomic<long long> positions{0};
     runThreads(64, 120, [&](int t) {
         auto ev = hub->makeEvaluator(8);
@@ -594,11 +598,13 @@ int main() {
     test_hub_single_request();
     test_hub_runner_begin_throws();
     test_hub_shutdown_with_threads_inside();
-    test_hub_outputs_equal_alone_under_chaos();
+    for (int slots : {kInferenceSlots, 1}) {
+        test_hub_outputs_equal_alone_under_chaos(slots);
+        test_hub_failure_reaches_every_waiter(slots);
+        test_hub_shutdown(slots);
+        test_hub_stress(slots);
+    }
     test_hub_refuses_oversized_request();
-    test_hub_failure_reaches_every_waiter();
-    test_hub_shutdown();
-    test_hub_stress();
     test_selfplay_through_hub_equals_local();
     test_worker_evaluators_cpu_is_local();
     std::printf("test_inference_hub: all tests passed\n");

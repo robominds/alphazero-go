@@ -159,8 +159,8 @@ keeps its seed, and results are added in the same order, so the result
 files are identical to matches played one at a time
 ([the design](docs/superpowers/specs/2026-10-10-arena-gpu-design.md)).
 `--rerate` plays its rounds the same way. With `metal`, `workers = 0` in
-the arena means every game of the wave at once (an arena game has only
-one search in flight). When a wave has several hubs, each keeps one pass
+a run's arena rounds means every game of the wave at once (an arena game
+has only one search in flight). The `arena` tool keeps the rule below. When a wave has several hubs, each keeps one pass
 in flight rather than two, so the passes are fewer and larger.
 
 With `metal`, `workers = 0` means twice the hardware threads: a worker

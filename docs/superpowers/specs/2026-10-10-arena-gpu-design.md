@@ -128,7 +128,9 @@ Which positions share a pass changes no result.
 same rounds. `rerate` cannot run several generations' rounds at once,
 because each round's opponents depend on the previous rounds' results.
 The `arena` app plays one long match (`playMatch`) and needs nothing
-new. It now passes `--workers` unresolved, which resolves the same way.
+new. It keeps its own worker rule: `--workers 0` resolves to every core
+(twice the hardware threads with `--backend metal`), as its usage text
+says. The every-game rule was measured only for a round's waves.
 
 **GPU memory.** A wave holds one hub per network at once. When a run
 starts, resumes or re-rates with `metal`, the memory check covers two

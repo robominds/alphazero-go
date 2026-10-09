@@ -225,7 +225,7 @@ int main(int argc, char** argv) {
 
         const azgo::MatchResult r =
             azgo::playMatch(playerA, playerB, cfg, static_cast<uint64_t>(seed),
-                            workers, backend, inferenceBatch);
+                            azgo::resolveWorkers(workers, backend == "metal"), backend, inferenceBatch);
         const std::pair<double, double> ci = azgo::wilsonInterval(r.scoreA, r.games);
         std::printf("A %s vs B %s: A scored %g/%d = %.3f (95%% CI %.3f-%.3f), distinct games %d\n",
                     labelA.c_str(), nameB.c_str(), r.scoreA, r.games, r.scoreA / r.games,
