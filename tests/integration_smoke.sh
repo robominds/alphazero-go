@@ -439,6 +439,11 @@ if [ "$METAL" = "metal=ON" ]; then
         | "$BUILD/gtp" --checkpoint "$MCK/gen_0003.azn" --simulations 8 --backend metal > "$W/gtp-metal.out" 2> /dev/null \
         || fail "gtp --backend metal failed"
     grep -Eqx '= ([A-E][1-5]|pass)' "$W/gtp-metal.out" || fail "gtp --backend metal played no move"
+
+    echo "== metal: bench =="
+    out="$("$BUILD/bench" --sizes 5 --seconds 0.1 --backend metal --configs "$SRC/configs" --hub-workers 2)"
+    echo "$out" | grep -Eq '^5x5 +3 x 32 +metal +[0-9]+ +-$' || fail "bench --backend metal printed no metal row"
+    echo "$out" | grep -q 'metal hub' || fail "bench --backend metal printed no hub table"
 else
     echo "== metal: refused in a build without it =="
     NOT_BUILT="backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON (macOS only)"
@@ -464,6 +469,10 @@ else
     out="$(echo quit | "$BUILD/gtp" --checkpoint "$CK/gen_0003.azn" --backend metal 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "gtp --backend metal without Metal exited $status, expected 1"
     echo "$out" | grep -qF "$NOT_BUILT" || fail "gtp did not say metal is not built: $out"
+    status=0
+    out="$("$BUILD/bench" --sizes 5 --seconds 0.1 --backend metal --configs "$SRC/configs" 2>&1)" || status=$?
+    [ "$status" -eq 1 ] || fail "bench --backend metal without Metal exited $status, expected 1"
+    echo "$out" | grep -qF "$NOT_BUILT" || fail "bench did not say metal is not built: $out"
 fi
 
 echo "integration_smoke: all checks passed"
