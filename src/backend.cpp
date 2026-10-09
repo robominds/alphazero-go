@@ -182,6 +182,36 @@ void NaiveBackend::gemm(bool transA, bool transB, int M, int N, int K, float alp
     for (std::thread& t : pool) t.join();
 }
 
+bool NaiveBackend::gemmRowsOnPool(ThreadPool& pool, bool transA, bool transB, int M, int N, int K, float alpha,
+                                  const float* A, const float* B, float beta, float* C) const {
+    if (M <= 0 || N <= 0) return true;
+    // Packed once here, read by every band.
+    std::vector<float> packA, packB;
+    int lda = transA ? M : K, ldb = transB ? K : N;
+    if (transA) {
+        transposeInto(A, K, M, lda, packA);
+        A = packA.data();
+        lda = K;
+    }
+    if (transB) {
+        transposeInto(B, N, K, ldb, packB);
+        B = packB.data();
+        ldb = N;
+    }
+    const int bands = std::max(1, M / kGemmRowBlock);   // the last band takes the remainder
+    parallelChunks(&pool, bands, [&](int band) {
+        const int r0 = band * kGemmRowBlock;
+        const int r1 = band == bands - 1 ? M : r0 + kGemmRowBlock;
+        gemmRows(r0, r1, N, K, alpha, A, lda, B, ldb, beta, C, N);
+    });
+    return true;
+}
+
+bool Backend::gemmRowsOnPool(ThreadPool&, bool, bool, int, int, int, float, const float*, const float*, float,
+                             float*) const {
+    return false;
+}
+
 // ---------------------------------------------------------------- column blocks
 
 int gemmColumnBlockCount(int M, int N) {

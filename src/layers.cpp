@@ -56,15 +56,19 @@ void Conv2d::backward(const Backend& be, const float* x, const float* col, const
     float* dIn = k == 1 ? dx : dcol;
     const int rows = k == 1 ? cin : K;
     const int blocks = dx == nullptr ? 0 : (pool ? gemmColumnBlockCount(rows, M) : 1);
-    // Chunk 0: y = w . columns, so dL/dw = dy . columns^T (summed over all M
-    // pixels), accumulated into gw (beta = 1), as one call. Chunks 1..: the
-    // column blocks of dL/dx, beside it on the pool. Without a pool, the
-    // two gemms in that order.
-    parallelChunks(pool, 1 + blocks, [&](int chunk) {
-        if (chunk == 0) {
+    // y = w . columns, so dL/dw = dy . columns^T (summed over all M pixels),
+    // accumulated into gw (beta = 1). It is one call, chunk 0 of the run
+    // below beside the column blocks of dL/dx, unless the backend can cut it
+    // into row bands on the pool itself. Without a pool: the two gemms in
+    // that order.
+    const bool dWDone = pool != nullptr &&
+                        be.gemmRowsOnPool(*pool, false, true, cout, K, M, 1.0f, dy, columns, 1.0f, gw.data());
+    const int first = dWDone ? 0 : 1;
+    parallelChunks(pool, first + blocks, [&](int chunk) {
+        if (chunk < first) {
             be.gemm(false, true, cout, K, M, 1.0f, dy, columns, 1.0f, gw.data());
         } else {
-            gemmColumnBlock(be, chunk - 1, blocks, true, false, rows, M, cout, 1.0f, w.data(), dy, 0.0f, dIn);
+            gemmColumnBlock(be, chunk - first, blocks, true, false, rows, M, cout, 1.0f, w.data(), dy, 0.0f, dIn);
         }
     });
     if (dx != nullptr && k != 1) col2imChannels(be, pool, dcol, cin, B, n, k, dx);

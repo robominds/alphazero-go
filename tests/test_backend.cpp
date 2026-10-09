@@ -311,6 +311,35 @@ static void test_column_blocks_match_unsplit_gemm() {
     if (blasAvailable()) checkColumnBlocksMatchUnsplit(*makeBackend("blas"), true);
 }
 
+// Row bands on a pool, used for the weight gradient on a backend that has
+// them (the naive one; BLAS declines): a dW-shaped gemm (beta = 1) on pools
+// of 1, 2 and 5 threads gives the unsplit call's bits.
+static void test_row_bands_match_unsplit_gemm() {
+    NaiveBackend naive;
+    ThreadPool p1(1), p2(2), p5(5);
+    if (blasAvailable()) {
+        float c = 7.0f;
+        const float one = 1.0f;
+        assert(!makeBackend("blas")->gemmRowsOnPool(p2, false, false, 1, 1, 1, 1.0f, &one, &one, 0.0f, &c));
+        assert(c == 7.0f);   // declined: nothing computed
+    }
+    Rng rng(51);
+    for (const Shape& s : {Shape{100, 288, 1200}, Shape{64, 162, 2025}, Shape{33, 27, 50}, Shape{8, 9, 10}}) {
+        for (int t = 0; t < 4; ++t) {
+            const bool tA = (t & 1) != 0, tB = (t & 2) != 0;
+            std::vector<float> A = randomVector(rng, static_cast<size_t>(s.M) * s.K);
+            std::vector<float> B = randomVector(rng, static_cast<size_t>(s.K) * s.N);
+            std::vector<float> C0 = randomVector(rng, static_cast<size_t>(s.M) * s.N), expected = C0;
+            naive.gemm(tA, tB, s.M, s.N, s.K, 1.0f, A.data(), B.data(), 1.0f, expected.data());
+            for (ThreadPool* pool : {&p1, &p2, &p5}) {
+                std::vector<float> C = C0;
+                assert(naive.gemmRowsOnPool(*pool, tA, tB, s.M, s.N, s.K, 1.0f, A.data(), B.data(), 1.0f, C.data()));
+                assert(std::memcmp(C.data(), expected.data(), C.size() * sizeof(float)) == 0);
+            }
+        }
+    }
+}
+
 // The definitions of im2col and col2im as first written (plain loops). The
 // backend's versions must give exactly these bits: im2col is a copy, and
 // col2im adds each pixel's contributions in the same (dy, dx) order.
@@ -380,6 +409,7 @@ int main() {
     test_blas_matches_naive();
     test_strided_gemm();
     test_column_blocks_match_unsplit_gemm();
+    test_row_bands_match_unsplit_gemm();
     test_im2col_col2im_match_definition_bitwise();
     std::printf("test_backend: all tests passed\n");
     return 0;

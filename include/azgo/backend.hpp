@@ -39,6 +39,14 @@ public:
     virtual void im2col(const float* in, int C, int B, int n, int k, float* col) const;
     // Adjoint of im2col: OVERWRITES in with the sum of contributions.
     virtual void col2im(const float* col, int C, int B, int n, int k, float* in) const;
+
+    // Optional: the packed gemm with the rows of C computed in parallel on
+    // `pool`, in bands of kGemmRowBlock rows fixed by the shape, giving
+    // exactly gemm's bits; for a long product that cannot be cut by columns
+    // (a convolution's weight gradient). Returns false, computing nothing,
+    // when the backend has no cheap way to do it (the default).
+    virtual bool gemmRowsOnPool(ThreadPool& pool, bool transA, bool transB, int M, int N, int K, float alpha,
+                                const float* A, const float* B, float beta, float* C) const;
 };
 
 // Blocked loops, packing transposed operands first. threads > 1 splits the
@@ -52,6 +60,10 @@ public:
     void gemm(bool transA, bool transB, int M, int N, int K, float alpha,
               const float* A, int lda, const float* B, int ldb, float beta,
               float* C, int ldc) const override;
+    // Packs the transposed operands once, then runs the row bands: each
+    // element's sum over K runs in the same fixed order as in one call.
+    bool gemmRowsOnPool(ThreadPool& pool, bool transA, bool transB, int M, int N, int K, float alpha,
+                        const float* A, const float* B, float beta, float* C) const override;
 private:
     int threads_;
 };
@@ -73,11 +85,15 @@ std::unique_ptr<Backend> makeBackend(const std::string& name, int threads = 1);
 // one fixed order), and for Accelerate as measured over ~11,000 conv
 // shapes (boards 5-19, 8-256 filters, batches 1-256, blocks of 128-1024
 // columns; tests/test_backend.cpp keeps a representative set). The weight
-// gradient (dW = dy . columns^T, a sum over every pixel) is not cut: cut
-// by rows it re-reads the whole column matrix per band and ran slower than
-// one call, and cut by columns Accelerate's bits changed for some small
-// batches. It runs as one call beside the input gradient's blocks.
+// gradient (dW = dy . columns^T, a sum over every pixel) is not cut by
+// columns (Accelerate's bits changed for some small batches) and, with
+// BLAS, not by rows either: each band re-reads the whole column matrix,
+// and on Accelerate the bands ran slower than one call. It runs as one
+// call beside the input gradient's blocks, except on a backend that
+// offers Backend::gemmRowsOnPool (the naive one), where it is cut into
+// bands of kGemmRowBlock rows of C (the last band also takes the remainder).
 constexpr int kGemmColumnBlock = 512;
+constexpr int kGemmRowBlock = 16;
 // Fewer rows of C than this and the gemm stays one call: the 1x1 head
 // convolutions' forward products (1 or 2 rows), for which Accelerate's bits
 // did depend on the column split.
