@@ -2,9 +2,12 @@
 // numbers rather than guesses. For each board size's preset network and each
 // backend: inference throughput at the MCTS batch size on one thread (what a
 // self-play worker sees) and the time of one training step at batch 128 on
-// all cores (what the training phase sees). Then raw rules-engine speed.
+// all cores (what the training phase sees with train_threads = 0). With
+// --train-threads, a second table times the training step at each of the
+// given thread counts (batch --train-batch). Then raw rules-engine speed.
 //
 //   bench [--sizes 5,9,19] [--backend naive|blas|all] [--seconds 2] [--configs configs]
+//         [--train-threads 1,2,4,8] [--train-batch 256]
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +23,7 @@
 #include "azgo/config.hpp"
 #include "azgo/game.hpp"
 #include "azgo/network.hpp"
+#include "azgo/optimizer.hpp"
 #include "azgo/parallel.hpp"
 #include "azgo/rng.hpp"
 #include "cli.hpp"
@@ -28,9 +32,12 @@ namespace {
 
 const char* const kUsage =
     "usage: bench [--sizes 5,9,19] [--backend naive|blas|all] [--seconds 2] [--configs DIR]\n"
+    "             [--train-threads 1,2,4,8] [--train-batch 256]\n"
     "\n"
     "Network shapes come from DIR/<n>x<n>.cfg (default DIR: configs). --seconds is\n"
-    "the minimum duration of each measurement.\n";
+    "the minimum duration of each measurement. --train-threads adds a table of the\n"
+    "training step's time at each thread count (0 = all cores), at batch\n"
+    "--train-batch (default 256).\n";
 
 constexpr int kInferBatch = 8;     // the default MCTS batch (mcts_batch)
 constexpr int kTrainBatch = 128;
@@ -44,6 +51,21 @@ int usageError(const std::string& message) {
 
 double secondsSince(Clock::time_point start) {
     return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+// "1,2,4": positive integers (thread counts; 0 = all cores).
+std::vector<int> parseThreadList(const std::string& text) {
+    std::vector<int> list;
+    std::stringstream in(text);
+    for (std::string item; std::getline(in, item, ',');) {
+        char* end = nullptr;
+        const long t = std::strtol(item.c_str(), &end, 10);
+        if (item.empty() || *end != '\0' || t < 0 || t > 256)
+            throw std::invalid_argument("--train-threads: '" + item + "' is not a thread count in 0..256");
+        list.push_back(static_cast<int>(t));
+    }
+    if (list.empty()) throw std::invalid_argument("--train-threads is empty");
+    return list;
 }
 
 std::vector<int> parseSizes(const std::string& text) {
@@ -89,27 +111,35 @@ double measureInference(const azgo::NetConfig& nc, const std::string& backendNam
     return static_cast<double>(calls) * kInferBatch / elapsed;
 }
 
-// Milliseconds per training step (forward + backward), batch kTrainBatch,
-// backend given every hardware thread as in the trainer.
-double measureTrainStep(const azgo::NetConfig& nc, const std::string& backendName, double seconds) {
-    std::unique_ptr<azgo::Backend> backend = azgo::makeBackend(backendName, azgo::resolveWorkers(0));
+// Milliseconds per training step (forward, loss, backward and the SGD
+// update) at the given batch, the network passes spread over `threads`
+// threads (resolveWorkers: 0 = all cores) as the trainer's train_threads does.
+double measureTrainStep(const azgo::NetConfig& nc, const std::string& backendName, int batch, int threads,
+                        double seconds) {
+    std::unique_ptr<azgo::Backend> backend = azgo::makeBackend(backendName, 1);
+    azgo::ThreadPool pool(azgo::resolveWorkers(threads));
     azgo::Network net(nc, 1);
-    azgo::Workspace ws(nc, kTrainBatch, *backend);
+    azgo::Workspace ws(nc, batch, *backend, &pool);
+    azgo::SgdMomentum opt(net, 0.9f, 1e-4f);
     azgo::Rng rng(11);
-    const std::vector<float> input = randomInput(nc, kTrainBatch, rng);
-    std::vector<float> pi(static_cast<size_t>(kTrainBatch) * nc.actions(), 0.0f);
-    std::vector<float> z(kTrainBatch);
-    for (int b = 0; b < kTrainBatch; ++b) {
+    const std::vector<float> input = randomInput(nc, batch, rng);
+    std::vector<float> pi(static_cast<size_t>(batch) * nc.actions(), 0.0f);
+    std::vector<float> z(static_cast<size_t>(batch));
+    for (int b = 0; b < batch; ++b) {
         pi[static_cast<size_t>(b) * nc.actions() + rng.below(nc.actions())] = 1.0f;   // one-hot target
         z[static_cast<size_t>(b)] = rng.below(2) ? 1.0f : -1.0f;
     }
+    auto step = [&] {
+        net.trainStep(ws, input.data(), pi.data(), z.data(), batch);
+        opt.step(net, 0.001f, &pool);
+    };
 
-    net.trainStep(ws, input.data(), pi.data(), z.data(), kTrainBatch);   // warm-up
+    step();   // warm-up
     long long steps = 0;
     const auto start = Clock::now();
     double elapsed = 0;
     do {
-        net.trainStep(ws, input.data(), pi.data(), z.data(), kTrainBatch);
+        step();
         ++steps;
         elapsed = secondsSince(start);
     } while (elapsed < seconds);
@@ -141,7 +171,8 @@ int main(int argc, char** argv) {
     std::unique_ptr<ArgParser> args;
     try {
         args = std::make_unique<ArgParser>(argc, argv,
-                                           std::vector<std::string>{"sizes", "backend", "seconds", "configs"},
+                                           std::vector<std::string>{"sizes", "backend", "seconds", "configs",
+                                                                    "train-threads", "train-batch"},
                                            std::vector<std::string>{"help"});
     } catch (const std::invalid_argument& e) {
         return usageError(e.what());
@@ -156,6 +187,10 @@ int main(int argc, char** argv) {
         const double seconds = args->getDouble("seconds", 2.0);
         if (seconds <= 0) throw std::invalid_argument("--seconds must be positive");
         const std::string configDir = args->get("configs", "configs");
+        const bool threadTable = args->has("train-threads");
+        const std::vector<int> threadCounts = parseThreadList(args->get("train-threads", "0"));
+        const int trainBatch = args->getInt("train-batch", 256);
+        if (trainBatch < 1) throw std::invalid_argument("--train-batch must be positive");
         const std::string which = args->get("backend", azgo::blasAvailable() ? "all" : "naive");
         std::vector<std::string> backends;
         if (which == "all") {
@@ -168,6 +203,7 @@ int main(int argc, char** argv) {
 
         std::printf("%-6s %-17s %-8s %12s %14s\n", "size", "blocks x filters", "backend", "evals/s",
                     "train-step ms");
+        std::vector<azgo::NetConfig> shapes;
         for (int n : sizes) {
             const std::string preset =
                 (std::filesystem::path(configDir) / (std::to_string(n) + "x" + std::to_string(n) + ".cfg")).string();
@@ -176,14 +212,36 @@ int main(int argc, char** argv) {
             const azgo::NetConfig nc = azgo::loadConfigFile(preset).netConfig();
             if (nc.boardSize != n)
                 throw std::runtime_error(preset + " has board_size " + std::to_string(nc.boardSize));
+            shapes.push_back(nc);
             for (const std::string& b : backends) {
                 const double evals = measureInference(nc, b, seconds);
-                const double stepMs = measureTrainStep(nc, b, seconds);
+                const double stepMs = measureTrainStep(nc, b, kTrainBatch, 0, seconds);
                 char shape[32], size[16];
                 std::snprintf(shape, sizeof shape, "%d x %d", nc.blocks, nc.filters);
                 std::snprintf(size, sizeof size, "%dx%d", n, n);
                 std::printf("%-6s %-17s %-8s %12.0f %14.1f\n", size, shape, b.c_str(), evals, stepMs);
                 std::fflush(stdout);
+            }
+        }
+
+        if (threadTable) {
+            // Speedup against the first thread count listed.
+            std::printf("\n%-6s %-17s %-8s %6s %8s %14s %8s\n", "size", "blocks x filters", "backend", "batch",
+                        "threads", "train-step ms", "speedup");
+            for (const azgo::NetConfig& nc : shapes) {
+                for (const std::string& b : backends) {
+                    double first = 0;
+                    for (int t : threadCounts) {
+                        const double stepMs = measureTrainStep(nc, b, trainBatch, t, seconds);
+                        if (first == 0) first = stepMs;
+                        char shape[32], size[16];
+                        std::snprintf(shape, sizeof shape, "%d x %d", nc.blocks, nc.filters);
+                        std::snprintf(size, sizeof size, "%dx%d", nc.boardSize, nc.boardSize);
+                        std::printf("%-6s %-17s %-8s %6d %8d %14.1f %7.2fx\n", size, shape, b.c_str(), trainBatch,
+                                    azgo::resolveWorkers(t), stepMs, first / stepMs);
+                        std::fflush(stdout);
+                    }
+                }
             }
         }
 
