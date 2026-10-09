@@ -17,11 +17,13 @@
 #include <vector>
 #include "azgo/arena.hpp"
 #include "azgo/backend.hpp"
+#include "azgo/bn_calibration.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/config.hpp"
 #include "azgo/elo.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/network.hpp"
+#include "azgo/rng.hpp"
 #include "azgo/run_state.hpp"
 #include "azgo/selfplay.hpp"
 #include "azgo/serialize.hpp"
@@ -1608,6 +1610,87 @@ static void test_train_threads_change_nothing() {
     }
 }
 
+// bn_calibrate: a fresh generation 0 is calibrated (bn_calibration.hpp),
+// to the same bytes for any workers, train_threads and backend; with the
+// key off its running statistics are the initial ones; a network given with
+// --init-from is used as it is.
+static void test_generation_0_batch_norm_calibration() {
+    TempDir reference("bn_reference"), off("bn_off"), given("bn_given");
+    Config c = tinyConfig();
+    c.workers = 1;
+    c.trainThreads = 1;
+    c.backend = "naive";
+    startQuiet(c, reference);
+    const std::string gen0 = readFile(checkpointPath(reference.str(), 0));
+    assert(readFile(reference.file("config.cfg")).find("\nbn_calibrate = true\n") != std::string::npos);
+    // Exactly the documented calibration of the documented network.
+    Network expected(c.netConfig(), deriveSeed(c.seed, 0, kPhaseInit));
+    calibrateBatchNorm(expected, deriveSeed(c.seed, 0, kPhaseBatchNorm), 1);
+    saveNetwork(expected, reference.file("expected.azn"));
+    assert(readFile(reference.file("expected.azn")) == gen0);
+
+    // Other worker and training thread counts, and every available backend.
+    std::vector<std::string> backends = {"naive"};
+    if (blasAvailable()) backends.push_back("blas");
+    if (metalAvailable()) backends.push_back("metal");
+    for (const std::string& backend : backends) {
+        TempDir other("bn_" + backend);
+        c.workers = 3;
+        c.trainThreads = 4;
+        c.backend = backend;
+        startQuiet(c, other);
+        assert(readFile(checkpointPath(other.str(), 0)) == gen0);
+    }
+
+    // Off: the same weights with the initial running statistics.
+    c = tinyConfig();
+    c.bnCalibrate = false;
+    startQuiet(c, off);
+    assert(readFile(off.file("config.cfg")).find("\nbn_calibrate = false\n") != std::string::npos);
+    Network fresh = loadNetwork(checkpointPath(off.str(), 0));
+    const std::vector<ParamView> freshParams = fresh.params(), expectedParams = expected.params();
+    for (size_t i = 0; i < freshParams.size(); ++i)
+        assert(std::equal(freshParams[i].value, freshParams[i].value + freshParams[i].size, expectedParams[i].value));
+    for (const BufferView& b : fresh.buffers()) {
+        const bool isVar = b.name.find("runVar") != std::string::npos;
+        for (size_t i = 0; i < b.size; ++i) assert(b.value[i] == (isVar ? 1.0f : 0.0f));
+    }
+    assert(readFile(checkpointPath(off.str(), 0)) != gen0);
+
+    // --init-from with bn_calibrate on: generation 0 is the given file.
+    Trainer::RunInit init;
+    init.initFrom = checkpointPath(off.str(), 0);
+    c.bnCalibrate = true;
+    Trainer::startNew(c, given.str(), init)->setLog(nullptr);
+    assert(readFile(checkpointPath(given.str(), 0)) == readFile(init.initFrom));
+}
+
+// Resume never calibrates: a run's checkpoints are untouched, and a
+// config.cfg written before bn_calibrate existed (whose generation 0 was not
+// calibrated) is rewritten with bn_calibrate = false. A run that has the key
+// keeps it.
+static void test_resume_and_bn_calibrate() {
+    TempDir old("bn_resume_old"), current("bn_resume_current");
+    Config c = tinyConfig();
+    c.bnCalibrate = false;
+    startQuiet(c, old)->runUntil(1);
+    std::string text = readFile(old.file("config.cfg"));
+    const size_t line = text.find("bn_calibrate = false\n");
+    assert(line != std::string::npos);
+    text.erase(line, std::string("bn_calibrate = false\n").size());   // as code before the key wrote it
+    writeFile(old.file("config.cfg"), text);
+    const std::string gen0 = readFile(checkpointPath(old.str(), 0)), gen1 = readFile(checkpointPath(old.str(), 1));
+    resumeQuiet(old, {})->runUntil(2);
+    assert(readFile(old.file("config.cfg")).find("\nbn_calibrate = false\n") != std::string::npos);
+    assert(readFile(checkpointPath(old.str(), 0)) == gen0 && readFile(checkpointPath(old.str(), 1)) == gen1);
+
+    startQuiet(tinyConfig(), current)->runUntil(1);
+    const std::string calibrated0 = readFile(checkpointPath(current.str(), 0));
+    resumeQuiet(current, {})->runUntil(2);
+    assert(readFile(current.file("config.cfg")).find("\nbn_calibrate = true\n") != std::string::npos);
+    assert(readFile(checkpointPath(current.str(), 0)) == calibrated0);
+}
+
 // backend = metal in a build without Metal: start, resume and re-rate refuse
 // before writing anything, with the message that says how to get it.
 static void test_metal_unavailable_writes_nothing() {
@@ -1825,6 +1908,8 @@ int main() {
     test_resume_adds_validation_columns();
     test_validation_loss_prints_nan();
     test_rounds_at_once_equal_one_at_a_time();
+    test_generation_0_batch_norm_calibration();
+    test_resume_and_bn_calibrate();
     std::printf("test_trainer: all tests passed\n");
     return 0;
 }

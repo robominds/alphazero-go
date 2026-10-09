@@ -132,6 +132,19 @@ public:
     LossStats inferLoss(Workspace& ws, const float* input, const float* pi, const float* z, int B,
                         const float* ownership = nullptr) const;
 
+    // Batch norm calibration: one training-mode forward pass over input
+    // [B][planes][area] (batch statistics, as trainStep uses) that SETS every
+    // batch norm layer's running mean and variance to the statistics of its
+    // own input in that pass (unbiased variance, as trainStep's update uses),
+    // instead of averaging them in. Afterwards inference mode normalizes
+    // this batch as training mode does. A fresh network's running
+    // statistics (mean 0, variance 1) do not normalize at all, so a deep one
+    // in inference mode lets activations grow block after block until the
+    // value saturates; Trainer::startNew calibrates generation 0 so that it
+    // plays like the normalized random network training starts from
+    // (bn_calibrate). Parameters and gradients are untouched.
+    void calibrateBatchNorm(Workspace& ws, const float* input, int B);
+
 private:
     NetConfig cfg_;
     // Layers (Task 7).
@@ -155,7 +168,8 @@ private:
 
     // Infer: BN running statistics. Train: batch statistics, running stats
     // updated. Probe: batch statistics, running stats untouched (computeLoss).
-    enum class Mode { Infer, Train, Probe };
+    // Calibrate: batch statistics, running stats set to them (momentum 1).
+    enum class Mode { Infer, Train, Probe, Calibrate };
     void forward(Workspace& ws, const float* input, int B, Mode mode);
     LossStats loss(Workspace& ws, const float* pi, const float* z, const float* ownership,
                    float ownershipWeight, int B, bool withGradients) const;

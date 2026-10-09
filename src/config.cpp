@@ -198,6 +198,8 @@ const KeyEntry kKeys[] = {
     {"value_hidden", true, intKey<&Config::valueHidden, 1, 1024>, printInt<&Config::valueHidden>},
     {"ownership", true, [](Config& c, const std::string& v) { return parseBool(v, c.ownership); },
      [](const Config& c) { return std::string(c.ownership ? "true" : "false"); }},
+    {"bn_calibrate", false, [](Config& c, const std::string& v) { return parseBool(v, c.bnCalibrate); },
+     [](const Config& c) { return std::string(c.bnCalibrate ? "true" : "false"); }},
     // self-play and search
     {"games_per_generation", false, intKey<&Config::gamesPerGeneration, 1, 1000000>,
      printInt<&Config::gamesPerGeneration>},

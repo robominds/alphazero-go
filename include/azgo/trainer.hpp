@@ -71,7 +71,11 @@ public:
     // runDir already contains state.bin, `init` does not fit cfg, or a
     // reference network is missing, unreadable or bigger than cfg's shape.
     // Writes config.cfg, gen_0000.azn and an initial state.bin (generation 0,
-    // with each reference network's path and hash); with `init` also init.txt
+    // with each reference network's path and hash). A fresh generation 0 has
+    // its batch norm calibrated (bn_calibrate, azgo/bn_calibration.hpp,
+    // seeded by deriveSeed(seed, 0, kPhaseBatchNorm), on the CPU: the same
+    // bytes for any workers, train_threads and backend); an initFrom
+    // network is used as it is. With `init` also init.txt
     // recording where the start came from. Every fixed player (bot or
     // reference network) plays calibration_games against generation 0.
     // Optimizer momentum starts at zero either way. Refuses an unavailable
@@ -80,7 +84,8 @@ public:
     //   gpu: Apple M5 Max, macOS 27.0.1, shaders 3f1c9a07 (inference: self-play, arena, validation)
     static std::unique_ptr<Trainer> startNew(const Config& cfg, const std::string& runDir,
                                              const RunInit& init = {}, std::ostream* log = &std::cout);
-    // Loads config.cfg, applies overrides, refuses (ConfigError listing keys)
+    // Loads config.cfg (one without bn_calibrate, from before the key, as
+    // bn_calibrate = false), applies overrides, refuses (ConfigError listing keys)
     // if an architecture key, bot_simulations or reference_networks changed,
     // or if a reference network's file no longer matches the hash in
     // state.bin; loads state.bin and the latest checkpoint.

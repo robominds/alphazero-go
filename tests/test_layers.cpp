@@ -192,6 +192,23 @@ static void test_batchnorm_running_stats_update() {
     assert(near(y[7], (4.0 - 1.0) / std::sqrt(3.0 + BatchNorm2d::kEps)));
 }
 
+// Momentum 1 is batch norm calibration (Network::calibrateBatchNorm): the
+// running statistics become exactly the batch's, whatever they were before.
+static void test_batchnorm_momentum_one_sets_running_stats() {
+    BatchNorm2d bn(2);
+    bn.runMean = {7.0f, -3.0f};
+    bn.runVar = {0.01f, 50.0f};
+    const int M = 4;
+    const float x[8] = {1, 2, 3, 4, 0, 0, 0, 4};
+    float y[8], xhat[8], invStd[2];
+    bn.forwardTrain(x, M, y, xhat, invStd, true, nullptr, 1.0f);
+    // The same float arithmetic as the update: mean, then var * M / (M - 1).
+    assert(bn.runMean[0] == 2.5f && bn.runMean[1] == 1.0f);
+    assert(bn.runVar[0] == static_cast<float>(1.25 * 4 / 3) && bn.runVar[1] == 4.0f);
+    // The output is the usual training-mode output (batch statistics).
+    assert(near(y[0], (1.0 - 2.5) / std::sqrt(1.25 + BatchNorm2d::kEps)));
+}
+
 static void test_he_init_scale() {
     Rng rng(1);
     Conv2d conv(64, 64, 3);                 // w is 64 x 576, fan-in 576
@@ -265,6 +282,7 @@ int main() {
     test_conv_forward_hand_example();
     test_batchnorm_inference_hand_values();
     test_batchnorm_running_stats_update();
+    test_batchnorm_momentum_one_sets_running_stats();
     test_he_init_scale();
     test_gradients_accumulate();
     std::printf("test_layers: all tests passed\n");

@@ -54,9 +54,12 @@ struct BatchNorm2d {
     // y = gamma * (x - runMean) / sqrt(runVar + eps) + beta
     void forwardInfer(const float* x, int M, float* y, ThreadPool* pool = nullptr) const;
     // Batch statistics (biased variance). Saves xhat [c][M] and invStd [c].
-    // If updateRunning, updates runMean and runVar (unbiased variance M/(M-1)).
+    // If updateRunning, updates runMean and runVar (unbiased variance M/(M-1))
+    // as running = (1 - momentum) * running + momentum * batch. momentum = 1
+    // sets them to the batch's statistics exactly: batch norm calibration
+    // (Network::calibrateBatchNorm).
     void forwardTrain(const float* x, int M, float* y, float* xhat, float* invStd,
-                      bool updateRunning, ThreadPool* pool = nullptr);
+                      bool updateRunning, ThreadPool* pool = nullptr, float momentum = kMomentum);
     // Accumulates ggamma, gbeta; writes dx (overwrite); dx may alias dy (Network relies on it).
     void backward(const float* dy, const float* xhat, const float* invStd, int M, float* dx,
                   ThreadPool* pool = nullptr);

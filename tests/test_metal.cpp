@@ -1452,6 +1452,12 @@ void test_metal_rounds_at_once_equal_one_at_a_time() {
     base.promoteThreshold = 0.5f;
     base.gating = true;
     base.gatingThreshold = 0.5f;
+    // These settings were chosen so that a promotion happens within four
+    // generations, which depends on generation 0's play. They were found
+    // before generation 0's batch norm was calibrated (bn_calibrate), and a
+    // calibrated generation 0 plays differently (here: no promotion by
+    // generation 4), so the test keeps the uncalibrated one it was built on.
+    base.bnCalibrate = false;
 
     RunDir sequential("rounds_seq");
     Config c = base;

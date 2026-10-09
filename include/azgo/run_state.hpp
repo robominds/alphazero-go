@@ -86,9 +86,12 @@ uint64_t fileHash(const std::string& path);
 // promotion games; kPhaseReference seeds fitting reference network j to the
 // run's shape (generation 0, index j). kPhaseValidation seeds the buffer
 // sample the validation loss compares with (a measurement: it feeds nothing
-// back into the run).
+// back into the run). kPhaseBatchNorm seeds the positions generation 0's
+// batch norm is calibrated on (generation 0, bn_calibrate; not to be confused
+// with kPhaseCalibration, the fixed players' rating games).
 constexpr uint64_t kPhaseInit = 0, kPhaseSelfPlay = 1, kPhaseTrain = 2, kPhaseArena = 3,
-                   kPhaseCalibration = 4, kPhaseReference = 5, kPhaseValidation = 6;
+                   kPhaseCalibration = 4, kPhaseReference = 5, kPhaseValidation = 6,
+                   kPhaseBatchNorm = 7;
 
 // Run-directory paths.
 std::string checkpointPath(const std::string& runDir, int generation);  // runDir/checkpoints/gen_0007.azn

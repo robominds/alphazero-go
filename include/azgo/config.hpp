@@ -46,6 +46,13 @@ struct Config {
     int filters = 64;
     int valueHidden = 64;
     bool ownership = false;            // ownership head (KataGo's auxiliary target)
+    // Batch norm calibration of a fresh generation 0 (azgo/bn_calibration.hpp):
+    // its running statistics are set from one training-mode pass over fixed
+    // positions, so that it does not saturate in inference mode. Read only
+    // when startNew creates a random network: not with --init-from, not on
+    // resume or re-rating. A run's config.cfg written before this key existed
+    // lacks it, and resume and re-rating read that as false (what that run did).
+    bool bnCalibrate = true;
     // self-play and search
     int gamesPerGeneration = 100;
     int simulations = 200;

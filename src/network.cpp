@@ -207,6 +207,10 @@ LossStats Network::inferLoss(Workspace& ws, const float* input, const float* pi,
     return loss(ws, pi, z, ownership, 0.0f, B, false);
 }
 
+void Network::calibrateBatchNorm(Workspace& ws, const float* input, int B) {
+    forward(ws, input, B, Mode::Calibrate);
+}
+
 namespace {
 
 // Samples per chunk of a per-sample loop on the pool.
@@ -243,6 +247,7 @@ void Network::forward(Workspace& ws, const float* input, int B, Mode mode) {
 
     auto norm = [&](BatchNorm2d& bn, const float* x, float* y, float* xhat, float* invStd) {
         if (mode == Mode::Infer) bn.forwardInfer(x, M, y, pool);
+        else if (mode == Mode::Calibrate) bn.forwardTrain(x, M, y, xhat, invStd, true, pool, 1.0f);
         else bn.forwardTrain(x, M, y, xhat, invStd, mode == Mode::Train, pool);
     };
 

@@ -18,6 +18,7 @@
 #include "azgo/arena.hpp"
 #include "azgo/arena_round.hpp"
 #include "azgo/backend.hpp"
+#include "azgo/bn_calibration.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/elo.hpp"
 #include "azgo/evaluator.hpp"
@@ -331,6 +332,16 @@ std::string joinStrings(const std::vector<std::string>& v) {
     return out.empty() ? "(none)" : out;
 }
 
+// A run's config.cfg. bn_calibrate defaults to true for a new config, but
+// a config.cfg written before the key existed lacks it, and that run's
+// generation 0 was not calibrated: there a missing key reads as false, so a
+// resume records (in the rewritten config.cfg) what the run actually did.
+Config loadRunConfig(const std::string& runDir) {
+    Config before;
+    before.bnCalibrate = false;
+    return loadConfigFile(configPath(runDir), before);
+}
+
 // The run's reference networks, each read once: `networks` fitted to the
 // run's shape (fitToShape, seeded by deriveSeed(seed, 0, kPhaseReference, j)
 // for reference network j, 0-based), `recorded` the path and fileHash that
@@ -424,7 +435,7 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     if (!init.bufferFrom.empty()) {
         if (!fs::exists(statePath(init.bufferFrom)))
             throw ConfigError(init.bufferFrom + " does not contain a run (no state.bin)");
-        const Config donor = loadConfigFile(configPath(init.bufferFrom));
+        const Config donor = loadRunConfig(init.bufferFrom);
         if (donor.boardSize != cfg.boardSize || donor.history != cfg.history)
             throw ConfigError("--buffer-from run " + init.bufferFrom + " has board_size " +
                               std::to_string(donor.boardSize) + ", history " +
@@ -453,6 +464,11 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     writeFileAtomically(configPath(runDir), configToString(cfg));
 
     Network net = given ? std::move(*given) : Network(cfg.netConfig(), deriveSeed(cfg.seed, 0, kPhaseInit));
+    // A random network's running statistics (mean 0, variance 1) do not
+    // normalize, and generation 0 plays in inference mode: calibrate them
+    // (bn_calibration.hpp). A given network keeps the statistics it has.
+    if (!given && cfg.bnCalibrate)
+        calibrateBatchNorm(net, deriveSeed(cfg.seed, 0, kPhaseBatchNorm), cfg.effectiveTrainThreads());
     saveNetwork(net, checkpointPath(runDir, 0));
 
     TrainingState state;
@@ -492,7 +508,7 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     if (!fs::exists(statePath(runDir)))
         throw ConfigError(runDir + " does not contain a run (no state.bin); start one with --config");
 
-    const Config saved = loadConfigFile(configPath(runDir));
+    const Config saved = loadRunConfig(runDir);
     Config cfg = saved;
     for (const std::string& o : overrides) applyOverride(cfg, o);
 
@@ -912,7 +928,7 @@ int rerateRun(const std::string& runDir, const std::vector<std::string>& overrid
               std::ostream* log) {
     if (!fs::exists(configPath(runDir)))
         throw ConfigError(runDir + " does not contain a run (no config.cfg)");
-    const Config saved = loadConfigFile(configPath(runDir));
+    const Config saved = loadRunConfig(runDir);
     Config cfg = saved;
     for (const std::string& o : overrides) applyOverride(cfg, o);
     const std::vector<std::string> diff = architectureDiff(saved, cfg);

@@ -552,6 +552,33 @@ static void test_validation_loss_key() {
     for (const char* name : {"5x5.cfg", "9x9.cfg", "19x19.cfg"}) assert(loadConfigFile(preset(name)).validationLoss);
 }
 
+// bn_calibrate: generation 0's batch norm calibration, on unless turned off.
+// Only read when a run starts, so it is tunable (and changes nothing later).
+static void test_bn_calibrate_key() {
+    Config c;
+    assert(c.bnCalibrate);
+    // With the network keys, after ownership.
+    assert(contains(configToString(c), "ownership = false\nbn_calibrate = true\n"));
+    c = parseConfigText("bn_calibrate = off\n", "t.cfg");
+    assert(!c.bnCalibrate);
+    assert(contains(configToString(c), "bn_calibrate = false\n"));
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    Config o;
+    applyOverride(o, "bn_calibrate=false");
+    assert(!o.bnCalibrate);
+    assert(contains(errorOf("bn_calibrate = maybe"), "t.cfg:1: bn_calibrate: "));
+    Config a;
+    assert(architectureDiff(a, c).empty() && resumeLockedDiff(a, c).empty());
+    // Every preset calibrates (by the default). A file without the key takes
+    // the base's value: resume passes a base with false for a config.cfg
+    // written before the key existed (Trainer::resume).
+    for (const char* name : {"5x5.cfg", "9x9.cfg", "19x19.cfg"}) assert(loadConfigFile(preset(name)).bnCalibrate);
+    Config before;
+    before.bnCalibrate = false;
+    assert(!parseConfigText("filters = 96\n", "old.cfg", before).bnCalibrate);
+    assert(parseConfigText("bn_calibrate = true\n", "new.cfg", before).bnCalibrate);
+}
+
 // train_threads: threads of the training step; 0 = every core. The result
 // does not depend on it, so it is tunable on resume.
 static void test_train_threads_key() {
@@ -643,6 +670,7 @@ int main() {
     test_resignation_keys();
     test_validation_loss_key();
     test_train_threads_key();
+    test_bn_calibrate_key();
     test_errors_name_key_and_line();
     test_hand_edited_files();
     std::printf("test_config: all tests passed\n");

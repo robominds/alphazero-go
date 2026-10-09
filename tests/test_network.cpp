@@ -605,6 +605,158 @@ static void test_thread_pool_gives_identical_bits() {
     }
 }
 
+// Mean and unbiased variance of each channel of x [C][M], in double.
+static void channelStats(const std::vector<double>& x, int C, size_t M, std::vector<double>& mean,
+                         std::vector<double>& var) {
+    mean.assign(C, 0.0);
+    var.assign(C, 0.0);
+    for (int c = 0; c < C; ++c) {
+        for (size_t i = 0; i < M; ++i) mean[c] += x[c * M + i];
+        mean[c] /= static_cast<double>(M);
+        for (size_t i = 0; i < M; ++i) var[c] += (x[c * M + i] - mean[c]) * (x[c * M + i] - mean[c]);
+        var[c] /= static_cast<double>(M - 1);
+    }
+}
+
+// Batch norm with batch statistics (biased variance, gamma 1, beta 0, as a
+// fresh network has), then ReLU, in place on x [C][M].
+static void normalizeRelu(std::vector<double>& x, int C, size_t M) {
+    std::vector<double> mean, var;
+    channelStats(x, C, M, mean, var);
+    for (int c = 0; c < C; ++c) {
+        const double biased = var[c] * static_cast<double>(M - 1) / static_cast<double>(M);
+        for (size_t i = 0; i < M; ++i)
+            x[c * M + i] = std::max(0.0, (x[c * M + i] - mean[c]) / std::sqrt(biased + BatchNorm2d::kEps));
+    }
+}
+
+static const ParamView& findParam(const std::vector<ParamView>& params, const std::string& name) {
+    for (const ParamView& p : params)
+        if (p.name == name) return p;
+    assert(false && "no such parameter");
+    return params.front();
+}
+
+static bool relNear(double a, double b, double tol) { return std::fabs(a - b) <= tol * std::max(1.0, std::fabs(b)); }
+
+// calibrateBatchNorm, checked by hand on a network without residual blocks:
+// each layer's running statistics are the batch mean and unbiased variance
+// of its own input in one training-mode pass, computed here in double from
+// the weights, and are set (not averaged into the old values).
+static void test_calibrate_batch_norm_by_hand() {
+    NetConfig cfg = makeConfig(5, 1, 0, 3, 4);
+    cfg.ownership = true;   // so every kind of batch norm layer is checked
+    const int B = 6, n = 5, A = cfg.area(), P = cfg.planes(), F = cfg.filters;
+    const size_t M = static_cast<size_t>(B) * A;
+    NaiveBackend be;
+    Network net(cfg, 31);
+    // Stale running statistics, which calibration must overwrite.
+    for (BufferView& b : net.buffers())
+        for (size_t i = 0; i < b.size; ++i) b.value[i] = 3.0f + static_cast<float>(i);
+    Rng rng(32);
+    const Batch batch = randomBatch(cfg, B, rng);
+    const std::vector<ParamView> params = net.params();
+    std::vector<float> paramsBefore;
+    for (const ParamView& p : params) paramsBefore.insert(paramsBefore.end(), p.value, p.value + p.size);
+
+    Workspace ws(cfg, B, be);
+    net.calibrateBatchNorm(ws, batch.input.data(), B);
+
+    // Stem: 3x3 'same' convolution, channel-major [F][B][A].
+    const float* stemW = findParam(params, "stem.conv.w").value;
+    std::vector<double> trunk(F * M, 0.0);
+    for (int f = 0; f < F; ++f)
+        for (int b = 0; b < B; ++b)
+            for (int y = 0; y < n; ++y)
+                for (int x = 0; x < n; ++x) {
+                    double sum = 0.0;
+                    for (int c = 0; c < P; ++c)
+                        for (int dy = 0; dy < 3; ++dy)
+                            for (int dx = 0; dx < 3; ++dx) {
+                                const int sy = y + dy - 1, sx = x + dx - 1;
+                                if (sy < 0 || sy >= n || sx < 0 || sx >= n) continue;
+                                sum += static_cast<double>(stemW[f * P * 9 + (c * 3 + dy) * 3 + dx]) *
+                                       batch.input[(static_cast<size_t>(b) * P + c) * A + sy * n + sx];
+                            }
+                    trunk[f * M + static_cast<size_t>(b) * A + y * n + x] = sum;
+                }
+    std::vector<BufferView> bufs = net.buffers();
+    auto expectStats = [&](const std::string& bn, const std::vector<double>& x, int C) {
+        std::vector<double> mean, var;
+        channelStats(x, C, M, mean, var);
+        const BufferView* runMean = nullptr;
+        const BufferView* runVar = nullptr;
+        for (const BufferView& b : bufs) {
+            if (b.name == bn + ".runMean") runMean = &b;
+            if (b.name == bn + ".runVar") runVar = &b;
+        }
+        assert(runMean && runVar && runMean->size == static_cast<size_t>(C));
+        for (int c = 0; c < C; ++c) {
+            assert(relNear(runMean->value[c], mean[c], 1e-4));
+            assert(relNear(runVar->value[c], var[c], 1e-4));
+        }
+    };
+    expectStats("stem.bn", trunk, F);
+    normalizeRelu(trunk, F, M);   // the trunk output the heads read
+
+    // The heads' 1x1 convolutions, each read from the batch-normalized trunk.
+    auto conv1x1 = [&](const std::string& name, int cout) {
+        const float* w = findParam(params, name).value;
+        std::vector<double> out(cout * M, 0.0);
+        for (int o = 0; o < cout; ++o)
+            for (int f = 0; f < F; ++f)
+                for (size_t i = 0; i < M; ++i) out[o * M + i] += static_cast<double>(w[o * F + f]) * trunk[f * M + i];
+        return out;
+    };
+    expectStats("policy.bn", conv1x1("policy.conv.w", 2), 2);
+    expectStats("value.bn", conv1x1("value.conv.w", 1), 1);
+    expectStats("ownership.bn", conv1x1("ownership.conv.w", 1), 1);
+
+    std::vector<float> paramsAfter;
+    for (const ParamView& p : params) paramsAfter.insert(paramsAfter.end(), p.value, p.value + p.size);
+    assert(paramsAfter == paramsBefore);
+}
+
+// With residual blocks: after calibration, inference mode on the
+// calibration batch gives what training mode (batch statistics) gives, up to
+// the unbiased-variance factor M / (M - 1); before it, it does not.
+// Calibrating again changes no bit (set, not averaged), and the bits do not
+// depend on the thread pool.
+static void test_calibration_matches_batch_statistics() {
+    const NetConfig cfg = makeConfig(5, 2, 3, 16, 8);
+    const int B = 40;
+    NaiveBackend be;
+    Rng rng(41);
+    const Batch batch = randomBatch(cfg, B, rng);
+    auto buffersOf = [](Network& net) {
+        std::vector<float> all;
+        for (const BufferView& b : net.buffers()) all.insert(all.end(), b.value, b.value + b.size);
+        return all;
+    };
+
+    Network net(cfg, 42);
+    Workspace ws(cfg, B, be);
+    const LossStats train = net.computeLoss(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B);
+    const LossStats fresh = net.inferLoss(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B);
+    assert(!relNear(fresh.policyLoss, train.policyLoss, 1e-2) || !relNear(fresh.valueLoss, train.valueLoss, 1e-2));
+    net.calibrateBatchNorm(ws, batch.input.data(), B);
+    const LossStats calibrated = net.inferLoss(ws, batch.input.data(), batch.pi.data(), batch.z.data(), B);
+    assert(relNear(calibrated.policyLoss, train.policyLoss, 2e-3));
+    assert(relNear(calibrated.valueLoss, train.valueLoss, 2e-3));
+
+    const std::vector<float> once = buffersOf(net);
+    net.calibrateBatchNorm(ws, batch.input.data(), B);
+    assert(buffersOf(net) == once);
+
+    for (int threads : {1, 3, 7}) {
+        ThreadPool pool(threads);
+        Network other(cfg, 42);
+        Workspace pooled(cfg, B, be, &pool);
+        other.calibrateBatchNorm(pooled, batch.input.data(), B);
+        assert(buffersOf(other) == once);
+    }
+}
+
 // ParamLayout lists params() and buffers() in order, with their sizes and
 // decay flags, at offsets aligned to 64 floats that never overlap.
 static void test_param_layout_matches_params() {
@@ -661,6 +813,8 @@ int main() {
     test_infer_loss_matches_infer_outputs();
     test_thread_pool_gives_identical_bits();
     test_param_layout_matches_params();
+    test_calibrate_batch_norm_by_hand();
+    test_calibration_matches_batch_statistics();
     std::printf("test_network: all tests passed\n");
     return 0;
 }

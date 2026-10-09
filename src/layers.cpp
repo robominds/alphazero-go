@@ -97,7 +97,7 @@ void BatchNorm2d::forwardInfer(const float* x, int M, float* y, ThreadPool* pool
 }
 
 void BatchNorm2d::forwardTrain(const float* x, int M, float* y, float* xhat, float* invStd,
-                               bool updateRunning, ThreadPool* pool) {
+                               bool updateRunning, ThreadPool* pool, float momentum) {
     assert(M > 1);
     parallelChunks(pool, c, [&](int ch) {
         const float* xc = x + static_cast<size_t>(ch) * M;
@@ -124,8 +124,8 @@ void BatchNorm2d::forwardTrain(const float* x, int M, float* y, float* xhat, flo
             // Inference sees one position at a time, so it needs population
             // estimates: unbiased variance, exponential moving averages.
             const double unbiased = var * M / (M - 1);
-            runMean[ch] = (1.0f - kMomentum) * runMean[ch] + kMomentum * static_cast<float>(mean);
-            runVar[ch] = (1.0f - kMomentum) * runVar[ch] + kMomentum * static_cast<float>(unbiased);
+            runMean[ch] = (1.0f - momentum) * runMean[ch] + momentum * static_cast<float>(mean);
+            runVar[ch] = (1.0f - momentum) * runVar[ch] + momentum * static_cast<float>(unbiased);
         }
     });
 }
