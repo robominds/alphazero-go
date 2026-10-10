@@ -5,7 +5,7 @@ the final code (after the pass fix, commit 15db72a). Every number below
 names the file it comes from. Runs were made 2026-09-30 to 2026-10-01;
 the follow-up matches and analyses were made on 2026-10-01. The 9×9
 experiments that follow them ran until 2026-10-08, and the matches
-against GNU Go on 2026-10-10.
+against GNU Go and Pachi on 2026-10-10.
 
 ## Headline: the 9×9 preset now trains a much stronger network
 
@@ -38,7 +38,13 @@ simulations), the earlier preset's generation 250 scored 0.16, the new
 preset's 0.77 (seed 1) and 0.75 (seed 2), and the recipe's 0.91,
 consistent with the internal matches; the recipe's network beats it
 0.61 even with its raw policy. See
-[Against GNU Go 3.8](#against-gnu-go-38-an-outside-anchor).
+[Against GNU Go 3.8](#against-gnu-go-38-an-outside-anchor). Pachi
+12.90, a Monte Carlo tree search program without its neural network,
+is stronger still: at about 2,000 playouts a move it beats every
+network (they score 0.28 to 0.44), and on one scale with GNU Go at 0
+the networks lie at +217 to +312 Elo and Pachi at +334 to +644, with
+the recipe's lead over the others smaller than against GNU Go. See
+[Against Pachi 12.90](#against-pachi-1290-a-stronger-outside-anchor).
 
 One seed and one board size, 400-game matches at 200 simulations. See
 [The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations),
@@ -2799,6 +2805,242 @@ games), Tromp-Taylor scoring (which counts dead stones left on the
 board, and costs the raw policy several games), and Elo relative to
 GNU Go only.
 
+### Against Pachi 12.90 (a stronger outside anchor)
+
+Question: GNU Go 3.8 at level 10 loses 0.75 to 0.91 to the strongest
+networks, so it says little about how much stronger they are, or about
+the gaps between them. Pachi, a Monte Carlo tree search program, at a
+fixed number of playouts per move gives a ladder of levels above GNU
+Go. How do the five strongest networks rank on it? The result: Pachi
+without its neural network, at about 2,000 playouts a move (its
+`-t =1000`), beats every network at 200 simulations (they score 0.28 to
+0.44) and is about +330 Elo above GNU Go level 10. On one scale with GNU
+Go at 0, the networks sit at +217 to +312 and Pachi's three levels at
++334, +497 and +644. The recipe's lead over the other networks is
+smaller than against GNU Go, and one Elo per player fits all 2,400
+games (1,500 between the networks and Pachi, 400 among GNU Go and
+Pachi's levels, and the networks' 500 against GNU Go) except one link,
+Pachi against itself.
+
+- *Pachi build* (`9x9-pachi/build.txt`). Pachi 12.90, the latest
+  release (15 April 2026), from the official repository: tag
+  `pachi-12.90`, commit f86fc61f6bf1; GitHub's source archive of the
+  tag (`pachi-12.90.tar.gz`, sha256
+  `3b693ef4d4f83ff03f4dd2262fead1bd99be3cb7644c5bb21e6fc4f11940cb3f`)
+  is identical to a clone, which the build used because its Makefile
+  reads `.git`. Built on the Mac mini that ran the matches with `make
+  MAC=1 DCNN=0 JOSEKIFIX=0` (no Caffe, no KataGo; Pachi's `-O3`) by
+  Apple clang 21.0.0. One fix was needed: with `MAC=1` a macro in
+  `random.h` has one closing parenthesis too many and does not compile,
+  fixed upstream two days after the release (commit 6f27988); the same
+  one-character change was made here. The MM pattern files, which give
+  the tree search its priors and are on by default
+  (`patterns_mm.gamma`, `patterns_mm.spat`, from the release's source
+  tree), sit next to the binary; the joseki file, used only on 13×13
+  and larger, was left out with `--nojoseki`; no neural network and no
+  opening book.
+- *Checks against a miscompile* (GNU Go 3.8 is miscompiled by Apple
+  clang). A second build with GCC 16 at the same flags gave the same
+  results everywhere: all 649 mandatory unit tests in 16 test files
+  pass in both builds (`make test` stops early on macOS, so they were
+  run by hand); the board-logic and spatial-pattern regression outputs
+  match Pachi's references byte for byte in both; the seeded playout
+  output matches neither (its reference predates the release's playout
+  changes) but is identical between the two. Seeded games cannot be
+  compared move for move, since Pachi's search stops on a clock (below),
+  so the GCC build played the clang build: 55/100 (+35, interval −33 to
+  +103), and the clang build itself 58/100 (`pachigcc-p4k`,
+  `pachi4k-p4k`, 4k playouts). No crash or assertion occurred in the
+  4,000 games of `9x9-pachi/matches/`, all played by the clang build
+  (and one match by the GCC build too).
+- *Settings.* `pachi --nojoseki -D -r chinese -s SEED -t =N threads=1
+  pass_all_alive`, plus `resign_threshold=0 allow_losing_pass` (below):
+  Chinese rules, one thread, no pondering (its default), a different
+  random seed per match, a fixed playout count, no board diagrams in its
+  log (`-D`), and `pass_all_alive`, which keeps it from passing until
+  the opponent's dead stones are captured (GNU Go's
+  `--capture-all-dead`), so a Tromp-Taylor count agrees with its own.
+  `-t =N` stops the search at the first check after the root holds N
+  playouts, counting those kept from the previous move's tree, and it
+  checks every 50 ms, so Pachi searches somewhat more than N: from
+  Pachi's logs, the median root count per move was 1,800 to 2,200 at
+  `=1000` (10th percentile about 1,200, 90th 4,000 to 8,500), 4,600 to
+  5,200 at `=4000` and 16,000 to 16,600 at `=16000`. Against a much
+  weaker opponent it searches less, as it stops once its best move has
+  5,000 playouts winning 95%. The levels below are named by
+  N (1k, 4k, 16k, 64k), and the count reached depends on the machine's
+  speed. Pachi's option `reportfreq=0.005s` would check every 5 ms; it
+  was tried first and crashes Pachi (an assertion after one game,
+  `set-aside/reportfreq-gnugo-p1k.csv`: a race between that check and
+  the search thread's warm-up), so the default stayed.
+- *Resignation off.* Pachi resigns by default when its best move wins
+  under 20% of its playouts, and it did so in every game it lost (GNU
+  Go and our engine never or almost never resign). At 1k playouts that
+  costs it games it would have won: GNU Go scored 39/100 against Pachi
+  1k with resignation on and 10/100 with it off (`gnugo-p1k`,
+  `gnugo-p1k-nr`). The main results therefore have resignation off
+  (`resign_threshold=0`, with `allow_losing_pass` so that Pachi passes
+  in a lost final position and the game ends), labels ending in `-nr`;
+  those with Pachi's default, which came first, are kept as a variant
+  below. With resignation off every game ended in two passes except one
+  resignation by GNU Go.
+- *Setup* (`9x9-pachi/`). `pachi-match.sh` plays one match with
+  `tools/gtp_match.py`: 100 games, 9×9, komi 7.5, colors alternating,
+  at most 162 moves, the player being rated as A and Pachi as B. A is
+  one of our networks (the `build-blas` of the GNU Go matches, from
+  main at e6c0af9, `--backend blas`, one thread, 200 simulations, leaf
+  batch 8, `--random-symmetry`,
+  a different `--seed` per match; it scores the games, Tromp-Taylor),
+  GNU Go 3.8 at level 10 with the flags and GCC build of the GNU Go
+  section (A scores), or Pachi itself at fewer playouts (seed + 1000),
+  to link the levels. `summarize.py` recounts every finished game
+  Tromp-Taylor from its SGF (with GNU Go or Pachi as A, that recount is
+  the score) and reports Pachi's playout counts; it agreed with our
+  engine's own count in all 2,393 finished games of the GNU Go matches
+  before it was used here. `ladder.py` fits the scale. The matches ran
+  on the second Mac mini (Apple M4, 16 GB) on 10 October from 12:49 to
+  15:24, 8 at a time: `jobs-anchor.txt` with `pachi-jobs.sh` (GNU
+  Parallel), the other lists with `queue.sh`, which starts a match
+  whenever fewer than 8 run (`queue.log`; the lists with `-nr` labels
+  ran with `PACHI_ARGS="resign_threshold=0 allow_losing_pass"`). The
+  networks are those of the GNU Go section at 200 simulations: the
+  recipe's 6×96 at generation 250, the preset from scratch (seed 1) at
+  250 and 400, seed 2 at 250, and the 6×96 run from scratch at 250.
+- *Run notes.* `pachi-match.sh` was edited (to add Pachi-against-Pachi
+  matches) while the first list ran; the shells running it then read
+  the changed file and failed after the last game, before moving
+  `summary.txt` into place (exit 2 in `jobs-anchor.txt.joblog`,
+  `jobs-anchor.log`), so that was done by hand; the games are complete.
+  The first two Pachi-against-Pachi matches with `-nr` labels gave the
+  setting to Pachi B only, so Pachi A still resigned; they were set
+  aside (`set-aside/mixed-*.csv`) and rerun with the fixed script
+  (`jobs-nr-ladder.txt`). When the remaining matches with resignation
+  on were cancelled for those with it off, three running matches lost
+  their `queue.log` line; they completed.
+
+Score is A's against Pachi (95% Wilson interval), Elo is A's minus
+Pachi's at that level. Pachi's resignation off; from
+`9x9-pachi/summary.txt`:
+
+| A | Pachi | score | 95% interval | Elo vs Pachi (interval) |
+|---|---|---|---|---|
+| GNU Go 3.8 level 10 | 1k | 10/100 = 0.100 | 0.055-0.174 | −382 (−493 to −270) |
+| GNU Go 3.8 level 10 | 4k | 5/100 = 0.050 | 0.022-0.112 | −512 (−663 to −360) |
+| Pachi 1k | 4k | 14/100 = 0.140 | 0.085-0.221 | −315 (−412 to −218) |
+| Pachi 4k | 16k | 27/100 = 0.270 | 0.193-0.364 | −173 (−249 to −97) |
+| recipe 6×96, gen 250 | 1k | 42/100 = 0.420 | 0.328-0.518 | −56 (−125 to +12) |
+| recipe 6×96, gen 250 | 4k | 29/100 = 0.290 | 0.210-0.385 | −156 (−230 to −81) |
+| recipe 6×96, gen 250 | 16k | 9/100 = 0.090 | 0.048-0.162 | −402 (−519 to −285) |
+| scratch, seed 1, gen 400 | 1k | 44/100 = 0.440 | 0.347-0.538 | −42 (−110 to +26) |
+| scratch, seed 1, gen 400 | 4k | 27/100 = 0.270 | 0.193-0.364 | −173 (−249 to −97) |
+| scratch, seed 1, gen 400 | 16k | 11/100 = 0.110 | 0.063-0.186 | −363 (−470 to −256) |
+| scratch, seed 1, gen 250 | 1k | 30/100 = 0.300 | 0.219-0.396 | −147 (−221 to −73) |
+| scratch, seed 1, gen 250 | 4k | 16/100 = 0.160 | 0.101-0.244 | −288 (−380 to −196) |
+| scratch, seed 1, gen 250 | 16k | 13/100 = 0.130 | 0.078-0.210 | −330 (−430 to −230) |
+| scratch, seed 2, gen 250 | 1k | 36/100 = 0.360 | 0.273-0.458 | −100 (−170 to −30) |
+| scratch, seed 2, gen 250 | 4k | 15/100 = 0.150 | 0.093-0.233 | −301 (−396 to −207) |
+| scratch, seed 2, gen 250 | 16k | 10/100 = 0.100 | 0.055-0.174 | −382 (−493 to −270) |
+| scratch 6×96, gen 250 | 1k | 28/100 = 0.280 | 0.201-0.375 | −164 (−239 to −89) |
+| scratch 6×96, gen 250 | 4k | 23/100 = 0.230 | 0.158-0.322 | −210 (−290 to −130) |
+| scratch 6×96, gen 250 | 16k | 8/100 = 0.080 | 0.041-0.150 | −424 (−547 to −301) |
+
+Every match was clean: no forfeit, no game at the move cap, 100
+distinct games each, and the Tromp-Taylor recount, A's count and
+Pachi's own `final_score` named the same winner in every finished game
+(with resignation on too; `9x9-pachi/results.csv`). The networks'
+scores fall in the 20% to 80% aimed for at 1k (0.28 to 0.44) and
+mostly at 4k (0.15 to 0.29); 16k (0.08 to 0.13) is beyond it for every
+network, and 64k (7/100 for the two networks that played it, with
+resignation on) further still.
+
+*One scale* (`9x9-pachi/ladder.txt`). A Bradley-Terry fit (maximum
+likelihood, Elo units) of every player to every game above and to the
+networks' 200-simulation matches against GNU Go (batch 8, from the GNU
+Go section), GNU Go level 10 fixed at 0; the interval includes the
+uncertainty of each player's link to GNU Go. "Via GNU Go only" is the
+network's own match against GNU Go; the last column is the same fit to
+the matches with Pachi's resignation on (`ladder-resign.txt`; the 6×96
+run from scratch played none):
+
+| player | Elo, joint fit (95% interval) | via GNU Go only | resignation on |
+|---|---|---|---|
+| GNU Go 3.8 level 10 | 0 (fixed) | 0 | 0 |
+| scratch, seed 1, gen 250 | +217 (+165 to +269) | +210 | +200 |
+| scratch, seed 2, gen 250 | +217 (+165 to +269) | +191 | +204 |
+| scratch 6×96, gen 250 | +223 (+171 to +275) | +230 | |
+| scratch, seed 1, gen 400 | +283 (+231 to +336) | +220 | +259 |
+| recipe 6×96, gen 250 | +312 (+259 to +365) | +402 | +268 |
+| Pachi 1k (about 2,000 playouts) | +334 (+291 to +378) | | +157 |
+| Pachi 4k (about 4,900) | +497 (+451 to +543) | | +389 |
+| Pachi 16k (about 16,200) | +644 (+588 to +700) | | +524 |
+| Pachi 64k (about 64,000) | | | +742 |
+
+- *The scale fits, except Pachi against itself.* Over the 24 pairings,
+  Pearson's chi-square is 29.7 on 16 degrees of freedom (p ≈ 0.02),
+  and one pairing gives a third of it: Pachi 1k scored 14/100 against
+  Pachi 4k where the fit expects 28 (residual −3.1). Without that
+  pairing the rest fit well (15.9 on 15, p ≈ 0.39), and the ratings move
+  by 25 Elo at most (Pachi 4k to +472). Against the networks, Pachi's
+  4k is about +120 Elo above its 1k (a fit to the networks' games
+  against Pachi alone), against itself +315: Pachi gains more from four
+  times the playouts against its own weaker setting than against other
+  programs, a known effect of rating a program against itself. From 4k
+  to 16k the two agree (+165 and +173).
+- *Network against Pachi against network against GNU Go.* Each network's
+  rating through Pachi 1k alone (Pachi 1k's rating from its matches
+  with GNU Go and Pachi 4k, plus the network's Elo against it) agrees
+  with its own match against GNU Go within the noise (differences −117
+  to +79 Elo, |z| ≤ 1.4; `ladder.txt` part 2). Through 4k and 16k, whose
+  ratings without the networks rest on the Pachi-against-Pachi links,
+  the chains come out above the direct results (by +67 to +257, z up to
+  2.8, except the recipe's at 16k), the same inflation seen from the
+  other side.
+- *The ranking, and the recipe's lead.* Against Pachi (300 games each,
+  resignation off) the networks score: generation 400 of the scratch
+  run 82, the recipe 80, seed 2 61, the scratch run's generation 250
+  59 and its 6×96 version 59. Against GNU Go the recipe stood well
+  ahead (91/100, against 75 to 79 for the others, +190 Elo); against
+  Pachi it is level with the scratch run's generation 400 and about
+  +90 Elo above the generation-250 networks. The internal matches put
+  it +78 above the scratch run's generation 250 (244/400) and that
+  run's generation 400 +135 above the same network (274/400), closer to
+  Pachi's view than to GNU Go's. The joint fit, which uses both
+  opponents, keeps the recipe first (+312) by a margin inside its
+  interval. Seed 1 and seed 2 at generation 250 and the 6×96 network
+  are level (+217 to +223); seeds 1 and 2 differ by +36 in their
+  direct match.
+- *Resignation shifts Pachi, not the networks.* With Pachi's default
+  resignation, every opponent scored more against Pachi 1k (GNU Go 39
+  against 10 of 100, the three networks that played both ways 52 to 62
+  against 30 to 44), and most of them less so at 4k and 16k. Pachi's
+  levels then rate lower (1k at +157 instead of
+  +334), but the networks' ratings move by 45 Elo at most (the recipe
+  +268, the others +200 to +259), because they are also tied to GNU Go
+  directly.
+
+*No published rating.* The CGOS 9×9 all-time list
+(<http://www.yss-aya.com/cgos/9x9/bayes.html>, read 10 October 2026)
+has entries for Pachi versions 10 and 11 under names suggesting
+10,000 and 40,000 playouts, but none for 12.90 and no settings for any
+of them, and CGOS plays at komi 7.0 with a clock. No published rating
+fits Pachi 12.90 without DCNN under these settings, so the Elo here is
+relative to GNU Go 3.8 level 10 and to these Pachi levels only. Nor do
+9×9 results translate into 19×19 grades.
+
+**Verdict.** Pachi 12.90 without its neural network, single-threaded at
+about 2,000 playouts a move, is stronger than every 9×9 network at 200
+simulations: they score 0.28 to 0.44 against it. On one scale with GNU
+Go 3.8 level 10 at 0, the networks lie at +217 to +312, Pachi at 1k,
+4k and 16k playouts at +334, +497 and +644. Against Pachi the recipe's
+network is level with the scratch run's generation 400 and about +90
+Elo above the generation-250 networks, not +190 as against GNU Go; the
+joint fit still ranks it first, inside the noise. Caveats: 100-game
+matches (about ±70 to ±120 Elo), Pachi's playout counts set by a clock
+check (so its levels depend on the machine's speed), the levels' gaps
+measured against Pachi itself overstated (1k to 4k), resignation off
+(Pachi's default resigns games it would win, at 1k most of all), and
+Elo relative to these two programs only.
+
 ### 19×19: criterion met (it runs)
 
 The criterion is that both generations complete, the losses are finite
@@ -3203,6 +3445,24 @@ matches at temperature 0 (AGZ's evaluation size).
   250 and its own 250; seed 2's generation 250 against `9x9-main`'s 250
   and seed 1's 250). See
   [its section](#against-gnu-go-38-an-outside-anchor).
+- `9x9-pachi/`: the matches against Pachi 12.90: the build record
+  `build.txt`; the scripts `pachi-match.sh`, `pachi-jobs.sh`,
+  `queue.sh`, `summarize.py` and `ladder.py`; the job lists
+  `jobs-anchor.txt` (with its GNU Parallel job log and the shells'
+  errors, `jobs-anchor.log`), `jobs-ladder.txt`, `jobs-nets.txt`,
+  `jobs-nets-1k.txt`, `jobs-control.txt`, `jobs-noresign.txt`,
+  `jobs-nr.txt` and `jobs-nr-ladder.txt`, and `queue.log`;
+  `matches/<label>/results.csv` and `summary.txt` for each of the 40
+  matches (labels ending in `-nr` have Pachi's resignation off); the
+  table `summary.txt` and `results.csv` (one row per match, with how the
+  games ended, the scorers' agreement and Pachi's playout counts); the
+  fits `ladder.txt` (resignation off) and `ladder-resign.txt`;
+  `set-aside/`, the results of the three matches set aside (the one
+  game with `reportfreq=0.005s` and the two Pachi-against-Pachi
+  matches where only one side had resignation off); and five games in
+  `sgf/`. The SGFs and engine logs of all matches are not in the
+  repository. See
+  [its section](#against-pachi-1290-a-stronger-outside-anchor).
 - `9x9/log-250.csv`, `9x9/config-250.cfg` and `9x9/{buf,pass,side}-250.txt`:
   `9x9-main` continued to generation 250: its `log.csv` over generations
   1–250 (the first 150 rows are `9x9/log.csv`), its `config.cfg` as

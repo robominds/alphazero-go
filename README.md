@@ -807,6 +807,26 @@ optimizing; build it from the official tarball with GCC (`-O2 -fcommon
 -fno-strict-aliasing -std=gnu89`) or at `-O0`, as described in
 `docs/results/README.md`.
 
+Pachi 12.90, a Monte Carlo tree search program, is a second and
+stronger opponent (`docs/results/9x9-pachi/`). Built without its
+neural network (`make MAC=1 DCNN=0 JOSEKIFIX=0`), it ran as
+
+```
+pachi --nojoseki -r chinese -t =4000 threads=1 pass_all_alive resign_threshold=0 allow_losing_pass
+```
+
+`-t =N` fixes the playouts per move (Pachi checks the count every 50
+ms, so it searches somewhat more, and more on a faster machine),
+`threads=1` uses one thread, `pass_all_alive` makes it capture dead
+stones before passing (like GNU Go's `--capture-all-dead`),
+`resign_threshold=0 allow_losing_pass` has it play lost games out and
+pass instead of resigning (at low playouts it resigns games it would
+win), and `--nojoseki` skips its joseki file, which only 13×13 and
+larger boards use. Its pattern files `patterns_mm.gamma` and `patterns_mm.spat` (in
+the source tree) go next to the binary. On macOS, release 12.90 needs a
+one-character fix in `random.h` to compile (fixed upstream after the
+release).
+
 ## Presets
 
 `configs/5x5.cfg`, `configs/9x9.cfg` and `configs/19x19.cfg`; the comments
@@ -907,6 +927,19 @@ From `docs/results/README.md`, which has the details and the sources.
   Go, not on 3.8 at level 10, and 9×9 strength does not translate into
   19×19 kyu or dan grades (see
   [the section](docs/results/README.md#against-gnu-go-38-an-outside-anchor)).
+- **9×9 against Pachi 12.90 (no neural network, fixed playouts).** 100
+  games per pairing, 200 simulations, Pachi single-threaded with its
+  resignation off: Pachi at about 2,000 playouts a move (`-t =1000`)
+  beats the five strongest networks, which score 0.28 to 0.44 against
+  it (0.15 to 0.29 at 4k playouts, 0.08 to 0.13 at 16k). A joint fit
+  with GNU Go 3.8 level 10 at 0 puts the networks at +217 to +312 Elo
+  and Pachi at +334 (1k), +497 (4k) and +644 (16k). Against Pachi the
+  recipe's 6×96 network is level with the scratch run's generation 400
+  and about +90 above the generation-250 networks (against GNU Go,
+  +190). The scale fits every pairing but Pachi against itself, whose
+  1k-to-4k gap is overstated. Relative Elo only: no published rating
+  fits this configuration (see
+  [the section](docs/results/README.md#against-pachi-1290-a-stronger-outside-anchor)).
 - **5×5: criterion met in 2 of 2 runs.** Both final networks (seeds 1 and
   2) beat generation 0 in **100 of 100** games (95% interval
   0.963–1.000), and Elo rises clearly: the mean `log.csv` rating of the
