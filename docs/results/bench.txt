@@ -335,7 +335,7 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 # The arena on the GPU: a round's matches played at once (2026-10-09)
 # =============================================================================
 # Branch arena-gpu (docs/superpowers/specs/2026-10-10-arena-gpu-design.md),
-# Apple M5 Max, 18 cores, macOS 27.0.1. Old = main 3ce8f40, built from git
+# Apple M5 Max, 18 cores, macOS 27.0.1. Old = main 12d1e94, built from git
 # archive in a scratch dir (build-metal, Release); new = arena-gpu's
 # build-metal. Both binaries hold naive, blas and metal.
 #

@@ -1,7 +1,7 @@
 # Measured results
 
 This directory holds the results of the reference trainings, made with
-the final code (after the pass fix, commit 5da9b90). Every number below
+the final code (after the pass fix, commit 15db72a). Every number below
 names the file it comes from. Runs were made 2026-09-30 to 2026-10-01;
 the follow-up matches and analyses were made on 2026-10-01. The 9×9
 experiments that follow them ran until 2026-10-08.
@@ -1241,7 +1241,7 @@ tried, so they stay.
   their logs, `sym-screen/*.txt` and `tune-screen/*.txt` (each `arena`'s
   output, with its `Search:` line). The scripts ran binaries copied from
   builds of main (`runs/bin-sym`, `runs/bin-tune`; the latter at commit
-  d2e7047); the `cd` to the absolute checkout path is made `cd .`.
+  28f0ee0); the `cd` to the absolute checkout path is made `cd .`.
 
 | side A (B: 1.5, batch 8, same network) | file | A's score | 95% interval | Elo (interval) |
 |---|---|---|---|---|
@@ -1335,7 +1335,7 @@ ranks all six against the control with less noise than these matches.
   keys). Like the control, none of the first four arms' binaries had
   `validation_loss` yet. The last two were run by `next-arm.sh` (the same
   command plus their `--set`s, then the matches and the re-rate) with
-  `runs/bin-next`, built from commit 0ab88fc, which logs `val_*` and
+  `runs/bin-next`, built from commit be9e708, which logs `val_*` and
   `seen_*`; their `config.cfg` also lists `validation_loss = true`.
 - *Matches.* 400 games per match (the earlier sections used 100), 200
   simulations for both sides, komi 7.5, colors alternating, arena's
@@ -1964,7 +1964,7 @@ whether the gain keeps growing. The result: by far the largest gain of
 the 9×9 experiments, still growing at generation 250, by about as much
 per generation as over generations 100–200. Mark has
 since made these four values the 9×9 preset (`configs/9x9.cfg`, commit
-629c37f), and the preset has since been run from scratch; see
+63b3979), and the preset has since been run from scratch; see
 [The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations).
 
 - *Setup.* `9x9-recipe/`: the control plus `temperature_moves = 7`,
@@ -2232,7 +2232,7 @@ could differ: resignation has to calibrate v_resign on a network whose
 values mean nothing yet, early games are long whatever the settings,
 and doubling the steps per generation might overfit while the buffer
 is still small. So the new preset (`configs/9x9.cfg` as merged in
-629c37f) was run from scratch for its full 150 generations and compared
+63b3979) was run from scratch for its full 150 generations and compared
 with `9x9-main`, the earlier preset's run on the same network and seed
 (the 9×9 sections near the top), then continued to generation 250, as
 `9x9-main` had been, to compare the two at equal generations to the end.
@@ -2243,7 +2243,7 @@ generations (250 included), at equal SGD steps and with its generation
 - *Setup.* `9x9-scratch/`: `train --config configs/9x9.cfg --run
   runs/9x9-scratch --set bot_simulations=100` (`scratch-recipe.sh`),
   with binaries (`runs/bin-scratch`, not in the repository) built from
-  main at 629c37f: 6×64, 150 generations of 200 games at 200
+  main at 63b3979: 6×64, 150 generations of 200 games at 200
   simulations, `temperature_moves = 7`, resignation at its defaults,
   400 SGD steps of 256 positions per generation, learning rate 0.02 and
   0.002 from generation 90, a 200,000-position buffer, seed 1, gating
@@ -2781,7 +2781,7 @@ matches (`runs/agz-experiment.sh`, not in the repository).
 | 6 | Arena-only tuning of `c_puct`, and `mcts_batch` 1 against 8 (AGZ evaluated leaves in batches of 8): generation 250 against itself, 400 games per setting | cheap: arena games only, no training | done, no change: `c_puct` 0.75 to 1.25 within noise of the preset 1.5, 2.0 and 3.0 clearly worse (−45, −102 Elo); batch 1 +30 Elo, not significant; see [Arena screens](#arena-screens-of-alphago-zero-search-settings) |
 | 7 | AGZ gating (`gating = true`, 55% over 400 games) | expensive; only if regressions appear | not started |
 | 8 | `value_hidden = 256`, as in AGZ | architecture change, low priority | not started |
-| 9 | The recipe: items 1, 3 and 4 together (`temperature_moves = 7`, resignation, 200 games and 400 steps) | the three single changes that beat the control | done, 250 generations from the same start (`9x9-recipe`): beat the control 0.787 at generation 50 (+228 Elo) and the budget arm 0.725, +170 over the control pooled over generations 46–50, and still gaining at 250: 0.670 for generation 100 against 50, 0.645 for 150 and 0.748 for 200 against 100, 0.632 for 250 against 200 (about +19 Elo per 10 generations over 100–250), 0.925 for 250 against the start; self-play time about the control's, training twice; the value head's fresh-game loss stays flat while its buffer loss falls, a gap widening slowly (0.12 to 0.16 over generations 101–200), then holding at 0.164 over 201–250; no re-rate past 200; see [The recipe](#the-recipe-four-changes-together-250-generations). Adopted as the 9×9 preset (`configs/9x9.cfg`, commit 629c37f); see row 10. At generation 250 its 6×96 network beat the 6×64 one from scratch 0.610 (+78); see [The recipe against the preset from scratch](#the-recipe-against-the-preset-from-scratch-generation-250) |
+| 9 | The recipe: items 1, 3 and 4 together (`temperature_moves = 7`, resignation, 200 games and 400 steps) | the three single changes that beat the control | done, 250 generations from the same start (`9x9-recipe`): beat the control 0.787 at generation 50 (+228 Elo) and the budget arm 0.725, +170 over the control pooled over generations 46–50, and still gaining at 250: 0.670 for generation 100 against 50, 0.645 for 150 and 0.748 for 200 against 100, 0.632 for 250 against 200 (about +19 Elo per 10 generations over 100–250), 0.925 for 250 against the start; self-play time about the control's, training twice; the value head's fresh-game loss stays flat while its buffer loss falls, a gap widening slowly (0.12 to 0.16 over generations 101–200), then holding at 0.164 over 201–250; no re-rate past 200; see [The recipe](#the-recipe-four-changes-together-250-generations). Adopted as the 9×9 preset (`configs/9x9.cfg`, commit 63b3979); see row 10. At generation 250 its 6×96 network beat the 6×64 one from scratch 0.610 (+78); see [The recipe against the preset from scratch](#the-recipe-against-the-preset-from-scratch-generation-250) |
 | 10 | The new 9×9 preset from scratch | the recipe was validated only from a trained start | done (`9x9-scratch`, the preset's 150 generations continued to 250, 6×64, seed 1, against `9x9-main`, the earlier preset's run with the same network, seed and generation 0): 0.895, 0.895, 0.907 and 0.915 at equal generations 50, 100, 150 and 250 (+372 to +413 Elo); 0.595 (+67) and 0.795 (+235) at equal SGD steps (generation 75 against 150, 125 against 250) with about 70% of the self-play positions; 0.853 (+305) for generation 150 against `9x9-main`'s 250; still improving at 250 (0.657 for 200 and 0.728 for 250 against 150); resignation calibrated itself from a random network within about five generations; one seed; see [The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations). Against the recipe's 6×96 network at generation 250 (widened to 6×96 for the arena, which preserves its function) it scored 0.390 (−78); see [The recipe against the preset from scratch](#the-recipe-against-the-preset-from-scratch-generation-250) |
 
 Evaluation only (the algorithm unchanged): a validation loss on
@@ -2822,7 +2822,7 @@ matches at temperature 0 (AGZ's evaluation size).
      101–150 and +634 from generation 50 to 150 against the head-to-head
      +676 (`9x9/rerate/elo.csv`).
 3. **The first set of reference runs was invalid: the pass bug.** The
-   runs made before commits 87b37ea and 5da9b90 had a search blind spot.
+   runs made before commits 5329b10 and 15db72a had a search blind spot.
    - At low simulation counts, a game-ending pass reply with a tiny prior
      was never visited.
    - So trained networks passed into Tromp-Taylor losses with dead stones

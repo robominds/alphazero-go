@@ -1,7 +1,7 @@
 # Case study: the pass blind spot
 
 The four reference runs were first made with the code as it stood at
-commit 57e7333. That code had a blind spot in its tree search around
+commit 946924e. That code had a blind spot in its tree search around
 passing. These files keep the logs of those runs, so the symptom, the
 diagnosis and the fix can be checked against data:
 
@@ -127,7 +127,7 @@ to move as Black):
 
 ## Fix
 
-Commits 87b37ea and 5da9b90 make the fix: "score the game-ending pass edge
+Commits 5329b10 and 15db72a make the fix: "score the game-ending pass edge
 exactly while unvisited".
 
 - When a node is expanded right after a pass, its own pass edge ends the
