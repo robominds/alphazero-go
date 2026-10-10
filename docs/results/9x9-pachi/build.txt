@@ -1,0 +1,94 @@
+Pachi build used for the 9x9 ratings (10 October 2026, on the Mac mini that
+ran the matches: Apple M4, macOS 27.0.1)
+
+Source
+  Pachi 12.90 "Jowa", the latest release (GitHub release pachi-12.90,
+  published 15 April 2026), from the official repository
+  https://github.com/pasky/pachi
+  tag pachi-12.90 = commit f86fc61f6bf10d8ce91ab97e22f3a8bba3098622
+  GitHub's source archive of the tag,
+    https://github.com/pasky/pachi/archive/refs/tags/pachi-12.90.tar.gz
+    sha256 3b693ef4d4f83ff03f4dd2262fead1bd99be3cb7644c5bb21e6fc4f11940cb3f
+  is file for file identical to a clone of the tag (diff -r); the build
+  used the clone, since the Makefile reads .git for its build stamp
+  (build.h) and stops without it.
+
+One fix
+  Makefile.mac adds -DNO_THREAD_LOCAL, which selects a macro in random.h
+  with one closing parenthesis too many; it does not compile ("extraneous
+  ')' before ';'" in random.c). Fixed upstream after the release, in
+  commit 6f27988287160baa199b58a14eac45b58fc035e9 ("random: fix
+  pcg32_set_state macro typo", 17 April 2026); the same change was made
+  here:
+  -#define pcg32_set_state(pt)	pthread_setspecific(random_state_key, (pt)))
+  +#define pcg32_set_state(pt)	pthread_setspecific(random_state_key, (pt))
+
+Build (no DCNN, so no Caffe; no josekifix, so no KataGo; Pachi's default -O3)
+  make MAC=1 DCNN=0 JOSEKIFIX=0                          # Apple clang 21.0.0 (clang-2100.3.34.2)
+  make MAC=1 DCNN=0 JOSEKIFIX=0 CC=gcc-16 CXX=g++-16     # GCC 16.2.0 (Homebrew), for comparison
+  CFLAGS (pachi --compile-flags, both): -Wall -ggdb3 -O3 -D_GNU_SOURCE
+    -frename-registers -DDATA_DIR='/usr/share/pachi-go' -DNO_THREAD_LOCAL
+    -fomit-frame-pointer -std=gnu99 -pthread -Wsign-compare
+    -Wno-format-zero-length -Winit-self -Wimplicit-fallthrough
+  pachi --version: Pachi 12.90 (Jowa), git f86fc61, !dcnn build
+  sha256 of the binaries:
+    3209bca76ed8fb0192be0601abcf18ce7391dac46d07eee8277b99eae10ef38f  pachi (clang; used for every match)
+    d23ba26a8e77fc187000b1864ffdb27ecaa2115fdb6bbdb7b39c2a2866acce1c  pachi (GCC 16; the build check)
+
+Data files
+  The MM pattern files, which give the tree search its priors (on by
+  default; "--patterns"), are in the release's source tree and were put
+  next to the binary, where Pachi looks for them:
+    dfcd495f7547ca2b31f8552ef253767ae725c0950ad227d5ae63cde4d9055abe  patterns_mm.gamma
+    b415fa8476036146222af097150e2029c87c628bfe6b059b32d47e42d9fcbc08  patterns_mm.spat
+  Pachi logs "Loaded spatial dictionary of 18016 patterns. Loaded 18105
+  gammas. Checking gammas ... OK" at start. The joseki file
+  (joseki19.gtp) is used only on 13x13 and larger boards; a build without
+  DCNN stops at start without it unless given --nojoseki, which was used.
+  No DCNN network, no opening book.
+
+Checks against a miscompile (GNU Go 3.8 is miscompiled by Apple clang)
+  - Unit tests. "make test" stops early on macOS (its run_tests needs
+    tac, and its GTP check a GNU grep pattern), so the test files were
+    run as run_tests does: pachi --kgs -d2 -u t-unit/FILE.t, for every
+    t-unit/*.t not marked "auto-run off". Both builds pass every
+    mandatory test, 649 in 16 files (atari 29, bent4 7, can_countercap 8,
+    false_eye_seki 3, is_selfatari_stress_test 1, ladder 24, ladder_any
+    25, moggy 4, pass_is_safe 26, seki 157, selfatari 320,
+    selfatari_stats 1, two_eyes 26, useful_ladder 7, wouldbe_ladder 5,
+    wouldbe_ladder_any 6). The other two files (dcnn_blunder,
+    first_line_blunder) use commands that exist only in DCNN builds. The
+    optional tests, known failures, fail alike in both (ladder 0/2,
+    selfatari 0/4, two_eyes 0/1, useful_ladder 0/1, pass_is_safe 0 or 1
+    of 3 from run to run: its playouts are randomly seeded).
+  - Regression outputs, with a BOARD_TESTS=1 build of each compiler
+    (linked against Homebrew's OpenSSL): the board-logic output
+    (t-unit/regtest.gtp) and the spatial-pattern output
+    (t-unit/spatial.gtp) match the references (regtest.ref.bz2,
+    spatial.ref.bz2) byte for byte with both compilers. The seeded
+    playout output (tunit moggy_regtest) matches neither build's
+    reference, moggy.ref.bz2, last regenerated on 8 November 2025 before
+    the release's playout changes (the moggy and bent-four commits of
+    January and February 2026), but is byte-identical between the clang
+    and the GCC build.
+  - Games. Pachi's fixed-playout search stops on a wall-clock check (see
+    pachi-match.sh), so seeded games are not reproducible move for move
+    and cannot be compared between builds. Instead the GCC build played
+    the clang build 100 games at -t =4000 (matches/pachigcc-p4k): 55/100
+    for GCC, +35 Elo (95% interval -33 to +103), against 58/100 in the
+    same match of the clang build against itself (matches/pachi4k-p4k).
+  - No crash or assertion in any game of the matches in matches/, all
+    with Pachi's default stop check.
+
+One configuration that does crash
+  Pachi's option reportfreq=0.005s makes it check its playout count every
+  5 ms instead of every 50 ms, which would make -t =N nearly exact; it
+  was tried first and dropped after one game against GNU Go stopped on
+    Assertion failed: (ownermap->playouts >= GJ_MINGAMES), function
+    uct_pass_is_safe_, file uct.c, line 174.
+  Each search first runs 500 ownership playouts (about 20 ms here) in the
+  search thread; the default interval (100 ms before the first check of
+  a process, 50 ms after) is longer, while a 5 ms one lets the main
+  thread ask whether a pass is safe before they are done. A race in
+  Pachi exposed by the setting, not a miscompile; the matches use the
+  default interval.

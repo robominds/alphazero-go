@@ -1,0 +1,10 @@
+Seq	Host	Starttime	JobRuntime	Send	Receive	Exitval	Signal	Command
+1	:	1791661782.938	   602.325	0	0	2	0	./pachi-match.sh gnugo-p1k gnugo 1000 301  
+2	:	1791661782.940	   786.289	0	0	2	0	./pachi-match.sh gnugo-p4k gnugo 4000 302  
+9	:	1791662385.266	   779.211	0	0	0	0	./pachi-match.sh pachigcc-p4k pachi-gcc/pachi 4000 309  
+3	:	1791661782.941	  1677.108	0	0	2	0	./pachi-match.sh gnugo-p16k gnugo 16000 303  
+7	:	1791661782.950	  1922.570	0	0	2	0	./pachi-match.sh scratch-g250-s200-p16k nets/scratch-g250.azn 16000 307  
+5	:	1791661782.945	  2043.128	0	0	2	0	./pachi-match.sh recipe-g250-s200-p16k nets/recipe-g250.azn 16000 305  
+4	:	1791661782.943	  4905.305	0	0	2	0	./pachi-match.sh gnugo-p64k gnugo 64000 304  
+8	:	1791661782.953	  5817.820	0	0	2	0	./pachi-match.sh scratch-g250-s200-p64k nets/scratch-g250.azn 64000 308  
+6	:	1791661782.947	  6060.782	0	0	2	0	./pachi-match.sh recipe-g250-s200-p64k nets/recipe-g250.azn 64000 306  

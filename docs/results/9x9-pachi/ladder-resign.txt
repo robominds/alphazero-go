@@ -1,0 +1,84 @@
+Pachi's resignation on (its default).
+
+1. The anchor: GNU Go 3.8 level 10 and the Pachi levels
+
+| A | B | A's score | Elo A - B (95% interval) |
+|---|---|---|---|
+| GNU Go L10 | Pachi 1k | 39/100 | -78 (-148 to -8) |
+| GNU Go L10 | Pachi 4k | 7/100 | -449 (-583 to -316) |
+| GNU Go L10 | Pachi 16k | 3/100 | -604 (-803 to -404) |
+| GNU Go L10 | Pachi 64k | 0/100 | infinite |
+| Pachi 16k | Pachi 64k | 20/100 | -241 (-326 to -156) |
+| Pachi 4k | Pachi 16k | 29/100 | -156 (-231 to -81) |
+| Pachi 1k | Pachi 4k | 19/100 | -252 (-339 to -165) |
+
+Fitted to these matches only:
+
+| player | Elo | 95% interval |
+|---|---|---|
+| GNU Go L10 | 0 | (fixed) |
+| Pachi 1k | +104 | +41 to +168 |
+| Pachi 4k | +400 | +324 to +476 |
+| Pachi 16k | +569 | +476 to +662 |
+| Pachi 64k | +820 | +698 to +942 |
+
+2. Each network through each Pachi level against GNU Go directly
+
+| network | via | score vs level | Elo vs level | rating via level | rating vs GNU Go directly | difference (z) |
+|---|---|---|---|---|---|---|
+| scratch-g250-s200 | Pachi 1k | 52/100 | +14 | +118 ± 93 | +210 ± 81 | -92 (-1.5) |
+| scratch-g250-s200 | Pachi 4k | 25/100 | -191 | +210 ± 109 | +210 ± 81 | -0 (-0.0) |
+| scratch-g250-s200 | Pachi 16k | 14/100 | -315 | +254 ± 135 | +210 ± 81 | +44 (+0.5) |
+| scratch-g250-s200 | Pachi 64k | 7/100 | -449 | +370 ± 181 | +210 ± 81 | +160 (+1.6) |
+| scratch-g400-s200 | Pachi 1k | 60/100 | +70 | +175 ± 94 | +220 ± 82 | -45 (-0.7) |
+| scratch-g400-s200 | Pachi 4k | 39/100 | -78 | +323 ± 103 | +220 ± 82 | +103 (+1.5) |
+| scratch-g400-s200 | Pachi 16k | 19/100 | -252 | +317 ± 127 | +220 ± 82 | +97 (+1.3) |
+| scratchs2-g250-s200 | Pachi 4k | 27/100 | -173 | +228 ± 108 | +191 ± 79 | +37 (+0.5) |
+| recipe-g250-s200 | Pachi 1k | 62/100 | +85 | +190 ± 94 | +402 ± 119 | -212 (-2.7) |
+| recipe-g250-s200 | Pachi 4k | 27/100 | -173 | +228 ± 108 | +402 ± 119 | -174 (-2.1) |
+| recipe-g250-s200 | Pachi 16k | 19/100 | -252 | +317 ± 127 | +402 ± 119 | -85 (-1.0) |
+| recipe-g250-s200 | Pachi 64k | 7/100 | -449 | +370 ± 181 | +402 ± 119 | -32 (-0.3) |
+
+3. Joint fit (all the games above; GNU Go 3.8 level 10 = 0)
+
+| player | Elo | 95% interval |
+|---|---|---|
+| GNU Go L10 | 0 | (fixed) |
+| Pachi 1k | +157 | +113 to +201 |
+| scratch-g250-s200 | +200 | +152 to +248 |
+| scratchs2-g250-s200 | +204 | +144 to +264 |
+| scratch-g400-s200 | +259 | +210 to +309 |
+| recipe-g250-s200 | +268 | +219 to +318 |
+| Pachi 4k | +389 | +345 to +433 |
+| Pachi 16k | +524 | +472 to +576 |
+| Pachi 64k | +742 | +666 to +818 |
+
+4. Residuals of the joint fit
+
+| A | B | games | A's score | expected | Pearson residual |
+|---|---|---|---|---|---|
+| GNU Go L10 | Pachi 1k | 100 | 39 | 28.8 | +2.25 |
+| GNU Go L10 | Pachi 4k | 100 | 7 | 9.6 | -0.88 |
+| GNU Go L10 | Pachi 16k | 100 | 3 | 4.7 | -0.79 |
+| GNU Go L10 | Pachi 64k | 100 | 0 | 1.4 | -1.18 |
+| Pachi 16k | Pachi 64k | 100 | 20 | 22.2 | -0.53 |
+| Pachi 4k | Pachi 16k | 100 | 29 | 31.5 | -0.55 |
+| Pachi 1k | Pachi 4k | 100 | 19 | 20.8 | -0.44 |
+| scratch-g250-s200 | Pachi 1k | 100 | 52 | 56.2 | -0.84 |
+| scratch-g250-s200 | Pachi 4k | 100 | 25 | 25.2 | -0.04 |
+| scratch-g250-s200 | Pachi 16k | 100 | 14 | 13.4 | +0.17 |
+| scratch-g250-s200 | Pachi 64k | 100 | 7 | 4.2 | +1.37 |
+| scratch-g400-s200 | Pachi 1k | 100 | 60 | 64.3 | -0.90 |
+| scratch-g400-s200 | Pachi 4k | 100 | 39 | 32.1 | +1.47 |
+| scratch-g400-s200 | Pachi 16k | 100 | 19 | 17.9 | +0.29 |
+| scratchs2-g250-s200 | Pachi 4k | 100 | 27 | 25.6 | +0.32 |
+| recipe-g250-s200 | Pachi 1k | 100 | 62 | 65.5 | -0.73 |
+| recipe-g250-s200 | Pachi 4k | 100 | 27 | 33.3 | -1.33 |
+| recipe-g250-s200 | Pachi 16k | 100 | 19 | 18.7 | +0.08 |
+| recipe-g250-s200 | Pachi 64k | 100 | 7 | 6.2 | +0.35 |
+| scratch-g250-s200 | GNU Go L10 | 100 | 77 | 76.0 | +0.24 |
+| scratch-g400-s200 | GNU Go L10 | 100 | 78 | 81.7 | -0.95 |
+| scratchs2-g250-s200 | GNU Go L10 | 100 | 75 | 76.4 | -0.33 |
+| recipe-g250-s200 | GNU Go L10 | 100 | 91 | 82.4 | +2.25 |
+
+Pearson chi-square 23.0 on 15 degrees of freedom (23 pairings, 8 free ratings)

@@ -1,0 +1,2 @@
+pachi1k-p4k-nr pachi=1000 4000 354
+pachi4k-p16k-nr pachi=4000 16000 355

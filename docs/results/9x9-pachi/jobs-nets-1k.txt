@@ -1,0 +1,5 @@
+recipe-g250-s200-p1k nets/recipe-g250.azn 1000 331
+scratch-g250-s200-p1k nets/scratch-g250.azn 1000 332
+scratch-g400-s200-p1k nets/scratch-g400.azn 1000 333
+scratchs2-g250-s200-p1k nets/scratchs2-g250.azn 1000 334
+scratch96-g250-s200-p1k nets/scratch96-g250.azn 1000 335

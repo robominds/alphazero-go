@@ -1,0 +1,3 @@
+gnugo-p1k-nr gnugo 1000 341
+recipe-g250-s200-p4k-nr nets/recipe-g250.azn 4000 342
+scratch-g250-s200-p4k-nr nets/scratch-g250.azn 4000 343
