@@ -762,7 +762,7 @@ Black in odd-numbered games). For GNU Go:
 ```
 $ python3 tools/gtp_match.py \
       --a "./build-blas/gtp --checkpoint runs/9x9-main/checkpoints/gen_0250.azn --backend blas --random-symmetry" \
-      --b "gnugo --mode gtp --boardsize 9 --komi 7.5 --chinese-rules --capture-all-dead --positional-superko" \
+      --b "gnugo --mode gtp --level 10 --chinese-rules --capture-all-dead --positional-superko" \
       --games 40 --size 9 --komi 7.5 --out runs/gnugo-gen250
 ```
 
@@ -788,8 +788,9 @@ deterministically repeat the same two games, so give our engine
 `--random-symmetry` (and GNU Go a different seed per run, if needed) to
 make games differ.
 
-The GNU Go flags are from GNU Go 3.8's documentation and not tested here;
-check them with `gnugo --help` on your version. `--mode gtp` selects the
+These GNU Go flags were used for the matches in `docs/results/9x9-gnugo/`
+(GNU Go 3.8; check them with `gnugo --help` on another version; the board
+size and komi are sent over GTP). `--mode gtp` selects the
 protocol; `--chinese-rules` selects area scoring; `--capture-all-dead`
 makes it capture dead stones before passing, so a Tromp-Taylor count
 agrees with its own judgment; `--positional-superko` selects our ko rule
@@ -799,7 +800,12 @@ board program such as Sabaki, with arguments like
 `--checkpoint runs/9x9-main/checkpoints/gen_0250.azn --backend blas`, and
 start a game on the checkpoint's board size.
 
-No match against GNU Go has been played for `docs/results/` yet.
+Ten 9×9 networks have played GNU Go 3.8 at level 10 this way; see
+[Results](#results). On macOS the Homebrew bottle of GNU Go 3.8 fails an
+assertion (`board.c:2540`), as Apple clang miscompiles it when
+optimizing; build it from the official tarball with GCC (`-O2 -fcommon
+-fno-strict-aliasing -std=gnu89`) or at `-O0`, as described in
+`docs/results/README.md`.
 
 ## Presets
 
@@ -887,6 +893,20 @@ From `docs/results/README.md`, which has the details and the sources.
   [the headline](docs/results/README.md#headline-the-99-preset-now-trains-a-much-stronger-network),
   [the section](docs/results/README.md#the-99-preset-from-scratch-250-generations)
   and [the head-to-head](docs/results/README.md#the-recipe-against-the-preset-from-scratch-generation-250)).
+- **9×9 against GNU Go 3.8 (level 10).** 100 games per network at 200
+  simulations, komi 7.5, Tromp-Taylor: the earlier preset's generation
+  250 scored 0.16 (−288 Elo against GNU Go), the new preset from
+  scratch 0.45 at generation 150 and 0.75 to 0.79 at 250 (both seeds,
+  6×64 and 6×96; about +190 to +230), and the recipe's 6×96 network
+  0.91 (+402, interval +285 to +519), and 0.61 with its raw policy (1
+  simulation). Seed 1's generation 250 is level with GNU Go at about 8
+  simulations. The ranking agrees with the internal matches (except
+  between networks within noise of each other) and so do most gaps,
+  so the internal scale shows no sign of inflation. The Elo is
+  relative to GNU Go only: CGOS anchors its 9×9 list on an older GNU
+  Go, not on 3.8 at level 10, and 9×9 strength does not translate into
+  19×19 kyu or dan grades (see
+  [the section](docs/results/README.md#against-gnu-go-38-an-outside-anchor)).
 - **5×5: criterion met in 2 of 2 runs.** Both final networks (seeds 1 and
   2) beat generation 0 in **100 of 100** games (95% interval
   0.963–1.000), and Elo rises clearly: the mean `log.csv` rating of the

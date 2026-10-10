@@ -4,7 +4,8 @@ This directory holds the results of the reference trainings, made with
 the final code (after the pass fix, commit 15db72a). Every number below
 names the file it comes from. Runs were made 2026-09-30 to 2026-10-01;
 the follow-up matches and analyses were made on 2026-10-01. The 9×9
-experiments that follow them ran until 2026-10-08.
+experiments that follow them ran until 2026-10-08, and the matches
+against GNU Go on 2026-10-10.
 
 ## Headline: the 9×9 preset now trains a much stronger network
 
@@ -31,6 +32,13 @@ played against each other: the continued run's 6×96 network, which is
 twice the size and had 300 generations of earlier training behind its
 start, beat the from-scratch 6×64 network 244/400 (0.610, +78). That
 compares two training paths, not network size or history alone.
+
+Against an outside program, GNU Go 3.8 at level 10 (100 games each, 200
+simulations), the earlier preset's generation 250 scored 0.16, the new
+preset's 0.77 (seed 1) and 0.75 (seed 2), and the recipe's 0.91,
+consistent with the internal matches; the recipe's network beats it
+0.61 even with its raw policy. See
+[Against GNU Go 3.8](#against-gnu-go-38-an-outside-anchor).
 
 One seed and one board size, 400-game matches at 200 simulations. See
 [The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations),
@@ -2581,6 +2589,216 @@ paths, not a test of either factor; one seed each; 400-game matches at
 same against the scratch network, so the gap is known only to within
 the matches' noise.
 
+### Against GNU Go 3.8 (an outside anchor)
+
+Question: every rating above is measured against the project's own
+networks. How strong are they against an outside program? GNU Go 3.8 at
+level 10, a classical (non-neural) engine and a common yardstick, played
+100 games against each of ten 9×9 networks at 200 simulations, and
+against the stronger ones at fewer simulations to find where they are
+level with it. The result: the preset from scratch beats it from about
+generation 150 on, the recipe's network beats it 0.91 at 200 simulations
+and 0.61 with its raw policy (1 simulation), and the earlier preset's
+networks lose to it; the order agrees with the internal scale.
+
+- *Setup* (`9x9-gnugo/`). `gnugo-match.sh` plays one match with
+  `tools/gtp_match.py`: our `gtp` (`build-blas` from main at e6c0af9,
+  `--backend blas`, one thread) as A and scorer, `--random-symmetry`
+  and a different `--seed` per match (GNU Go is deterministic, so this
+  is what makes games differ), against `gnugo --mode gtp --level 10
+  --chinese-rules --capture-all-dead --positional-superko`; 9×9, komi
+  7.5, 100 games, colors alternating, at most 162 moves. Games are
+  scored Tromp-Taylor by our engine (every stone on the board counts);
+  GNU Go's own `final_score` is recorded too. `gnugo-jobs.sh` ran the
+  job lists (`jobs-*.txt`, one line per match: label, checkpoint,
+  simulations, seed, leaf batch) with GNU Parallel, up to 8 matches at
+  a time, on the second Mac mini (an Apple M4 with 16 GB) on 10 October:
+  `jobs-200.txt` from 10:38 to 11:12, the others from 11:13 to 11:40
+  (`*.joblog`; host and user names removed). The first list ran an
+  earlier `gnugo-match.sh` without the leaf-batch argument, which
+  leaves `gtp` at its default of 8, as the current script does.
+  `summarize.py` turns the per-match `matches/<label>/results.csv` and
+  `summary.txt` (`gtp_match.py`'s output) into `results.csv` and
+  `summary.txt`. A handful of games are in `sgf/`; the rest, and the
+  engines' stderr, are not in the repository.
+- *GNU Go build.* The Homebrew bottle of GNU Go 3.8 fails an assertion
+  on this macOS (`board.c:2540`, `ON_BOARD1` near a pass), because
+  Apple clang miscompiles GNU Go 3.8 at `-O1`/`-O2`. Both builds used
+  here are from the official 3.8 tarball (`gnugo-3.8.tar.gz`, sha256
+  `da68d7a65f44dcf6ce6e4e630b6f6dd9897249d34425920bfdd4e07ff1866a72`):
+  the ten 200-simulation matches with the default leaf batch of 8
+  (`jobs-200.txt`) ran against an unoptimized `-O0` build; all the
+  others, and the stopped ones below, against a GCC 16 build at `-O2`
+  with `-fcommon -fno-strict-aliasing -std=gnu89`, about twice as fast,
+  which played move-for-move the same games as the `-O0` build in 5
+  seeded full games (`--seed 1` to `5`, level 10, the flags above). A
+  full game was checked to run before the matches.
+- *Networks.* `9x9-main` (the earlier preset) at generations 50, 100
+  and 250; the preset from scratch (`9x9-scratch`, seed 1) at 50, 150,
+  250 and 400 (its continuation past 250); `9x9-scratch-s2`, the same
+  preset with seed 2, at 250; `9x9-scratch96`, the same preset from
+  scratch with a 6×96 network, at 250; and the recipe (`9x9-recipe`,
+  6×96) at 250. All have 6 blocks and 64 filters unless marked. The
+  continuation past 250 and the seed-2 and 6×96 runs are not otherwise
+  in `docs/results/`.
+- *The leaf batch at low simulation counts.* The first runs below 200
+  simulations used the presets' leaf batch of 8 and were stopped after
+  19 to 32 games (`stopped-batch8/`, `jobs-ladder.log`): with 8
+  descents in flight, virtual loss sends each to a different root move,
+  so an 8-simulation search visits 8 moves once each and picks one of
+  them at random. The recipe's network scored 2/22 that way at 8
+  simulations and 0/19 the scratch network's, against 72/100 and 52/100
+  with a batch of 1. The matches at 8 to 64 simulations were rerun with
+  `--mcts-batch 1`. At 1 simulation the batch is 1 whatever the
+  setting, and the move is the policy's top move. At 200 simulations
+  both batches were played for the recipe's network and the scratch
+  run's generation 250, within noise of each other (89 and 91 of 100
+  for the recipe, 83 and 77 for the scratch network), as the arena
+  screen found (batch 1 against 8: +30 Elo, not significant).
+
+Score is ours against GNU Go (95% Wilson interval), Elo is ours minus
+GNU Go's (400 · log10(p / (1 − p)), the interval's ends converted the
+same way), "distinct" counts different games out of 100. From
+`9x9-gnugo/summary.txt`:
+
+| network | gen | sims | batch | score | 95% interval | Elo vs GNU Go (interval) | distinct |
+|---|---|---|---|---|---|---|---|
+| `9x9-main` | 50 | 200 | 8 | 0/100 = 0.000 | 0.000-0.037 | −∞ (below −566) | 100 |
+| `9x9-main` | 100 | 200 | 8 | 7/100 = 0.070 | 0.034-0.137 | −449 (−580 to −319) | 100 |
+| `9x9-main` | 250 | 1 | 1 | 15/100 = 0.150 | 0.093-0.233 | −301 (−396 to −207) | 99 |
+| `9x9-main` | 250 | 200 | 8 | 16/100 = 0.160 | 0.101-0.244 | −288 (−380 to −196) | 100 |
+| `9x9-main` | 250 | 800 | 8 | 33/100 = 0.330 | 0.246-0.427 | −123 (−195 to −51) | 99 |
+| scratch, seed 1 | 50 | 200 | 8 | 5/100 = 0.050 | 0.022-0.112 | −512 (−663 to −360) | 100 |
+| scratch, seed 1 | 150 | 200 | 8 | 45/100 = 0.450 | 0.356-0.548 | −35 (−103 to +33) | 100 |
+| scratch, seed 1 | 250 | 1 | 1 | 39/100 = 0.390 | 0.300-0.488 | −78 (−147 to −8) | 100 |
+| scratch, seed 1 | 250 | 8 | 1 | 52/100 = 0.520 | 0.423-0.615 | +14 (−54 to +82) | 100 |
+| scratch, seed 1 | 250 | 32 | 1 | 70/100 = 0.700 | 0.604-0.781 | +147 (+73 to +221) | 100 |
+| scratch, seed 1 | 250 | 200 | 1 | 83/100 = 0.830 | 0.745-0.891 | +275 (+186 to +365) | 100 |
+| scratch, seed 1 | 250 | 200 | 8 | 77/100 = 0.770 | 0.678-0.842 | +210 (+130 to +290) | 100 |
+| scratch, seed 1 | 400 | 1 | 1 | 46/100 = 0.460 | 0.366-0.557 | −28 (−96 to +40) | 100 |
+| scratch, seed 1 | 400 | 200 | 8 | 78/100 = 0.780 | 0.689-0.850 | +220 (+138 to +301) | 100 |
+| scratch, seed 2 | 250 | 1 | 1 | 54/100 = 0.540 | 0.443-0.634 | +28 (−40 to +96) | 100 |
+| scratch, seed 2 | 250 | 200 | 8 | 75/100 = 0.750 | 0.657-0.825 | +191 (+113 to +269) | 99 |
+| scratch 6×96 | 250 | 1 | 1 | 57/100 = 0.570 | 0.472-0.663 | +49 (−19 to +117) | 99 |
+| scratch 6×96 | 250 | 200 | 8 | 79/100 = 0.790 | 0.700-0.858 | +230 (+147 to +313) | 100 |
+| recipe 6×96 | 250 | 1 | 1 | 61/100 = 0.610 | 0.512-0.700 | +78 (+8 to +147) | 100 |
+| recipe 6×96 | 250 | 8 | 1 | 72/100 = 0.720 | 0.625-0.799 | +164 (+89 to +239) | 99 |
+| recipe 6×96 | 250 | 32 | 1 | 83/100 = 0.830 | 0.745-0.891 | +275 (+186 to +365) | 99 |
+| recipe 6×96 | 250 | 64 | 1 | 85/100 = 0.850 | 0.767-0.907 | +301 (+207 to +396) | 100 |
+| recipe 6×96 | 250 | 200 | 1 | 89/100 = 0.890 | 0.814-0.937 | +363 (+256 to +470) | 100 |
+| recipe 6×96 | 250 | 200 | 8 | 91/100 = 0.910 | 0.838-0.952 | +402 (+285 to +519) | 99 |
+
+- *Every match was clean.* No forfeits (no illegal or refused move), no
+  timeout, no draw; 99 or 100 distinct games in every match. GNU Go
+  resigned 7 games in all; our engine never resigns. 21 games reached
+  the 162-move cap, all losses of ours as Black (20 of them at 1
+  simulation): in 20 the root value stayed at −0.8 or below from our
+  13th to 44th move (of 81) on, in the last at −0.68 or below over our
+  last 40, and the game ran on to the cap with our engine filling its
+  own area (`sgf/scratchs2-g250-s200-game75.sgf`). The winner is not in
+  doubt in those games.
+- *The scorers agree at 200 simulations and more.* GNU Go's own count
+  named a different winner in 1 of the 1,300 games at 200 or 800
+  simulations (`scratch-g150-s200`, game 74, in `sgf/`: GNU Go, as
+  Black, passed with White stones on the board that its count treats
+  as dead; Tromp-Taylor counts them, and our engine wins by 6.5). Where
+  the margins differ but not the winner (1 to 13 games per match), GNU
+  Go's margin is always the winner's larger, as when the loser's dead
+  stones are left on the board for Tromp-Taylor to count.
+- *At 1 simulation they do not.* The raw policy passes with an
+  opponent stone still inside its area (or lets GNU Go play into it and
+  passes), and Tromp-Taylor counts that stone, so GNU Go's count, which
+  removes it, gives our engine 18 more wins over the six raw-policy
+  matches and none fewer (11 for generation 400 of the scratch run,
+  whose 46/100 would be 57/100; `sgf/scratch-g400-s1-game3.sgf`). The
+  1-simulation scores are Tromp-Taylor's and so the lower of the two.
+  With 8 simulations or more no such game occurred.
+- *Simulations needed to draw level.* The recipe's network beats GNU Go
+  with its raw policy (0.61, interval 0.51-0.70), so it is level at
+  fewer than 1 simulation. With their raw policies, the preset's
+  generation 250 of seed 2 and its 6×96 network are about level (0.54
+  and 0.57) and seed 1's generation 400 nearly (0.46, 0.57 by GNU Go's
+  count); seed 1's generation 250 needs about 8 simulations (0.39 at 1,
+  0.52 at 8, 0.70 at 32). The earlier preset's generation 250 is far
+  from level at 200 (0.16) and still behind at 800 (0.33), and its
+  search barely helps between 1 and 200 simulations (0.15 and 0.16).
+  For the strongest network, 200 simulations are not yet saturated
+  (0.89 to 0.91, short of 0.95), so its 200-simulation Elo is usable.
+
+*Against the internal scale.* With `9x9-main`'s generation 250 at 0,
+each network's Elo against GNU Go at 200 simulations (batch 8) minus
+that generation's −288, set against the project's own matches (400
+games, 200 simulations each side, from `9x9/rerate-250/elo.csv`, the
+`9x9-scratch/` matches, `9x9-versus/` and the copies in
+`9x9-gnugo/internal/`). The interval of a difference of two 100-game
+results is about ±110 to ±180:
+
+| network | via GNU Go | internal | internal source |
+|---|---|---|---|
+| `9x9-main` gen 50 | below −278 | −667 | re-rate to 250 (1132.5 − 1799.5) |
+| `9x9-main` gen 100 | −161 ± 163 | −267 | re-rate to 250 (1532.3 − 1799.5) |
+| scratch gen 50 | −223 ± 182 | about −296 | `9x9-main` gen 50 −667, plus 358/400 against it (+371) |
+| scratch gen 150 | +253 ± 115 | +305 | 341/400 against `9x9-main` gen 250 |
+| scratch gen 250 | +498 ± 123 | +413 | 366/400 against `9x9-main` gen 250 |
+| scratch gen 400 | +508 ± 124 | +470 | 375/400 against `9x9-main` gen 250 |
+| scratch seed 2, gen 250 | +479 ± 122 | +449 | 372/400 against `9x9-main` gen 250 |
+| scratch 6×96, gen 250 | +518 ± 125 | not measured | |
+| recipe gen 250 | +690 ± 151 | about +491 | scratch gen 250's +413, plus the recipe's +78 against it |
+
+- *The ranking agrees and most differences do.* The networks rank the
+  same both ways, except among the three that are within about 60 Elo
+  of each other internally (seed 1's generations 250 and 400, seed 2's
+  250). Every network sits where the internal scale puts it, within the
+  interval, except the recipe's, which is about +200 higher through GNU
+  Go than by the shortest internal chain (+670 ± 123 pooling its two
+  200-simulation matches, 180/200). That chain has two links, and each
+  agrees on its own: pooling both batches, the recipe is ahead of the
+  scratch run's generation 250 by +141 ± 100 through GNU Go (180/200
+  against 160/200), against +78 in their direct match, and that
+  network is ahead of `9x9-main`'s generation 250 by +529 ± 111,
+  against +413. The two excesses, each inside the noise, add up to the
+  gap.
+- *Small internal gains do not all show.* The scratch run's generation
+  400 beat its generation 250 274/400 (+135) directly, but scores the
+  same against GNU Go (0.78 and 0.77, +10 ± 115); seed 2 and seed 1 at
+  250 differ by +36 directly and −19 through GNU Go. Differences under
+  about 150 Elo are inside the noise of 100-game matches.
+- *No sign of inflation.* Ratings from matches among one project's own
+  networks can overstate progress against other opponents. Here the
+  differences through GNU Go are, if anything, as large as the
+  internal ones or larger (+498 against +413 for the preset from
+  scratch over the earlier preset): no sign of inflation between these
+  networks.
+
+*No anchored rating.* GNU Go 3.8 level 10 is not the anchor of the
+CGOS 9×9 server. Its all-time BayesElo list
+(<http://www.yss-aya.com/cgos/9x9/bayes.html>, read 10 October 2026)
+holds `Gnugo-3.7.10-a1`, an older version whose settings it does not
+give, fixed at 1800 (338,247 games); the server's source
+(<https://github.com/yssaya/cgos>) inserts that program into its anchors
+table at 1800. The same list has a `gnugo_v_3_8_lv10` at 1946 ± 81 from
+821 games, mostly against far stronger or far weaker programs, and CGOS
+plays 5 minutes per side at komi 7.0. None of that pins GNU Go 3.8
+level 10 under these conditions to a number, so the Elo here is
+relative to it only. Nor do 9×9 results translate into 19×19 kyu or dan
+grades: 9×9 is a different game in practice (short, tactical, decided
+by reading more than by strategy), and a program's 9×9 and 19×19
+strengths differ widely.
+
+**Verdict.** Against GNU Go 3.8 at level 10, the 9×9 preset from scratch
+is about level at generation 150 (0.45 at 200 simulations) and ahead by
+generation 250 (0.75 to 0.83, about +190 to +275 Elo, for both seeds and
+both widths), the recipe's 6×96 network is clearly stronger (0.89 to
+0.91 at 200 simulations, about +360 to +400; 0.61 with its raw policy),
+and the earlier preset's networks are weaker (0.16 at generation 250,
+−288). The outside ranking agrees with the internal one, and the
+internal scale shows no sign of inflation. Caveats: 100-game matches
+(about ±80 to ±120 Elo at these scores), one opponent at one level,
+GNU Go deterministic (only our engine's random symmetries vary the
+games), Tromp-Taylor scoring (which counts dead stones left on the
+board, and costs the raw policy several games), and Elo relative to
+GNU Go only.
+
 ### 19×19: criterion met (it runs)
 
 The criterion is that both generations complete, the losses are finite
@@ -2971,6 +3189,20 @@ matches at temperature 0 (AGZ's evaluation size).
   `recipe-g200-vs-scratch-g250.txt` and
   `recipe-g250-vs-scratch-g150.txt`. See
   [its section](#the-recipe-against-the-preset-from-scratch-generation-250).
+- `9x9-gnugo/`: the matches against GNU Go 3.8: the scripts
+  `gnugo-match.sh`, `gnugo-jobs.sh` and `summarize.py`; the job lists
+  `jobs-200.txt`, `jobs-ladder.txt`, `jobs-ladder-b1.txt` and
+  `jobs-ladder2.txt` with their GNU Parallel job logs (`*.joblog`) and
+  `jobs-ladder.log` (the stopped jobs); `matches/<label>/results.csv`
+  and `summary.txt` for each of the 24 matches; the table `summary.txt`
+  and `results.csv` (one row per match, with how the games ended and
+  the scorers' disagreements); `stopped-batch8/`, the partial results of
+  the five low-simulation matches stopped for the leaf batch; six games
+  in `sgf/`; and `internal/`, copies of four 400-game match outputs
+  from the runs (the scratch run's generation 400 against `9x9-main`'s
+  250 and its own 250; seed 2's generation 250 against `9x9-main`'s 250
+  and seed 1's 250). See
+  [its section](#against-gnu-go-38-an-outside-anchor).
 - `9x9/log-250.csv`, `9x9/config-250.cfg` and `9x9/{buf,pass,side}-250.txt`:
   `9x9-main` continued to generation 250: its `log.csv` over generations
   1–250 (the first 150 rows are `9x9/log.csv`), its `config.cfg` as
