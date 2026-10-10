@@ -1,0 +1,5 @@
+recipe-g250-s8-b1 nets/recipe-g250.azn 8 211 1
+recipe-g250-s32-b1 nets/recipe-g250.azn 32 212 1
+recipe-g250-s64-b1 nets/recipe-g250.azn 64 213 1
+scratch-g250-s8-b1 nets/scratch-g250.azn 8 214 1
+scratch-g250-s32-b1 nets/scratch-g250.azn 32 215 1

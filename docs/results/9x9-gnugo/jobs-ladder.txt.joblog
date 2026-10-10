@@ -1,0 +1,9 @@
+Seq	Host	Starttime	JobRuntime	Send	Receive	Exitval	Signal	Command
+2	:	1791656018.092	   141.013	0	0	143	0	./gnugo-match.sh recipe-g250-s8 nets/recipe-g250.azn 8 202
+3	:	1791656018.094	   141.040	0	0	143	0	./gnugo-match.sh recipe-g250-s32 nets/recipe-g250.azn 32 203
+4	:	1791656018.096	   141.067	0	0	143	0	./gnugo-match.sh recipe-g250-s64 nets/recipe-g250.azn 64 204
+6	:	1791656018.102	   141.076	0	0	143	0	./gnugo-match.sh scratch-g250-s8 nets/scratch-g250.azn 8 206
+7	:	1791656018.106	   141.098	0	0	143	0	./gnugo-match.sh scratch-g250-s32 nets/scratch-g250.azn 32 207
+5	:	1791656018.099	   400.615	0	0	0	0	./gnugo-match.sh scratch-g250-s1 nets/scratch-g250.azn 1 205
+1	:	1791656018.091	   408.077	0	0	0	0	./gnugo-match.sh recipe-g250-s1 nets/recipe-g250.azn 1 201
+8	:	1791656018.110	  1598.015	0	0	0	0	./gnugo-match.sh main-g250-s800 nets/main-g250.azn 800 208
