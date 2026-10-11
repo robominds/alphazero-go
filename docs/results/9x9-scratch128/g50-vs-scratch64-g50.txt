@@ -1,0 +1,2 @@
+A runs/9x9-scratch128/checkpoints/gen_0050.azn vs B runs/r6-eval/scratch128/scratch64-g50-as-10x128.azn: A scored 231/400 = 0.578 (95% CI 0.529-0.625), distinct games 391
+A wins 231, B wins 169, draws 0

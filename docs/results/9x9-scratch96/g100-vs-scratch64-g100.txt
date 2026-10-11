@@ -1,0 +1,2 @@
+A runs/9x9-scratch96/checkpoints/gen_0100.azn vs B runs/r3-eval/scratch96/scratch-g100-as-6x96.azn: A scored 202/400 = 0.505 (95% CI 0.456-0.554), distinct games 384
+A wins 202, B wins 198, draws 0

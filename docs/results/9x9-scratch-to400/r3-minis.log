@@ -1,0 +1,9 @@
+scratch-to400	scratch-to400 start Thu Oct  8 21:48:41 PDT 2026 on [the first Mac mini]
+scratch-s2	scratch-s2 start Thu Oct  8 21:48:41 PDT 2026 on [the second Mac mini]
+scratch-to400	train exit 0 Fri Oct  9 09:41:25 PDT 2026
+scratch-to400	g300-vs-g250: A runs/9x9-scratch/checkpoints/gen_0300.azn vs B runs/9x9-scratch/checkpoints/gen_0250.azn: A scored 256/400 = 0.640 (95% CI 0.592-0.686), distinct games 353
+scratch-to400	g350-vs-g250: A runs/9x9-scratch/checkpoints/gen_0350.azn vs B runs/9x9-scratch/checkpoints/gen_0250.azn: A scored 264/400 = 0.660 (95% CI 0.612-0.705), distinct games 371
+scratch-to400	g400-vs-g250: A runs/9x9-scratch/checkpoints/gen_0400.azn vs B runs/9x9-scratch/checkpoints/gen_0250.azn: A scored 274/400 = 0.685 (95% CI 0.638-0.729), distinct games 368
+scratch-to400	g400-vs-main-g250: A runs/9x9-scratch/checkpoints/gen_0400.azn vs B runs/9x9-main/checkpoints/gen_0250.azn: A scored 375/400 = 0.938 (95% CI 0.909-0.957), distinct games 365
+scratch-to400	scratch-to400 all done Fri Oct  9 10:10:34 PDT 2026
+minis done Fri Oct  9 17:44:51 PDT 2026

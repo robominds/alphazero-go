@@ -1,0 +1,8 @@
+scratch128 start Fri Oct  9 17:47:58 PDT 2026 on [the Mac Studio]
+train exit 0 Sat Oct 10 19:58:28 PDT 2026
+g50-vs-scratch64-g50: A runs/9x9-scratch128/checkpoints/gen_0050.azn vs B runs/r6-eval/scratch128/scratch64-g50-as-10x128.azn: A scored 231/400 = 0.578 (95% CI 0.529-0.625), distinct games 391
+g100-vs-scratch64-g100: A runs/9x9-scratch128/checkpoints/gen_0100.azn vs B runs/r6-eval/scratch128/scratch64-g100-as-10x128.azn: A scored 179/400 = 0.448 (95% CI 0.400-0.496), distinct games 384
+g150-vs-scratch64-g150: A runs/9x9-scratch128/checkpoints/gen_0150.azn vs B runs/r6-eval/scratch128/scratch64-g150-as-10x128.azn: A scored 162/400 = 0.405 (95% CI 0.358-0.454), distinct games 383
+g250-vs-scratch64-g250: A runs/9x9-scratch128/checkpoints/gen_0250.azn vs B runs/r6-eval/scratch128/scratch64-g250-as-10x128.azn: A scored 161/400 = 0.403 (95% CI 0.356-0.451), distinct games 368
+g250-vs-scratch64-g400: A runs/9x9-scratch128/checkpoints/gen_0250.azn vs B runs/r6-eval/scratch128/scratch64-g400-as-10x128.azn: A scored 105/400 = 0.263 (95% CI 0.222-0.308), distinct games 363
+scratch128 all done Sat Oct 10 20:51:31 PDT 2026

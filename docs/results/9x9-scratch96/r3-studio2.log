@@ -1,0 +1,8 @@
+scratch96	scratch96 resume Fri Oct  9 00:32:25 PDT 2026 on [the Mac Studio]
+scratch96	train exit 0 Fri Oct  9 16:38:37 PDT 2026
+scratch96	g50-vs-scratch64-g50: A runs/9x9-scratch96/checkpoints/gen_0050.azn vs B runs/r3-eval/scratch96/scratch-g50-as-6x96.azn: A scored 262/400 = 0.655 (95% CI 0.607-0.700), distinct games 386
+scratch96	g100-vs-scratch64-g100: A runs/9x9-scratch96/checkpoints/gen_0100.azn vs B runs/r3-eval/scratch96/scratch-g100-as-6x96.azn: A scored 202/400 = 0.505 (95% CI 0.456-0.554), distinct games 384
+scratch96	g150-vs-scratch64-g150: A runs/9x9-scratch96/checkpoints/gen_0150.azn vs B runs/r3-eval/scratch96/scratch-g150-as-6x96.azn: A scored 227/400 = 0.568 (95% CI 0.519-0.615), distinct games 382
+scratch96	g250-vs-scratch64-g250: A runs/9x9-scratch96/checkpoints/gen_0250.azn vs B runs/r3-eval/scratch96/scratch-g250-as-6x96.azn: A scored 238/400 = 0.595 (95% CI 0.546-0.642), distinct games 373
+scratch96	g250-vs-recipe-g250: A runs/9x9-scratch96/checkpoints/gen_0250.azn vs B runs/9x9-recipe/checkpoints/gen_0250.azn: A scored 157/400 = 0.393 (95% CI 0.346-0.441), distinct games 370
+scratch96	scratch96 all done Fri Oct  9 17:21:04 PDT 2026

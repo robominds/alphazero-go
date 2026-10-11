@@ -1,0 +1,7 @@
+scratch-s3 start Fri Oct  9 17:45:02 PDT 2026 on [the first Mac mini]
+train exit 0 Sat Oct 10 15:44:51 PDT 2026
+g50-vs-seed1-g50: A runs/9x9-scratch-s3/checkpoints/gen_0050.azn vs B runs/9x9-scratch/checkpoints/gen_0050.azn: A scored 236/400 = 0.590 (95% CI 0.541-0.637), distinct games 387
+g100-vs-seed1-g100: A runs/9x9-scratch-s3/checkpoints/gen_0100.azn vs B runs/9x9-scratch/checkpoints/gen_0100.azn: A scored 219/400 = 0.547 (95% CI 0.499-0.596), distinct games 388
+g150-vs-seed1-g150: A runs/9x9-scratch-s3/checkpoints/gen_0150.azn vs B runs/9x9-scratch/checkpoints/gen_0150.azn: A scored 200/400 = 0.500 (95% CI 0.451-0.549), distinct games 381
+g250-vs-seed1-g250: A runs/9x9-scratch-s3/checkpoints/gen_0250.azn vs B runs/9x9-scratch/checkpoints/gen_0250.azn: A scored 230/400 = 0.575 (95% CI 0.526-0.623), distinct games 351
+scratch-s3 all done Sat Oct 10 16:33:27 PDT 2026
