@@ -34,6 +34,7 @@ Fitted to these matches only:
 | scratch96-g250-s200 | Pachi 1k | 28/100 | -164 | +177 ± 121 | +230 ± 84 | -53 (-0.7) |
 | scratch96-g250-s200 | Pachi 4k | 23/100 | -210 | +415 ± 141 | +230 ± 84 | +185 (+2.2) |
 | scratch96-g250-s200 | Pachi 16k | 8/100 | -424 | +373 ± 187 | +230 ± 84 | +143 (+1.4) |
+| scratch128-g250-s200 | Pachi 1k | 23/100 | -210 | +131 ± 124 | +49 ± 69 | +82 (+1.1) |
 | recipe-g250-s200 | Pachi 1k | 42/100 | -56 | +285 ± 117 | +402 ± 119 | -117 (-1.4) |
 | recipe-g250-s200 | Pachi 4k | 29/100 | -156 | +469 ± 138 | +402 ± 119 | +67 (+0.7) |
 | recipe-g250-s200 | Pachi 16k | 9/100 | -402 | +395 ± 183 | +402 ± 119 | -6 (-0.1) |
@@ -43,42 +44,45 @@ Fitted to these matches only:
 | player | Elo | 95% interval |
 |---|---|---|
 | GNU Go L10 | 0 | (fixed) |
-| scratch-g250-s200 | +217 | +165 to +269 |
-| scratchs2-g250-s200 | +217 | +165 to +269 |
-| scratch96-g250-s200 | +223 | +171 to +275 |
-| scratch-g400-s200 | +283 | +231 to +336 |
-| recipe-g250-s200 | +312 | +259 to +365 |
-| Pachi 1k | +334 | +291 to +378 |
-| Pachi 4k | +497 | +451 to +543 |
-| Pachi 16k | +644 | +588 to +700 |
+| scratch128-g250-s200 | +76 | +19 to +132 |
+| scratch-g250-s200 | +211 | +160 to +262 |
+| scratchs2-g250-s200 | +211 | +160 to +262 |
+| scratch96-g250-s200 | +217 | +166 to +268 |
+| scratch-g400-s200 | +277 | +225 to +328 |
+| recipe-g250-s200 | +305 | +254 to +356 |
+| Pachi 1k | +324 | +284 to +364 |
+| Pachi 4k | +491 | +446 to +535 |
+| Pachi 16k | +637 | +582 to +692 |
 
 4. Residuals of the joint fit
 
 | A | B | games | A's score | expected | Pearson residual |
 |---|---|---|---|---|---|
-| GNU Go L10 | Pachi 1k | 100 | 10 | 12.7 | -0.82 |
-| GNU Go L10 | Pachi 4k | 100 | 5 | 5.4 | -0.18 |
-| Pachi 4k | Pachi 16k | 100 | 27 | 30.1 | -0.67 |
-| Pachi 1k | Pachi 4k | 100 | 14 | 28.1 | -3.14 |
-| scratch-g250-s200 | Pachi 1k | 100 | 30 | 33.7 | -0.79 |
-| scratch-g250-s200 | Pachi 4k | 100 | 16 | 16.6 | -0.17 |
-| scratch-g250-s200 | Pachi 16k | 100 | 13 | 7.9 | +1.89 |
-| scratch-g400-s200 | Pachi 1k | 100 | 44 | 42.7 | +0.27 |
-| scratch-g400-s200 | Pachi 4k | 100 | 27 | 22.6 | +1.06 |
+| GNU Go L10 | Pachi 1k | 100 | 10 | 13.4 | -1.00 |
+| GNU Go L10 | Pachi 4k | 100 | 5 | 5.6 | -0.26 |
+| Pachi 4k | Pachi 16k | 100 | 27 | 30.0 | -0.66 |
+| Pachi 1k | Pachi 4k | 100 | 14 | 27.7 | -3.07 |
+| scratch-g250-s200 | Pachi 1k | 100 | 30 | 34.3 | -0.90 |
+| scratch-g250-s200 | Pachi 4k | 100 | 16 | 16.7 | -0.18 |
+| scratch-g250-s200 | Pachi 16k | 100 | 13 | 7.9 | +1.88 |
+| scratch-g400-s200 | Pachi 1k | 100 | 44 | 43.2 | +0.16 |
+| scratch-g400-s200 | Pachi 4k | 100 | 27 | 22.6 | +1.05 |
 | scratch-g400-s200 | Pachi 16k | 100 | 11 | 11.1 | -0.04 |
-| scratchs2-g250-s200 | Pachi 1k | 100 | 36 | 33.7 | +0.48 |
-| scratchs2-g250-s200 | Pachi 4k | 100 | 15 | 16.6 | -0.44 |
-| scratchs2-g250-s200 | Pachi 16k | 100 | 10 | 7.9 | +0.78 |
-| scratch96-g250-s200 | Pachi 1k | 100 | 28 | 34.5 | -1.36 |
-| scratch96-g250-s200 | Pachi 4k | 100 | 23 | 17.1 | +1.57 |
-| scratch96-g250-s200 | Pachi 16k | 100 | 8 | 8.1 | -0.05 |
-| recipe-g250-s200 | Pachi 1k | 100 | 42 | 46.8 | -0.96 |
+| scratchs2-g250-s200 | Pachi 1k | 100 | 36 | 34.3 | +0.36 |
+| scratchs2-g250-s200 | Pachi 4k | 100 | 15 | 16.7 | -0.45 |
+| scratchs2-g250-s200 | Pachi 16k | 100 | 10 | 7.9 | +0.77 |
+| scratch96-g250-s200 | Pachi 1k | 100 | 28 | 35.0 | -1.47 |
+| scratch96-g250-s200 | Pachi 4k | 100 | 23 | 17.1 | +1.56 |
+| scratch96-g250-s200 | Pachi 16k | 100 | 8 | 8.2 | -0.06 |
+| scratch128-g250-s200 | Pachi 1k | 100 | 23 | 19.3 | +0.94 |
+| recipe-g250-s200 | Pachi 1k | 100 | 42 | 47.3 | -1.05 |
 | recipe-g250-s200 | Pachi 4k | 100 | 29 | 25.6 | +0.78 |
-| recipe-g250-s200 | Pachi 16k | 100 | 9 | 12.9 | -1.16 |
-| scratch-g250-s200 | GNU Go L10 | 100 | 77 | 77.7 | -0.18 |
-| scratch-g400-s200 | GNU Go L10 | 100 | 78 | 83.6 | -1.52 |
-| scratchs2-g250-s200 | GNU Go L10 | 100 | 75 | 77.7 | -0.66 |
-| scratch96-g250-s200 | GNU Go L10 | 100 | 79 | 78.3 | +0.17 |
-| recipe-g250-s200 | GNU Go L10 | 100 | 91 | 85.8 | +1.50 |
+| recipe-g250-s200 | Pachi 16k | 100 | 9 | 12.9 | -1.15 |
+| scratch-g250-s200 | GNU Go L10 | 100 | 77 | 77.1 | -0.03 |
+| scratch-g400-s200 | GNU Go L10 | 100 | 78 | 83.1 | -1.36 |
+| scratchs2-g250-s200 | GNU Go L10 | 100 | 75 | 77.1 | -0.51 |
+| scratch96-g250-s200 | GNU Go L10 | 100 | 79 | 77.7 | +0.31 |
+| scratch128-g250-s200 | GNU Go L10 | 100 | 57 | 60.7 | -0.76 |
+| recipe-g250-s200 | GNU Go L10 | 100 | 91 | 85.3 | +1.62 |
 
-Pearson chi-square 29.7 on 16 degrees of freedom (24 pairings, 8 free ratings)
+Pearson chi-square 31.3 on 17 degrees of freedom (26 pairings, 9 free ratings)

@@ -56,6 +56,7 @@ NETWORKS = {   # label prefix -> (description, shape)
     "scratch": ("new preset from scratch, seed 1", "6x64"),
     "scratchs2": ("new preset from scratch, seed 2", "6x64"),
     "scratch96": ("new preset from scratch, 6x96", "6x96"),
+    "scratch128": ("new preset from scratch, 10x128", "10x128"),
     "recipe": ("recipe (continued 6x96)", "6x96"),
 }
 LABEL = re.compile(r"^(?P<player>gnugo|pachigcc|pachi(?P<apo>\d+)k|(?P<net>[a-z0-9]+)-g(?P<gen>\d+)-s(?P<sims>\d+)(?:-b(?P<batch>\d+))?)"

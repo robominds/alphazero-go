@@ -59,14 +59,16 @@ See [three seeds](#the-preset-from-scratch-three-seeds),
 
 Against an outside program, GNU Go 3.8 at level 10 (100 games each, 200
 simulations), the earlier preset's generation 250 scored 0.16, the new
-preset's 0.77 (seed 1) and 0.75 (seed 2), and the recipe's 0.91,
+preset's 0.77 (seed 1) and 0.75 (seed 2), its 10×128 network's 0.57,
+and the recipe's 0.91,
 consistent with the internal matches; the recipe's network beats it
 0.61 even with its raw policy. See
 [Against GNU Go 3.8](#against-gnu-go-38-an-outside-anchor). Pachi
 12.90, a Monte Carlo tree search program without its neural network,
 is stronger still: at about 2,000 playouts a move it beats every
-network (they score 0.28 to 0.44), and on one scale with GNU Go at 0
-the networks lie at +217 to +312 Elo and Pachi at +334 to +644, with
+network (they score 0.23 to 0.44), and on one scale with GNU Go at 0
+the five strongest networks lie at +211 to +305 Elo, the 10×128 network
+at +76 and Pachi at +324 to +637, with
 the recipe's lead over the others smaller than against GNU Go. See
 [Against Pachi 12.90](#against-pachi-1290-a-stronger-outside-anchor).
 
@@ -3039,6 +3041,17 @@ Between 363 and 391 of each 400 games were distinct.
   5.0 times faster. Over the 250 generations the Mac Studio took 6.3
   minutes per generation: self-play 196.5 s (18.5 ms per position),
   training 100.2 s on its CPU cores and arena 80.0 s.
+- *Against the outside anchors* (added later, 100 games each,
+  generation 250 at 200 simulations). It scores 57/100 against GNU Go
+  3.8 level 10 (+49 Elo; 37/100 with its raw policy, like seed 1's
+  6×64 network's 39/100) and 23/100 against Pachi 1k (−210). The joint
+  fit puts it at +76 with GNU Go at 0, against +211 for the
+  generation-250 6×64 networks and +305 for the recipe: the outside
+  programs agree that it ends weaker, by about 135 Elo against −69
+  internally (161/400), a difference inside the noise of 100-game
+  matches.
+  See [Against GNU Go 3.8](#against-gnu-go-38-an-outside-anchor) and
+  [Against Pachi 12.90](#against-pachi-1290-a-stronger-outside-anchor).
 
 **Verdict.** A 10×128 network trained from scratch with the 9×9 preset
 **ends weaker than the 6×64 one**: +54 Elo at generation 50, then −37
@@ -3058,12 +3071,14 @@ helps.
 Question: every rating above is measured against the project's own
 networks. How strong are they against an outside program? GNU Go 3.8 at
 level 10, a classical (non-neural) engine and a common yardstick, played
-100 games against each of ten 9×9 networks at 200 simulations, and
+100 games against each of eleven 9×9 networks at 200 simulations, and
 against the stronger ones at fewer simulations to find where they are
 level with it. The result: the preset from scratch beats it from about
 generation 150 on, the recipe's network beats it 0.91 at 200 simulations
 and 0.61 with its raw policy (1 simulation), and the earlier preset's
-networks lose to it; the order agrees with the internal scale.
+networks lose to it; the order agrees with the internal scale. The
+preset's 10×128 network, added later, is only about level with it
+(0.57), as its value head's overfitting predicts.
 
 - *Setup* (`9x9-gnugo/`). `gnugo-match.sh` plays one match with
   `tools/gtp_match.py`: our `gtp` (`build-blas` from main at e6c0af9,
@@ -3077,7 +3092,8 @@ networks lose to it; the order agrees with the internal scale.
   job lists (`jobs-*.txt`, one line per match: label, checkpoint,
   simulations, seed, leaf batch) with GNU Parallel, up to 8 matches at
   a time, on the second Mac mini (an Apple M4 with 16 GB) on 10 October:
-  `jobs-200.txt` from 10:38 to 11:12, the others from 11:13 to 11:40
+  `jobs-200.txt` from 10:38 to 11:12, the others from 11:13 to 11:40,
+  except `jobs-128.txt` (the 10×128 network) from 20:59 to 21:18
   (`*.joblog`; host and user names removed). The first list ran an
   earlier `gnugo-match.sh` without the leaf-batch argument, which
   leaves `gtp` at its default of 8, as the current script does.
@@ -3101,10 +3117,17 @@ networks lose to it; the order agrees with the internal scale.
   and 250; the preset from scratch (`9x9-scratch`, seed 1) at 50, 150,
   250 and 400 (its continuation past 250); `9x9-scratch-s2`, the same
   preset with seed 2, at 250; `9x9-scratch96`, the same preset from
-  scratch with a 6×96 network, at 250; and the recipe (`9x9-recipe`,
-  6×96) at 250. All have 6 blocks and 64 filters unless marked. The
-  continuation past 250 and the seed-2 and 6×96 runs are not otherwise
-  in `docs/results/`.
+  scratch with a 6×96 network, at 250; `9x9-scratch128`, the same
+  preset from scratch with a 10×128 network, at 250; and the recipe
+  (`9x9-recipe`, 6×96) at 250. All have 6 blocks and 64 filters unless
+  marked. The seed-2, continued, 6×96 and 10×128 runs have their own
+  sections: [three seeds](#the-preset-from-scratch-three-seeds)
+  (`9x9-scratch-seeds/`),
+  [400 generations](#the-preset-from-scratch-continued-to-generation-400)
+  (`9x9-scratch-to400/`),
+  [6×96](#the-preset-from-scratch-with-a-696-network) (`9x9-scratch96/`)
+  and [10×128](#the-preset-from-scratch-with-a-10128-network)
+  (`9x9-scratch128/`).
 - *The leaf batch at low simulation counts.* The first runs below 200
   simulations used the presets' leaf batch of 8 and were stopped after
   19 to 32 games (`stopped-batch8/`, `jobs-ladder.log`): with 8
@@ -3145,6 +3168,8 @@ same way), "distinct" counts different games out of 100. From
 | scratch, seed 2 | 250 | 200 | 8 | 75/100 = 0.750 | 0.657-0.825 | +191 (+113 to +269) | 99 |
 | scratch 6×96 | 250 | 1 | 1 | 57/100 = 0.570 | 0.472-0.663 | +49 (−19 to +117) | 99 |
 | scratch 6×96 | 250 | 200 | 8 | 79/100 = 0.790 | 0.700-0.858 | +230 (+147 to +313) | 100 |
+| scratch 10×128 | 250 | 1 | 1 | 37/100 = 0.370 | 0.282-0.468 | −92 (−163 to −22) | 100 |
+| scratch 10×128 | 250 | 200 | 8 | 57/100 = 0.570 | 0.472-0.663 | +49 (−19 to +117) | 100 |
 | recipe 6×96 | 250 | 1 | 1 | 61/100 = 0.610 | 0.512-0.700 | +78 (+8 to +147) | 100 |
 | recipe 6×96 | 250 | 8 | 1 | 72/100 = 0.720 | 0.625-0.799 | +164 (+89 to +239) | 99 |
 | recipe 6×96 | 250 | 32 | 1 | 83/100 = 0.830 | 0.745-0.891 | +275 (+186 to +365) | 99 |
@@ -3154,15 +3179,16 @@ same way), "distinct" counts different games out of 100. From
 
 - *Every match was clean.* No forfeits (no illegal or refused move), no
   timeout, no draw; 99 or 100 distinct games in every match. GNU Go
-  resigned 7 games in all; our engine never resigns. 21 games reached
-  the 162-move cap, all losses of ours as Black (20 of them at 1
-  simulation): in 20 the root value stayed at −0.8 or below from our
-  13th to 44th move (of 81) on, in the last at −0.68 or below over our
-  last 40, and the game ran on to the cap with our engine filling its
+  resigned 7 games in all; our engine never resigns. 34 games reached
+  the 162-move cap, all losses of ours (29 as Black; 30 of them at 1
+  simulation, 10 of those the 10×128 network's): in 32 the root value
+  stayed at −0.8 or below from our 12th to 48th move (of 81) on, in the
+  other two at −0.68 and −0.72 or below over our last 40, and the game
+  ran on to the cap with our engine filling its
   own area (`sgf/scratchs2-g250-s200-game75.sgf`). The winner is not in
   doubt in those games.
 - *The scorers agree at 200 simulations and more.* GNU Go's own count
-  named a different winner in 1 of the 1,300 games at 200 or 800
+  named a different winner in 1 of the 1,400 games at 200 or 800
   simulations (`scratch-g150-s200`, game 74, in `sgf/`: GNU Go, as
   Black, passed with White stones on the board that its count treats
   as dead; Tromp-Taylor counts them, and our engine wins by 6.5). Where
@@ -3172,9 +3198,10 @@ same way), "distinct" counts different games out of 100. From
 - *At 1 simulation they do not.* The raw policy passes with an
   opponent stone still inside its area (or lets GNU Go play into it and
   passes), and Tromp-Taylor counts that stone, so GNU Go's count, which
-  removes it, gives our engine 18 more wins over the six raw-policy
+  removes it, gives our engine 21 more wins over the seven raw-policy
   matches and none fewer (11 for generation 400 of the scratch run,
-  whose 46/100 would be 57/100; `sgf/scratch-g400-s1-game3.sgf`). The
+  whose 46/100 would be 57/100, `sgf/scratch-g400-s1-game3.sgf`; 3 for
+  the 10×128 network, 37/100 to 40/100). The
   1-simulation scores are Tromp-Taylor's and so the lower of the two.
   With 8 simulations or more no such game occurred.
 - *Simulations needed to draw level.* The recipe's network beats GNU Go
@@ -3188,14 +3215,24 @@ same way), "distinct" counts different games out of 100. From
   search barely helps between 1 and 200 simulations (0.15 and 0.16).
   For the strongest network, 200 simulations are not yet saturated
   (0.89 to 0.91, short of 0.95), so its 200-simulation Elo is usable.
+- *The 10×128 network: the policy holds up, the search does not.* With
+  its raw policy it scores like seed 1's 6×64 network at the same
+  generation (0.37 and 0.39), but 200 simulations lift it only to 0.57
+  (+141 Elo), against 0.77 for seed 1 (+288) and 0.75 to 0.79 for seed
+  2 and the 6×96 network. That fits the
+  [10×128 section](#the-preset-from-scratch-with-a-10128-network): its
+  policy head shows no gap between fresh games and the buffer, its
+  value head, which steers the search, overfits the buffer (fresh-game
+  value loss 0.81 against 0.42 at generation 250). A rerun with 400
+  games per generation, which halves the replay ratio, is in progress.
 
 *Against the internal scale.* With `9x9-main`'s generation 250 at 0,
 each network's Elo against GNU Go at 200 simulations (batch 8) minus
 that generation's −288, set against the project's own matches (400
 games, 200 simulations each side, from `9x9/rerate-250/elo.csv`, the
-`9x9-scratch/` matches, `9x9-versus/` and the copies in
-`9x9-gnugo/internal/`). The interval of a difference of two 100-game
-results is about ±110 to ±180:
+`9x9-scratch/` matches, `9x9-versus/`, `9x9-scratch128/` and the
+copies in `9x9-gnugo/internal/`). The interval of a difference of two
+100-game results is about ±110 to ±180:
 
 | network | via GNU Go | internal | internal source |
 |---|---|---|---|
@@ -3207,13 +3244,17 @@ results is about ±110 to ±180:
 | scratch gen 400 | +508 ± 124 | +470 | 375/400 against `9x9-main` gen 250 |
 | scratch seed 2, gen 250 | +479 ± 122 | +449 | 372/400 against `9x9-main` gen 250 |
 | scratch 6×96, gen 250 | +518 ± 125 | not measured | |
+| scratch 10×128, gen 250 | +337 ± 116 | about +344 | scratch gen 250's +413, plus 161/400 against it (−69; `9x9-scratch128/`) |
 | recipe gen 250 | +690 ± 151 | about +491 | scratch gen 250's +413, plus the recipe's +78 against it |
 
 - *The ranking agrees and most differences do.* The networks rank the
   same both ways, except among the three that are within about 60 Elo
   of each other internally (seed 1's generations 250 and 400, seed 2's
   250). Every network sits where the internal scale puts it, within the
-  interval, except the recipe's, which is about +200 higher through GNU
+  interval (the 10×128 network +337 against about +344, or about +291
+  through its 105/400 against the scratch run's generation 400; its
+  6×64 opponents played grown to 10×128, the same function), except
+  the recipe's, which is about +200 higher through GNU
   Go than by the shortest internal chain (+670 ± 123 pooling its two
   200-simulation matches, 180/200). That chain has two links, and each
   agrees on its own: pooling both batches, the recipe is ahead of the
@@ -3255,8 +3296,12 @@ generation 250 (0.75 to 0.83, about +190 to +275 Elo, for both seeds and
 both widths), the recipe's 6×96 network is clearly stronger (0.89 to
 0.91 at 200 simulations, about +360 to +400; 0.61 with its raw policy),
 and the earlier preset's networks are weaker (0.16 at generation 250,
-−288). The outside ranking agrees with the internal one, and the
-internal scale shows no sign of inflation. Caveats: 100-game matches
+−288). The preset's 10×128 network is only about level (0.57, +49;
+0.37 with its raw policy), below every 6×64 and 6×96 network of the
+same preset at generation 250, as its internal matches and its
+overfitting value head predict; a rerun with 400 games per generation
+is in progress. The outside ranking agrees with the internal one, and
+the internal scale shows no sign of inflation. Caveats: 100-game matches
 (about ±80 to ±120 Elo at these scores), one opponent at one level,
 GNU Go deterministic (only our engine's random symmetries vary the
 games), Tromp-Taylor scoring (which counts dead stones left on the
@@ -3269,16 +3314,17 @@ Question: GNU Go 3.8 at level 10 loses 0.75 to 0.91 to the strongest
 networks, so it says little about how much stronger they are, or about
 the gaps between them. Pachi, a Monte Carlo tree search program, at a
 fixed number of playouts per move gives a ladder of levels above GNU
-Go. How do the five strongest networks rank on it? The result: Pachi
-without its neural network, at about 2,000 playouts a move (its
-`-t =1000`), beats every network at 200 simulations (they score 0.28 to
-0.44) and is about +330 Elo above GNU Go level 10. On one scale with GNU
-Go at 0, the networks sit at +217 to +312 and Pachi's three levels at
-+334, +497 and +644. The recipe's lead over the other networks is
-smaller than against GNU Go, and one Elo per player fits all 2,400
-games (1,500 between the networks and Pachi, 400 among GNU Go and
-Pachi's levels, and the networks' 500 against GNU Go) except one link,
-Pachi against itself.
+Go. How do the five strongest networks rank on it? (The preset's
+10×128 network was added later.) The result: Pachi without its neural
+network, at about 2,000 playouts a move (its `-t =1000`), beats every
+network at 200 simulations (they score 0.23 to 0.44) and is about +320
+Elo above GNU Go level 10. On one scale with GNU Go at 0, the five
+networks sit at +211 to +305, the 10×128 network at +76, and Pachi's
+three levels at +324, +491 and +637. The recipe's lead over the other
+networks is smaller than against GNU Go, and one Elo per player fits
+all 2,600 games (1,600 between the networks and Pachi, 400 among GNU Go
+and Pachi's levels, and the networks' 600 against GNU Go) except one
+link, Pachi against itself.
 
 - *Pachi build* (`9x9-pachi/build.txt`). Pachi 12.90, the latest
   release (15 April 2026), from the official repository: tag
@@ -3322,7 +3368,9 @@ Pachi against itself.
   playouts, counting those kept from the previous move's tree, and it
   checks every 50 ms, so Pachi searches somewhat more than N: from
   Pachi's logs, the median root count per move was 1,800 to 2,200 at
-  `=1000` (10th percentile about 1,200, 90th 4,000 to 8,500), 4,600 to
+  `=1000` (10th percentile about 1,200, 90th 4,000 to 8,500; against
+  the 10×128 network 3,041, 1,362 and 12,566, a cause not looked
+  into), 4,600 to
   5,200 at `=4000` and 16,000 to 16,600 at `=16000`. Against a much
   weaker opponent it searches less, as it stops once its best move has
   5,000 playouts winning 95%. The levels below are named by
@@ -3364,6 +3412,10 @@ Pachi against itself.
   networks are those of the GNU Go section at 200 simulations: the
   recipe's 6×96 at generation 250, the preset from scratch (seed 1) at
   250 and 400, seed 2 at 250, and the 6×96 run from scratch at 250.
+  The 10×128 run from scratch at 250 was added later
+  (`jobs-128.txt`, resignation off, `queue.sh`, from 20:59 to 21:20
+  alongside its GNU Go matches): against Pachi 1k only, as it was to
+  play 4k only if it scored 0.40 or more at 1k.
 - *Run notes.* `pachi-match.sh` was edited (to add Pachi-against-Pachi
   matches) while the first list ran; the shells running it then read
   the changed file and failed after the last game, before moving
@@ -3401,15 +3453,17 @@ Pachi's at that level. Pachi's resignation off; from
 | scratch 6×96, gen 250 | 1k | 28/100 = 0.280 | 0.201-0.375 | −164 (−239 to −89) |
 | scratch 6×96, gen 250 | 4k | 23/100 = 0.230 | 0.158-0.322 | −210 (−290 to −130) |
 | scratch 6×96, gen 250 | 16k | 8/100 = 0.080 | 0.041-0.150 | −424 (−547 to −301) |
+| scratch 10×128, gen 250 | 1k | 23/100 = 0.230 | 0.158-0.322 | −210 (−290 to −130) |
 
 Every match was clean: no forfeit, no game at the move cap, 100
 distinct games each, and the Tromp-Taylor recount, A's count and
 Pachi's own `final_score` named the same winner in every finished game
 (with resignation on too; `9x9-pachi/results.csv`). The networks'
-scores fall in the 20% to 80% aimed for at 1k (0.28 to 0.44) and
+scores fall in the 20% to 80% aimed for at 1k (0.23 to 0.44) and
 mostly at 4k (0.15 to 0.29); 16k (0.08 to 0.13) is beyond it for every
 network, and 64k (7/100 for the two networks that played it, with
-resignation on) further still.
+resignation on) further still. The 10×128 network's 0.23 at 1k is the
+lowest.
 
 *One scale* (`9x9-pachi/ladder.txt`). A Bradley-Terry fit (maximum
 likelihood, Elo units) of every player to every game above and to the
@@ -3418,27 +3472,28 @@ Go section), GNU Go level 10 fixed at 0; the interval includes the
 uncertainty of each player's link to GNU Go. "Via GNU Go only" is the
 network's own match against GNU Go; the last column is the same fit to
 the matches with Pachi's resignation on (`ladder-resign.txt`; the 6×96
-run from scratch played none):
+and 10×128 runs from scratch played none):
 
 | player | Elo, joint fit (95% interval) | via GNU Go only | resignation on |
 |---|---|---|---|
 | GNU Go 3.8 level 10 | 0 (fixed) | 0 | 0 |
-| scratch, seed 1, gen 250 | +217 (+165 to +269) | +210 | +200 |
-| scratch, seed 2, gen 250 | +217 (+165 to +269) | +191 | +204 |
-| scratch 6×96, gen 250 | +223 (+171 to +275) | +230 | |
-| scratch, seed 1, gen 400 | +283 (+231 to +336) | +220 | +259 |
-| recipe 6×96, gen 250 | +312 (+259 to +365) | +402 | +268 |
-| Pachi 1k (about 2,000 playouts) | +334 (+291 to +378) | | +157 |
-| Pachi 4k (about 4,900) | +497 (+451 to +543) | | +389 |
-| Pachi 16k (about 16,200) | +644 (+588 to +700) | | +524 |
+| scratch 10×128, gen 250 | +76 (+19 to +132) | +49 | |
+| scratch, seed 1, gen 250 | +211 (+160 to +262) | +210 | +200 |
+| scratch, seed 2, gen 250 | +211 (+160 to +262) | +191 | +204 |
+| scratch 6×96, gen 250 | +217 (+166 to +268) | +230 | |
+| scratch, seed 1, gen 400 | +277 (+225 to +328) | +220 | +259 |
+| recipe 6×96, gen 250 | +305 (+254 to +356) | +402 | +268 |
+| Pachi 1k (about 2,000 playouts) | +324 (+284 to +364) | | +157 |
+| Pachi 4k (about 4,900) | +491 (+446 to +535) | | +389 |
+| Pachi 16k (about 16,200) | +637 (+582 to +692) | | +524 |
 | Pachi 64k (about 64,000) | | | +742 |
 
-- *The scale fits, except Pachi against itself.* Over the 24 pairings,
-  Pearson's chi-square is 29.7 on 16 degrees of freedom (p ≈ 0.02),
+- *The scale fits, except Pachi against itself.* Over the 26 pairings,
+  Pearson's chi-square is 31.3 on 17 degrees of freedom (p ≈ 0.02),
   and one pairing gives a third of it: Pachi 1k scored 14/100 against
   Pachi 4k where the fit expects 28 (residual −3.1). Without that
-  pairing the rest fit well (15.9 on 15, p ≈ 0.39), and the ratings move
-  by 25 Elo at most (Pachi 4k to +472). Against the networks, Pachi's
+  pairing the rest fit well (18.2 on 16, p ≈ 0.31), and the ratings move
+  by 26 Elo at most (Pachi 4k to +465). Against the networks, Pachi's
   4k is about +120 Elo above its 1k (a fit to the networks' games
   against Pachi alone), against itself +315: Pachi gains more from four
   times the playouts against its own weaker setting than against other
@@ -3448,7 +3503,7 @@ run from scratch played none):
   rating through Pachi 1k alone (Pachi 1k's rating from its matches
   with GNU Go and Pachi 4k, plus the network's Elo against it) agrees
   with its own match against GNU Go within the noise (differences −117
-  to +79 Elo, |z| ≤ 1.4; `ladder.txt` part 2). Through 4k and 16k, whose
+  to +82 Elo, |z| ≤ 1.4; `ladder.txt` part 2). Through 4k and 16k, whose
   ratings without the networks rest on the Pachi-against-Pachi links,
   the chains come out above the direct results (by +67 to +257, z up to
   2.8, except the recipe's at 16k), the same inflation seen from the
@@ -3463,16 +3518,26 @@ run from scratch played none):
   it +78 above the scratch run's generation 250 (244/400) and that
   run's generation 400 +135 above the same network (274/400), closer to
   Pachi's view than to GNU Go's. The joint fit, which uses both
-  opponents, keeps the recipe first (+312) by a margin inside its
+  opponents, keeps the recipe first (+305) by a margin inside its
   interval. Seed 1 and seed 2 at generation 250 and the 6×96 network
-  are level (+217 to +223); seeds 1 and 2 differ by +36 in their
+  are level (+211 to +217); seeds 1 and 2 differ by +36 in their
   direct match.
+- *The 10×128 network.* It scores 23/100 against Pachi 1k and 57/100
+  against GNU Go, and the joint fit puts it at +76, about 135 Elo below
+  the generation-250 6×64 networks (+211); its internal match against
+  seed 1's generation 250 gives −69 (161/400). Both outside anchors
+  agree that the larger network ends weaker, the result of the
+  [10×128 section](#the-preset-from-scratch-with-a-10128-network),
+  where its value head overfits the replay buffer. A rerun with 400
+  games per generation, which halves the replay ratio, is in progress.
+  Its two links (Pachi 1k and GNU Go) put Pachi 1k 10 Elo lower and
+  every other rating 6 or 7 lower than the fit without it.
 - *Resignation shifts Pachi, not the networks.* With Pachi's default
   resignation, every opponent scored more against Pachi 1k (GNU Go 39
   against 10 of 100, the three networks that played both ways 52 to 62
   against 30 to 44), and most of them less so at 4k and 16k. Pachi's
   levels then rate lower (1k at +157 instead of
-  +334), but the networks' ratings move by 45 Elo at most (the recipe
+  +324), but the networks' ratings move by 37 Elo at most (the recipe
   +268, the others +200 to +259), because they are also tied to GNU Go
   directly.
 
@@ -3487,9 +3552,12 @@ relative to GNU Go 3.8 level 10 and to these Pachi levels only. Nor do
 
 **Verdict.** Pachi 12.90 without its neural network, single-threaded at
 about 2,000 playouts a move, is stronger than every 9×9 network at 200
-simulations: they score 0.28 to 0.44 against it. On one scale with GNU
-Go 3.8 level 10 at 0, the networks lie at +217 to +312, Pachi at 1k,
-4k and 16k playouts at +334, +497 and +644. Against Pachi the recipe's
+simulations: they score 0.23 to 0.44 against it. On one scale with GNU
+Go 3.8 level 10 at 0, the five strongest networks lie at +211 to +305,
+Pachi at 1k, 4k and 16k playouts at +324, +491 and +637. The preset's
+10×128 network, whose value head overfits, is at +76, below every 6×64
+network of the same preset (a rerun with 400 games per generation is in
+progress). Against Pachi the recipe's
 network is level with the scratch run's generation 400 and about +90
 Elo above the generation-250 networks, not +190 as against GNU Go; the
 joint fit still ranks it first, inside the noise. Caveats: 100-game
@@ -3943,10 +4011,11 @@ matches at temperature 0 (AGZ's evaluation size).
   [its section](#the-recipe-against-the-preset-from-scratch-generation-250).
 - `9x9-gnugo/`: the matches against GNU Go 3.8: the scripts
   `gnugo-match.sh`, `gnugo-jobs.sh` and `summarize.py`; the job lists
-  `jobs-200.txt`, `jobs-ladder.txt`, `jobs-ladder-b1.txt` and
-  `jobs-ladder2.txt` with their GNU Parallel job logs (`*.joblog`) and
+  `jobs-200.txt`, `jobs-ladder.txt`, `jobs-ladder-b1.txt`,
+  `jobs-ladder2.txt` and `jobs-128.txt` with their GNU Parallel job
+  logs (`*.joblog`) and
   `jobs-ladder.log` (the stopped jobs); `matches/<label>/results.csv`
-  and `summary.txt` for each of the 24 matches; the table `summary.txt`
+  and `summary.txt` for each of the 26 matches; the table `summary.txt`
   and `results.csv` (one row per match, with how the games ended and
   the scorers' disagreements); `stopped-batch8/`, the partial results of
   the five low-simulation matches stopped for the leaf batch; six games
@@ -3961,8 +4030,9 @@ matches at temperature 0 (AGZ's evaluation size).
   `jobs-anchor.txt` (with its GNU Parallel job log and the shells'
   errors, `jobs-anchor.log`), `jobs-ladder.txt`, `jobs-nets.txt`,
   `jobs-nets-1k.txt`, `jobs-control.txt`, `jobs-noresign.txt`,
-  `jobs-nr.txt` and `jobs-nr-ladder.txt`, and `queue.log`;
-  `matches/<label>/results.csv` and `summary.txt` for each of the 40
+  `jobs-nr.txt`, `jobs-nr-ladder.txt` and `jobs-128.txt`, and
+  `queue.log`;
+  `matches/<label>/results.csv` and `summary.txt` for each of the 41
   matches (labels ending in `-nr` have Pachi's resignation off); the
   table `summary.txt` and `results.csv` (one row per match, with how the
   games ended, the scorers' agreement and Pachi's playout counts); the

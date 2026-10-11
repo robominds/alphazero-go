@@ -800,7 +800,7 @@ board program such as Sabaki, with arguments like
 `--checkpoint runs/9x9-main/checkpoints/gen_0250.azn --backend blas`, and
 start a game on the checkpoint's board size.
 
-Ten 9×9 networks have played GNU Go 3.8 at level 10 this way; see
+Eleven 9×9 networks have played GNU Go 3.8 at level 10 this way; see
 [Results](#results). On macOS the Homebrew bottle of GNU Go 3.8 fails an
 assertion (`board.c:2540`), as Apple clang miscompiles it when
 optimizing; build it from the official tarball with GCC (`-O2 -fcommon
@@ -952,7 +952,9 @@ From `docs/results/README.md`, which has the details and the sources.
   scratch 0.45 at generation 150 and 0.75 to 0.79 at 250 (both seeds,
   6×64 and 6×96; about +190 to +230), and the recipe's 6×96 network
   0.91 (+402, interval +285 to +519), and 0.61 with its raw policy (1
-  simulation). Seed 1's generation 250 is level with GNU Go at about 8
+  simulation). The preset's 10×128 network, whose value head overfits,
+  scored only 0.57 (+49) at generation 250. Seed 1's generation 250
+  is level with GNU Go at about 8
   simulations. The ranking agrees with the internal matches (except
   between networks within noise of each other) and so do most gaps,
   so the internal scale shows no sign of inflation. The Elo is
@@ -965,8 +967,11 @@ From `docs/results/README.md`, which has the details and the sources.
   resignation off: Pachi at about 2,000 playouts a move (`-t =1000`)
   beats the five strongest networks, which score 0.28 to 0.44 against
   it (0.15 to 0.29 at 4k playouts, 0.08 to 0.13 at 16k). A joint fit
-  with GNU Go 3.8 level 10 at 0 puts the networks at +217 to +312 Elo
-  and Pachi at +334 (1k), +497 (4k) and +644 (16k). Against Pachi the
+  with GNU Go 3.8 level 10 at 0 puts the networks at +211 to +305 Elo
+  and Pachi at +324 (1k), +491 (4k) and +637 (16k); the 10×128
+  network, added later, scored 0.23 against Pachi 1k and fits at +76,
+  below every 6×64 network of the same preset (a rerun with 400 games
+  per generation is in progress). Against Pachi the
   recipe's 6×96 network is level with the scratch run's generation 400
   and about +90 above the generation-250 networks (against GNU Go,
   +190). The scale fits every pairing but Pachi against itself, whose

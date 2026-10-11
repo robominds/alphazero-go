@@ -1,0 +1,2 @@
+scratch128-g250-s200 nets/scratch128-g250.azn 200 231
+scratch128-g250-s1 nets/scratch128-g250.azn 1 232 1
