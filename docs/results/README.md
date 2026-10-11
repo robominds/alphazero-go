@@ -3243,7 +3243,7 @@ copies in `9x9-gnugo/internal/`). The interval of a difference of two
 | scratch gen 250 | +498 ± 123 | +413 | 366/400 against `9x9-main` gen 250 |
 | scratch gen 400 | +508 ± 124 | +470 | 375/400 against `9x9-main` gen 250 |
 | scratch seed 2, gen 250 | +479 ± 122 | +449 | 372/400 against `9x9-main` gen 250 |
-| scratch 6×96, gen 250 | +518 ± 125 | not measured | |
+| scratch 6×96, gen 250 | +518 ± 125 | about +480 | scratch gen 250's +413, plus 238/400 against it (+67; `9x9-scratch96/`) |
 | scratch 10×128, gen 250 | +337 ± 116 | about +344 | scratch gen 250's +413, plus 161/400 against it (−69; `9x9-scratch128/`) |
 | recipe gen 250 | +690 ± 151 | about +491 | scratch gen 250's +413, plus the recipe's +78 against it |
 
