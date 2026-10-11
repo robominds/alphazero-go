@@ -859,8 +859,16 @@ games each), 318/400 (0.795, about +235 Elo) at equal SGD steps
 (generation 125 against 250) with about 70% of the self-play
 positions, and 341/400 (0.853) with its generation 150 against the
 earlier run's generation 250; continued to 250, it beat the earlier
-run's generation 250 366/400 (0.915) at equal generations (one seed; see
+run's generation 250 366/400 (0.915) at equal generations (see
 [The 9×9 preset from scratch](docs/results/README.md#the-99-preset-from-scratch-250-generations)).
+Two more seeds replicated it (seed 2's generation 250: 372/400, 0.930),
+and seed 1 turned out the weakest of the three by 37 and 53 Elo (see
+[three seeds](docs/results/README.md#the-preset-from-scratch-three-seeds)).
+The preset keeps the 6×64 network: from scratch with the same settings
+a 6×96 network was no clearly stronger, and a 10×128 one ended weaker,
+its value head overfitting the replay buffer (see
+[6×96](docs/results/README.md#the-preset-from-scratch-with-a-696-network)
+and [10×128](docs/results/README.md#the-preset-from-scratch-with-a-10128-network)).
 From scratch its games are longer early on, about 100 plies over the
 first ten generations, and about 64 on average over the preset's 150
 generations.
@@ -909,10 +917,35 @@ From `docs/results/README.md`, which has the details and the sources.
   recipe run (continued from a trained 6×96 network, twice the size,
   with 300 earlier generations behind it) beat the from-scratch 6×64
   network 244/400 (0.610, +78): two training paths compared, not a
-  controlled test. One seed, one board size (see
+  controlled test. One board size (see
   [the headline](docs/results/README.md#headline-the-99-preset-now-trains-a-much-stronger-network),
   [the section](docs/results/README.md#the-99-preset-from-scratch-250-generations)
   and [the head-to-head](docs/results/README.md#the-recipe-against-the-preset-from-scratch-generation-250)).
+- **9×9: the preset from scratch replicates across seeds.** Seeds 2
+  and 3 of the 6×64 run, to generation 250, scored 0.748, 0.580, 0.575
+  and 0.552 and 0.590, 0.547, 0.500 and 0.575 against seed 1 at
+  generations 50, 100, 150 and 250 (400 games each): seed 1 was a
+  slightly weak draw, and from generation 100 on the three agree within
+  about 0 to 60 Elo. Seed 2's generation 250 beat the earlier preset's
+  372/400 (0.930; seed 1's 0.915), so the preset's lead replicates (see
+  [three seeds](docs/results/README.md#the-preset-from-scratch-three-seeds)).
+- **9×9: the 6×64 network levels off by generation 400.** Seed 1
+  continued past 250 scored 0.640, 0.660 and 0.685 against its
+  generation 250 at generations 300, 350 and 400: +100 Elo for the
+  first 50 generations, then about +15 and +20 (see
+  [400 generations](docs/results/README.md#the-preset-from-scratch-continued-to-generation-400)).
+- **9×9: larger networks from scratch did not help.** With the same
+  preset, a 6×96 network scored 0.505 to 0.595 against 6×64 seed 1 at
+  equal generations 100 to 250, within the 6×64 seeds' spread. A 10×128
+  network, which first collapsed from an uncalibrated generation 0
+  (hence `bn_calibrate`), led at generation 50 (0.578) and then fell
+  behind, 0.403 at generation 250 and 0.263 against 6×64's generation
+  400. Its validation loss shows the value head overfitting: at
+  generation 250 a value loss of 0.81 on fresh self-play games against
+  0.42 on its replay buffer (6×64: 0.71 against 0.64). A rerun with 400
+  games per generation, halving the replay ratio, is running (see
+  [6×96](docs/results/README.md#the-preset-from-scratch-with-a-696-network)
+  and [10×128](docs/results/README.md#the-preset-from-scratch-with-a-10128-network)).
 - **9×9 against GNU Go 3.8 (level 10).** 100 games per network at 200
   simulations, komi 7.5, Tromp-Taylor: the earlier preset's generation
   250 scored 0.16 (−288 Elo against GNU Go), the new preset from

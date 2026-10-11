@@ -4,7 +4,7 @@ This directory holds the results of the reference trainings, made with
 the final code (after the pass fix, commit 15db72a). Every number below
 names the file it comes from. Runs were made 2026-09-30 to 2026-10-01;
 the follow-up matches and analyses were made on 2026-10-01. The 9×9
-experiments that follow them ran until 2026-10-08, and the matches
+experiments that follow them ran until 2026-10-10, and the matches
 against GNU Go and Pachi on 2026-10-10.
 
 ## Headline: the 9×9 preset now trains a much stronger network
@@ -33,6 +33,30 @@ twice the size and had 300 generations of earlier training behind its
 start, beat the from-scratch 6×64 network 244/400 (0.610, +78). That
 compares two training paths, not network size or history alone.
 
+The preset from scratch was then replicated and pushed further, to
+generation 250 unless noted:
+
+- two more seeds of the 6×64 run are ahead of seed 1 by +37 and +53 at
+  generation 250 (221/400 and 230/400) and within about 0 to 60 Elo of
+  it from generation 100 on, and seed 2's generation 250 beats the
+  earlier preset's 372/400 (0.930, seed 1's 0.915): seed 1 was a
+  slightly weak draw, and the lead replicates;
+- seed 1 continued to generation 400 gained +100 by 300 and only about
+  +35 more by 400 against its generation 250 (274/400 at 400): the
+  6×64 network levels off;
+- a 6×96 network from scratch is +47 and +67 over seed 1 at generations
+  150 and 250, within the 6×64 seeds' spread;
+- a 10×128 network from scratch leads at generation 50 (0.578), then
+  falls behind (0.403 at 250, and 0.263 against 6×64's generation 400):
+  its value head overfits the replay buffer (a fresh-game value loss of
+  0.81 against 0.42 on the buffer at generation 250; 0.71 against 0.64
+  for 6×64). A rerun with 400 games per generation is under way.
+
+See [three seeds](#the-preset-from-scratch-three-seeds),
+[400 generations](#the-preset-from-scratch-continued-to-generation-400),
+[6×96](#the-preset-from-scratch-with-a-696-network) and
+[10×128](#the-preset-from-scratch-with-a-10128-network).
+
 Against an outside program, GNU Go 3.8 at level 10 (100 games each, 200
 simulations), the earlier preset's generation 250 scored 0.16, the new
 preset's 0.77 (seed 1) and 0.75 (seed 2), and the recipe's 0.91,
@@ -46,7 +70,8 @@ the networks lie at +217 to +312 Elo and Pachi at +334 to +644, with
 the recipe's lead over the others smaller than against GNU Go. See
 [Against Pachi 12.90](#against-pachi-1290-a-stronger-outside-anchor).
 
-One seed and one board size, 400-game matches at 200 simulations. See
+One board size, three seeds of the preset from scratch at 6×64 and
+one of everything else, 400-game matches at 200 simulations. See
 [The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations),
 [The recipe](#the-recipe-four-changes-together-250-generations) and
 [The recipe against the preset from scratch](#the-recipe-against-the-preset-from-scratch-generation-250).
@@ -74,9 +99,11 @@ the reasons. All three presets use:
   (0: the training phase on every core too; added 2026-10-08, it does
   not change results);
 - `bn_calibrate` unset (true: a new run's generation 0 has its batch
-  norm calibrated; added 2026-10-10, after every run on this page, so
+  norm calibrated; added 2026-10-10, after almost every run on this page, so
   their generation 0 was uncalibrated and a new run with the same seed
-  starts elsewhere; `--set bn_calibrate=false` reproduces them);
+  starts elsewhere; `--set bn_calibrate=false` reproduces them; only
+  the 10×128 run from scratch, `9x9-scratch128/`, and its rerun were
+  started with it);
 - `history = 8`, `mcts_batch = 8`, `c_puct = 1.5`;
 - `dirichlet_scale = 10`, `noise_fraction = 0.25`;
 - momentum 0.9, `weight_decay = 1e-4`;
@@ -115,7 +142,8 @@ Every other 9×9 run in this directory
 started from the earlier values (100 games, 200 steps,
 `temperature_moves = 20`, no resignation) and changed only the settings
 it tested (the recipe arm, `9x9-recipe/`, changed all four; the
-from-scratch run, `9x9-scratch/`, is the preset itself); each run's `config.cfg` records
+from-scratch runs, `9x9-scratch/` and its follow-ups, are the preset
+itself, with another seed or network size in some); each run's `config.cfg` records
 what it used, and `--resume` keeps it.
 
 ## Results by board size
@@ -2521,7 +2549,9 @@ against 150, +235 at 125 against 250), and at equal steps the two runs
 had different learning-rate histories (the earlier preset drops the
 rate at 17,800 steps, the new one at 35,600), so the steps comparison
 is not a clean one; the wall times come from different machines; and
-the eye check was not run on this network.
+the eye check was not run on this network. Two more seeds later
+replicated the result, and this seed turned out the weakest of the
+three; see [three seeds](#the-preset-from-scratch-three-seeds).
 
 ### The recipe against the preset from scratch (generation 250)
 
@@ -2594,6 +2624,434 @@ paths, not a test of either factor; one seed each; 400-game matches at
 200 simulations; and the recipe's generations 200 and 250 scored the
 same against the scratch network, so the gap is known only to within
 the matches' noise.
+
+### The preset from scratch: three seeds
+
+Question: every result for the preset from scratch so far came from one
+seed. How much of it is that seed? Two more seeds of the same run, 6×64
+to generation 250, were played against seed 1 (`9x9-scratch/`, the run
+above) at equal generations. The result: seed 1 was a slightly weak
+draw. Seeds 2 and 3 are ahead of it at seven of the eight points
+measured, by +37 and +53 Elo at generation 250, and from generation 100
+on the three agree within about 0 to 60 Elo. Seed 2's generation 250
+beats `9x9-main`'s 0.930, as seed 1's did 0.915: the new preset's lead
+over the earlier one replicates.
+
+These runs, and the three after them, were made from 8 to 10 October on
+three machines: the Mac Studio (Apple M5 Max, 18 cores; the machine of
+[GPU inference](#gpu-inference-with-backend--metal)), the first Mac mini
+(Apple M4, 24 GB; the machine of [Machine](#machine) and "this Mac" in
+the 9×9 sections above) and the second Mac mini (Apple M4, 16 GB). Host names
+are redacted in the copied scripts and logs. `runs/mini2/` and
+`runs/mini3/` in the scripts are the Mac Studio's copies of the second
+and first Mac mini's runs.
+
+- *Seed 2* (`9x9-scratch-seeds/seed2/`). `train --config
+  configs/9x9.cfg --run runs/9x9-scratch-s2 --set seed=2 --set
+  generations=250 --set bot_simulations=100` (`r3-job.sh scratch-s2`),
+  with `runs/bin-r3`, a copy of the `runs/bin-next` binaries that played
+  the head-to-head above (not in the repository), on the BLAS backend,
+  alone on the second Mac mini, as seed 1 was. It was launched with GNU
+  Parallel from the Mac Studio (`r3-launch-minis.sh` and `r3-minis.log`
+  in `9x9-scratch-to400/`) at 21:48 on 8 October. Before a reboot of the
+  Mac Studio, whose GNU Parallel controller would have taken the job down
+  with it, the job was stopped during generation 233 and resumed on the
+  mini itself at 17:45 on 9 October (`r3-resume-s2.sh`, `--resume` from
+  the state saved after generation 232). Training ended at 19:07 (21 h
+  19 min in all), and the five matches followed (`r3-s2-detached.log`).
+- *Seed 3* (`9x9-scratch-seeds/seed3/`). `--set seed=3 --set
+  generations=250 --set bot_simulations=100 --set bn_calibrate=false
+  --set backend=metal` (`r5-job.sh`), with binaries built from main
+  with the GPU backend and the calibration key (`runs/bin-r5`, not in
+  the repository), on the first Mac mini, from 14:48 on 9 October to
+  15:44 on 10 October (24 h 57 min; `r5-mini3.log`, `r5-detached.log`).
+  `bn_calibrate = false` makes its generation 0 the way seeds 1 and 2's
+  were made (see [Presets](#presets)); `backend = metal` puts self-play,
+  the arena and the validation pass on the mini's GPU, which changes the
+  last bits of the network's outputs, not the algorithm. It too was
+  stopped before the reboot, after generation 24, and resumed detached
+  by rerunning `r5-job.sh`.
+- *The matches.* Each seed's generations 50, 100, 150 and 250 against
+  seed 1's same generation, and seed 2's generation 250 against
+  `9x9-main`'s: 400 games, 200 simulations for both sides, komi 7.5,
+  colors alternating, `arena`'s default opening temperature; seed 2's
+  on the BLAS backend, seed 3's on the GPU (`--backend metal`). Seed 1's
+  checkpoints are those of `9x9-scratch/`. Files in
+  `9x9-scratch-seeds/`, named `seed2-*.txt` and `seed3-*.txt`.
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| seed 2 vs seed 1, gen 50 (`seed2-g50-vs-seed1-g50.txt`) | 299/400 = 0.748 | 0.703-0.788 | +189 (+150 to +228) |
+| seed 2 vs seed 1, gen 100 (`seed2-g100-vs-seed1-g100.txt`) | 232/400 = 0.580 | 0.531-0.627 | +56 (+22 to +90) |
+| seed 2 vs seed 1, gen 150 (`seed2-g150-vs-seed1-g150.txt`) | 230/400 = 0.575 | 0.526-0.623 | +53 (+18 to +87) |
+| seed 2 vs seed 1, gen 250 (`seed2-g250-vs-seed1-g250.txt`) | 221/400 = 0.552 | 0.504-0.600 | +37 (+3 to +70) |
+| seed 3 vs seed 1, gen 50 (`seed3-g50-vs-seed1-g50.txt`) | 236/400 = 0.590 | 0.541-0.637 | +63 (+29 to +98) |
+| seed 3 vs seed 1, gen 100 (`seed3-g100-vs-seed1-g100.txt`) | 219/400 = 0.547 | 0.499-0.596 | +33 (−1 to +68) |
+| seed 3 vs seed 1, gen 150 (`seed3-g150-vs-seed1-g150.txt`) | 200/400 = 0.500 | 0.451-0.549 | 0 (−34 to +34) |
+| seed 3 vs seed 1, gen 250 (`seed3-g250-vs-seed1-g250.txt`) | 230/400 = 0.575 | 0.526-0.623 | +53 (+18 to +87) |
+| seed 2 gen 250 vs `9x9-main` gen 250 (`seed2-g250-vs-main-g250.txt`) | 372/400 = 0.930 | 0.901-0.951 | +449 (+384 to +515) |
+| for comparison, seed 1 gen 250 vs `9x9-main` gen 250 (`9x9-scratch/g250-vs-main-g250.txt`) | 366/400 = 0.915 | 0.884-0.939 | +413 (+353 to +475) |
+
+Between 351 and 396 of each 400 games were distinct.
+
+- *Seed 1 was a slightly weak draw.* Every match but one favours the
+  new seed, and six of the eight intervals exclude 0.5; the exception
+  is seed 3 at generation 150, exactly level. The seeds differ most
+  early: seed 2 led by +189 at generation 50, then by +37 to +56 from
+  100 on. At generation 250 seeds 2 and 3 are +37 and +53 above seed 1,
+  so about level with each other. So the seed-1 results above, if
+  anything, understate the preset slightly.
+- *The lead over the earlier preset replicates.* Seed 2's generation 250
+  beats `9x9-main`'s 0.930 (+449), seed 1's 0.915 (+413); the
+  difference, +36, agrees with their direct match (+37). Seed 3 was not
+  played against `9x9-main`. `9x9-main`, the earlier preset's run, is
+  still one seed.
+- *The live Elo curves cannot rank the seeds.* `elo.csv` at generations
+  50, 100, 150 and 250: seed 1 1599.0, 1898.0, 2127.0 and 2216.5
+  (`9x9-scratch/elo.csv`); seed 2 2003.2, 2226.9, 2411.3 and 2463.1;
+  seed 3 1915.1, 2245.5, 2257.9 and 2402.3. They put seed 2 +247 above
+  seed 1 at generation 250, where the direct match gives +37. Each
+  curve is anchored at its own generation 0, a different random network
+  in each seed, and rated against its own references, so the curves
+  measure progress from different starts on different scales. Only the
+  direct matches compare the seeds.
+- *Seeds 2 and 3 started from a nearly saturated generation 0.* Made
+  without batch norm calibration, as seed 1's was, their generation 0
+  had a validation policy loss of 21.0 and 23.6 (the `val_policy_loss`
+  of generation 1, which measures generation 0), against 5.52 for seed
+  1 and 19.0 for the collapsed 10×128 network (see
+  [the 10×128 run](#the-preset-from-scratch-with-a-10128-network)).
+  Seed 2 trained normally (63.5 and 87.1 plies at generations 1 and 2).
+  Seed 3 nearly collapsed: its generation 2 averaged 16.5 plies, with
+  v_resign at −0.52 from its first 20 played-out games and a
+  false-positive rate of 0.385. It recovered on its own: v_resign was
+  −0.83 at generation 3, the games were 97.7 plies long by generation 9,
+  and from there it trained like the others. A calibrated generation 0,
+  the default since, avoids that start.
+- *Training curves* (`log.csv`; seeds 1, 2 and 3). Over generations
+  1–250: 56.9, 53.4 and 55.6 plies per game, replay ratio 9.47, 10.08
+  and 9.69, 97.6%, 98.1% and 97.9% of the games that could resign
+  resigned, at false-positive rates of 0.048 in all three. Policy loss
+  at generation 250 2.191, 2.135 and 2.147. The value head's
+  fresh-game loss exceeds its buffer loss by 0.2 to 0.3 up to the
+  learning-rate drop at generation 90 and by about 0.1 after it in all
+  three (0.100, 0.095 and 0.092 over generations 226–250); see the
+  table in [the 10×128 run](#the-preset-from-scratch-with-a-10128-network).
+- *Cost* (indicative only: the machines and backends differ). Seed 2
+  took 5.1 minutes per generation (self-play 133.2 s, training 125.0 s,
+  arena 48.3 s), 21.3 h of generation time, seed 1 21.9 h on the same
+  machine. Seed 3 took 6.0 minutes: self-play 246.6 s, training 37.7 s
+  (its build trains on every core, see `train_threads` in the main
+  README) and arena 73.7 s, 24.9 h. On an M4 Mac mini the GPU played
+  self-play at 22.2 ms per position, against 12.3 and 12.5 ms for seeds
+  1 and 2 on the CPU cores with BLAS: for a 6×64 network the mini's GPU
+  is about 1.8 times slower.
+
+**Verdict.** Three seeds of the preset from scratch, 6×64, agree
+within about 0 to 60 Elo from generation 100 to 250, and seed 1, the
+run of the sections above, is the weakest of the three at generation
+250 (by 37 and 53 Elo). The preset's lead over the earlier preset
+replicates (0.930 for seed 2 against 0.915 for seed 1, both against
+`9x9-main`'s generation 250). Caveats: three seeds; 400-game matches
+(about ±35 Elo each); seed 3 played its games on a GPU and seeds 1 and
+2 on CPUs; and the earlier preset has one seed.
+
+### The preset from scratch continued to generation 400
+
+Question: seed 1 was still improving at generation 250, more slowly
+(+113 by generation 200 and +171 by 250 against its generation 150).
+Where does the 6×64 network level off under the preset? Seed 1 was
+continued from generation 250 to 400. The result: diminishing returns.
+Against its generation 250 it gained +100 by generation 300, then only
++15 and +20 more over the next two 50-generation stretches (by
+difference), +135 in all; the network is levelling off.
+
+- *Setup* (`9x9-scratch-to400/`). `r3-job.sh scratch-to400`: `train
+  --run runs/9x9-scratch --resume --generations 400` (`config.cfg`
+  changes only in `generations`), with `runs/bin-r3` (the `bin-next`
+  binaries, BLAS), alone on the first Mac mini, on the copy of the run
+  that `versus.sh` had brought there from the second Mac mini. It ran
+  from 21:48 on 8 October to 09:41 on 9 October (11 h 53 min), at
+  learning rate 0.002 throughout, and then played four 400-game matches
+  (`r3-minis.log`; the launch is `r3-launch.sh`, whose two Mac mini
+  jobs could not find the job script and were relaunched by
+  `r3-launch-minis.sh`, `r3.log`). The files cover generations 1–400:
+  `log.csv` (its first 250 rows are `9x9-scratch/log.csv`), `elo.csv`,
+  `references.csv`, `results.csv` and `config.cfg`, and `progress.txt`
+  is the continuation's output. The refit at generation 400 moved the
+  ratings of generations 1–250 by less than 25, except generation 243's
+  (−52).
+- *The matches* are as above: 400 games, 200 simulations for both sides,
+  komi 7.5, colors alternating, BLAS.
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| gen 300 vs gen 250 (`g300-vs-g250.txt`) | 256/400 = 0.640 | 0.592-0.686 | +100 (+65 to +136) |
+| gen 350 vs gen 250 (`g350-vs-g250.txt`) | 264/400 = 0.660 | 0.612-0.705 | +115 (+79 to +151) |
+| gen 400 vs gen 250 (`g400-vs-g250.txt`) | 274/400 = 0.685 | 0.638-0.729 | +135 (+98 to +172) |
+| gen 400 vs `9x9-main` gen 250 (`g400-vs-main-g250.txt`) | 375/400 = 0.938 | 0.909-0.957 | +470 (+400 to +539) |
+
+353, 371, 368 and 365 of the 400 games were distinct.
+
+- *Diminishing returns.* +100 for the first 50 generations past 250,
+  then +15 and +20 by difference, each inside the ±35 noise of a
+  400-game match. Per generation that is +1.7 Elo from 150 to 250
+  (+171), +0.9 from 250 to 400 (+135) and under +0.5 from 300 to 400.
+- *Against `9x9-main`.* Generation 400 scores 0.938 (+470) against
+  `9x9-main`'s generation 250, against 0.915 (+413) for generation 250:
+  +57 by that route, against +135 directly. Scores this near 1 compress
+  gaps, as with generations 150 to 250 (+171 directly, +108 by this
+  route).
+- *The Elo curve* (the refit at 400, references promoted at 317 past
+  250): 2194.7 at generation 250, 2253.4 at 300, 2304.1 at 350 and
+  2293.9 at 400, with a peak of 2358.8 at 372. +99 from 250 to 400,
+  against +135 in the direct match.
+- *Training curves.* Over generations 251–300, 301–350 and 351–400: 44.7,
+  44.9 and 43.1 plies per game, replay ratio 11.5, 11.5 and 12.0, policy
+  loss 2.196, 2.193 and 2.170 (fresh games 2.154, 2.148 and 2.124), the
+  value head's fresh-game minus buffer loss 0.103, 0.115 and 0.109 (no
+  widening), v_resign −0.86 to −0.87 on average and false positives
+  0.048. The policy terms still fall, slowly; strength nearly stops.
+- *Cost.* 4.7 to 4.8 minutes per generation (self-play 113.5 s,
+  training 124.3 s, arena 47.2 s), 11.9 h for the 150 generations. Per
+  position the self-play ran at 12.8 ms on the first Mac mini against
+  12.3 ms on the second for generations 1–250.
+
+**Verdict.** The preset's 6×64 network **levels off between generations
+300 and 400**: +100 Elo over its generation 250 by 300, and only about
++35 more by 400. What limits it, the network's size, the fixed learning
+rate of 0.002 or the self-play data, this run cannot say; the two runs
+below test the size from scratch. Caveats: one seed (seed 1, the
+weakest of three at generation 250); 400-game matches, so the +15 and
++20 increments are within the noise; the gains by 400 are measured only
+against generation 250 and `9x9-main`.
+
+### The preset from scratch with a 6×96 network
+
+Question: does a wider network do better from scratch with the preset?
+The same run as seed 1 with `filters = 96` (6×96, 1,032,349 parameters
+against 473,277, `value_hidden` 64 in both), to generation 250. The
+result: no clear gain. It is ahead of the 6×64 network at generation 50
+(0.655), level at 100 (0.505) and slightly ahead at 150 and 250 (0.568
+and 0.595, +47 and +67), as much as the 6×64 network's seeds 2 and 3
+are (+37 and +53 at 250). The recipe's 6×96 network, with its 300
+earlier generations, beats it 0.607 at generation 250.
+
+- *Setup* (`9x9-scratch96/`). `r3-job.sh scratch96`: `train --config
+  configs/9x9.cfg --run runs/9x9-scratch96 --set filters=96 --set
+  generations=250 --set bot_simulations=100`, seed 1, on the Mac Studio
+  with BLAS on its 18 cores, started at 21:47 on 8 October with
+  `runs/bin-r3` (`r3.log`). Its generation 0 was not calibrated (the
+  code predates the key; `config.cfg` has none). After generation 18 the
+  run was stopped and resumed at 00:32 on 9 October (`r3-resume96.sh`,
+  `r3-studio2.log`) on `runs/bin-r3b`, binaries built from main once the
+  multi-threaded training step was merged (the script names that commit
+  by its hash before the history was rewritten). That step's results
+  are byte-identical to the single-threaded one's, measured for
+  Accelerate on this machine (see `train_threads` in the main README),
+  so the switch does not change the run; its training time fell from
+  about 190 s per generation to about 40 s. The job was also paused for
+  the GPU benchmarks below, and the times of generations 116, 127–129
+  and 135 include those pauses (903.6 s of self-play at generation 127,
+  for instance). Training ended at 16:38 on 9 October, 18 h 51 min after
+  it started.
+- *The matches.* The arena plays only networks of the same shape, so
+  `grow --filters 96` widened seed 1's generations 50, 100, 150 and 250
+  to 6×96 (`grow-g*.txt`: the outputs on 8 random positions within
+  7.4e-06 to 1.5e-05 of the 6×64 network's; the widened checkpoints are
+  not in the repository). Widening preserves the function (see
+  [The recipe against the preset from scratch](#the-recipe-against-the-preset-from-scratch-generation-250)).
+  400 games, 200 simulations for both sides, komi 7.5, colors
+  alternating, BLAS.
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| 6×96 vs 6×64 seed 1, gen 50 (`g50-vs-scratch64-g50.txt`) | 262/400 = 0.655 | 0.607-0.700 | +111 (+76 to +147) |
+| 6×96 vs 6×64 seed 1, gen 100 (`g100-vs-scratch64-g100.txt`) | 202/400 = 0.505 | 0.456-0.554 | +3 (−31 to +38) |
+| 6×96 vs 6×64 seed 1, gen 150 (`g150-vs-scratch64-g150.txt`) | 227/400 = 0.568 | 0.519-0.615 | +47 (+13 to +81) |
+| 6×96 vs 6×64 seed 1, gen 250 (`g250-vs-scratch64-g250.txt`) | 238/400 = 0.595 | 0.546-0.642 | +67 (+32 to +101) |
+| 6×96 gen 250 vs the recipe's gen 250 (`g250-vs-recipe-g250.txt`) | 157/400 = 0.393 | 0.346-0.441 | −76 (−111 to −41) |
+
+Between 370 and 386 of each 400 games were distinct.
+
+- *No clear gain from width.* From generation 100 on the 6×96 network
+  is +3 to +67 above seed 1 of the 6×64 network, within the spread of
+  the 6×64 network's own seeds (+37 and +53 for seeds 2 and 3 at 250),
+  with 2.2 times the parameters. Its lead at generation 50 (+111) is of the size seed 2's
+  was (+189): early on, runs differ most.
+- *Against the recipe.* Both are 6×96 networks trained with the
+  preset's settings to generation 250, the recipe's after 300
+  generations on the earlier settings. The recipe wins 0.607 (+76). The
+  chain through seed 1 disagrees: the recipe is +78 above seed 1's
+  generation 250 and the 6×96 run +67, which would leave only +11
+  between them. Three 400-game matches at about ±35 Elo each can
+  disagree that much.
+- *The value head fits its buffer more closely.* Its fresh-game value
+  loss is about the 6×64 network's (0.754 against 0.746 over
+  generations 226–250, each on its own run's games) and its buffer loss
+  lower (0.569 against 0.646), a gap of 0.13 to 0.19 after the
+  learning-rate drop against 0.08 to 0.11 for 6×64; see the table in
+  [the 10×128 run](#the-preset-from-scratch-with-a-10128-network).
+- *Training curves.* 54.8 plies per game over generations 1–250 (46.0
+  over 151–250), replay ratio 9.73, 98.1% of the games that could resign
+  resigned at false positives of 0.048, policy loss 2.203 at generation
+  250. On its own scale the `elo.csv` curve reaches 1873.5 at generation
+  250 (peak 1969.6 at 231).
+- *Cost.* 4.5 minutes per generation over generations 1–250, 18.8 h
+  with the pauses: self-play 156.6 s (14.3 ms per position on 18 BLAS
+  workers), training 42.5 s from generation 19 on, arena 60.0 s.
+
+**Verdict.** A 6×96 network trained from scratch with the preset is
+**no clearly better** than the 6×64 one: +47 to +67 Elo over seed 1 at
+generations 150 and 250, within the 6×64 network's seed-to-seed spread.
+Caveats: one seed of each width (seed 1 of 6×64 being the weakest of
+three); 400-game matches; the 6×64 network played widened, a copy that
+computes the same function.
+
+### The preset from scratch with a 10×128 network
+
+Question: does a much larger network keep improving where 6×64 levels
+off? The preset from scratch with `blocks = 10`, `filters = 128`
+(2,994,301 parameters, 6.3 times the 6×64 network's; the 19×19 preset's
+shape, with the 9×9 preset's `value_hidden = 64`), to generation 250.
+The result: no. It leads the 6×64 network at generation 50 (0.578),
+then falls behind (0.448, 0.405 and 0.403 at 100, 150 and 250), and
+scores 0.263 against the 6×64 network's generation 400. Its `log.csv`
+points to the value head overfitting its replay buffer.
+
+- *Two collapsed starts first.* Tried on the first Mac mini on
+  9 October with an uncalibrated generation 0 (`r4-job.sh`,
+  `backend = metal`), the run collapsed at once, twice: with
+  resignation on, from 17.6 plies per game at generation 1 to 7.4 at
+  generation 2; with resignation off for the first ten generations (the
+  warm-up in `r4-job.sh`, whose comment records the first try), 17.8
+  and 19.5 plies. Generation 0's value was +1.00 at the empty board and
+  everywhere else, and its validation policy loss 19.0. The cause was
+  batch norm in inference mode with a never-trained network's initial
+  statistics, which grow through the deep trunk; the fix is
+  `bn_calibrate`, true by default since (the
+  [design](../superpowers/specs/2026-10-10-bn-calibration-design.md),
+  with these runs' numbers, and "Batch norm calibration of generation 0"
+  in the main README). The collapsed runs stayed on the mini and are not
+  in the repository; `r4-mini3.log` and `r4-mini3b.log` are the two
+  launches.
+- *Setup* (`9x9-scratch128/`). `r6-job.sh`: `train --config
+  configs/9x9.cfg --run runs/9x9-scratch128 --set blocks=10 --set
+  filters=128 --set backend=metal --set generations=250 --set
+  bot_simulations=100`, seed 1, generation 0 calibrated (the default),
+  with binaries built from main on 9 October with the calibration and
+  the GPU backend (`runs/bin-r6`, not in the repository), on the Mac
+  Studio: self-play, the arena and the validation pass on its GPU,
+  training on its CPU cores. From 17:47 on 9 October, after a reboot, to
+  19:58 on 10 October (26 h 10 min; `r6-studio.log`).
+- *The matches.* `grow --blocks 10 --filters 128` made 10×128 copies of
+  seed 1's generations 50, 100, 150, 250 and 400 (appended blocks start
+  as identities and widening preserves the function; `grow-g*.txt`: within
+  5.7e-06 to 1.6e-05 on 8 random positions). 400 games, 200 simulations
+  for both sides, komi 7.5, colors alternating, on the GPU.
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| 10×128 vs 6×64 seed 1, gen 50 (`g50-vs-scratch64-g50.txt`) | 231/400 = 0.578 | 0.529-0.625 | +54 (+20 to +89) |
+| 10×128 vs 6×64 seed 1, gen 100 (`g100-vs-scratch64-g100.txt`) | 179/400 = 0.448 | 0.400-0.496 | −37 (−70 to −3) |
+| 10×128 vs 6×64 seed 1, gen 150 (`g150-vs-scratch64-g150.txt`) | 162/400 = 0.405 | 0.358-0.454 | −67 (−101 to −32) |
+| 10×128 vs 6×64 seed 1, gen 250 (`g250-vs-scratch64-g250.txt`) | 161/400 = 0.403 | 0.356-0.451 | −69 (−103 to −34) |
+| 10×128 gen 250 vs 6×64 seed 1 gen 400 (`g250-vs-scratch64-g400.txt`) | 105/400 = 0.263 | 0.222-0.308 | −179 (−218 to −141) |
+
+Between 363 and 391 of each 400 games were distinct.
+
+- *Ahead early, then behind.* The larger network leads at generation 50
+  and is behind from 100 on, by −37 to −69, every interval excluding
+  0.5. Seed 1 is the weakest 6×64 seed, so against seeds 2 and 3 the gap
+  would be wider, about −105 to −120 at generation 250 by difference.
+  Its own `elo.csv` still rises (1611.4 at generation 50, 2182.8 at 250,
+  peak 2260.1 at 242), so it learns, but more slowly than the 6×64
+  network.
+- *The diagnosis: the value head overfits its buffer.* The validation
+  loss compares the value head on the run's next, unseen games (fresh)
+  with the positions it trained on (buffer). Means over each range of
+  generations, fresh / buffer / gap (generation 1 left out, as above):
+
+  | generations | 6×64, seed 1 | 6×96 | 10×128 |
+  |---|---|---|---|
+  | 2–10 | 1.150 / 0.520 / 0.630 | 1.082 / 0.473 / 0.609 | 1.107 / 0.409 / 0.699 |
+  | 11–25 | 0.932 / 0.667 / 0.265 | 0.879 / 0.550 / 0.329 | 0.863 / 0.494 / 0.369 |
+  | 26–50 | 0.869 / 0.602 / 0.268 | 0.875 / 0.547 / 0.328 | 0.848 / 0.462 / 0.386 |
+  | 51–75 | 0.851 / 0.581 / 0.270 | 0.885 / 0.542 / 0.342 | 0.910 / 0.481 / 0.430 |
+  | 76–89 | 0.823 / 0.563 / 0.260 | 0.811 / 0.473 / 0.338 | 0.847 / 0.434 / 0.413 |
+  | 90–100 | 0.821 / 0.550 / 0.271 | 0.761 / 0.446 / 0.315 | 0.825 / 0.417 / 0.408 |
+  | 101–125 | 0.781 / 0.670 / 0.111 | 0.780 / 0.594 / 0.186 | 0.820 / 0.543 / 0.277 |
+  | 126–150 | 0.786 / 0.685 / 0.102 | 0.789 / 0.638 / 0.151 | 0.799 / 0.539 / 0.259 |
+  | 151–175 | 0.749 / 0.673 / 0.076 | 0.740 / 0.614 / 0.126 | 0.792 / 0.502 / 0.291 |
+  | 176–200 | 0.755 / 0.654 / 0.101 | 0.793 / 0.623 / 0.170 | 0.769 / 0.470 / 0.300 |
+  | 201–225 | 0.746 / 0.649 / 0.097 | 0.762 / 0.599 / 0.163 | 0.796 / 0.441 / 0.355 |
+  | 226–250 | 0.746 / 0.646 / 0.100 | 0.754 / 0.569 / 0.186 | 0.790 / 0.426 / 0.364 |
+  | generation 250 | 0.706 / 0.642 / 0.065 | 0.771 / 0.554 / 0.217 | 0.810 / 0.425 / 0.385 |
+
+  (Seeds 2 and 3 of 6×64: 0.095 and 0.092 over generations 226–250.)
+  The gap grows with the network: about 0.1 for 6×64, 0.13 to 0.19 for
+  6×96 and 0.26 to 0.36 for 10×128 after the learning-rate drop. For
+  6×64 it stays flat; for 10×128 it widens again over generations
+  151–250 (0.291 to 0.364), the buffer loss falling (0.502 to 0.426)
+  while the fresh-game loss stays at 0.77 to 0.80. Its training value
+  loss averaged 0.474 over generations 151–250, against the 6×64
+  network's 0.655. The policy head shows no such gap in any of the
+  three (fresh within about 0.01 of buffer from generation 126 on); the
+  10×128 network's fresh-game policy loss is 2.238 at generation 250
+  against 2.160. Each run's fresh games are its own, so the fresh-game
+  losses of two runs are measured on different data; the gap within a
+  run is the comparable measure.
+- *Why the value head.* Every position of a game shares one value
+  target, the game's result, so a 200,000-position buffer of games
+  about 45 plies long holds only about 4,400 independent value targets,
+  and at a replay ratio of about 12 (12.1 over generations 151–250, as
+  the 6×64 network's 11.1) each position is trained on about 12 times.
+  The original AlphaGo (Silver et al., Nature 2016) reported the same
+  failure for a value network trained on whole games: successive
+  positions are strongly correlated and the network memorized the
+  results. A network 6.3 times larger has the capacity to memorize them
+  here.
+- *The fix under test, still running.* `9x9-scratch128-g400`: the same
+  run with `games_per_generation = 400` and still 400 steps
+  (`g400-config.cfg` differs from `config.cfg` only there), which halves
+  the replay ratio, about 6, so that each position is trained on half as
+  often and the buffer turns over twice as fast. It started on the Mac
+  Studio at 20:57 on 10 October (`r7-job.sh`, `r7-studio.log`; the copy
+  of the script here corrects its third line, which named the 200-game
+  run `9x9-scratch128-g400`). It will be played against seed 1 of 6×64
+  and against this run at equal generations.
+- *Training curves.* 125.6 plies per game at generation 1, the
+  calibrated random network's long games (see the design), 76.0 at
+  generation 2, 53.1 over generations 1–250 and 42.8 over 151–250;
+  replay ratio 10.14 over 1–250; 97.8% of the games that could resign
+  resigned at false positives of 0.047; policy loss 2.270 at generation
+  250.
+- *Cost: the Mac Studio's GPU against the Mac mini's.* Generations 1
+  and 2 of this run are the calibrated run the design measured on the
+  first Mac mini's GPU (seed 1, `backend = metal`), and every number the
+  design lists for them that `log.csv` records is this run's too (125.6 plies, value loss
+  0.560, validation losses 4.65 and 1.54, v_resign −0.90, 0.89 of the
+  games resigned and no false positives at generation 1; 76.0 plies,
+  4.28 and 1.14, −0.77, 0.98 and 0.093 at generation 2): the calibrated
+  generation 0 is the same bytes on both machines (see the design).
+  Self-play took 2,154 s on the mini's GPU and 433.8 s on the Mac
+  Studio's at generation 1, 1,441 s and 283.1 s at generation 2, about
+  5.0 times faster. Over the 250 generations the Mac Studio took 6.3
+  minutes per generation: self-play 196.5 s (18.5 ms per position),
+  training 100.2 s on its CPU cores and arena 80.0 s.
+
+**Verdict.** A 10×128 network trained from scratch with the 9×9 preset
+**ends weaker than the 6×64 one**: +54 Elo at generation 50, then −37
+to −69 from generation 100 to 250, and −179 against the 6×64 network's
+generation 400. Its value head overfits the buffer: at generation 250
+its fresh-game value loss is 0.81 against 0.42 on the buffer, a gap of
+0.39 against 0.07 for 6×64, and the gap widened late in the run. More
+games per generation, which halves the replay ratio, is being tested.
+Caveats: one seed of each network (seed 1 of 6×64 the weakest of
+three); 400-game matches; the 6×64 network played grown to 10×128 (the
+same function); the overfitting diagnosis rests on the validation loss
+and is a hypothesis until the 400-game run says whether less replay
+helps.
 
 ### Against GNU Go 3.8 (an outside anchor)
 
@@ -3242,7 +3700,12 @@ matches (`runs/agz-experiment.sh`, not in the repository).
 | 7 | AGZ gating (`gating = true`, 55% over 400 games) | expensive; only if regressions appear | not started |
 | 8 | `value_hidden = 256`, as in AGZ | architecture change, low priority | not started |
 | 9 | The recipe: items 1, 3 and 4 together (`temperature_moves = 7`, resignation, 200 games and 400 steps) | the three single changes that beat the control | done, 250 generations from the same start (`9x9-recipe`): beat the control 0.787 at generation 50 (+228 Elo) and the budget arm 0.725, +170 over the control pooled over generations 46–50, and still gaining at 250: 0.670 for generation 100 against 50, 0.645 for 150 and 0.748 for 200 against 100, 0.632 for 250 against 200 (about +19 Elo per 10 generations over 100–250), 0.925 for 250 against the start; self-play time about the control's, training twice; the value head's fresh-game loss stays flat while its buffer loss falls, a gap widening slowly (0.12 to 0.16 over generations 101–200), then holding at 0.164 over 201–250; no re-rate past 200; see [The recipe](#the-recipe-four-changes-together-250-generations). Adopted as the 9×9 preset (`configs/9x9.cfg`, commit 63b3979); see row 10. At generation 250 its 6×96 network beat the 6×64 one from scratch 0.610 (+78); see [The recipe against the preset from scratch](#the-recipe-against-the-preset-from-scratch-generation-250) |
-| 10 | The new 9×9 preset from scratch | the recipe was validated only from a trained start | done (`9x9-scratch`, the preset's 150 generations continued to 250, 6×64, seed 1, against `9x9-main`, the earlier preset's run with the same network, seed and generation 0): 0.895, 0.895, 0.907 and 0.915 at equal generations 50, 100, 150 and 250 (+372 to +413 Elo); 0.595 (+67) and 0.795 (+235) at equal SGD steps (generation 75 against 150, 125 against 250) with about 70% of the self-play positions; 0.853 (+305) for generation 150 against `9x9-main`'s 250; still improving at 250 (0.657 for 200 and 0.728 for 250 against 150); resignation calibrated itself from a random network within about five generations; one seed; see [The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations). Against the recipe's 6×96 network at generation 250 (widened to 6×96 for the arena, which preserves its function) it scored 0.390 (−78); see [The recipe against the preset from scratch](#the-recipe-against-the-preset-from-scratch-generation-250) |
+| 10 | The new 9×9 preset from scratch | the recipe was validated only from a trained start | done (`9x9-scratch`, the preset's 150 generations continued to 250, 6×64, seed 1, against `9x9-main`, the earlier preset's run with the same network, seed and generation 0): 0.895, 0.895, 0.907 and 0.915 at equal generations 50, 100, 150 and 250 (+372 to +413 Elo); 0.595 (+67) and 0.795 (+235) at equal SGD steps (generation 75 against 150, 125 against 250) with about 70% of the self-play positions; 0.853 (+305) for generation 150 against `9x9-main`'s 250; still improving at 250 (0.657 for 200 and 0.728 for 250 against 150); resignation calibrated itself from a random network within about five generations; one seed; see [The 9×9 preset from scratch](#the-99-preset-from-scratch-250-generations). Against the recipe's 6×96 network at generation 250 (widened to 6×96 for the arena, which preserves its function) it scored 0.390 (−78); see [The recipe against the preset from scratch](#the-recipe-against-the-preset-from-scratch-generation-250). Seeds 2 and 3 replicated it; see row 11 |
+| 11 | Two more seeds of the preset from scratch (6×64, seeds 2 and 3, to generation 250) | row 10 rested on one seed | done (`9x9-scratch-seeds`): against seed 1 at equal generations 50, 100, 150 and 250, seed 2 scored 0.748, 0.580, 0.575 and 0.552 and seed 3 0.590, 0.547, 0.500 and 0.575 (+37 and +53 Elo at 250); seed 1 was a slightly weak draw, and the seeds agree within about 0 to 60 Elo from generation 100 on; seed 2's generation 250 beat `9x9-main`'s 0.930 (seed 1's 0.915); see [three seeds](#the-preset-from-scratch-three-seeds) |
+| 12 | Seed 1 continued from generation 250 to 400 | it was still improving at 250 | done (`9x9-scratch-to400`): 0.640, 0.660 and 0.685 for generations 300, 350 and 400 against 250 (+100, then +15 and +20 per 50 generations), 0.938 for 400 against `9x9-main`'s 250; the 6×64 network levels off; see [400 generations](#the-preset-from-scratch-continued-to-generation-400) |
+| 13 | The preset from scratch with a 6×96 network | does a wider network do better from scratch? | done (`9x9-scratch96`, seed 1): 0.655, 0.505, 0.568 and 0.595 against 6×64 seed 1 at equal generations 50, 100, 150 and 250, within the 6×64 seeds' spread; 0.393 against the recipe's 6×96 network at 250; see [6×96](#the-preset-from-scratch-with-a-696-network) |
+| 14 | The preset from scratch with a 10×128 network | does a larger network keep improving where 6×64 levels off? | done (`9x9-scratch128`, seed 1, generation 0 batch norm calibrated after two uncalibrated tries collapsed): 0.578, 0.448, 0.405 and 0.403 against 6×64 seed 1 at equal generations 50, 100, 150 and 250, 0.263 against its generation 400; the value head overfits the buffer (fresh-game value loss 0.81 against 0.42 on the buffer at generation 250; 6×64: 0.71 against 0.64); see [10×128](#the-preset-from-scratch-with-a-10128-network) |
+| 15 | Row 14 with 400 games per generation (400 steps; replay ratio halved, about 6) | row 14's value head overfits at a replay ratio of about 12 | running (`9x9-scratch128-g400`, started 10 October); to be played against 6×64 seed 1 and row 14's run at equal generations |
 
 Evaluation only (the algorithm unchanged): a validation loss on
 held-out fresh games each generation is merged (`validation_loss`, on by
@@ -3295,6 +3758,15 @@ matches at temperature 0 (AGZ's evaluation size).
    criterion, but the curve is "rise, then plateau", not "rising to the
    end". After about generation 31–34, Black wins almost every self-play
    game and the arena loses resolution.
+5. **A larger network from scratch did not beat 6×64 on 9×9.** With the
+   9×9 preset, a 10×128 network first collapsed at once
+   from an uncalibrated generation 0 (fixed by `bn_calibrate`), then,
+   calibrated, ended behind the 6×64 network from generation 100 on
+   (0.403 at generation 250), its value head overfitting the replay
+   buffer; a 6×96 network was no clearly better than 6×64. See
+   [10×128](#the-preset-from-scratch-with-a-10128-network) and
+   [6×96](#the-preset-from-scratch-with-a-696-network); a rerun with
+   400 games per generation is under way.
 
 ## Files
 
@@ -3422,6 +3894,44 @@ matches at temperature 0 (AGZ's evaluation size).
   `g250-vs-g150.txt` and `g250-vs-main-g250.txt`; and the buffer
   statistics `buf.txt`, `pass.txt` and `side.txt` at generation 150 and
   `buf-250.txt`, `pass-250.txt` and `side-250.txt` at 250.
+- `9x9-scratch-seeds/`: seeds 2 and 3 of the preset from scratch, in
+  `seed2/` and `seed3/` (each with `log.csv`, `elo.csv`,
+  `references.csv`, `results.csv`, `config.cfg` and `progress.txt`, the
+  run's output with its resume); the 400-game matches against seed 1,
+  `seed2-g{50,100,150,250}-vs-seed1-g*.txt` and the same for seed 3,
+  and `seed2-g250-vs-main-g250.txt`; the scripts `r3-job.sh`,
+  `r3-resume-s2.sh` and `r5-job.sh` with their logs
+  `r3-s2-detached.log`, `r5-mini3.log` and `r5-detached.log` (host
+  names redacted). See
+  [its section](#the-preset-from-scratch-three-seeds).
+- `9x9-scratch-to400/`: seed 1 continued to generation 400: `log.csv`
+  over generations 1–400 (the first 250 rows are `9x9-scratch/log.csv`),
+  `elo.csv` (the refit at 400), `references.csv`, `results.csv`,
+  `config.cfg`, `progress.txt` (the continuation's output); the matches
+  `g300-vs-g250.txt`, `g350-vs-g250.txt`, `g400-vs-g250.txt` and
+  `g400-vs-main-g250.txt`; and round 3's launch: `r3-job.sh`,
+  `r3-launch.sh`, `r3-launch-minis.sh`, `r3.log` and `r3-minis.log`
+  (host names redacted). See
+  [its section](#the-preset-from-scratch-continued-to-generation-400).
+- `9x9-scratch96/`: the preset from scratch with a 6×96 network: the
+  run's files as in `9x9-scratch-seeds/seed2/`, the `grow` outputs
+  `grow-g{50,100,150,250}.txt` (seed 1 widened to 6×96; the widened
+  checkpoints are not in the repository), the matches
+  `g{50,100,150,250}-vs-scratch64-g*.txt` and
+  `g250-vs-recipe-g250.txt`, and the scripts `r3-job.sh` and
+  `r3-resume96.sh` with the log `r3-studio2.log`. See
+  [its section](#the-preset-from-scratch-with-a-696-network).
+- `9x9-scratch128/`: the preset from scratch with a 10×128 network: the
+  run's files as in `9x9-scratch-seeds/seed2/`, the `grow` outputs
+  `grow-g{50,100,150,250,400}.txt` (seed 1 grown to 10×128), the matches
+  `g{50,100,150,250}-vs-scratch64-g*.txt` and
+  `g250-vs-scratch64-g400.txt`, the script `r6-job.sh` and its log
+  `r6-studio.log`; the collapsed tries' script `r4-job.sh` and launch
+  lines `r4-mini3.log` and `r4-mini3b.log`; and the rerun with 400 games
+  per generation, still running: `r7-job.sh` (its third line corrected
+  in this copy), `r7-studio.log` and its `config.cfg` as
+  `g400-config.cfg`. Host names are redacted. See
+  [its section](#the-preset-from-scratch-with-a-10128-network).
 - `9x9-versus/`: the recipe against the preset from scratch at
   generation 250: the script `versus.sh` (host names redacted) and its
   log `versus.log`, the `grow` outputs `grow-g150.txt` and
