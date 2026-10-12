@@ -800,7 +800,7 @@ board program such as Sabaki, with arguments like
 `--checkpoint runs/9x9-main/checkpoints/gen_0250.azn --backend blas`, and
 start a game on the checkpoint's board size.
 
-Eleven 9×9 networks have played GNU Go 3.8 at level 10 this way; see
+Twelve 9×9 networks have played GNU Go 3.8 at level 10 this way; see
 [Results](#results). On macOS the Homebrew bottle of GNU Go 3.8 fails an
 assertion (`board.c:2540`), as Apple clang miscompiles it when
 optimizing; build it from the official tarball with GCC (`-O2 -fcommon
@@ -943,7 +943,9 @@ From `docs/results/README.md`, which has the details and the sources.
   400. Its validation loss shows the value head overfitting: at
   generation 250 a value loss of 0.81 on fresh self-play games against
   0.42 on its replay buffer (6×64: 0.71 against 0.64). A rerun with 400
-  games per generation, halving the replay ratio, is running (see
+  games per generation, halving the replay ratio, beat 6×64 seed 1
+  327/400 at generation 250 and is the strongest network against the
+  outside anchors below; it will be written up on its own (see
   [6×96](docs/results/README.md#the-preset-from-scratch-with-a-696-network)
   and [10×128](docs/results/README.md#the-preset-from-scratch-with-a-10128-network)).
 - **9×9 against GNU Go 3.8 (level 10).** 100 games per network at 200
@@ -953,7 +955,9 @@ From `docs/results/README.md`, which has the details and the sources.
   6×64 and 6×96; about +190 to +230), and the recipe's 6×96 network
   0.91 (+402, interval +285 to +519), and 0.61 with its raw policy (1
   simulation). The preset's 10×128 network, whose value head overfits,
-  scored only 0.57 (+49) at generation 250. Seed 1's generation 250
+  scored only 0.57 (+49) at generation 250, its rerun with 400 games
+  per generation 0.91, like the recipe's (0.67 with its raw policy).
+  Seed 1's generation 250
   is level with GNU Go at about 8
   simulations. The ranking agrees with the internal matches (except
   between networks within noise of each other) and so do most gaps,
@@ -965,13 +969,15 @@ From `docs/results/README.md`, which has the details and the sources.
 - **9×9 against Pachi 12.90 (no neural network, fixed playouts).** 100
   games per pairing, 200 simulations, Pachi single-threaded with its
   resignation off: Pachi at about 2,000 playouts a move (`-t =1000`)
-  beats the five strongest networks, which score 0.28 to 0.44 against
+  beats the five networks first rated, which score 0.28 to 0.44 against
   it (0.15 to 0.29 at 4k playouts, 0.08 to 0.13 at 16k). A joint fit
-  with GNU Go 3.8 level 10 at 0 puts the networks at +211 to +305 Elo
-  and Pachi at +324 (1k), +491 (4k) and +637 (16k); the 10×128
-  network, added later, scored 0.23 against Pachi 1k and fits at +76,
-  below every 6×64 network of the same preset (a rerun with 400 games
-  per generation is in progress). Against Pachi the
+  with GNU Go 3.8 level 10 at 0 puts them at +208 to +301 Elo
+  and Pachi at +327 (1k), +482 (4k) and +619 (16k); the 10×128
+  network, added later, scored 0.23 against Pachi 1k and fits at +77,
+  below every 6×64 network of the same preset, and its rerun with 400
+  games per generation scored 0.60, 0.46 and 0.31 against Pachi 1k, 4k
+  and 16k and fits at +439, the strongest network so far, about +140
+  above the recipe's. Against Pachi the
   recipe's 6×96 network is level with the scratch run's generation 400
   and about +90 above the generation-250 networks (against GNU Go,
   +190). The scale fits every pairing but Pachi against itself, whose
