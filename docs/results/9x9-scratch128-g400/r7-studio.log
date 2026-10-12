@@ -1,0 +1,12 @@
+scratch128-g400 start Sat Oct 10 20:57:32 PDT 2026 on [the Mac Studio]
+train exit 0 Mon Oct 12 09:43:14 PDT 2026
+g50-vs-scratch64-g50: A runs/9x9-scratch128-g400/checkpoints/gen_0050.azn vs B runs/r7-eval/scratch128-g400/scratch64-g50-as-10x128.azn: A scored 370/400 = 0.925 (95% CI 0.895-0.947), distinct games 396
+g100-vs-scratch64-g100: A runs/9x9-scratch128-g400/checkpoints/gen_0100.azn vs B runs/r7-eval/scratch128-g400/scratch64-g100-as-10x128.azn: A scored 353/400 = 0.882 (95% CI 0.847-0.910), distinct games 389
+g150-vs-scratch64-g150: A runs/9x9-scratch128-g400/checkpoints/gen_0150.azn vs B runs/r7-eval/scratch128-g400/scratch64-g150-as-10x128.azn: A scored 353/400 = 0.882 (95% CI 0.847-0.910), distinct games 378
+g250-vs-scratch64-g250: A runs/9x9-scratch128-g400/checkpoints/gen_0250.azn vs B runs/r7-eval/scratch128-g400/scratch64-g250-as-10x128.azn: A scored 327/400 = 0.818 (95% CI 0.777-0.852), distinct games 375
+g250-vs-scratch64-g400: A runs/9x9-scratch128-g400/checkpoints/gen_0250.azn vs B runs/r7-eval/scratch128-g400/scratch64-g400-as-10x128.azn: A scored 274/400 = 0.685 (95% CI 0.638-0.729), distinct games 368
+g50-vs-scratch128-g50: A runs/9x9-scratch128-g400/checkpoints/gen_0050.azn vs B runs/9x9-scratch128/checkpoints/gen_0050.azn: A scored 372/400 = 0.930 (95% CI 0.901-0.951), distinct games 392
+g100-vs-scratch128-g100: A runs/9x9-scratch128-g400/checkpoints/gen_0100.azn vs B runs/9x9-scratch128/checkpoints/gen_0100.azn: A scored 367/400 = 0.917 (95% CI 0.886-0.941), distinct games 369
+g150-vs-scratch128-g150: A runs/9x9-scratch128-g400/checkpoints/gen_0150.azn vs B runs/9x9-scratch128/checkpoints/gen_0150.azn: A scored 360/400 = 0.900 (95% CI 0.867-0.926), distinct games 365
+g250-vs-scratch128-g250: A runs/9x9-scratch128-g400/checkpoints/gen_0250.azn vs B runs/9x9-scratch128/checkpoints/gen_0250.azn: A scored 359/400 = 0.897 (95% CI 0.864-0.924), distinct games 369
+scratch128-g400 all done Mon Oct 12 11:18:50 PDT 2026
