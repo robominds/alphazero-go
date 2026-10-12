@@ -4,8 +4,8 @@ This directory holds the results of the reference trainings, made with
 the final code (after the pass fix, commit 15db72a). Every number below
 names the file it comes from. Runs were made 2026-09-30 to 2026-10-01;
 the follow-up matches and analyses were made on 2026-10-01. The 9×9
-experiments that follow them ran until 2026-10-10, and the matches
-against GNU Go and Pachi on 2026-10-10.
+experiments that follow them ran until 2026-10-12, and the matches
+against GNU Go and Pachi on 2026-10-10 and 2026-10-12.
 
 ## Headline: the 9×9 preset now trains a much stronger network
 
@@ -50,15 +50,24 @@ generation 250 unless noted:
   falls behind (0.403 at 250, and 0.263 against 6×64's generation 400):
   its value head overfits the replay buffer (a fresh-game value loss of
   0.81 against 0.42 on the buffer at generation 250; 0.71 against 0.64
-  for 6×64). Its rerun with 400 games per generation, which halves the
-  replay ratio, beats 6×64 seed 1 327/400 (0.818) at generation 250
-  and 274/400 (0.685) against its generation 400; it will be written
-  up on its own.
+  for 6×64);
+- the same 10×128 run with 400 games per generation, which halves the
+  replay ratio, no longer overfits (a gap of 0.07 to 0.11, as for
+  6×64) and is the strongest 9×9 network: it beats 6×64 seed 1
+  370/400 (0.925) at generation 50 and 327/400 (0.818, +261) at 250,
+  274/400 (0.685, +135) against 6×64's generation 400 (having made only
+  1.14 times that network's self-play positions), and the 10×128 run with
+  200 games 0.897 to 0.930 at equal generations. With enough fresh
+  games per parameter the larger network turns its capacity into
+  strength; it costs 8.8 minutes per generation on the Mac Studio
+  against 6.3 with 200 games. Its continuation to generation 300 is
+  running.
 
 See [three seeds](#the-preset-from-scratch-three-seeds),
 [400 generations](#the-preset-from-scratch-continued-to-generation-400),
-[6×96](#the-preset-from-scratch-with-a-696-network) and
-[10×128](#the-preset-from-scratch-with-a-10128-network).
+[6×96](#the-preset-from-scratch-with-a-696-network),
+[10×128](#the-preset-from-scratch-with-a-10128-network) and
+[10×128 with 400 games](#the-10128-network-with-400-games-per-generation).
 
 Against an outside program, GNU Go 3.8 at level 10 (100 games each, 200
 simulations), the earlier preset's generation 250 scored 0.16, the new
@@ -110,8 +119,9 @@ the reasons. All three presets use:
   norm calibrated; added 2026-10-10, after almost every run on this page, so
   their generation 0 was uncalibrated and a new run with the same seed
   starts elsewhere; `--set bn_calibrate=false` reproduces them; only
-  the 10×128 run from scratch, `9x9-scratch128/`, and its rerun were
-  started with it);
+  the 10×128 run from scratch, `9x9-scratch128/`, and its rerun with
+  400 games per generation, `9x9-scratch128-g400/`, were started with
+  it);
 - `history = 8`, `mcts_batch = 8`, `c_puct = 1.5`;
 - `dirichlet_scale = 10`, `noise_fraction = 0.25`;
 - momentum 0.9, `weight_decay = 1e-4`;
@@ -2828,7 +2838,7 @@ difference), +135 in all; the network is levelling off.
 **Verdict.** The preset's 6×64 network **levels off between generations
 300 and 400**: +100 Elo over its generation 250 by 300, and only about
 +35 more by 400. What limits it, the network's size, the fixed learning
-rate of 0.002 or the self-play data, this run cannot say; the two runs
+rate of 0.002 or the self-play data, this run cannot say; the runs
 below test the size from scratch. Caveats: one seed (seed 1, the
 weakest of three at generation 250); 400-game matches, so the +15 and
 +20 increments are within the noise; the gains by 400 are measured only
@@ -3019,23 +3029,14 @@ Between 363 and 391 of each 400 games were distinct.
   positions are strongly correlated and the network memorized the
   results. A network 6.3 times larger has the capacity to memorize them
   here.
-- *The fix under test, still running.* `9x9-scratch128-g400`: the same
-  run with `games_per_generation = 400` and still 400 steps
-  (`g400-config.cfg` differs from `config.cfg` only there), which halves
-  the replay ratio, about 6, so that each position is trained on half as
-  often and the buffer turns over twice as fast. It started on the Mac
-  Studio at 20:57 on 10 October (`r7-job.sh`, `r7-studio.log`; the copy
-  of the script here corrects its third line, which named the 200-game
-  run `9x9-scratch128-g400`). It will be played against seed 1 of 6×64
-  and against this run at equal generations.
-- *The rerun's first results* (added later; the rerun will be written
-  up on its own). It reached generation 250 on 12 October. Its
-  generation 250 beats seed 1's 6×64 network 327/400 (0.818) at
-  generation 250 and 274/400 (0.685) at 400, and against the outside
-  anchors it scores 91/100 against GNU Go and 60/100 against Pachi 1k,
-  +439 on the joint scale, above every other network (see
-  [Against GNU Go 3.8](#against-gnu-go-38-an-outside-anchor) and
-  [Against Pachi 12.90](#against-pachi-1290-a-stronger-outside-anchor)).
+- *The fix, tested.* `9x9-scratch128-g400`: the same run with
+  `games_per_generation = 400` and still 400 steps, which halves the
+  replay ratio, about 6, so that each position is trained on half as
+  often and the buffer turns over twice as fast. It fixes the
+  overfitting (a gap of 0.07 to 0.11 after the learning-rate drop) and
+  beats this run about 0.9 at every generation played and seed 1's 6×64
+  network 0.818 at generation 250; see
+  [the next section](#the-10128-network-with-400-games-per-generation).
 - *Training curves.* 125.6 plies per game at generation 1, the
   calibrated random network's long games (see the design), 76.0 at
   generation 2, 53.1 over generations 1–250 and 42.8 over 151–250;
@@ -3073,12 +3074,191 @@ to −69 from generation 100 to 250, and −179 against the 6×64 network's
 generation 400. Its value head overfits the buffer: at generation 250
 its fresh-game value loss is 0.81 against 0.42 on the buffer, a gap of
 0.39 against 0.07 for 6×64, and the gap widened late in the run. More
-games per generation, which halves the replay ratio, is being tested.
-Caveats: one seed of each network (seed 1 of 6×64 the weakest of
-three); 400-game matches; the 6×64 network played grown to 10×128 (the
-same function); the overfitting diagnosis rests on the validation loss
-and is a hypothesis until the 400-game run says whether less replay
-helps.
+games per generation, which halves the replay ratio, fixes it and
+makes the 10×128 network the strongest 9×9 network (see
+[the next section](#the-10128-network-with-400-games-per-generation)),
+which bears the diagnosis out. Caveats: one seed of each network (seed
+1 of 6×64 the weakest of three); 400-game matches; the 6×64 network
+played grown to 10×128 (the same function).
+
+### The 10×128 network with 400 games per generation
+
+Question: the 10×128 run above overfits its value head at a replay
+ratio of about 12. With twice the games per generation and the same
+400 steps, which halves the replay ratio, does the larger network turn
+its size into strength? The same run with `games_per_generation = 400`,
+to generation 250. The result: yes. It beats seed 1 of the 6×64
+network 0.925 at generation 50 and 0.818 at 250, and the 6×64
+network's generation 400 0.685; it beats the 10×128 run with 200 games
+about 0.9 at every generation played; its value head's fresh-game loss
+stays within about 0.1 of its buffer loss, as the 6×64 network's does;
+and against GNU Go and Pachi it is the strongest 9×9 network so far.
+
+- *Setup* (`9x9-scratch128-g400/`). `r7-job.sh`: `train --config
+  configs/9x9.cfg --run runs/9x9-scratch128-g400 --set blocks=10 --set
+  filters=128 --set backend=metal --set games_per_generation=400 --set
+  generations=250 --set bot_simulations=100`, seed 1, generation 0
+  calibrated (the default; the same bytes as the 200-game run's
+  generation 0), with `runs/bin-r6`, on the Mac Studio: self-play, the
+  arena and the validation pass on its GPU, training on its CPU cores.
+  Its `config.cfg` differs from `9x9-scratch128/config.cfg` only in
+  `games_per_generation`. `train_steps` stays 400, so the replay ratio
+  is about half the 200-game run's: 5.71 against 10.14 over generations
+  1–250 and 6.54 against 12.09 over 151–250 (`log.csv`). From 20:57 on
+  10 October to 09:43 on 12 October (36 h 46 min; `r7-studio.log`; the
+  copy of the script here corrects its third line, which named the
+  200-game run `9x9-scratch128-g400`). The run's files are those of
+  generation 250, copied before the run was continued (below).
+- *The matches.* `r7-job.sh` grew seed 1's generations 50, 100, 150,
+  250 and 400 to 10×128 again (`grow-g*.txt`: within 5.7e-06 to
+  1.6e-05 on 8 random positions) and played them and the 200-game run
+  at equal generations: 400 games, 200 simulations for both sides, komi
+  7.5, colors alternating, on the GPU.
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| 400 games vs 6×64 seed 1, gen 50 (`g50-vs-scratch64-g50.txt`) | 370/400 = 0.925 | 0.895-0.947 | +436 (+372 to +501) |
+| 400 games vs 6×64 seed 1, gen 100 (`g100-vs-scratch64-g100.txt`) | 353/400 = 0.882 | 0.847-0.910 | +350 (+297 to +402) |
+| 400 games vs 6×64 seed 1, gen 150 (`g150-vs-scratch64-g150.txt`) | 353/400 = 0.882 | 0.847-0.910 | +350 (+297 to +402) |
+| 400 games vs 6×64 seed 1, gen 250 (`g250-vs-scratch64-g250.txt`) | 327/400 = 0.818 | 0.777-0.852 | +261 (+217 to +304) |
+| 400 games gen 250 vs 6×64 seed 1 gen 400 (`g250-vs-scratch64-g400.txt`) | 274/400 = 0.685 | 0.638-0.729 | +135 (+98 to +172) |
+| 400 games vs 200 games, gen 50 (`g50-vs-scratch128-g50.txt`) | 372/400 = 0.930 | 0.901-0.951 | +449 (+384 to +515) |
+| 400 games vs 200 games, gen 100 (`g100-vs-scratch128-g100.txt`) | 367/400 = 0.917 | 0.886-0.941 | +418 (+356 to +481) |
+| 400 games vs 200 games, gen 150 (`g150-vs-scratch128-g150.txt`) | 360/400 = 0.900 | 0.867-0.926 | +382 (+326 to +439) |
+| 400 games vs 200 games, gen 250 (`g250-vs-scratch128-g250.txt`) | 359/400 = 0.897 | 0.864-0.924 | +377 (+321 to +434) |
+
+Between 365 and 396 of each 400 games were distinct.
+
+- *Ahead of 6×64 throughout, by less as it goes.* Every interval
+  excludes 0.5. Against seed 1 of the 6×64 network the lead is +436 at
+  generation 50, +350 at 100 and 150 and +261 at 250. At equal
+  generations it has played twice the games (20,000 against 10,000 at
+  generation 50), so these comparisons favour it; the one at about
+  equal data is below. The 6×64 network's generation 400 is +135 behind
+  its generation 250. Seeds 2 and 3 of 6×64 are +37 and +53 above seed 1
+  at generation 250, so against them the lead would be about +210 to
+  +225 by difference.
+- *Against the 200-game run.* +449 at generation 50, then +377 to +418.
+  The chain through seed 1 agrees: +261 for this run and −69 for the
+  200-game run against the same opponent, +330, against +377 directly.
+  Both runs start from the same generation 0, yet their `elo.csv`
+  curves put this one lower (1582.6 at generation 50 and 2071.1 at 250,
+  peak 2170.9 at 216, against 1611.4 and 2182.8): each run is rated
+  against its own references, so the live curves cannot compare runs.
+- *The overfitting is gone.* Validation value loss, fresh / buffer /
+  gap, means over each range of generations (generation 1 left out, as
+  above; the first two columns are those of the table in the
+  [10×128 section](#the-preset-from-scratch-with-a-10128-network)):
+
+  | generations | 6×64, seed 1 | 10×128, 200 games | 10×128, 400 games |
+  |---|---|---|---|
+  | 2–10 | 1.150 / 0.520 / 0.630 | 1.107 / 0.409 / 0.699 | 1.008 / 0.687 / 0.321 |
+  | 11–25 | 0.932 / 0.667 / 0.265 | 0.863 / 0.494 / 0.369 | 0.861 / 0.649 / 0.212 |
+  | 26–50 | 0.869 / 0.602 / 0.268 | 0.848 / 0.462 / 0.386 | 0.854 / 0.616 / 0.239 |
+  | 51–75 | 0.851 / 0.581 / 0.270 | 0.910 / 0.481 / 0.430 | 0.826 / 0.566 / 0.260 |
+  | 76–89 | 0.823 / 0.563 / 0.260 | 0.847 / 0.434 / 0.413 | 0.818 / 0.549 / 0.269 |
+  | 90–100 | 0.821 / 0.550 / 0.271 | 0.825 / 0.417 / 0.408 | 0.740 / 0.560 / 0.180 |
+  | 101–125 | 0.781 / 0.670 / 0.111 | 0.820 / 0.543 / 0.277 | 0.729 / 0.658 / 0.071 |
+  | 126–150 | 0.786 / 0.685 / 0.102 | 0.799 / 0.539 / 0.259 | 0.727 / 0.658 / 0.069 |
+  | 151–175 | 0.749 / 0.673 / 0.076 | 0.792 / 0.502 / 0.291 | 0.713 / 0.635 / 0.079 |
+  | 176–200 | 0.755 / 0.654 / 0.101 | 0.769 / 0.470 / 0.300 | 0.734 / 0.638 / 0.096 |
+  | 201–225 | 0.746 / 0.649 / 0.097 | 0.796 / 0.441 / 0.355 | 0.731 / 0.633 / 0.098 |
+  | 226–250 | 0.746 / 0.646 / 0.100 | 0.790 / 0.426 / 0.364 | 0.708 / 0.596 / 0.112 |
+  | generation 250 | 0.706 / 0.642 / 0.065 | 0.810 / 0.425 / 0.385 | 0.661 / 0.571 / 0.090 |
+
+  After the learning-rate drop at generation 90 the gap is 0.07 to
+  0.11 (from generation 101 on), about the 6×64 network's 0.08 to 0.11,
+  against 0.26 to 0.36 for the 200-game run (0.39 at generation 250);
+  before the drop it is about the 6×64 network's or smaller (0.18 to
+  0.32 against 0.26 to 0.63). It does not widen late in the run, as
+  the 200-game run's did. Its buffer loss stays near the 6×64 network's
+  (0.596 against 0.646 over generations 226–250, 0.426 for the 200-game
+  run), and so does its training value loss (0.629 over 151–250,
+  against 0.655 and 0.474). Its fresh-game value loss is the lowest of
+  the three from generation 51 on (0.708 over 226–250, against 0.746
+  and 0.790), with the caveat of the table above: each run's fresh
+  games are its own.
+- *The policy is better too.* Fresh-game policy loss, means over each
+  range (the same caveat):
+
+  | generations | 6×64, seed 1 | 6×96 | 10×128, 200 games | 10×128, 400 games |
+  |---|---|---|---|---|
+  | 26–50 | 2.994 | 2.848 | 2.761 | 2.520 |
+  | 101–125 | 2.309 | 2.291 | 2.329 | 2.043 |
+  | 151–175 | 2.221 | 2.186 | 2.246 | 1.993 |
+  | 201–225 | 2.167 | 2.190 | 2.243 | 1.960 |
+  | 226–250 | 2.147 | 2.164 | 2.232 | 2.002 |
+
+  It is the lowest of every run from scratch from generation 11 on,
+  seeds 2 and 3 of 6×64 included (2.099 and 2.108 over 226–250; seed 1
+  continued to 400: 2.142 over 251–400), and below the recipe's from
+  generation 101 on (2.100 over 226–250): about 2.00 over generations
+  226–250, 0.1 below the next. Fresh and buffer policy losses agree
+  within about 0.015 from generation 126 on, as in the other runs.
+- *The search works again.* Against GNU Go 3.8 level 10 (see
+  [the GNU Go section](#against-gnu-go-38-an-outside-anchor)) its
+  generation 250 scores 67/100 with its raw policy (+123) and 91/100 at
+  200 simulations (+402): the search adds +279 Elo, as for seed 1 of
+  the 6×64 network (+288, from 39/100 to 77/100) and the recipe's
+  network (+324), where the 200-game run's overfitting value head let
+  it add only +141 (37/100 to 57/100).
+- *Against the outside anchors* (100 games each, generation 250 at 200
+  simulations). 91/100 against GNU Go, the recipe's score; 60/100
+  against Pachi 1k, 46/100 against 4k and 31/100 against 16k, the only
+  network to beat Pachi 1k. The joint fit puts it at +439 (+387 to
+  +490) with GNU Go at 0, between Pachi 1k (+327) and 4k (+482), +138
+  above the recipe's network (+301) and +362 above the 200-game run
+  (+77); see [Against Pachi 12.90](#against-pachi-1290-a-stronger-outside-anchor).
+- *Data and compute.* By generation 250 it had played 100,000 games
+  and 4.74 million self-play positions, against 50,000 games and 2.66
+  million positions for the 200-game run and 2.85 million for seed 1 of
+  6×64 at the same generation. Seed 1 continued to generation 400 had
+  played 80,000 games and 4.17 million positions, with 160,000 SGD steps
+  to this run's 100,000: with 1.25 times the games, 1.14 times the
+  positions and fewer steps, the 10×128 network beats it by +135, and
+  the 6×64 network had nearly levelled off by then (about +35 from
+  generation 300 to 400). More data alone does not explain the gap.
+- *Training curves.* 122.0 plies per game at generation 1 (125.6 in
+  the 200-game run, from the same generation 0) and 101.6 at 2; 47.4
+  over generations 1–250 and 39.4 over 151–250, against 53.1 and 42.8:
+  the games are shorter. 98.4% of the games that could resign resigned
+  at false positives of 0.048 (v_resign −0.87 on average). Policy loss
+  2.048 at generation 250 (the 200-game run: 2.270).
+- *Cost.* 8.8 minutes per generation on the Mac Studio over generations
+  1–250, against 6.3 for the 200-game run on the same machine:
+  self-play 345.6 s (18.2 ms per position, the 200-game run 18.5),
+  training 102.6 s and arena 80.9 s, 36.7 h of generation time against
+  26.2 h. The self-play per generation is 1.76 times the 200-game run's
+  (twice the games, each shorter); training and arena are about the
+  same, since the steps are.
+- *Continued to generation 300, still running.* `runs/r8-job.sh` (not
+  yet in the repository) resumed the run on the Mac Studio at 13:45 on
+  12 October, to generation 300, after which its generation 300 is to
+  play its generation 250 and seed 1's 6×64 generation 400 (400 games
+  each). Its results will be added here; everything above is
+  generations 1–250.
+
+**Verdict.** With 400 games per generation instead of 200, at the same
+400 steps, the 10×128 network trained from scratch with the 9×9 preset
+**becomes the strongest 9×9 network**: +261 Elo over seed 1 of the
+6×64 network at generation 250 and +135 over that network's generation
+400, +377 to +449 over the 10×128 run with 200 games at equal
+generations, and +439 on the joint scale with GNU Go and Pachi, between
+Pachi 1k and 4k and +138 above the recipe's network. Its value head no
+longer overfits the buffer (a gap of 0.07 to 0.11 after the
+learning-rate drop, as for 6×64, against 0.26 to 0.36), its fresh-game
+policy loss is the lowest of all the runs from scratch, and its search
+gains as much over its raw policy as the 6×64 network's does. With
+enough fresh games per parameter, the larger network turns its
+capacity into strength: the 200-game run was held back by too few
+fresh games per parameter, not by the network's size. It costs more: 8.8 minutes per generation
+against 6.3 for the 200-game run on the same machine. Caveats: one
+seed; the rerun changes the replay ratio and the amount of data
+together (the equal-data comparison with the 6×64 network's generation
+400 favours the larger network all the same); 400-game matches; the
+6×64 network played grown to 10×128 (the same function); the 6×64
+network was not run with 400 games per generation; and the
+continuation to 300 is still running.
 
 ### Against GNU Go 3.8 (an outside anchor)
 
@@ -3140,15 +3320,16 @@ network, and 0.67 with its raw policy.
   `9x9-scratch128-g400`, that run again with `games_per_generation =
   400`, at 250; and the recipe (`9x9-recipe`, 6×96) at 250. All have
   6 blocks and 64 filters unless marked. The seed-2, continued, 6×96
-  and 10×128 runs have their own sections (the 10×128 rerun's first
-  results are in the 10×128 one; its write-up will follow):
+  and both 10×128 runs have their own sections:
   [three seeds](#the-preset-from-scratch-three-seeds)
   (`9x9-scratch-seeds/`),
   [400 generations](#the-preset-from-scratch-continued-to-generation-400)
   (`9x9-scratch-to400/`),
-  [6×96](#the-preset-from-scratch-with-a-696-network) (`9x9-scratch96/`)
-  and [10×128](#the-preset-from-scratch-with-a-10128-network)
-  (`9x9-scratch128/`).
+  [6×96](#the-preset-from-scratch-with-a-696-network) (`9x9-scratch96/`),
+  [10×128](#the-preset-from-scratch-with-a-10128-network)
+  (`9x9-scratch128/`) and
+  [10×128 with 400 games](#the-10128-network-with-400-games-per-generation)
+  (`9x9-scratch128-g400/`).
 - *The leaf batch at low simulation counts.* The first runs below 200
   simulations used the presets' leaf batch of 8 and were stopped after
   19 to 32 games (`stopped-batch8/`, `jobs-ladder.log`): with 8
@@ -3253,15 +3434,15 @@ same way), "distinct" counts different games out of 100. From
   games per generation, which halves the replay ratio, scores 0.67 with
   its raw policy and 0.91 at 200 simulations: the policy is better than
   any other network's here, and the search gains +279 Elo, as for the
-  6×64 network (+288) and the recipe's (+324).
+  6×64 network (+288) and the recipe's (+324); see
+  [its section](#the-10128-network-with-400-games-per-generation).
 
 *Against the internal scale.* With `9x9-main`'s generation 250 at 0,
 each network's Elo against GNU Go at 200 simulations (batch 8) minus
 that generation's −288, set against the project's own matches (400
 games, 200 simulations each side, from `9x9/rerate-250/elo.csv`, the
 `9x9-scratch/` matches, `9x9-versus/`, `9x9-scratch128/`, the copies
-in `9x9-gnugo/internal/` and, for the 10×128 rerun, its own matches,
-which will be written up with it). The interval of a difference of two
+in `9x9-gnugo/internal/` and `9x9-scratch128-g400/`). The interval of a difference of two
 100-game results is about ±110 to ±180:
 
 | network | via GNU Go | internal | internal source |
@@ -3275,7 +3456,7 @@ which will be written up with it). The interval of a difference of two
 | scratch seed 2, gen 250 | +479 ± 122 | +449 | 372/400 against `9x9-main` gen 250 |
 | scratch 6×96, gen 250 | +518 ± 125 | about +480 | scratch gen 250's +413, plus 238/400 against it (+67; `9x9-scratch96/`) |
 | scratch 10×128, gen 250 | +337 ± 116 | about +344 | scratch gen 250's +413, plus 161/400 against it (−69; `9x9-scratch128/`) |
-| scratch 10×128, 400 games, gen 250 | +690 ± 151 | about +674 | scratch gen 250's +413, plus 327/400 against it (+261) |
+| scratch 10×128, 400 games, gen 250 | +690 ± 151 | about +674 | scratch gen 250's +413, plus 327/400 against it (+261; `9x9-scratch128-g400/`) |
 | recipe gen 250 | +690 ± 151 | about +491 | scratch gen 250's +413, plus the recipe's +78 against it |
 
 - *The ranking agrees and most differences do.* The networks rank the
@@ -3581,7 +3762,8 @@ and both 10×128 runs from scratch played none):
   agree that the larger network ends weaker, the result of the
   [10×128 section](#the-preset-from-scratch-with-a-10128-network),
   where its value head overfits the replay buffer; its rerun with 400
-  games per generation, which halves the replay ratio, is below. Its
+  games per generation, which halves the replay ratio, is below (and
+  [in its own section](#the-10128-network-with-400-games-per-generation)). Its
   two links (Pachi 1k and GNU Go) put Pachi 1k 10 Elo lower and
   every other rating 6 or 7 lower than the fit without it.
 - *The 10×128 rerun with 400 games per generation.* It scores 60/100
@@ -3842,7 +4024,8 @@ matches (`runs/agz-experiment.sh`, not in the repository).
 | 12 | Seed 1 continued from generation 250 to 400 | it was still improving at 250 | done (`9x9-scratch-to400`): 0.640, 0.660 and 0.685 for generations 300, 350 and 400 against 250 (+100, then +15 and +20 per 50 generations), 0.938 for 400 against `9x9-main`'s 250; the 6×64 network levels off; see [400 generations](#the-preset-from-scratch-continued-to-generation-400) |
 | 13 | The preset from scratch with a 6×96 network | does a wider network do better from scratch? | done (`9x9-scratch96`, seed 1): 0.655, 0.505, 0.568 and 0.595 against 6×64 seed 1 at equal generations 50, 100, 150 and 250, within the 6×64 seeds' spread; 0.393 against the recipe's 6×96 network at 250; see [6×96](#the-preset-from-scratch-with-a-696-network) |
 | 14 | The preset from scratch with a 10×128 network | does a larger network keep improving where 6×64 levels off? | done (`9x9-scratch128`, seed 1, generation 0 batch norm calibrated after two uncalibrated tries collapsed): 0.578, 0.448, 0.405 and 0.403 against 6×64 seed 1 at equal generations 50, 100, 150 and 250, 0.263 against its generation 400; the value head overfits the buffer (fresh-game value loss 0.81 against 0.42 on the buffer at generation 250; 6×64: 0.71 against 0.64); see [10×128](#the-preset-from-scratch-with-a-10128-network) |
-| 15 | Row 14 with 400 games per generation (400 steps; replay ratio halved, about 6) | row 14's value head overfits at a replay ratio of about 12 | running (`9x9-scratch128-g400`, started 10 October); to be played against 6×64 seed 1 and row 14's run at equal generations |
+| 15 | Row 14 with 400 games per generation (400 steps; replay ratio halved, about 6) | row 14's value head overfits at a replay ratio of about 12 | done (`9x9-scratch128-g400`, seed 1, to generation 250): 0.925, 0.882, 0.882 and 0.818 against 6×64 seed 1 at equal generations 50, 100, 150 and 250, 0.685 against its generation 400, and 0.930, 0.917, 0.900 and 0.897 against row 14's run; the value head no longer overfits (fresh-game minus buffer value loss 0.07 to 0.11 after the learning-rate drop, as for 6×64, against 0.26 to 0.36); 0.91 against GNU Go and +439 on the joint scale with Pachi, the strongest 9×9 network; 8.8 minutes per generation against 6.3; see [10×128 with 400 games](#the-10128-network-with-400-games-per-generation) |
+| 16 | Row 15 continued from generation 250 to 300 | does the 10×128 network keep improving where 6×64 levelled off? | running (`runs/r8-job.sh`, started 12 October); generation 300 to be played against its generation 250 and 6×64 seed 1's generation 400 |
 
 Evaluation only (the algorithm unchanged): a validation loss on
 held-out fresh games each generation is merged (`validation_loss`, on by
@@ -3895,15 +4078,18 @@ matches at temperature 0 (AGZ's evaluation size).
    criterion, but the curve is "rise, then plateau", not "rising to the
    end". After about generation 31–34, Black wins almost every self-play
    game and the arena loses resolution.
-5. **A larger network from scratch did not beat 6×64 on 9×9.** With the
-   9×9 preset, a 10×128 network first collapsed at once
+5. **A larger network from scratch did not beat 6×64 on 9×9 with the
+   preset's 200 games per generation.** With the 9×9 preset, a 10×128
+   network first collapsed at once
    from an uncalibrated generation 0 (fixed by `bn_calibrate`), then,
    calibrated, ended behind the 6×64 network from generation 100 on
    (0.403 at generation 250), its value head overfitting the replay
    buffer; a 6×96 network was no clearly better than 6×64. See
    [10×128](#the-preset-from-scratch-with-a-10128-network) and
-   [6×96](#the-preset-from-scratch-with-a-696-network); a rerun with
-   400 games per generation is under way.
+   [6×96](#the-preset-from-scratch-with-a-696-network). With 400 games
+   per generation, halving the replay ratio, the same 10×128 network
+   became the strongest 9×9 network (see
+   [10×128 with 400 games](#the-10128-network-with-400-games-per-generation)).
 
 ## Files
 
@@ -4064,11 +4250,18 @@ matches at temperature 0 (AGZ's evaluation size).
   `g{50,100,150,250}-vs-scratch64-g*.txt` and
   `g250-vs-scratch64-g400.txt`, the script `r6-job.sh` and its log
   `r6-studio.log`; the collapsed tries' script `r4-job.sh` and launch
-  lines `r4-mini3.log` and `r4-mini3b.log`; and the rerun with 400 games
-  per generation, still running: `r7-job.sh` (its third line corrected
-  in this copy), `r7-studio.log` and its `config.cfg` as
-  `g400-config.cfg`. Host names are redacted. See
-  [its section](#the-preset-from-scratch-with-a-10128-network).
+  lines `r4-mini3.log` and `r4-mini3b.log`. Host names are redacted.
+  See [its section](#the-preset-from-scratch-with-a-10128-network).
+- `9x9-scratch128-g400/`: the 10×128 network with 400 games per
+  generation, generations 1–250 (copied before the run was continued
+  to 300): the run's files as in `9x9-scratch-seeds/seed2/`, the `grow`
+  outputs `grow-g{50,100,150,250,400}.txt` (seed 1 grown to 10×128
+  again), the matches `g{50,100,150,250}-vs-scratch64-g*.txt`,
+  `g250-vs-scratch64-g400.txt` and `g{50,100,150,250}-vs-scratch128-g*.txt`
+  (against the 200-game run), and the script `r7-job.sh` (its third
+  line corrected in this copy) with its log `r7-studio.log` (host name
+  redacted). See
+  [its section](#the-10128-network-with-400-games-per-generation).
 - `9x9-versus/`: the recipe against the preset from scratch at
   generation 250: the script `versus.sh` (host names redacted) and its
   log `versus.log`, the `grow` outputs `grow-g150.txt` and

@@ -869,6 +869,15 @@ a 6×96 network was no clearly stronger, and a 10×128 one ended weaker,
 its value head overfitting the replay buffer (see
 [6×96](docs/results/README.md#the-preset-from-scratch-with-a-696-network)
 and [10×128](docs/results/README.md#the-preset-from-scratch-with-a-10128-network)).
+A 10×128 network with `games_per_generation = 400` (still 400 steps,
+so half the replay ratio) is much stronger, the strongest 9×9 network
+measured, but it costs more: twice the games per generation, every
+position evaluated by a network with 6.3 times the 6×64 network's
+parameters; on the Mac Studio's GPU 8.8 minutes per generation
+(self-play 346 s) against 6.3 (197 s) for the 10×128 network with 200
+games (see
+[10×128 with 400 games](docs/results/README.md#the-10128-network-with-400-games-per-generation)).
+The preset does not use it.
 From scratch its games are longer early on, about 100 plies over the
 first ten generations, and about 64 on average over the preset's 150
 generations.
@@ -934,20 +943,31 @@ From `docs/results/README.md`, which has the details and the sources.
   generation 250 at generations 300, 350 and 400: +100 Elo for the
   first 50 generations, then about +15 and +20 (see
   [400 generations](docs/results/README.md#the-preset-from-scratch-continued-to-generation-400)).
-- **9×9: larger networks from scratch did not help.** With the same
-  preset, a 6×96 network scored 0.505 to 0.595 against 6×64 seed 1 at
-  equal generations 100 to 250, within the 6×64 seeds' spread. A 10×128
-  network, which first collapsed from an uncalibrated generation 0
-  (hence `bn_calibrate`), led at generation 50 (0.578) and then fell
-  behind, 0.403 at generation 250 and 0.263 against 6×64's generation
-  400. Its validation loss shows the value head overfitting: at
-  generation 250 a value loss of 0.81 on fresh self-play games against
-  0.42 on its replay buffer (6×64: 0.71 against 0.64). A rerun with 400
-  games per generation, halving the replay ratio, beat 6×64 seed 1
-  327/400 at generation 250 and is the strongest network against the
-  outside anchors below; it will be written up on its own (see
+- **9×9: larger networks from scratch did not help at the preset's
+  settings.** With the same preset, a 6×96 network scored 0.505 to
+  0.595 against 6×64 seed 1 at equal generations 100 to 250, within
+  the 6×64 seeds' spread. A 10×128 network, which first collapsed from
+  an uncalibrated generation 0 (hence `bn_calibrate`), led at
+  generation 50 (0.578) and then fell behind, 0.403 at generation 250
+  and 0.263 against 6×64's generation 400. Its validation loss shows
+  the value head overfitting: at generation 250 a value loss of 0.81 on
+  fresh self-play games against 0.42 on its replay buffer (6×64: 0.71
+  against 0.64; see
   [6×96](docs/results/README.md#the-preset-from-scratch-with-a-696-network)
   and [10×128](docs/results/README.md#the-preset-from-scratch-with-a-10128-network)).
+- **9×9: with 400 games per generation the 10×128 network is the
+  strongest.** The same 10×128 run with `games_per_generation = 400`
+  and still 400 steps, half the replay ratio, no longer overfits (fresh
+  minus buffer value loss 0.07 to 0.11 after the learning-rate drop, as
+  for 6×64, against 0.26 to 0.36). It beat 6×64 seed 1 0.925, 0.882,
+  0.882 and 0.818 at equal generations 50, 100, 150 and 250, 0.685
+  (+135) against 6×64's generation 400 with only 1.14 times its
+  self-play positions, and the 10×128 run with 200 games 0.897 to 0.930
+  at equal generations (400 games each). With enough fresh games per
+  parameter the larger network turns its capacity into strength, at
+  8.8 minutes per generation on the Mac Studio against 6.3 with 200
+  games. Its continuation to generation 300 is running (see
+  [10×128 with 400 games](docs/results/README.md#the-10128-network-with-400-games-per-generation)).
 - **9×9 against GNU Go 3.8 (level 10).** 100 games per network at 200
   simulations, komi 7.5, Tromp-Taylor: the earlier preset's generation
   250 scored 0.16 (−288 Elo against GNU Go), the new preset from
