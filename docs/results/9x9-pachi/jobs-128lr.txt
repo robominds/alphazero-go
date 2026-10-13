@@ -1,0 +1,3 @@
+scratch128lr-g350-s200-p1k-nr nets/scratch128lr-g350.azn 1000 401
+scratch128lr-g350-s200-p4k-nr nets/scratch128lr-g350.azn 4000 402
+scratch128lr-g350-s200-p16k-nr nets/scratch128lr-g350.azn 16000 403

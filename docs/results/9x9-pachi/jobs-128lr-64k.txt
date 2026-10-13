@@ -1,0 +1,1 @@
+scratch128lr-g350-s200-p64k-nr nets/scratch128lr-g350.azn 64000 404
