@@ -1,0 +1,105 @@
+--- copy continued to 400 with lr 0.00002 from generation 350 Tue Oct 13 08:00:39 PDT 2026
+gpu: Apple M5 Max, macOS 27.0.1, shaders b7b31a09 (inference: self-play, arena, validation)
+resuming runs/9x9-scratch128-g400-lr2 at generation 350; effective config (saved to runs/9x9-scratch128-g400-lr2/config.cfg):
+seed = 1
+generations = 400
+workers = 0
+train_threads = 0
+backend = metal
+board_size = 9
+komi = 7.5
+max_moves = 0
+history = 8
+blocks = 10
+filters = 128
+value_hidden = 64
+ownership = false
+bn_calibrate = true
+games_per_generation = 400
+simulations = 200
+mcts_batch = 8
+inference_batch = 256
+c_puct = 1.5
+dirichlet_scale = 10
+noise_fraction = 0.25
+temperature_moves = 7
+mcts_random_symmetry = false
+resignation = true
+resign_threshold_initial = -0.9
+resign_disabled_fraction = 0.1
+resign_false_positive = 0.05
+resign_window = 500
+resign_min_games = 20
+buffer_positions = 200000
+train_steps = 400
+batch_size = 256
+lr_schedule = 0:0.02,90:0.002,300:0.0002,350:0.00002
+momentum = 0.9
+weight_decay = 0.0001
+ownership_weight = 1.5
+validation_loss = true
+arena_every = 1
+arena_games = 20
+arena_opponents = 2
+bot_simulations = 100
+reference_networks = 
+calibration_games = 80
+promote_threshold = 0.85
+arena_simulations = 100
+arena_temperature_moves = 4
+arena_random_symmetry = false
+gating = false
+gating_threshold = 0.55
+sgf_per_generation = 2
+
+gen 351 | selfplay 400 games avg 38.6 plies resign -0.88 rate 0.99 fp 0.042 296.5s | train loss p 1.99 v 0.65 lr 2e-05 val p 1.95 v 0.67 seen p 1.95 v 0.67 104.8s | arena elo 2091.5 vs 350:0.55 295:0.40 111:0.75 160:0.70 (distinct 20/20) 76.0s
+gen 352 | selfplay 400 games avg 37.0 plies resign -0.86 rate 0.99 fp 0.044 284.1s | train loss p 1.99 v 0.65 lr 2e-05 val p 2.00 v 0.65 seen p 1.95 v 0.66 103.4s | arena elo 2087.5 vs 351:0.55 295:0.45 111:0.80 160:0.55 (distinct 20/20) 73.3s
+gen 353 | selfplay 400 games avg 35.6 plies resign -0.85 rate 0.99 fp 0.046 276.9s | train loss p 2.00 v 0.66 lr 2e-05 val p 1.99 v 0.64 seen p 1.97 v 0.66 100.5s | arena elo 2158.8 vs 352:0.70 295:0.50 111:0.90 160:0.65 (distinct 20/20) 73.4s
+gen 354 | selfplay 400 games avg 34.6 plies resign -0.85 rate 0.99 fp 0.046 256.7s | train loss p 2.00 v 0.65 lr 2e-05 val p 1.97 v 0.61 seen p 1.97 v 0.66 103.1s | arena elo 2132.2 vs 353:0.75 295:0.50 160:0.55 111:0.75 (distinct 20/20) 75.6s
+gen 355 | selfplay 400 games avg 34.9 plies resign -0.85 rate 0.99 fp 0.046 260.0s | train loss p 2.00 v 0.65 lr 2e-05 val p 1.95 v 0.61 seen p 1.98 v 0.65 102.6s | arena elo 2178.1 vs 354:0.50 295:0.70 160:0.80 111:0.75 (distinct 20/20) 80.7s
+gen 356 | selfplay 400 games avg 33.3 plies resign -0.84 rate 1.00 fp 0.062 254.8s | train loss p 2.00 v 0.65 lr 2e-05 val p 1.98 v 0.62 seen p 1.96 v 0.65 103.4s | arena elo 2134.6 vs 355:0.35 295:0.70 160:0.55 111:0.85 (distinct 20/20) 80.4s
+gen 357 | selfplay 400 games avg 36.4 plies resign -0.87 rate 0.99 fp 0.048 284.3s | train loss p 2.00 v 0.64 lr 2e-05 val p 1.95 v 0.68 seen p 1.94 v 0.66 101.0s | arena elo 2149.4 vs 356:0.45 295:0.70 160:0.70 111:0.75 (distinct 20/20) 76.2s
+gen 358 | selfplay 400 games avg 36.4 plies resign -0.86 rate 0.97 fp 0.050 285.2s | train loss p 2.00 v 0.65 lr 2e-05 val p 1.96 v 0.66 seen p 1.95 v 0.65 105.9s | arena elo 2190.1 vs 357:0.55 295:0.70 160:0.60 111:0.95 (distinct 20/20) 77.5s
+gen 359 | selfplay 400 games avg 32.1 plies resign -0.86 rate 0.98 fp 0.052 250.5s | train loss p 1.99 v 0.65 lr 2e-05 val p 1.96 v 0.71 seen p 1.96 v 0.65 104.8s | arena elo 2129.8 vs 358:0.50 295:0.55 160:0.65 111:0.75 (distinct 20/20) 76.6s
+gen 360 | selfplay 400 games avg 34.2 plies resign -0.87 rate 0.97 fp 0.050 265.6s | train loss p 2.00 v 0.65 lr 2e-05 val p 1.95 v 0.63 seen p 1.95 v 0.67 102.1s | arena elo 2202.5 vs 359:0.65 295:0.60 160:0.85 111:0.80 (distinct 20/20) 78.4s
+gen 361 | selfplay 400 games avg 36.2 plies resign -0.87 rate 0.99 fp 0.062 284.8s | train loss p 2.00 v 0.64 lr 2e-05 val p 1.96 v 0.67 seen p 1.96 v 0.65 102.8s | arena elo 2158.1 vs 360:0.60 295:0.55 160:0.70 111:0.75 (distinct 20/20) 78.0s
+gen 362 | selfplay 400 games avg 39.3 plies resign -0.89 rate 0.99 fp 0.048 301.3s | train loss p 1.99 v 0.65 lr 2e-05 val p 1.95 v 0.70 seen p 1.95 v 0.64 101.9s | arena elo 2123.2 vs 361:0.50 295:0.55 160:0.55 111:0.85 (distinct 20/20) 76.1s
+gen 363 | selfplay 400 games avg 35.4 plies resign -0.89 rate 0.98 fp 0.052 277.8s | train loss p 2.00 v 0.64 lr 2e-05 val p 1.96 v 0.59 seen p 1.95 v 0.65 104.1s | arena elo 2160.6 vs 362:0.60 295:0.60 160:0.65 111:0.85 (distinct 20/20) 76.4s
+gen 364 | selfplay 400 games avg 38.4 plies resign -0.90 rate 0.99 fp 0.038 297.0s | train loss p 2.00 v 0.65 lr 2e-05 val p 1.93 v 0.71 seen p 1.97 v 0.65 103.2s | arena elo 2224.5 vs 363:0.60 295:0.70 160:0.85 111:0.80 (distinct 20/20) 79.9s
+gen 365 | selfplay 400 games avg 41.1 plies resign -0.90 rate 0.98 fp 0.040 321.4s | train loss p 2.00 v 0.64 lr 2e-05 val p 1.92 v 0.70 seen p 1.96 v 0.65 109.4s | arena elo 2120.0 vs 364:0.25 295:0.60 160:0.60 111:0.85 (distinct 20/20) 84.4s
+gen 366 | selfplay 400 games avg 38.3 plies resign -0.90 rate 0.99 fp 0.042 303.0s | train loss p 1.99 v 0.66 lr 2e-05 val p 1.92 v 0.75 seen p 1.96 v 0.66 106.3s | arena elo 2116.7 vs 365:0.45 295:0.60 160:0.70 111:0.70 (distinct 20/20) 79.6s
+gen 367 | selfplay 400 games avg 39.6 plies resign -0.90 rate 0.98 fp 0.042 300.3s | train loss p 1.99 v 0.66 lr 2e-05 val p 1.95 v 0.70 seen p 1.95 v 0.65 100.2s | arena elo 2137.4 vs 366:0.20 295:0.60 111:0.85 160:0.85 (distinct 20/20) 73.1s
+gen 368 | selfplay 400 games avg 34.7 plies resign -0.90 rate 0.98 fp 0.044 247.1s | train loss p 1.98 v 0.66 lr 2e-05 val p 1.95 v 0.66 seen p 1.96 v 0.67 99.0s | arena elo 2126.3 vs 367:0.35 295:0.45 160:0.75 111:0.90 (distinct 20/20) 75.1s
+gen 369 | selfplay 400 games avg 38.3 plies resign -0.90 rate 0.98 fp 0.040 274.6s | train loss p 1.99 v 0.67 lr 2e-05 val p 1.94 v 0.69 seen p 1.94 v 0.67 100.3s | arena elo 2164.6 vs 368:0.55 295:0.55 160:0.80 111:0.80 (distinct 20/20) 77.3s
+gen 370 | selfplay 400 games avg 40.2 plies resign -0.90 rate 0.99 fp 0.038 286.2s | train loss p 1.98 v 0.67 lr 2e-05 val p 1.92 v 0.75 seen p 1.95 v 0.66 99.6s | arena elo 2125.7 vs 369:0.50 295:0.55 160:0.55 111:0.85 (distinct 20/20) 75.9s
+gen 371 | selfplay 400 games avg 42.6 plies resign -0.90 rate 0.99 fp 0.036 307.5s | train loss p 1.98 v 0.67 lr 2e-05 val p 1.95 v 0.67 seen p 1.94 v 0.67 99.7s | arena elo 2109.9 vs 370:0.45 295:0.50 160:0.65 111:0.80 (distinct 20/20) 78.5s
+gen 372 | selfplay 400 games avg 38.9 plies resign -0.90 rate 0.99 fp 0.034 277.6s | train loss p 1.98 v 0.67 lr 2e-05 val p 1.95 v 0.67 seen p 1.94 v 0.68 99.8s | arena elo 2062.6 vs 371:0.40 295:0.30 111:0.80 160:0.65 (distinct 20/20) 75.4s
+gen 373 | selfplay 400 games avg 40.7 plies resign -0.90 rate 0.98 fp 0.032 291.0s | train loss p 1.98 v 0.68 lr 2e-05 val p 1.92 v 0.68 seen p 1.95 v 0.66 99.6s | arena elo 2096.4 vs 372:0.45 295:0.50 111:0.70 160:0.75 (distinct 20/20) 75.2s
+gen 374 | selfplay 400 games avg 41.0 plies resign -0.90 rate 0.97 fp 0.032 294.0s | train loss p 1.97 v 0.68 lr 2e-05 val p 1.91 v 0.72 seen p 1.93 v 0.68 100.9s | arena elo 2133.7 vs 373:0.45 295:0.40 111:0.90 160:0.80 (distinct 20/20) 76.1s
+gen 375 | selfplay 400 games avg 39.3 plies resign -0.90 rate 0.98 fp 0.032 284.7s | train loss p 1.97 v 0.67 lr 2e-05 val p 1.98 v 0.66 seen p 1.93 v 0.68 100.6s | arena elo 2199.2 vs 374:0.35 295:0.75 160:0.85 111:0.85 (distinct 19/20) 75.0s
+gen 376 | selfplay 400 games avg 41.4 plies resign -0.90 rate 0.98 fp 0.038 297.7s | train loss p 1.98 v 0.69 lr 2e-05 val p 1.97 v 0.72 seen p 1.93 v 0.69 100.6s | arena elo 2152.5 vs 375:0.55 295:0.50 160:0.80 111:0.70 (distinct 20/20) 73.0s
+gen 377 | selfplay 400 games avg 43.9 plies resign -0.90 rate 0.97 fp 0.034 310.6s | train loss p 1.98 v 0.67 lr 2e-05 val p 1.94 v 0.65 seen p 1.95 v 0.68 100.7s | arena elo 2146.4 vs 376:0.45 295:0.65 160:0.70 111:0.75 (distinct 20/20) 72.6s
+gen 378 | selfplay 400 games avg 40.3 plies resign -0.88 rate 0.99 fp 0.044 290.9s | train loss p 1.98 v 0.68 lr 2e-05 val p 1.95 v 0.68 seen p 1.93 v 0.69 99.8s | arena elo 2172.8 vs 377:0.50 295:0.70 160:0.80 111:0.70 (distinct 20/20) 76.4s
+gen 379 | selfplay 400 games avg 37.1 plies resign -0.88 rate 0.98 fp 0.044 270.5s | train loss p 1.98 v 0.67 lr 2e-05 val p 1.96 v 0.68 seen p 1.94 v 0.69 100.2s | arena elo 2120.1 vs 378:0.25 295:0.70 160:0.70 111:0.70 (distinct 20/20) 74.2s
+gen 380 | selfplay 400 games avg 40.5 plies resign -0.88 rate 0.99 fp 0.042 290.0s | train loss p 1.98 v 0.67 lr 2e-05 val p 1.99 v 0.68 seen p 1.95 v 0.67 100.5s | arena elo 2161.6 vs 379:0.60 295:0.55 160:0.80 111:0.75 (distinct 20/20) 77.4s
+gen 381 | selfplay 400 games avg 36.7 plies resign -0.87 rate 1.00 fp 0.048 269.1s | train loss p 1.98 v 0.67 lr 2e-05 val p 1.98 v 0.70 seen p 1.94 v 0.68 99.4s | arena elo 2171.4 vs 380:0.60 295:0.55 160:0.85 111:0.70 (distinct 20/20) 78.0s
+gen 382 | selfplay 400 games avg 34.7 plies resign -0.87 rate 0.98 fp 0.054 248.1s | train loss p 1.99 v 0.68 lr 2e-05 val p 1.96 v 0.72 seen p 1.95 v 0.67 99.3s | arena elo 2130.0 vs 381:0.45 295:0.65 160:0.55 111:0.80 (distinct 20/20) 74.6s
+gen 383 | selfplay 400 games avg 37.9 plies resign -0.88 rate 0.98 fp 0.046 269.8s | train loss p 1.99 v 0.68 lr 2e-05 val p 1.97 v 0.71 seen p 1.93 v 0.67 99.3s | arena elo 2122.8 vs 382:0.40 295:0.55 160:0.85 111:0.65 (distinct 20/20) 79.1s
+gen 384 | selfplay 400 games avg 37.1 plies resign -0.88 rate 0.98 fp 0.048 274.7s | train loss p 1.99 v 0.67 lr 2e-05 val p 1.95 v 0.67 seen p 1.96 v 0.67 99.4s | arena elo 2221.7 vs 383:0.50 295:0.65 160:0.90 111:0.90 (distinct 20/20) 77.4s
+gen 385 | selfplay 400 games avg 37.0 plies resign -0.88 rate 0.99 fp 0.044 267.3s | train loss p 1.99 v 0.68 lr 2e-05 val p 1.98 v 0.67 seen p 1.95 v 0.68 99.3s | arena elo 2202.3 vs 384:0.50 295:0.55 160:0.85 111:0.85 (distinct 20/20) 74.8s
+gen 386 | selfplay 400 games avg 38.4 plies resign -0.88 rate 0.99 fp 0.044 273.8s | train loss p 2.00 v 0.67 lr 2e-05 val p 1.96 v 0.67 seen p 1.95 v 0.68 99.2s | arena elo 2240.7 vs 385:0.55 295:0.70 160:0.90 111:0.80 (distinct 20/20) 78.2s
+gen 387 | selfplay 400 games avg 36.2 plies resign -0.88 rate 0.99 fp 0.042 260.5s | train loss p 2.00 v 0.67 lr 2e-05 val p 1.97 v 0.70 seen p 1.95 v 0.67 99.0s | arena elo 2155.9 vs 386:0.45 295:0.55 160:0.70 111:0.80 (distinct 20/20) 77.8s
+gen 388 | selfplay 400 games avg 35.4 plies resign -0.87 rate 0.99 fp 0.048 258.8s | train loss p 2.00 v 0.68 lr 2e-05 val p 1.98 v 0.69 seen p 1.97 v 0.67 99.0s | arena elo 2159.7 vs 387:0.40 295:0.60 160:0.70 111:0.90 (distinct 20/20) 75.5s
+gen 389 | selfplay 400 games avg 37.5 plies resign -0.87 rate 0.99 fp 0.046 272.9s | train loss p 2.00 v 0.67 lr 2e-05 val p 2.00 v 0.69 seen p 1.95 v 0.68 100.2s | arena elo 2145.8 vs 388:0.50 295:0.55 160:0.60 111:0.90 (distinct 20/20) 74.6s
+gen 390 | selfplay 400 games avg 35.0 plies resign -0.86 rate 0.98 fp 0.054 253.8s | train loss p 2.01 v 0.68 lr 2e-05 val p 1.99 v 0.65 seen p 1.94 v 0.68 100.2s | arena elo 2200.0 vs 389:0.60 295:0.80 160:0.65 111:0.80 (distinct 20/20) 78.6s
+gen 391 | selfplay 400 games avg 36.1 plies resign -0.87 rate 0.99 fp 0.058 261.5s | train loss p 2.00 v 0.68 lr 2e-05 val p 1.95 v 0.70 seen p 1.96 v 0.67 99.1s | arena elo 2140.3 vs 390:0.60 295:0.35 160:0.70 111:0.85 (distinct 20/20) 73.9s
+gen 392 | selfplay 400 games avg 37.1 plies resign -0.89 rate 0.99 fp 0.046 270.4s | train loss p 2.01 v 0.67 lr 2e-05 val p 1.99 v 0.72 seen p 1.97 v 0.67 99.1s | arena elo 2109.1 vs 391:0.35 295:0.55 160:0.80 111:0.65 (distinct 20/20) 79.2s
+gen 393 | selfplay 400 games avg 35.4 plies resign -0.88 rate 0.99 fp 0.050 255.7s | train loss p 2.01 v 0.69 lr 2e-05 val p 1.95 v 0.72 seen p 1.97 v 0.67 99.7s | arena elo 2073.8 vs 392:0.35 295:0.55 111:0.65 160:0.65 (distinct 20/20) 78.0s
+gen 394 | selfplay 400 games avg 39.6 plies resign -0.88 rate 0.99 fp 0.044 283.3s | train loss p 2.01 v 0.68 lr 2e-05 val p 1.98 v 0.62 seen p 1.98 v 0.69 100.8s | arena elo 2225.3 vs 393:0.65 295:0.80 111:0.85 160:0.75 (distinct 20/20) 73.7s
+gen 395 | selfplay 400 games avg 39.6 plies resign -0.88 rate 0.98 fp 0.040 280.5s | train loss p 2.01 v 0.67 lr 2e-05 val p 1.99 v 0.62 seen p 1.96 v 0.69 100.5s | arena elo 2170.7 vs 394:0.50 295:0.50 160:0.90 111:0.70 (distinct 20/20) 75.5s
+gen 396 | selfplay 400 games avg 36.9 plies resign -0.86 rate 0.99 fp 0.042 263.5s | train loss p 2.01 v 0.67 lr 2e-05 val p 1.97 v 0.67 seen p 1.96 v 0.68 100.1s | arena elo 2176.4 vs 395:0.55 295:0.60 160:0.75 111:0.80 (distinct 20/20) 76.2s
+gen 397 | selfplay 400 games avg 36.0 plies resign -0.84 rate 0.99 fp 0.050 262.1s | train loss p 2.02 v 0.67 lr 2e-05 val p 2.00 v 0.65 seen p 1.99 v 0.66 99.3s | arena elo 2175.7 vs 396:0.60 295:0.50 160:0.75 111:0.85 (distinct 20/20) 75.5s
+gen 398 | selfplay 400 games avg 32.9 plies resign -0.84 rate 0.99 fp 0.052 247.9s | train loss p 2.01 v 0.67 lr 2e-05 val p 1.97 v 0.68 seen p 1.97 v 0.68 100.0s | arena elo 2175.5 vs 397:0.40 295:0.50 160:0.95 111:0.80 (distinct 20/20) 76.6s
+gen 399 | selfplay 400 games avg 35.8 plies resign -0.85 rate 0.99 fp 0.058 259.8s | train loss p 2.02 v 0.67 lr 2e-05 val p 2.00 v 0.66 seen p 1.96 v 0.67 100.2s | arena elo 2177.5 vs 398:0.55 295:0.70 160:0.90 111:0.55 (distinct 20/20) 75.3s
+gen 400 | selfplay 400 games avg 36.1 plies resign -0.87 rate 0.99 fp 0.052 261.5s | train loss p 2.02 v 0.67 lr 2e-05 val p 1.97 v 0.72 seen p 1.97 v 0.67 99.6s | arena elo 2211.7 vs 399:0.75 295:0.60 160:0.80 111:0.75 (distinct 20/20) 76.0s
+done: generation 400 in runs/9x9-scratch128-g400-lr2
