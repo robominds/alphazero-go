@@ -1,0 +1,5 @@
+scratch128-g400-to300 start Mon Oct 12 13:45:13 PDT 2026 on [the Mac Studio]
+train exit 0 Mon Oct 12 20:17:55 PDT 2026
+g300-vs-g250: A runs/9x9-scratch128-g400/checkpoints/gen_0300.azn vs B runs/9x9-scratch128-g400/checkpoints/gen_0250.azn: A scored 189/400 = 0.472 (95% CI 0.424-0.521), distinct games 364
+g300-vs-scratch64-g400: A runs/9x9-scratch128-g400/checkpoints/gen_0300.azn vs B runs/r7-eval/scratch128-g400/scratch64-g400-as-10x128.azn: A scored 287/400 = 0.718 (95% CI 0.671-0.759), distinct games 358
+scratch128-g400-to300 all done Mon Oct 12 20:38:11 PDT 2026

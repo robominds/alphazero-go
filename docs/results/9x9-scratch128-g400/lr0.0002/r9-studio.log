@@ -1,0 +1,7 @@
+scratch128-g400-lr start Mon Oct 12 21:00:32 PDT 2026 on [the Mac Studio]
+train exit 0 Tue Oct 13 03:09:20 PDT 2026
+g325-vs-g300: A runs/9x9-scratch128-g400-lr/checkpoints/gen_0325.azn vs B runs/9x9-scratch128-g400/checkpoints/gen_0300.azn: A scored 244/400 = 0.610 (95% CI 0.561-0.657), distinct games 365
+g350-vs-g300: A runs/9x9-scratch128-g400-lr/checkpoints/gen_0350.azn vs B runs/9x9-scratch128-g400/checkpoints/gen_0300.azn: A scored 264/400 = 0.660 (95% CI 0.612-0.705), distinct games 353
+g350-vs-g250: A runs/9x9-scratch128-g400-lr/checkpoints/gen_0350.azn vs B runs/9x9-scratch128-g400/checkpoints/gen_0250.azn: A scored 256/400 = 0.640 (95% CI 0.592-0.686), distinct games 368
+g350-vs-scratch64-g400: A runs/9x9-scratch128-g400-lr/checkpoints/gen_0350.azn vs B runs/r7-eval/scratch128-g400/scratch64-g400-as-10x128.azn: A scored 348/400 = 0.870 (95% CI 0.833-0.899), distinct games 357
+scratch128-g400-lr all done Tue Oct 13 03:49:21 PDT 2026
