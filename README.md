@@ -878,6 +878,11 @@ parameters; on the Mac Studio's GPU 8.8 minutes per generation
 games (see
 [10×128 with 400 games](docs/results/README.md#the-10128-network-with-400-games-per-generation)).
 The preset does not use it.
+The preset's `lr_schedule` (`0:0.02,90:0.002`) holds 0.002 from
+generation 90 on; for that 10×128 run a further step, to 0.0002 at
+generation 300, helped after it had levelled off (see
+[the learning-rate step](docs/results/README.md#continued-to-generation-300-and-a-learning-rate-step)),
+but `configs/9x9.cfg` is unchanged: its runs are 150 generations long.
 From scratch its games are longer early on, about 100 plies over the
 first ten generations, and about 64 on average over the preset's 150
 generations.
@@ -966,8 +971,22 @@ From `docs/results/README.md`, which has the details and the sources.
   at equal generations (400 games each). With enough fresh games per
   parameter the larger network turns its capacity into strength, at
   8.8 minutes per generation on the Mac Studio against 6.3 with 200
-  games. Its continuation to generation 300 is running (see
+  games (see
   [10×128 with 400 games](docs/results/README.md#the-10128-network-with-400-games-per-generation)).
+- **9×9: a learning-rate step lifts the 10×128 network past a
+  plateau.** Continued at the learning rate of 0.002, the 400-game run
+  levelled off: its generation 300 scored 0.472 against its generation
+  250. A copy of it with the learning rate stepped down to 0.0002 at
+  generation 300, as AlphaGo Zero lowered its learning rate in steps,
+  gained again: generation 350 scored 0.660 (+115 Elo) against
+  generation 300, 0.640 against 250 and 0.870 (+330) against 6×64's
+  generation 400 (400 games each), with the lowest fresh-game policy
+  loss of any 9×9 run (1.908 at generation 350). It is the strongest
+  9×9 network measured; its ratings against GNU Go and Pachi are being
+  measured, and a second step, to 0.00002 from generation 350 to 400,
+  is running. The arena's running Elo, 20 games per opponent, does not
+  show the gain (see
+  [the learning-rate step](docs/results/README.md#continued-to-generation-300-and-a-learning-rate-step)).
 - **9×9 against GNU Go 3.8 (level 10).** 100 games per network at 200
   simulations, komi 7.5, Tromp-Taylor: the earlier preset's generation
   250 scored 0.16 (−288 Elo against GNU Go), the new preset from
