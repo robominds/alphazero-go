@@ -996,6 +996,17 @@ From `docs/results/README.md`, which has the details and the sources.
   (policy about 1.96, value gap about 0.01). The first step did the
   work (see
   [the second step](docs/results/README.md#a-second-step-to-000002-at-generation-350)).
+- **9×9: the 10×128 network has levelled off.** Continued at 0.00002
+  from generation 400 to 450, the run gained nothing more: generation
+  450 scored 0.475 against generation 400 and 0.542 against the
+  stepped run's generation 350 (400 games each, both intervals
+  including 0.5), and its fresh-game losses stayed flat (policy about
+  1.98, value gap about 0). Whether or not its learning rate is stepped
+  again, the 10×128 network with 400 games per generation sits at
+  about +500 on the joint scale with GNU Go at 0; more training on this
+  data does not help. A copy of the stepped run continued from
+  generation 350 with 800 games per generation is running (see
+  [to 450](docs/results/README.md#continued-to-generation-450)).
 - **9×9 against GNU Go 3.8 (level 10).** 100 games per network at 200
   simulations, komi 7.5, Tromp-Taylor: the earlier preset's generation
   250 scored 0.16 (−288 Elo against GNU Go), the new preset from

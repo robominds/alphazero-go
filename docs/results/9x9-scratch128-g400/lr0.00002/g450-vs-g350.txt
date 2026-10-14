@@ -1,0 +1,2 @@
+A runs/9x9-scratch128-g400-lr2/checkpoints/gen_0450.azn vs B runs/9x9-scratch128-g400-lr/checkpoints/gen_0350.azn: A scored 217/400 = 0.542 (95% CI 0.494-0.591), distinct games 349
+A wins 217, B wins 183, draws 0
