@@ -1,0 +1,3 @@
+Seq	Host	Starttime	JobRuntime	Send	Receive	Exitval	Signal	Command
+2	:	1791930479.245	   320.968	0	0	0	0	./gnugo-match.sh scratch128lr2-g400-s1 nets/scratch128lr2-g400.azn 1 262 1
+1	:	1791930479.243	  1039.753	0	0	0	0	./gnugo-match.sh scratch128lr2-g400-s200 nets/scratch128lr2-g400.azn 200 261 

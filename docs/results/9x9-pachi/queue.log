@@ -36,3 +36,7 @@ scratch128lr-g350-s200-p1k-nr start 1791903759 end 1791904873 exit 0
 scratch128lr-g350-s200-p4k-nr start 1791903769 end 1791905135 exit 0
 scratch128lr-g350-s200-p16k-nr start 1791903779 end 1791905936 exit 0
 scratch128lr-g350-s200-p64k-nr start 1791905950 end 1791911057 exit 0
+scratch128lr2-g400-s200-p1k-nr start 1791930479 end 1791931689 exit 0
+scratch128lr2-g400-s200-p4k-nr start 1791930489 end 1791931982 exit 0
+scratch128lr2-g400-s200-p16k-nr start 1791930499 end 1791932797 exit 0
+scratch128lr2-g400-s200-p64k-nr start 1791930509 end 1791935798 exit 0
