@@ -69,35 +69,44 @@ generation 250 unless noted:
   the lowest fresh-game policy loss of any 9×9 run. That network,
   generation 350 of the stepped run, is now the strongest 9×9 network
   measured, against GNU Go and Pachi too (0.94 against GNU Go, level
-  with Pachi at 4k and 16k playouts, +84 above its generation 250 on
-  the joint scale below against +100 internally), and a second step,
-  to 0.00002 from generation 350 to 400, is running.
+  with Pachi at 4k and 16k playouts, +82 above its generation 250 on
+  the joint scale below against +100 internally);
+- a second step, to 0.00002 from generation 350 to 400, does not
+  clearly help: generation 400 beats generation 350 257/400 (0.642,
+  +102) but scores only 0.797 against 6×64's generation 400 to
+  generation 350's 0.870, internal results that disagree by about five
+  standard errors; GNU Go and Pachi put the two level (+497 and +515 on
+  the joint scale below), and the fresh-game losses are flat.
 
 See [three seeds](#the-preset-from-scratch-three-seeds),
 [400 generations](#the-preset-from-scratch-continued-to-generation-400),
 [6×96](#the-preset-from-scratch-with-a-696-network),
 [10×128](#the-preset-from-scratch-with-a-10128-network) and
 [10×128 with 400 games](#the-10128-network-with-400-games-per-generation)
-(and [its learning-rate step](#continued-to-generation-300-and-a-learning-rate-step)).
+(and [its learning-rate step](#continued-to-generation-300-and-a-learning-rate-step)
+and [second step](#a-second-step-to-000002-at-generation-350)).
 
 Against an outside program, GNU Go 3.8 at level 10 (100 games each, 200
 simulations), the earlier preset's generation 250 scored 0.16, the new
 preset's 0.77 (seed 1) and 0.75 (seed 2), its 10×128 network's 0.57,
-the recipe's and the 10×128 rerun's 0.91, and that rerun's generation
-350 after its learning-rate step 0.94, consistent with the internal
-matches; those three networks beat it 0.61, 0.67 and 0.69 even with
-their raw policies. See
+the recipe's and the 10×128 rerun's 0.91, that rerun's generation
+350 after its learning-rate step 0.94 and its generation 400 after a
+second step 0.97, consistent with the internal matches; those four
+networks beat it 0.61, 0.67, 0.69 and 0.71 even with their raw
+policies. See
 [Against GNU Go 3.8](#against-gnu-go-38-an-outside-anchor). Pachi
 12.90, a Monte Carlo tree search program without its neural network,
 is stronger still: at about 2,000 playouts a move it beats every
 network (they score 0.23 to 0.44) but the 10×128 rerun (0.60 at
-generation 250, 0.66 at 350 after the step), and on one scale with
-GNU Go at 0 the five networks first rated lie at +205 to +297 Elo, the
-10×128 network at +78, its rerun at +432 (generation 250) and +516
-(generation 350, stepped) and Pachi at +332 (1k), +480 (4k), +591
-(16k) and +663 (64k): the stepped generation 350 is the strongest
+generation 250, 0.66 at 350 after the step, 0.61 at 400 after the
+second), and on one scale with GNU Go at 0 the five networks first
+rated lie at +208 to +299 Elo, the 10×128 network at +82, its rerun at
++433 (generation 250), +515 (generation 350, stepped) and +497
+(generation 400, stepped twice) and Pachi at +342 (1k), +479 (4k), +586
+(16k) and +658 (64k): the stepped generation 350 is the strongest
 network so far, between Pachi 4k and 16k (it scores 0.52 against
-each), about +220 above the recipe's. The recipe's lead over the
+each), about +215 above the recipe's, and generation 400 is level with
+it. The recipe's lead over the
 other networks is smaller than against GNU Go. See
 [Against Pachi 12.90](#against-pachi-1290-a-stronger-outside-anchor).
 
@@ -3082,9 +3091,9 @@ Between 363 and 391 of each 400 games were distinct.
   generation 250 at 200 simulations). It scores 57/100 against GNU Go
   3.8 level 10 (+49 Elo; 37/100 with its raw policy, like seed 1's
   6×64 network's 39/100) and 23/100 against Pachi 1k (−210). The joint
-  fit puts it at +78 with GNU Go at 0, against +205 for the
-  generation-250 6×64 networks and +297 for the recipe: the outside
-  programs agree that it ends weaker, by about 130 Elo against −69
+  fit puts it at +82 with GNU Go at 0, against +208 for the
+  generation-250 6×64 networks and +299 for the recipe: the outside
+  programs agree that it ends weaker, by about 125 Elo against −69
   internally (161/400), a difference inside the noise of 100-game
   matches.
   See [Against GNU Go 3.8](#against-gnu-go-38-an-outside-anchor) and
@@ -3117,7 +3126,9 @@ stays within about 0.1 of its buffer loss, as the 6×64 network's does;
 and against GNU Go and Pachi it is the strongest 9×9 network so far.
 Continued past 250, it levels off at the learning rate of 0.002 and
 gains again after a step down to 0.0002 at generation 300 (see
-[the last part](#continued-to-generation-300-and-a-learning-rate-step)).
+[the last part](#continued-to-generation-300-and-a-learning-rate-step));
+a second step, to 0.00002 at generation 350, does not clearly help
+([the second step](#a-second-step-to-000002-at-generation-350)).
 
 - *Setup* (`9x9-scratch128-g400/`). `r7-job.sh`: `train --config
   configs/9x9.cfg --run runs/9x9-scratch128-g400 --set blocks=10 --set
@@ -3232,10 +3243,10 @@ Between 365 and 396 of each 400 games were distinct.
 - *Against the outside anchors* (100 games each, generation 250 at 200
   simulations). 91/100 against GNU Go, the recipe's score; 60/100
   against Pachi 1k, 46/100 against 4k and 31/100 against 16k, the only
-  first network to beat Pachi 1k. The joint fit puts it at +432 (+381
-  to +482) with GNU Go at 0, between Pachi 1k (+332) and 4k (+480),
-  +135 above the recipe's network (+297) and +354 above the 200-game
-  run (+78); see [Against Pachi 12.90](#against-pachi-1290-a-stronger-outside-anchor).
+  first network to beat Pachi 1k. The joint fit puts it at +433 (+383
+  to +483) with GNU Go at 0, between Pachi 1k (+342) and 4k (+479),
+  +134 above the recipe's network (+299) and +351 above the 200-game
+  run (+82); see [Against Pachi 12.90](#against-pachi-1290-a-stronger-outside-anchor).
 - *Data and compute.* By generation 250 it had played 100,000 games
   and 4.74 million self-play positions, against 50,000 games and 2.66
   million positions for the 200-game run and 2.85 million for seed 1 of
@@ -3271,8 +3282,8 @@ Between 365 and 396 of each 400 games were distinct.
 **becomes the strongest 9×9 network**: +261 Elo over seed 1 of the
 6×64 network at generation 250 and +135 over that network's generation
 400, +377 to +449 over the 10×128 run with 200 games at equal
-generations, and +432 on the joint scale with GNU Go and Pachi, between
-Pachi 1k and 4k and +135 above the recipe's network. Its value head no
+generations, and +433 on the joint scale with GNU Go and Pachi, between
+Pachi 1k and 4k and +134 above the recipe's network. Its value head no
 longer overfits the buffer (a gap of 0.07 to 0.11 after the
 learning-rate drop, as for 6×64, against 0.26 to 0.36), its fresh-game
 policy loss is the lowest of all the runs from scratch, and its search
@@ -3304,7 +3315,9 @@ network plateaus (generation 300 against 250: 0.472); after the step
 it gains again, +115 Elo by generation 350 against generation 300 and
 0.870 (+330) against the 6×64 network's generation 400, and its
 fresh-game policy loss falls to the lowest of any 9×9 run. The arena's
-running Elo shows neither the plateau nor the gain.
+running Elo shows neither the plateau nor the gain. A second step, to
+0.00002 at generation 350, does not clearly help (see
+[below](#a-second-step-to-000002-at-generation-350)).
 
 - *Setup: the continuation* (`9x9-scratch128-g400/`). `r8-job.sh`:
   `train --run runs/9x9-scratch128-g400 --resume --generations 300`
@@ -3409,15 +3422,11 @@ Between 353 and 368 of each 400 games were distinct.
   games and 6.27 million self-play positions in 140,000 SGD steps (seed
   1 of 6×64 at generation 400: 80,000 games, 4.17 million positions,
   160,000 steps).
-- *A second step, running.* `runs/r10-job.sh` (not yet in the
-  repository) continues a copy of the stepped run at generation 350 to
-  400 with the learning rate stepped again, to 0.00002
-  (`lr_schedule=0:0.02,90:0.002,300:0.0002,350:0.00002`), on the Mac
-  Studio from 13 October; its generations 375 and 400 are to play the
-  stepped run's generation 350, and 400 the 6×64 network's generation
-  400 (400 games each). Against GNU Go and Pachi the stepped run's
-  generation 350 is +516 on the joint scale, +84 above generation 250
-  ([Against Pachi 12.90](#against-pachi-1290-a-stronger-outside-anchor)).
+- *Against the outside anchors.* Against GNU Go and Pachi the stepped
+  run's generation 350 is +515 on the joint scale, +82 above generation
+  250 ([Against Pachi 12.90](#against-pachi-1290-a-stronger-outside-anchor)).
+  A second step, to 0.00002 at generation 350, is
+  [below](#a-second-step-to-000002-at-generation-350).
 
 **Verdict.** At the learning rate of 0.002 that the preset holds after
 generation 90, the 10×128 network with 400 games per generation
@@ -3429,8 +3438,9 @@ against 250 and +330 against the 6×64 network's generation 400, with
 the lowest fresh-game policy loss of any 9×9 run and the value head's
 fresh-game loss closer to its buffer loss. Generation 350 of the
 stepped run is the strongest 9×9 network measured, internally and
-against GNU Go and Pachi (+516 with GNU Go at 0, between Pachi 4k and
-16k). What held the network back at
+against GNU Go and Pachi (+515 with GNU Go at 0, between Pachi 4k and
+16k; the second step's generation 400, below, is level with it).
+What held the network back at
 generation 300 was the learning rate, not yet its size. Caveats: one
 seed, one step (a factor of 10, at generation 300); the stepped run
 branched from the continuation at 300, so the run at 0.002 was not
@@ -3439,12 +3449,138 @@ one); 400-game matches; the arena's running Elo does not show the
 gain; and whether the 6×64 network, which levelled off at 0.002, would
 gain from the same step was not tested.
 
+##### A second step, to 0.00002 at generation 350
+
+Question: the step to 0.0002 at generation 300 gained +115 Elo in 50
+generations. AlphaGo Zero lowered its learning rate more than once.
+Does a second step by the same factor of 10, to 0.00002 at generation
+350, gain again? The result: no gain that holds up. Generation 400
+beats the stepped run's generation 350 257/400 (0.642, +102), but
+scores less than generation 350 did against the 6×64 network's
+generation 400 (0.797 against 0.870), which puts it 92 Elo below by
+that chain; the two internal views differ by far more than their noise.
+Against GNU Go and Pachi it rates +497, level with generation 350
+(+515; −18 ± 50), and its fresh-game losses are flat.
+
+- *Setup* (`9x9-scratch128-g400/lr0.00002/`).
+  `runs/9x9-scratch128-g400-lr2` is an APFS clone of the stepped run's
+  directory at generation 350 (checkpoints, replay buffer and optimizer
+  state). `r10-job.sh`: `train --run runs/9x9-scratch128-g400-lr2
+  --resume --set "lr_schedule=0:0.02,90:0.002,300:0.0002,350:0.00002"
+  --generations 400`: its `config.cfg` differs from the stepped run's
+  only in `generations` and `lr_schedule`, and generations 351–400
+  trained at 0.00002 (`log.csv`). With `runs/bin-r6` on the Mac Studio
+  from 08:00 to 14:19 on 13 October (6 h 18 min; `r10-studio.log`),
+  then three 400-game matches, as above. Its `log.csv` covers
+  generations 1–400 (the first 350 rows are the stepped run's),
+  `elo.csv`, `references.csv` and `results.csv` are those of generation
+  400 (the refit at 400), and `progress.txt` is the continuation's
+  output. "Twice-stepped" below is this run.
+
+| match | score | 95% interval | Elo (interval) |
+|---|---|---|---|
+| twice-stepped gen 375 vs stepped gen 350 (`lr0.00002/g375-vs-g350.txt`) | 215/400 = 0.537 | 0.489-0.586 | +26 (−8 to +60) |
+| twice-stepped gen 400 vs stepped gen 350 (`lr0.00002/g400-vs-g350.txt`) | 257/400 = 0.642 | 0.594-0.688 | +102 (+66 to +137) |
+| twice-stepped gen 400 vs 6×64 seed 1 gen 400 (`lr0.00002/g400-vs-scratch64-g400.txt`) | 319/400 = 0.797 | 0.755-0.834 | +238 (+196 to +280) |
+| stepped gen 350 vs 6×64 seed 1 gen 400 (above) | 348/400 = 0.870 | 0.833-0.899 | +330 (+279 to +380) |
+
+Between 354 and 366 of each 400 games were distinct.
+
+- *The internal matches do not add up.* Directly, generation 400 is
+  +102 above generation 350 (+26 at generation 375, its interval
+  including 0.5). Through the 6×64 network's generation 400, which both
+  played, it is 92 below (+238 against +330). The two differ by 194
+  Elo; each 400-game Elo here has a standard error of 18 to 26, so the
+  gap is about 5 standard errors (z ≈ 5.1), against the 47 by which the
+  chain through seed 1 missed above (+330 against +377). One rating per
+  network does not fit these three matches. One reading, not tested
+  here: 50 more generations on its own line's games made generation 400
+  better at the positions that line reaches, which its ancestor reaches
+  too and a network of another line need not.
+- *The outside anchors* (100 games each, 200 simulations, from
+  [Against GNU Go 3.8](#against-gnu-go-38-an-outside-anchor) and
+  [Against Pachi 12.90](#against-pachi-1290-a-stronger-outside-anchor)).
+  Generation 400 scores 97/100 against GNU Go (+604; 71/100 with its
+  raw policy) against generation 350's 94/100 (+478; 69/100), and
+  61, 55, 42 and 29 of 100 against Pachi 1k, 4k, 16k and 64k against
+  66, 52, 52 and 30: 187 of 400 against Pachi to generation 350's 200.
+  Level by level its Elo is −37, +21, −70 and −9 against generation
+  350's, and +126 through GNU Go, where both are near that anchor's
+  ceiling. The joint fit with GNU Go at 0 puts it at +497 (+448 to
+  +546) and generation 350 at +515 (+466 to +565): a difference of
+  −18 ± 50 (95%, from the fit's covariance; −25 ± 51 leaving out both
+  networks' games against GNU Go). That interval, −68 to +32, excludes
+  both internal views, +102 and −92; it lies nearer the chain through
+  the 6×64 network but says the two networks are level. Its
+  residuals are −2.2 against Pachi 1k (61/100 where the fit expects
+  71), +0.5, +0.9 and +0.1 against 4k, 16k and 64k, and +1.1 against
+  GNU Go; adding it moves the other ratings by 10 Elo at most (Pachi
+  1k) and the fit's chi-square from 46.8 on 23 degrees of freedom to
+  54.1 on 27.
+- *The losses.* Validation value loss (fresh / buffer / gap) and
+  fresh-game policy loss, means over each range (`lr0.00002/log.csv`;
+  the first row repeats the 326–350 row of the table above):
+
+  | generations | learning rate | value loss, fresh / buffer / gap | policy loss, fresh |
+  |---|---|---|---|
+  | 326–350 | 0.0002 | 0.679 / 0.647 / 0.032 | 1.960 |
+  | 351–375 | 0.00002 | 0.672 / 0.660 / 0.012 | 1.950 |
+  | 376–400 | 0.00002 | 0.681 / 0.677 / 0.004 | 1.973 |
+  | generation 350 | 0.0002 | 0.749 / 0.654 / 0.095 | 1.908 |
+  | generation 375 | 0.00002 | 0.660 / 0.685 / −0.024 | 1.976 |
+  | generation 400 | 0.00002 | 0.715 / 0.672 / 0.043 | 1.970 |
+
+  At 0.00002 the fresh-game losses are flat: policy 1.950 and 1.973
+  against 1.960 over 326–350 (1.913 to 2.001 per generation over
+  351–400; generation
+  350's 1.908 was the low point of a noisy series, not a level the run
+  held), value 0.672 and 0.681 against 0.679. The buffer value loss
+  keeps rising, as after the first step (0.647 to 0.660 and 0.677; the
+  training value loss likewise, 0.649 to 0.656 and 0.675), so the gap
+  closes further, to 0.012 and 0.004 (from −0.07 to 0.09 per
+  generation), and the training policy loss is flat (2.001, then 1.992
+  and 1.998). Nothing in the losses shows the network improving.
+- *The arena's Elo.* The run's `elo.csv` (the refit at 400) averages
+  2125.8 over generations 326–350, 2145.8 over 351–375 and 2165.6 over
+  376–400, and puts generation 350 at 2066.5, 375 at 2181.4 and 400 at
+  2211.7 (peak 2250.1 at 364); the win rate against the previous
+  generation averages 0.497 over 351–400, against 0.526 over 301–350.
+  As before, its drift of about +20 per 25 generations is inside its
+  noise.
+- *Training curves and cost.* Over generations 351–400: 37.4 plies per
+  game, replay ratio 6.87, 98.6% of the games that could resign
+  resigned at a false-positive rate of 0.045 (v_resign −0.88 on
+  average), 7.57 minutes per generation (self-play 276.4 s, training
+  101.1 s, arena 76.5 s). By generation 400 the run had played 160,000
+  games and 7.01 million self-play positions in 160,000 SGD steps.
+
+**Verdict.** **A second step, to 0.00002 at generation 350, did not
+clearly help.** Its generation 400 beats generation 350 directly
+(257/400, +102), but loses ground against the 6×64 network's
+generation 400 (0.797 against 0.870, −92 by that chain), a
+disagreement of about five standard errors; the outside anchors put
+the two level (+497 against +515 on the joint scale, −18 ± 50), and
+the fresh-game losses are flat (policy about 1.96, the value gap
+closing to about 0.01). One reading of the non-transitive internal
+results, not tested here, is that the further training sharpened play
+against the network's own line rather than in general; the outside
+anchors, which are not of that line, see no gain. At 0.00002 the
+network barely moves on the losses, consistent with a learning rate
+too small to help at this point; the first step, to 0.0002, did the
+work. Generation 350 of the stepped run remains the strongest 9×9
+network on the joint scale, with generation 400 level with it inside
+the noise. Caveats: one seed and one run; 400-game internal matches,
+whose disagreement here is larger than their noise; 100-game outside
+matches (the fit's interval for the difference is about ±50); GNU Go
+is at its ceiling for both networks; and the joint fit itself fits
+poorly at the Pachi-against-Pachi link.
+
 ### Against GNU Go 3.8 (an outside anchor)
 
 Question: every rating above is measured against the project's own
 networks. How strong are they against an outside program? GNU Go 3.8 at
 level 10, a classical (non-neural) engine and a common yardstick, played
-100 games against each of thirteen 9×9 networks at 200 simulations, and
+100 games against each of fourteen 9×9 networks at 200 simulations, and
 against the stronger ones at fewer simulations to find where they are
 level with it. The result: the preset from scratch beats it from about
 generation 150 on, the recipe's network beats it 0.91 at 200 simulations
@@ -3453,9 +3589,10 @@ networks lose to it; the order agrees with the internal scale. The
 preset's 10×128 network, added later, is only about level with it
 (0.57), as its value head's overfitting predicts; its rerun with 400
 games per generation, added after that, beats it 0.91 like the recipe's
-network, and 0.67 with its raw policy; and that run's generation 350
-after a learning-rate step, added last, beats it 0.94, the highest
-score here, and 0.69 with its raw policy.
+network, and 0.67 with its raw policy; that run's generation 350
+after a learning-rate step beats it 0.94 and 0.69 with its raw policy;
+and its generation 400 after a second step, added last, beats it 0.97,
+the highest score here, and 0.71 with its raw policy.
 
 - *Setup* (`9x9-gnugo/`). `gnugo-match.sh` plays one match with
   `tools/gtp_match.py`: our `gtp` (`build-blas` from main at e6c0af9,
@@ -3474,7 +3611,9 @@ score here, and 0.69 with its raw policy.
   and `jobs-128g400.txt` (its rerun with 400 games per generation) on
   12 October from 10:57 to 11:12, and `jobs-128lr.txt` (that run's
   generation 350 after its learning-rate step) on 13 October from 08:02
-  to 08:19 (`*.joblog`; host and user names removed). The first list
+  to 08:19, and `jobs-128lr2.txt` (its generation 400 after a second
+  step) the same day from 15:28 to 15:45 (`*.joblog`; host and user
+  names and paths removed). The first list
   ran an
   earlier `gnugo-match.sh` without the leaf-batch argument, which
   leaves `gtp` at its default of 8, as the current script does.
@@ -3503,7 +3642,10 @@ score here, and 0.69 with its raw policy.
   `9x9-scratch128-g400`, that run again with `games_per_generation =
   400`, at 250, and its copy with the learning rate stepped down to
   0.0002 at generation 300 (`9x9-scratch128-g400/lr0.0002/`, "stepped"
-  below) at 350; and the recipe (`9x9-recipe`, 6×96) at 250. All have
+  below) at 350, and the stepped run's copy with the learning rate
+  stepped again, to 0.00002 at generation 350
+  (`9x9-scratch128-g400/lr0.00002/`, "twice-stepped" below), at 400; and
+  the recipe (`9x9-recipe`, 6×96) at 250. All have
   6 blocks and 64 filters unless marked. The seed-2, continued, 6×96
   and both 10×128 runs have their own sections:
   [three seeds](#the-preset-from-scratch-three-seeds)
@@ -3562,6 +3704,8 @@ same way), "distinct" counts different games out of 100. From
 | scratch 10×128, 400 games | 250 | 200 | 8 | 91/100 = 0.910 | 0.838-0.952 | +402 (+285 to +519) | 99 |
 | scratch 10×128, 400 games, stepped | 350 | 1 | 1 | 69/100 = 0.690 | 0.594-0.772 | +139 (+66 to +212) | 99 |
 | scratch 10×128, 400 games, stepped | 350 | 200 | 8 | 94/100 = 0.940 | 0.875-0.972 | +478 (+338 to +618) | 97 |
+| scratch 10×128, 400 games, twice-stepped | 400 | 1 | 1 | 71/100 = 0.710 | 0.615-0.790 | +156 (+81 to +230) | 97 |
+| scratch 10×128, 400 games, twice-stepped | 400 | 200 | 8 | 97/100 = 0.970 | 0.915-0.990 | +604 (+414 to +794) | 96 |
 | recipe 6×96 | 250 | 1 | 1 | 61/100 = 0.610 | 0.512-0.700 | +78 (+8 to +147) | 100 |
 | recipe 6×96 | 250 | 8 | 1 | 72/100 = 0.720 | 0.625-0.799 | +164 (+89 to +239) | 99 |
 | recipe 6×96 | 250 | 32 | 1 | 83/100 = 0.830 | 0.745-0.891 | +275 (+186 to +365) | 99 |
@@ -3570,19 +3714,19 @@ same way), "distinct" counts different games out of 100. From
 | recipe 6×96 | 250 | 200 | 8 | 91/100 = 0.910 | 0.838-0.952 | +402 (+285 to +519) | 99 |
 
 - *Every match was clean.* No forfeits (no illegal or refused move), no
-  timeout, no draw; 97 to 100 distinct games in every match. GNU Go
-  resigned 7 games in all; our engine never resigns. 36 games reached
-  the 162-move cap, all losses of ours (31 as Black; 32 of them at 1
-  simulation, 10 of those the 10×128 network's, 1 its rerun's and 1
-  the stepped network's): in
-  34 the root value stayed at −0.8 or below from our 12th to 48th move
+  timeout, no draw; 96 to 100 distinct games in every match. GNU Go
+  resigned 7 games in all; our engine never resigns. 40 games reached
+  the 162-move cap, all losses of ours (35 as Black; 36 of them at 1
+  simulation, 10 of those the 10×128 network's, 1 its rerun's, 1
+  the stepped network's and 4 the twice-stepped network's): in
+  38 the root value stayed at −0.8 or below from our 12th to 48th move
   (of 81) on, in the
   other two at −0.68 and −0.72 or below over our last 40, and the game
   ran on to the cap with our engine filling its
   own area (`sgf/scratchs2-g250-s200-game75.sgf`). The winner is not in
   doubt in those games.
 - *The scorers agree at 200 simulations and more.* GNU Go's own count
-  named a different winner in 1 of the 1,600 games at 200 or 800
+  named a different winner in 1 of the 1,700 games at 200 or 800
   simulations (`scratch-g150-s200`, game 74, in `sgf/`: GNU Go, as
   Black, passed with White stones on the board that its count treats
   as dead; Tromp-Taylor counts them, and our engine wins by 6.5). Where
@@ -3592,11 +3736,12 @@ same way), "distinct" counts different games out of 100. From
 - *At 1 simulation they do not.* The raw policy passes with an
   opponent stone still inside its area (or lets GNU Go play into it and
   passes), and Tromp-Taylor counts that stone, so GNU Go's count, which
-  removes it, gives our engine 41 more wins over the nine raw-policy
+  removes it, gives our engine 46 more wins over the ten raw-policy
   matches (11 for generation 400 of the scratch run,
   whose 46/100 would be 57/100, `sgf/scratch-g400-s1-game3.sgf`; 3 for
   the 10×128 network, 37/100 to 40/100; 8 for its rerun, 67/100 to
-  75/100; 12 for the stepped network) and 1 fewer: in the stepped
+  75/100; 12 for the stepped network; 5 for the twice-stepped network,
+  71/100 to 76/100) and 1 fewer: in the stepped
   network's game 56 (`sgf/scratch128lr-g350-s1-game56.sgf`) our engine,
   as White, passed with a group whose eye space is a square of four,
   which is dead, and GNU Go passed without capturing it; Tromp-Taylor
@@ -3607,8 +3752,9 @@ same way), "distinct" counts different games out of 100. From
   With 8 simulations or more no such game occurred.
 - *Simulations needed to draw level.* The recipe's network beats GNU Go
   with its raw policy (0.61, interval 0.51-0.70), and so does the
-  10×128 rerun (0.67, 0.57-0.75) and its stepped generation 350 (0.69,
-  0.59-0.77), so they are level at fewer than 1 simulation. With their raw policies, the preset's
+  10×128 rerun (0.67, 0.57-0.75), its stepped generation 350 (0.69,
+  0.59-0.77) and its twice-stepped generation 400 (0.71, 0.62-0.79), so
+  they are level at fewer than 1 simulation. With their raw policies, the preset's
   generation 250 of seed 2 and its 6×96 network are about level (0.54
   and 0.57) and seed 1's generation 400 nearly (0.46, 0.57 by GNU Go's
   count); seed 1's generation 250 needs about 8 simulations (0.39 at 1,
@@ -3617,7 +3763,9 @@ same way), "distinct" counts different games out of 100. From
   search barely helps between 1 and 200 simulations (0.15 and 0.16).
   For the strongest networks, 200 simulations are not yet saturated
   (0.89 to 0.94, short of 0.95), so their 200-simulation Elo is usable,
-  though at 0.94 its interval is wide (+338 to +618).
+  though at 0.94 its interval is wide (+338 to +618); at 0.97 the
+  twice-stepped network is at the ceiling, and its Elo, +604 (+414 to
+  +794), says little more than that it is at least about +400.
 - *The 10×128 network: the policy holds up, the search does not.* With
   its raw policy it scores like seed 1's 6×64 network at the same
   generation (0.37 and 0.39), but 200 simulations lift it only to 0.57
@@ -3632,7 +3780,9 @@ same way), "distinct" counts different games out of 100. From
   any earlier network's here, and the search gains +279 Elo, as for the
   6×64 network (+288) and the recipe's (+324); see
   [its section](#the-10128-network-with-400-games-per-generation). Its
-  stepped generation 350 scores 0.69 and 0.94, a search gain of +339.
+  stepped generation 350 scores 0.69 and 0.94, a search gain of +339,
+  and its twice-stepped generation 400 0.71 and 0.97 (+448, at the
+  ceiling).
 
 *Against the internal scale.* With `9x9-main`'s generation 250 at 0,
 each network's Elo against GNU Go at 200 simulations (batch 8) minus
@@ -3655,6 +3805,7 @@ in `9x9-gnugo/internal/` and `9x9-scratch128-g400/`). The interval of a differen
 | scratch 10×128, gen 250 | +337 ± 116 | about +344 | scratch gen 250's +413, plus 161/400 against it (−69; `9x9-scratch128/`) |
 | scratch 10×128, 400 games, gen 250 | +690 ± 151 | about +674 | scratch gen 250's +413, plus 327/400 against it (+261; `9x9-scratch128-g400/`) |
 | scratch 10×128, 400 games, stepped, gen 350 | +766 ± 171 | about +774 | the row above, plus 256/400 against it (+100; `9x9-scratch128-g400/lr0.0002/`) |
+| scratch 10×128, 400 games, twice-stepped, gen 400 | +892 ± 220 | about +876 | the row above, plus 257/400 against it (+102; `9x9-scratch128-g400/lr0.00002/`) |
 | recipe gen 250 | +690 ± 151 | about +491 | scratch gen 250's +413, plus the recipe's +78 against it |
 
 - *The ranking agrees and most differences do.* The networks rank the
@@ -3666,7 +3817,9 @@ in `9x9-gnugo/internal/` and `9x9-scratch128-g400/`). The interval of a differen
   rerun with 400 games +690 against about +674, or about +605 through
   its 274/400 against generation 400; its stepped generation 350 +766
   against about +774, or about +800 through its 348/400 against
-  generation 400; their 6×64 opponents played
+  generation 400; its twice-stepped generation 400 +892 against about
+  +876, but about +708 through its 319/400 against generation 400;
+  their 6×64 opponents played
   grown to 10×128, the same function), except
   the recipe's, which is about +200 higher through GNU
   Go than by the shortest internal chain (+670 ± 123 pooling its two
@@ -3678,7 +3831,7 @@ in `9x9-gnugo/internal/` and `9x9-scratch128-g400/`). The interval of a differen
   against +413. The two excesses, each inside the noise, add up to the
   gap. The same excess has the recipe tie the 10×128 rerun through GNU
   Go (91/100 each), where the internal chains put the rerun about +180
-  ahead (+674 against +491) and the joint fit with Pachi +135.
+  ahead (+674 against +491) and the joint fit with Pachi +134.
 - *Small internal gains do not all show.* The scratch run's generation
   400 beat its generation 250 274/400 (+135) directly, but scores the
   same against GNU Go (0.78 and 0.77, +10 ± 115); seed 2 and seed 1 at
@@ -3721,7 +3874,11 @@ with its raw policy), as its internal matches predict (+261 over seed
 1's 6×64 network at generation 250), and its generation 350 after the
 learning-rate step scores higher still (0.94, +478; 0.69 with its raw
 policy), +76 above its generation 250 through GNU Go against +100 in
-their direct match. The outside ranking agrees with
+their direct match. Its generation 400 after a second step scores
+0.97 (+604; 0.71 with its raw policy), at this anchor's ceiling: +126
+± 246 above generation 350 through GNU Go, too wide to choose between
+its internal matches (see
+[the second step](#a-second-step-to-000002-at-generation-350)). The outside ranking agrees with
 the internal one, and the internal scale shows no sign of inflation.
 Caveats: 100-game matches
 (about ±80 to ±120 Elo at these scores), one opponent at one level,
@@ -3737,22 +3894,24 @@ networks, so it says little about how much stronger they are, or about
 the gaps between them. Pachi, a Monte Carlo tree search program, at a
 fixed number of playouts per move gives a ladder of levels above GNU
 Go. How do the five strongest networks rank on it? (The preset's
-10×128 network, its rerun with 400 games per generation and that
-rerun's generation 350 after a learning-rate step were added later.)
+10×128 network, its rerun with 400 games per generation, that rerun's
+generation 350 after a learning-rate step and its generation 400 after
+a second step were added later.)
 The result: Pachi without its neural network, at about 2,000 playouts
 a move (its `-t =1000`), beats every network at 200 simulations but the
-10×128 rerun's two (they score 0.23 to 0.44, the rerun 0.60 at
-generation 250 and 0.66 at 350) and is about +330 Elo above GNU Go
-level 10. On one scale with GNU Go at 0, the five networks sit at +205
-to +297, the 10×128 network at +78, its rerun at +432 at generation
-250 and +516 at 350, and Pachi's levels at +332 (1k), +480 (4k) and
-+591 (16k): the stepped generation 350 lies between Pachi 4k and 16k,
-level with both in its own matches (0.52 each), and loses to Pachi 64k
-0.30. The recipe's lead over the other networks is smaller than
-against GNU Go, and one Elo per player fits all 3,500 games (2,300
-between the networks and Pachi, 400 among GNU Go and Pachi's levels,
-and the networks' 800 against GNU Go) except one link, Pachi against
-itself, though less well than before the stepped network was added.
+10×128 rerun's three (they score 0.23 to 0.44, the rerun 0.60 at
+generation 250, 0.66 at 350 and 0.61 at 400) and is about +340 Elo
+above GNU Go level 10. On one scale with GNU Go at 0, the five networks
+sit at +208 to +299, the 10×128 network at +82, its rerun at +433 at
+generation 250, +515 at 350 and +497 at 400, and Pachi's levels at +342
+(1k), +479 (4k), +586 (16k) and +658 (64k): the stepped generations 350
+and 400 lie between Pachi 4k and 16k, level with each other, and both
+lose to Pachi 64k (0.30 and 0.29). The recipe's lead over the other
+networks is smaller than against GNU Go, and one Elo per player fits
+all 4,000 games (2,700 between the networks and Pachi, 400 among GNU Go
+and Pachi's levels, and the networks' 900 against GNU Go) except one
+link, Pachi against itself, though less well than before the stepped
+networks were added.
 
 - *Pachi build* (`9x9-pachi/build.txt`). Pachi 12.90, the latest
   release (15 April 2026), from the official repository: tag
@@ -3783,7 +3942,7 @@ itself, though less well than before the stepped network was added.
   so the GCC build played the clang build: 55/100 (+35, interval −33 to
   +103), and the clang build itself 58/100 (`pachigcc-p4k`,
   `pachi4k-p4k`, 4k playouts). No crash or assertion occurred in the
-  4,800 games of `9x9-pachi/matches/`, all played by the clang build
+  5,200 games of `9x9-pachi/matches/`, all played by the clang build
   (and one match by the GCC build too).
 - *Settings.* `pachi --nojoseki -D -r chinese -s SEED -t =N threads=1
   pass_all_alive`, plus `resign_threshold=0 allow_losing_pass` (below):
@@ -3799,8 +3958,8 @@ itself, though less well than before the stepped network was added.
   `=1000` (10th percentile about 1,200, 90th 4,000 to 8,500; against
   the 10×128 network 3,041, 1,362 and 12,566, a cause not looked
   into; against its rerun 2,361), 4,600 to 5,300 at `=4000`,
-  16,000 to 16,700 at `=16000` and 64,490 at `=64000` against the
-  stepped 10×128 network (below). Against a much
+  16,000 to 16,700 at `=16000` and 64,365 and 64,490 at `=64000`
+  against the two stepped 10×128 networks (below). Against a much
   weaker opponent it searches less, as it stops once its best move has
   5,000 playouts winning 95%. The levels below are named by
   N (1k, 4k, 16k, 64k), and the count reached depends on the machine's
@@ -3854,7 +4013,12 @@ itself, though less well than before the stepped network was added.
   with `queue.sh` too, against 1k, 4k and 16k at once (`jobs-128lr.txt`, from
   08:02 to 08:38 alongside its GNU Go matches), and against 64k
   (`jobs-128lr-64k.txt`, 08:39 to 10:04), as it scored 0.40 or more at
-  16k; no network had played 64k with Pachi's resignation off.
+  16k; no network had played 64k with Pachi's resignation off. Its
+  generation 400 after a second learning-rate step was added the same
+  day, against all four levels at once so that it could be compared
+  with generation 350 level by level (`jobs-128lr2.txt`, `queue.sh`,
+  1k from 15:28 to 15:48, 4k to 15:53, 16k to 16:07 and 64k to 16:56,
+  alongside its GNU Go matches).
 - *Run notes.* `pachi-match.sh` was edited (to add Pachi-against-Pachi
   matches) while the first list ran; the shells running it then read
   the changed file and failed after the last game, before moving
@@ -3900,20 +4064,24 @@ Pachi's at that level. Pachi's resignation off; from
 | scratch 10×128, 400 games, stepped, gen 350 | 4k | 52/100 = 0.520 | 0.423-0.615 | +14 (−54 to +82) |
 | scratch 10×128, 400 games, stepped, gen 350 | 16k | 52/100 = 0.520 | 0.423-0.615 | +14 (−54 to +82) |
 | scratch 10×128, 400 games, stepped, gen 350 | 64k | 30/100 = 0.300 | 0.219-0.396 | −147 (−221 to −73) |
+| scratch 10×128, 400 games, twice-stepped, gen 400 | 1k | 61/100 = 0.610 | 0.512-0.700 | +78 (+8 to +147) |
+| scratch 10×128, 400 games, twice-stepped, gen 400 | 4k | 55/100 = 0.550 | 0.452-0.644 | +35 (−33 to +103) |
+| scratch 10×128, 400 games, twice-stepped, gen 400 | 16k | 42/100 = 0.420 | 0.328-0.518 | −56 (−125 to +12) |
+| scratch 10×128, 400 games, twice-stepped, gen 400 | 64k | 29/100 = 0.290 | 0.210-0.385 | −156 (−230 to −81) |
 
 Every match was clean: no forfeit, no game at the move cap, 100
 distinct games each, and the Tromp-Taylor recount, A's count and
 Pachi's own `final_score` named the same winner in every finished game
 (with resignation on too; `9x9-pachi/results.csv`). The networks'
 scores fall in the 20% to 80% aimed for at 1k (0.23 to 0.66) and
-mostly at 4k (0.15 to 0.52); 16k (0.08 to 0.13) is beyond it for every
-network but the 10×128 rerun (0.31) and its stepped generation 350
-(0.52), and 64k (7/100 for the two networks that played it with
-resignation on) further still, except for the stepped network (0.30
-with resignation off). The 10×128 network's 0.23 at 1k is the lowest,
-the stepped network's 0.66 the highest; it and the rerun at generation
-250 are the only networks to score above 0.5, the stepped one at every
-level up to 16k.
+mostly at 4k (0.15 to 0.55); 16k (0.08 to 0.13) is beyond it for every
+network but the 10×128 rerun (0.31) and its stepped generations 350
+(0.52) and 400 (0.42), and 64k (7/100 for the two networks that played
+it with resignation on) further still, except for the stepped networks
+(0.30 and 0.29 with resignation off). The 10×128 network's 0.23 at 1k
+is the lowest, the stepped generation 350's 0.66 the highest; the
+10×128 rerun's three networks are the only ones to score above 0.5:
+generation 250 at 1k, 350 at every level up to 16k, 400 at 1k and 4k.
 
 *One scale* (`9x9-pachi/ladder.txt`). A Bradley-Terry fit (maximum
 likelihood, Elo units) of every player to every game above and to the
@@ -3922,55 +4090,62 @@ Go section), GNU Go level 10 fixed at 0; the interval includes the
 uncertainty of each player's link to GNU Go. "Via GNU Go only" is the
 network's own match against GNU Go; the last column is the same fit to
 the matches with Pachi's resignation on (`ladder-resign.txt`; the 6×96
-and both 10×128 runs from scratch played none). Pachi 64k with its
-resignation off played only the stepped network, so its rating there is
-that network's plus its Elo against it, with no check
-(`ladder.txt` part 2 has no chain for it, and the fit no residual):
+and the 10×128 runs from scratch played none). Pachi 64k with its
+resignation off played only the two stepped networks, so its rating
+there rests on them alone (`ladder.txt` part 2 has no chain for it):
 
 | player | Elo, joint fit (95% interval) | via GNU Go only | resignation on |
 |---|---|---|---|
 | GNU Go 3.8 level 10 | 0 (fixed) | 0 | 0 |
-| scratch 10×128, gen 250 | +78 (+22 to +135) | +49 | |
-| scratch, seed 1, gen 250 | +205 (+156 to +255) | +210 | +200 |
-| scratch, seed 2, gen 250 | +205 (+156 to +255) | +191 | +204 |
-| scratch 6×96, gen 250 | +211 (+161 to +260) | +230 | |
-| scratch, seed 1, gen 400 | +269 (+220 to +319) | +220 | +259 |
-| recipe 6×96, gen 250 | +297 (+247 to +346) | +402 | +268 |
-| Pachi 1k (about 2,000 playouts) | +332 (+294 to +369) | | +157 |
-| scratch 10×128, 400 games, gen 250 | +432 (+381 to +482) | +402 | |
-| Pachi 4k (about 4,900) | +480 (+439 to +521) | | +389 |
-| scratch 10×128, 400 games, stepped, gen 350 | +516 (+464 to +568) | +478 | |
-| Pachi 16k (about 16,200) | +591 (+546 to +637) | | +524 |
-| Pachi 64k (about 64,000) | +663 (+573 to +754) | | +742 |
+| scratch 10×128, gen 250 | +82 (+26 to +139) | +49 | |
+| scratch, seed 1, gen 250 | +208 (+159 to +257) | +210 | +200 |
+| scratch, seed 2, gen 250 | +208 (+159 to +257) | +191 | +204 |
+| scratch 6×96, gen 250 | +214 (+164 to +263) | +230 | |
+| scratch, seed 1, gen 400 | +272 (+222 to +321) | +220 | +259 |
+| recipe 6×96, gen 250 | +299 (+250 to +348) | +402 | +268 |
+| Pachi 1k (about 2,000 playouts) | +342 (+305 to +378) | | +157 |
+| scratch 10×128, 400 games, gen 250 | +433 (+383 to +483) | +402 | |
+| Pachi 4k (about 4,900) | +479 (+440 to +519) | | +389 |
+| scratch 10×128, 400 games, twice-stepped, gen 400 | +497 (+448 to +546) | +604 | |
+| scratch 10×128, 400 games, stepped, gen 350 | +515 (+466 to +565) | +478 | |
+| Pachi 16k (about 16,200) | +586 (+543 to +629) | | +524 |
+| Pachi 64k (about 64,000) | +658 (+590 to +726) | | +742 |
 
-- *The scale fits, except Pachi against itself.* Over the 35 pairings,
-  Pearson's chi-square is 46.8 on 23 degrees of freedom (p ≈ 0.002),
+- *The scale fits, except Pachi against itself.* Over the 40 pairings,
+  Pearson's chi-square is 54.1 on 27 degrees of freedom (p ≈ 0.002),
   and one pairing gives a quarter of it: Pachi 1k scored 14/100 against
-  Pachi 4k where the fit expects 30 (residual −3.5). Without that
-  pairing the rest fit acceptably (31.4 on 22, p ≈ 0.09), and the
-  ratings move by 20 Elo at most (Pachi 4k to +460). The next largest
-  residual is the stepped network's against Pachi 16k (52/100 where
-  the fit expects 39, +2.6); before it was added the rest fit well
+  Pachi 4k where the fit expects 31 (residual −3.7). Without that
+  pairing the rest fit acceptably (36.8 on 26, p ≈ 0.08), and the
+  ratings move by about 20 Elo at most (Pachi 4k to +461). The next
+  largest residuals are the stepped generation 350's against Pachi 16k
+  (52/100 where the fit expects 40, +2.5) and the twice-stepped
+  generation 400's against Pachi 1k (61/100 where it expects 71,
+  −2.2); before the stepped networks were added the rest fit well
   (20.1 on 19, p ≈ 0.39). Against the networks, Pachi's 4k is about
-  +120 Elo above its 1k (+117 in a fit to the networks' games against
+  +110 Elo above its 1k (+107 in a fit to the networks' games against
   Pachi alone), against itself +315: Pachi gains more from four times
   the playouts against its own weaker setting than against other
   programs, a known effect of rating a program against itself. From 4k
-  to 16k the networks see +110 (+145 without the stepped network, which
-  scored 52/100 at both) and Pachi itself +173.
+  to 16k the networks see +106 (+145 without the two stepped networks,
+  which scored 52 and 55 of 100 at 4k and 52 and 42 at 16k) and Pachi
+  itself +173.
 - *Network against Pachi against network against GNU Go.* Each network's
   rating through Pachi 1k alone (Pachi 1k's rating from its matches
   with GNU Go and Pachi 4k, plus the network's Elo against it) agrees
-  with its own match against GNU Go within the noise (differences −117
-  to +82 Elo, |z| ≤ 1.4; `ladder.txt` part 2). Through 4k and 16k, whose
+  with its own match against GNU Go within the noise (differences −185
+  to +82 Elo, |z| ≤ 1.6, the −185 the twice-stepped network's, whose
+  97/100 against GNU Go is at the ceiling; `ladder.txt` part 2). Through 4k and 16k, whose
   ratings without the networks rest on the Pachi-against-Pachi links,
-  the chains come out above the direct results (by +67 to +333, z up to
+  the chains come out above the direct results (by +56 to +333, z up to
   3.1, except the recipe's at 16k; the 10×128 rerun's +195 and +256,
-  its stepped generation 350's +161 and +333), the same inflation seen
-  from the other side.
+  its stepped generation 350's +161 and +333, its twice-stepped
+  generation 400's +56 and +137, whose direct result, 97/100 against GNU
+  Go, is at that anchor's ceiling), the same inflation seen from the
+  other side.
 - *The ranking, and the recipe's lead.* Against Pachi (300 games each,
   resignation off, 1k to 16k) the networks score: the stepped 10×128
-  network 170, the 10×128 rerun at generation 250 137, generation
+  generation 350 170, the twice-stepped generation 400 158, the 10×128
+  rerun at generation 250 137, generation
   400 of the scratch run 82, the recipe 80, seed 2 61, the scratch
   run's generation 250 59 and its 6×96 version 59. Against GNU Go the
   recipe stood well ahead of the other four (91/100, against 75 to 79,
@@ -3980,13 +4155,13 @@ that network's plus its Elo against it, with no check
   it +78 above the scratch run's generation 250 (244/400) and that
   run's generation 400 +135 above the same network (274/400), closer to
   Pachi's view than to GNU Go's. The joint fit, which uses both
-  opponents, keeps the recipe first of these five (+297) by a margin
+  opponents, keeps the recipe first of these five (+299) by a margin
   inside its interval. Seed 1 and seed 2 at generation 250 and the
-  6×96 network are level (+205 to +211); seeds 1 and 2 differ by +36
+  6×96 network are level (+208 to +214); seeds 1 and 2 differ by +36
   in their direct match.
 - *The 10×128 network.* It scores 23/100 against Pachi 1k and 57/100
-  against GNU Go, and the joint fit puts it at +78, about 125 Elo below
-  the generation-250 6×64 networks (+205); its internal match against
+  against GNU Go, and the joint fit puts it at +82, about 125 Elo below
+  the generation-250 6×64 networks (+208); its internal match against
   seed 1's generation 250 gives −69 (161/400). Both outside anchors
   agree that the larger network ends weaker, the result of the
   [10×128 section](#the-preset-from-scratch-with-a-10128-network),
@@ -3998,12 +4173,12 @@ that network's plus its Elo against it, with no check
 - *The 10×128 rerun with 400 games per generation.* It scores 60/100
   against Pachi 1k, 46/100 against 4k and 31/100 against 16k, and
   91/100 against GNU Go, the recipe's score there. The joint fit puts
-  it at +432 (+381 to +482), between Pachi 1k (+332) and 4k (+480),
-  and above every other network but its own stepped generation 350
-  (below): +135 above the recipe's (which scored
-  80 of 300 against Pachi to its 137), +221 above the 6×96 network
-  from scratch, +227 above seed 1's 6×64 network at generation 250,
-  +163 above that network's generation 400 and +354 above the 10×128
+  it at +433 (+383 to +483), between Pachi 1k (+342) and 4k (+479),
+  and above every other network but its own stepped generations 350
+  and 400 (below): +134 above the recipe's (which scored
+  80 of 300 against Pachi to its 137), +219 above the 6×96 network
+  from scratch, +225 above seed 1's 6×64 network at generation 250,
+  +161 above that network's generation 400 and +351 above the 10×128
   run with 200 games. Its internal matches agree: 327/400 (+261)
   against seed 1's generation 250 and 274/400 (+135) against its
   generation 400, and a chain of +330 (+261 plus the 200-game run's
@@ -4015,27 +4190,46 @@ that network's plus its Elo against it, with no check
   ([its section](#continued-to-generation-300-and-a-learning-rate-step)).
   It scores 66/100 against Pachi 1k, 52/100 against both 4k and 16k
   and 30/100 against 64k, and 94/100 against GNU Go, the highest score
-  there. The joint fit puts it at +516 (+464 to +568), between Pachi 4k
-  (+480) and 16k (+591), the strongest network rated: +84 above the
-  same run's generation 250 (170 of 300 against Pachi 1k to 16k, to
-  its 137) and +219 above the recipe's network. Its internal matches
+  there until its generation 400 below. The joint fit puts it at +515
+  (+466 to +565), between Pachi 4k (+479) and 16k (+586), the
+  strongest network rated: +82 above the same run's generation 250 (170
+  of 300 against Pachi 1k to 16k, to its 137) and +216 above the
+  recipe's network. Its internal matches
   agree: 256/400 (+100) against generation 250, and 264/400 (+115)
   against generation 300, which is level with 250 (189/400 for 300,
   −19), a chain of +96. Through GNU Go alone it is +76 above
   generation 250 (94/100 against 91/100). Its equal scores at 4k and
-  16k do not fit one Elo per level well: the fit expects 55 and 39
+  16k do not fit one Elo per level well: the fit expects 55 and 40
   of 100, so 4k looks harder and 16k easier for it than for the other
   networks, and its links pull Pachi 16k down by 28 Elo (from +619)
-  and move the other ratings by 7 at most. It is the only player to
-  have met Pachi 64k with resignation off, so that level rates +72
-  above 16k here on this one match (+218 in the fit with resignation
-  on).
+  and move the other ratings by 7 at most. It and its generation 400
+  (below) are the only players to have met Pachi 64k with resignation
+  off, so that level rates +72 above 16k here on their two matches
+  (+218 in the fit with resignation on).
+- *The twice-stepped generation 400*
+  ([its section](#a-second-step-to-000002-at-generation-350)). It
+  scores 61/100 against Pachi 1k, 55/100 against 4k, 42/100 against 16k
+  and 29/100 against 64k, and 97/100 against GNU Go, the highest score
+  there (+604, at that anchor's ceiling). The joint fit puts it at +497
+  (+448 to +546), between Pachi 4k and 16k, 18 Elo below generation 350
+  (−18 ± 50, 95%, from the fit's covariance) and +64 above generation
+  250. Level by level against generation 350 its Elo differs by −37 (1k),
+  +21 (4k), −70 (16k), −9 (64k) and +126 (GNU Go, at the ceiling): 187
+  of 400 against Pachi to generation 350's 200. Its residuals are
+  −2.2 (1k), +0.5 (4k), +0.9 (16k), +0.1 (64k) and +1.1 (GNU Go).
+  Its internal matches disagree with each other: +102 against
+  generation 350 directly (257/400), −92 through the 6×64 network's
+  generation 400 (319/400 against generation 350's 348/400). The joint
+  fit's interval, −68 to +32, holds neither; it puts the two networks
+  level. Leaving out its and generation 350's games against GNU Go,
+  where both are near the ceiling, gives −25 ± 51. Its links move
+  Pachi 1k up 10 Elo and the other ratings by 6 at most.
 - *Resignation shifts Pachi, not the networks.* With Pachi's default
   resignation, every opponent scored more against Pachi 1k (GNU Go 39
   against 10 of 100, the three networks that played both ways 52 to 62
   against 30 to 44), and most of them less so at 4k and 16k. Pachi's
   levels then rate lower (1k at +157 instead of
-  +332), but the networks' ratings move by 29 Elo at most (the recipe
+  +342), but the networks' ratings move by 31 Elo at most (the recipe
   +268, the others +200 to +259), because they are also tied to GNU Go
   directly.
 
@@ -4050,17 +4244,20 @@ relative to GNU Go 3.8 level 10 and to these Pachi levels only. Nor do
 
 **Verdict.** Pachi 12.90 without its neural network, single-threaded at
 about 2,000 playouts a move, is stronger than every 9×9 network at 200
-simulations but two: they score 0.23 to 0.44 against it. On one scale
+simulations but three: they score 0.23 to 0.44 against it. On one scale
 with GNU Go 3.8 level 10 at 0, the five networks first rated lie at
-+205 to +297, Pachi at 1k, 4k and 16k playouts at +332, +480 and +591.
-The preset's 10×128 network, whose value head overfits, is at +78,
++208 to +299, Pachi at 1k, 4k and 16k playouts at +342, +479 and +586.
+The preset's 10×128 network, whose value head overfits, is at +82,
 below every 6×64 network of the same preset; its rerun with 400 games
-per generation beats Pachi 1k (0.60) and is at +432, between Pachi 1k
+per generation beats Pachi 1k (0.60) and is at +433, between Pachi 1k
 and 4k and about +135 above the recipe's network, and that run's
 generation 350 after its learning-rate step, the strongest network
-so far, is at +516, between Pachi 4k and 16k (0.52 against each;
-0.30 against 64k), +84 above its generation 250, as their internal
-match predicts (+100). Against Pachi the recipe's
+so far, is at +515, between Pachi 4k and 16k (0.52 against each;
+0.30 against 64k), +82 above its generation 250, as their internal
+match predicts (+100). Its generation 400 after a second step is at
++497, level with generation 350 (−18 ± 50), where its internal matches
+put it +102 above (directly) or 92 below (through the 6×64 network).
+Against Pachi the recipe's
 network is level with the scratch run's generation 400 and about +90
 Elo above the generation-250 networks, not +190 as against GNU Go; the
 joint fit still ranks it first, inside the noise. Caveats: 100-game
@@ -4276,10 +4473,10 @@ matches (`runs/agz-experiment.sh`, not in the repository).
 | 12 | Seed 1 continued from generation 250 to 400 | it was still improving at 250 | done (`9x9-scratch-to400`): 0.640, 0.660 and 0.685 for generations 300, 350 and 400 against 250 (+100, then +15 and +20 per 50 generations), 0.938 for 400 against `9x9-main`'s 250; the 6×64 network levels off; see [400 generations](#the-preset-from-scratch-continued-to-generation-400) |
 | 13 | The preset from scratch with a 6×96 network | does a wider network do better from scratch? | done (`9x9-scratch96`, seed 1): 0.655, 0.505, 0.568 and 0.595 against 6×64 seed 1 at equal generations 50, 100, 150 and 250, within the 6×64 seeds' spread; 0.393 against the recipe's 6×96 network at 250; see [6×96](#the-preset-from-scratch-with-a-696-network) |
 | 14 | The preset from scratch with a 10×128 network | does a larger network keep improving where 6×64 levels off? | done (`9x9-scratch128`, seed 1, generation 0 batch norm calibrated after two uncalibrated tries collapsed): 0.578, 0.448, 0.405 and 0.403 against 6×64 seed 1 at equal generations 50, 100, 150 and 250, 0.263 against its generation 400; the value head overfits the buffer (fresh-game value loss 0.81 against 0.42 on the buffer at generation 250; 6×64: 0.71 against 0.64); see [10×128](#the-preset-from-scratch-with-a-10128-network) |
-| 15 | Row 14 with 400 games per generation (400 steps; replay ratio halved, about 6) | row 14's value head overfits at a replay ratio of about 12 | done (`9x9-scratch128-g400`, seed 1, to generation 250): 0.925, 0.882, 0.882 and 0.818 against 6×64 seed 1 at equal generations 50, 100, 150 and 250, 0.685 against its generation 400, and 0.930, 0.917, 0.900 and 0.897 against row 14's run; the value head no longer overfits (fresh-game minus buffer value loss 0.07 to 0.11 after the learning-rate drop, as for 6×64, against 0.26 to 0.36); 0.91 against GNU Go and +432 on the joint scale with Pachi (row 17's generation 350: +516); 8.8 minutes per generation against 6.3; see [10×128 with 400 games](#the-10128-network-with-400-games-per-generation) |
+| 15 | Row 14 with 400 games per generation (400 steps; replay ratio halved, about 6) | row 14's value head overfits at a replay ratio of about 12 | done (`9x9-scratch128-g400`, seed 1, to generation 250): 0.925, 0.882, 0.882 and 0.818 against 6×64 seed 1 at equal generations 50, 100, 150 and 250, 0.685 against its generation 400, and 0.930, 0.917, 0.900 and 0.897 against row 14's run; the value head no longer overfits (fresh-game minus buffer value loss 0.07 to 0.11 after the learning-rate drop, as for 6×64, against 0.26 to 0.36); 0.91 against GNU Go and +433 on the joint scale with Pachi (row 17's generation 350: +515); 8.8 minutes per generation against 6.3; see [10×128 with 400 games](#the-10128-network-with-400-games-per-generation) |
 | 16 | Row 15 continued from generation 250 to 300 | does the 10×128 network keep improving where 6×64 levelled off? | done (`9x9-scratch128-g400`, at the same settings, learning rate 0.002): it levels off, 0.472 for generation 300 against 250 (−19 Elo, interval includes 0.5), and 0.718 against 6×64 seed 1's generation 400 (0.685 at 250); the fresh-game minus buffer value loss widens a little (0.134 and 0.140 over generations 251–275 and 276–300, from 0.112) and the fresh-game policy loss is flat at about 2.03; see [the learning-rate step](#continued-to-generation-300-and-a-learning-rate-step) |
-| 17 | Row 16 with the learning rate stepped down from 0.002 to 0.0002 at generation 300, to 350 | the plateau at 0.002; AGZ lowered its learning rate in steps | done (`9x9-scratch128-g400/lr0.0002/`, a copy of row 16's run at generation 300): 0.610 for generation 325 and 0.660 for 350 against generation 300 (+78, +115 Elo), 0.640 for 350 against 250, and 0.870 (+330) against 6×64 seed 1's generation 400, the strongest 9×9 network measured internally; fresh-game policy loss 1.960 over generations 326–350 and 1.908 at 350, the lowest of any 9×9 run; fresh-game minus buffer value loss 0.052 and 0.032 over 301–325 and 326–350; the arena's running Elo does not show the gain; against the outside anchors 94/100 against GNU Go, 66, 52, 52 and 30 of 100 against Pachi 1k, 4k, 16k and 64k, +516 on the joint scale (+84 above generation 250); see [the learning-rate step](#continued-to-generation-300-and-a-learning-rate-step) |
-| 18 | Row 17 with a second step, to 0.00002 at generation 350, to 400 | row 17's step gained +115 in 50 generations | running (`runs/9x9-scratch128-g400-lr2`, a copy of row 17's run at generation 350, `runs/r10-job.sh`, started 13 October); generations 375 and 400 to be played against row 17's generation 350, and 400 against 6×64 seed 1's generation 400 |
+| 17 | Row 16 with the learning rate stepped down from 0.002 to 0.0002 at generation 300, to 350 | the plateau at 0.002; AGZ lowered its learning rate in steps | done (`9x9-scratch128-g400/lr0.0002/`, a copy of row 16's run at generation 300): 0.610 for generation 325 and 0.660 for 350 against generation 300 (+78, +115 Elo), 0.640 for 350 against 250, and 0.870 (+330) against 6×64 seed 1's generation 400, the strongest 9×9 network measured internally; fresh-game policy loss 1.960 over generations 326–350 and 1.908 at 350, the lowest of any 9×9 run; fresh-game minus buffer value loss 0.052 and 0.032 over 301–325 and 326–350; the arena's running Elo does not show the gain; against the outside anchors 94/100 against GNU Go, 66, 52, 52 and 30 of 100 against Pachi 1k, 4k, 16k and 64k, +515 on the joint scale (+82 above generation 250); see [the learning-rate step](#continued-to-generation-300-and-a-learning-rate-step) |
+| 18 | Row 17 with a second step, to 0.00002 at generation 350, to 400 | row 17's step gained +115 in 50 generations | done (`9x9-scratch128-g400/lr0.00002/`, a copy of row 17's run at generation 350): no clear gain. 0.537 for generation 375 and 0.642 (+102) for 400 against row 17's generation 350, but 0.797 (+238) for 400 against 6×64 seed 1's generation 400, where row 17's 350 scored 0.870 (+330): the internal matches disagree by about five standard errors; fresh-game policy loss flat (1.950 and 1.973 over generations 351–375 and 376–400, against 1.960 over 326–350), fresh-game minus buffer value loss 0.012 and 0.004; against the outside anchors 97/100 against GNU Go (at its ceiling), 61, 55, 42 and 29 of 100 against Pachi 1k, 4k, 16k and 64k, +497 on the joint scale, level with row 17's generation 350 (+515; −18 ± 50); see [the second step](#a-second-step-to-000002-at-generation-350) |
 
 Evaluation only (the algorithm unchanged): a validation loss on
 held-out fresh games each generation is merged (`validation_loss`, on by
@@ -4525,9 +4722,17 @@ matches at temperature 0 (AGZ's evaluation size).
   350), `references.csv`, `results.csv`, `config.cfg`, `progress.txt`
   (the continuation's output), `r9-job.sh`, `r9-studio.log` and the
   matches `g325-vs-g300.txt`, `g350-vs-g300.txt`, `g350-vs-g250.txt`
-  and `g350-vs-scratch64-g400.txt`. Host names are redacted. See
-  [its section](#the-10128-network-with-400-games-per-generation) and
-  [the learning-rate step](#continued-to-generation-300-and-a-learning-rate-step).
+  and `g350-vs-scratch64-g400.txt`. Its subfolder `lr0.00002/` holds
+  that copy continued from 350 to 400 with the learning rate stepped
+  again, to 0.00002: `log.csv` over generations 1–400 (the first 350
+  rows are `lr0.0002/`'s), `elo.csv` (the refit at 400),
+  `references.csv`, `results.csv`, `config.cfg`, `progress.txt` (the
+  continuation's output), `r10-job.sh`, `r10-studio.log` and the
+  matches `g375-vs-g350.txt`, `g400-vs-g350.txt` and
+  `g400-vs-scratch64-g400.txt`. Host names are redacted. See
+  [its section](#the-10128-network-with-400-games-per-generation),
+  [the learning-rate step](#continued-to-generation-300-and-a-learning-rate-step)
+  and [the second step](#a-second-step-to-000002-at-generation-350).
 - `9x9-versus/`: the recipe against the preset from scratch at
   generation 250: the script `versus.sh` (host names redacted) and its
   log `versus.log`, the `grow` outputs `grow-g150.txt` and
@@ -4540,13 +4745,14 @@ matches at temperature 0 (AGZ's evaluation size).
 - `9x9-gnugo/`: the matches against GNU Go 3.8: the scripts
   `gnugo-match.sh`, `gnugo-jobs.sh` and `summarize.py`; the job lists
   `jobs-200.txt`, `jobs-ladder.txt`, `jobs-ladder-b1.txt`,
-  `jobs-ladder2.txt`, `jobs-128.txt` and `jobs-128g400.txt` with
+  `jobs-ladder2.txt`, `jobs-128.txt`, `jobs-128g400.txt`,
+  `jobs-128lr.txt` and `jobs-128lr2.txt` with
   their GNU Parallel job logs (`*.joblog`) and `jobs-ladder.log` (the
   stopped jobs); `matches/<label>/results.csv` and `summary.txt` for
-  each of the 28 matches; the table `summary.txt`
+  each of the 32 matches; the table `summary.txt`
   and `results.csv` (one row per match, with how the games ended and
   the scorers' disagreements); `stopped-batch8/`, the partial results of
-  the five low-simulation matches stopped for the leaf batch; six games
+  the five low-simulation matches stopped for the leaf batch; seven games
   in `sgf/`; and `internal/`, copies of four 400-game match outputs
   from the runs (the scratch run's generation 400 against `9x9-main`'s
   250 and its own 250; seed 2's generation 250 against `9x9-main`'s 250
@@ -4558,9 +4764,10 @@ matches at temperature 0 (AGZ's evaluation size).
   `jobs-anchor.txt` (with its GNU Parallel job log and the shells'
   errors, `jobs-anchor.log`), `jobs-ladder.txt`, `jobs-nets.txt`,
   `jobs-nets-1k.txt`, `jobs-control.txt`, `jobs-noresign.txt`,
-  `jobs-nr.txt`, `jobs-nr-ladder.txt`, `jobs-128.txt` and
-  `jobs-128g400.txt`, and `queue.log`;
-  `matches/<label>/results.csv` and `summary.txt` for each of the 44
+  `jobs-nr.txt`, `jobs-nr-ladder.txt`, `jobs-128.txt`,
+  `jobs-128g400.txt`, `jobs-128lr.txt`, `jobs-128lr-64k.txt` and
+  `jobs-128lr2.txt`, and `queue.log`;
+  `matches/<label>/results.csv` and `summary.txt` for each of the 52
   matches (labels ending in `-nr` have Pachi's resignation off); the
   table `summary.txt` and `results.csv` (one row per match, with how the
   games ended, the scorers' agreement and Pachi's playout counts); the
