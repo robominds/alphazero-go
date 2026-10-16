@@ -37,6 +37,7 @@ NETWORKS = {   # label prefix -> (description, shape)
     "scratch128g400": ("new preset from scratch, 10x128, 400 games", "10x128"),
     "scratch128lr": ("new preset from scratch, 10x128, 400 games, lr 0.0002 from 300", "10x128"),
     "scratch128lr2": ("new preset from scratch, 10x128, 400 games, lr 0.00002 from 350", "10x128"),
+    "scratch128fp2": ("new preset from scratch, 10x128, 400 games, lr 0.0002 from 300, resign fp 0.02 from 350", "10x128"),
     "recipe": ("recipe (continued 6x96)", "6x96"),
 }
 SCORE = re.compile(r"^([BW])\+(\d+(?:\.\d+)?)$|^0$", re.I)

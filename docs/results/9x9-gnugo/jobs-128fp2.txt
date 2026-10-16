@@ -1,0 +1,2 @@
+scratch128fp2-g400-s200 nets/scratch128fp2-g400.azn 200 271
+scratch128fp2-g400-s1 nets/scratch128fp2-g400.azn 1 272 1
