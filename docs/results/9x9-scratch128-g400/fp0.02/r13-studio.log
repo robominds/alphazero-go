@@ -1,0 +1,8 @@
+scratch128-fp2 start Wed Oct 14 20:43:11 PDT 2026 on [the Mac Studio]
+train exit 0 Thu Oct 15 03:40:53 PDT 2026
+g375-vs-g350: A runs/9x9-scratch128-fp2/checkpoints/gen_0375.azn vs B runs/9x9-scratch128-g400-lr/checkpoints/gen_0350.azn: A scored 226/400 = 0.565 (95% CI 0.516-0.613), distinct games 354
+g400-vs-g350: A runs/9x9-scratch128-fp2/checkpoints/gen_0400.azn vs B runs/9x9-scratch128-g400-lr/checkpoints/gen_0350.azn: A scored 253/400 = 0.632 (95% CI 0.584-0.678), distinct games 357
+g400-vs-g800-g400: A runs/9x9-scratch128-fp2/checkpoints/gen_0400.azn vs B runs/9x9-scratch128-g800/checkpoints/gen_0400.azn: A scored 211/400 = 0.527 (95% CI 0.479-0.576), distinct games 370
+g400-vs-lr2-g450: A runs/9x9-scratch128-fp2/checkpoints/gen_0400.azn vs B runs/9x9-scratch128-g400-lr2/checkpoints/gen_0450.azn: A scored 223/400 = 0.557 (95% CI 0.509-0.605), distinct games 373
+g400-vs-scratch64-g400: A runs/9x9-scratch128-fp2/checkpoints/gen_0400.azn vs B runs/r7-eval/scratch128-g400/scratch64-g400-as-10x128.azn: A scored 333/400 = 0.833 (95% CI 0.793-0.866), distinct games 373
+scratch128-fp2 all done Thu Oct 15 04:32:35 PDT 2026
