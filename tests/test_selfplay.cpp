@@ -584,15 +584,20 @@ static void test_slice_stats() {
     assert(evaluations > 0 && one.evaluations == evaluations && three.evaluations == evaluations);
 }
 
-// The QoS class only changes how macOS schedules the worker threads.
+// The QoS class only changes how macOS schedules the worker threads (with
+// utility, BLAS may run on efficiency cores: the same arithmetic).
 static void test_qos_changes_nothing() {
     const Network net(tinyNet(), 9);
     const SelfPlayConfig sp = sliceConfig(true);
-    EngineRun utility{"naive", 2};
-    utility.qos = CpuQos::Utility;
-    const std::vector<GameRecord> a = playSelfPlayGames(net, sp, 5, 1, 0, 4, EngineRun{"naive", 2});
-    const std::vector<GameRecord> b = playSelfPlayGames(net, sp, 5, 1, 0, 4, utility);
-    for (int i = 0; i < 4; ++i) assert(sameRecord(a[i], b[i]) && sameResignFields(a[i], b[i]));
+    std::vector<std::string> backends = {"naive"};
+    if (blasAvailable()) backends.push_back("blas");
+    for (const std::string& backend : backends) {
+        EngineRun utility{backend, 2};
+        utility.qos = CpuQos::Utility;
+        const std::vector<GameRecord> a = playSelfPlayGames(net, sp, 5, 1, 0, 4, EngineRun{backend, 2});
+        const std::vector<GameRecord> b = playSelfPlayGames(net, sp, 5, 1, 0, 4, utility);
+        for (int i = 0; i < 4; ++i) assert(sameRecord(a[i], b[i]) && sameResignFields(a[i], b[i]));
+    }
 }
 
 // A slice stops at its next network evaluation once its cancel flag is
