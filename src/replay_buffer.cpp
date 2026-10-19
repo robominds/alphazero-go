@@ -127,37 +127,91 @@ void ReplayBuffer::sample(int B, int history, Rng& rng, TrainingBatch& out, Thre
     });
 }
 
+// One game: the layout is described with writeGameRecord in the header.
+void writeGameRecord(BinaryWriter& w, const GameRecord& g, bool withOwnership, bool withResigned) {
+    w.i32(g.boardSize);
+    w.f32(g.komi);
+    w.u32(static_cast<uint32_t>(g.moves.size()));
+    for (int m : g.moves) w.i32(m);
+    w.bytes(g.stones.data(), g.stones.size());
+    for (const auto& ply : g.visits) {
+        w.u32(static_cast<uint32_t>(ply.size()));
+        for (const auto& av : ply)
+            w.u32((static_cast<uint32_t>(static_cast<uint16_t>(av.first)) << 16) | av.second);
+    }
+    w.f32(g.resultForBlack);
+    if (withOwnership) {
+        assert(g.finalOwnership.size() == static_cast<size_t>(g.boardSize) * g.boardSize);
+        w.bytes(g.finalOwnership.data(), g.finalOwnership.size());
+    }
+    if (withResigned) {
+        const uint8_t resigned = g.resigned ? 1 : 0;
+        w.bytes(&resigned, 1);
+    }
+}
+
+GameRecord readGameRecord(BinaryReader& r, const std::string& what, bool withOwnership,
+                          bool withResigned) {
+    GameRecord g;
+    g.boardSize = r.i32();
+    if (g.boardSize < kMinBoardSize || g.boardSize > kMaxBoardSize)
+        throw std::runtime_error(what + ": bad board size " + std::to_string(g.boardSize));
+    const int area = g.boardSize * g.boardSize;
+    g.komi = r.f32();
+    // Sanity bounds keep a corrupt file from asking for gigabytes.
+    const uint32_t moves = r.u32();
+    if (moves == 0 || moves > 100000) throw std::runtime_error(what + ": bad move count");
+    g.moves.resize(moves);
+    for (int& m : g.moves) {
+        m = r.i32();
+        if (m < 0 || m > area) throw std::runtime_error(what + ": bad move");
+    }
+    g.stones.resize(static_cast<size_t>(moves) * area);
+    r.bytes(g.stones.data(), g.stones.size());
+    g.visits.resize(moves);
+    for (auto& ply : g.visits) {
+        const uint32_t k = r.u32();
+        if (k == 0 || k > static_cast<uint32_t>(area + 1))
+            throw std::runtime_error(what + ": bad visit list");
+        ply.resize(k);
+        for (auto& av : ply) {
+            const uint32_t packed = r.u32();
+            av.first = static_cast<int16_t>(packed >> 16);
+            av.second = static_cast<uint16_t>(packed & 0xFFFFu);
+            if (av.first < 0 || av.first > area || av.second == 0)
+                throw std::runtime_error(what + ": bad visit entry");
+        }
+    }
+    g.resultForBlack = r.f32();
+    if (withOwnership) {
+        g.finalOwnership.resize(static_cast<size_t>(area));
+        r.bytes(g.finalOwnership.data(), g.finalOwnership.size());
+        for (int8_t o : g.finalOwnership)
+            if (o < -1 || o > 1) throw std::runtime_error(what + ": bad ownership value");
+    } else {
+        // An older file: recompute what self-play would have recorded.
+        try {
+            g.finalOwnership = replayFinalOwnership(g);
+        } catch (const std::runtime_error& e) {
+            throw std::runtime_error(what + " does not replay: " + e.what());
+        }
+    }
+    if (withResigned) {
+        uint8_t resigned = 0;
+        r.bytes(&resigned, 1);
+        if (resigned > 1) throw std::runtime_error(what + ": bad resigned flag");
+        g.resigned = resigned == 1;
+    }
+    return g;
+}
+
 // Layout: u64 capacity, u64 totalAdded (two's complement of the i64), u32 games,
-// then per game: i32 boardSize, f32 komi, u32 moves + i32 each, the stones as
-// raw bytes (positions * n * n), per ply u32 count + u32 (action << 16 | count)
-// each, f32 resultForBlack, then (withOwnership) finalOwnership as n * n
-// signed bytes, then (withResigned) one byte, 1 if the game ended by
-// resignation.
+// then each game as writeGameRecord writes it.
 void ReplayBuffer::save(BinaryWriter& w, bool withOwnership, bool withResigned) const {
     w.u64(capacity_);
     w.u64(static_cast<uint64_t>(totalAdded_));
     w.u32(static_cast<uint32_t>(games_.size()));
-    for (const GameRecord& g : games_) {
-        w.i32(g.boardSize);
-        w.f32(g.komi);
-        w.u32(static_cast<uint32_t>(g.moves.size()));
-        for (int m : g.moves) w.i32(m);
-        w.bytes(g.stones.data(), g.stones.size());
-        for (const auto& ply : g.visits) {
-            w.u32(static_cast<uint32_t>(ply.size()));
-            for (const auto& av : ply)
-                w.u32((static_cast<uint32_t>(static_cast<uint16_t>(av.first)) << 16) | av.second);
-        }
-        w.f32(g.resultForBlack);
-        if (withOwnership) {
-            assert(g.finalOwnership.size() == static_cast<size_t>(g.boardSize) * g.boardSize);
-            w.bytes(g.finalOwnership.data(), g.finalOwnership.size());
-        }
-        if (withResigned) {
-            const uint8_t resigned = g.resigned ? 1 : 0;
-            w.bytes(&resigned, 1);
-        }
-    }
+    for (const GameRecord& g : games_) writeGameRecord(w, g, withOwnership, withResigned);
 }
 
 ReplayBuffer ReplayBuffer::load(BinaryReader& r, bool withOwnership, bool withResigned) {
@@ -167,57 +221,8 @@ ReplayBuffer ReplayBuffer::load(BinaryReader& r, bool withOwnership, bool withRe
     const long long totalAdded = static_cast<long long>(r.u64());
     const uint32_t games = r.u32();
     for (uint32_t i = 0; i < games; ++i) {
-        GameRecord g;
-        g.boardSize = r.i32();
-        if (g.boardSize < kMinBoardSize || g.boardSize > kMaxBoardSize)
-            throw std::runtime_error("replay buffer: bad board size " + std::to_string(g.boardSize));
-        const int area = g.boardSize * g.boardSize;
-        g.komi = r.f32();
-        // Sanity bounds keep a corrupt file from asking for gigabytes.
-        const uint32_t moves = r.u32();
-        if (moves == 0 || moves > 100000) throw std::runtime_error("replay buffer: bad move count");
-        g.moves.resize(moves);
-        for (int& m : g.moves) {
-            m = r.i32();
-            if (m < 0 || m > area) throw std::runtime_error("replay buffer: bad move");
-        }
-        g.stones.resize(static_cast<size_t>(moves) * area);
-        r.bytes(g.stones.data(), g.stones.size());
-        g.visits.resize(moves);
-        for (auto& ply : g.visits) {
-            const uint32_t k = r.u32();
-            if (k == 0 || k > static_cast<uint32_t>(area + 1))
-                throw std::runtime_error("replay buffer: bad visit list");
-            ply.resize(k);
-            for (auto& av : ply) {
-                const uint32_t packed = r.u32();
-                av.first = static_cast<int16_t>(packed >> 16);
-                av.second = static_cast<uint16_t>(packed & 0xFFFFu);
-                if (av.first < 0 || av.first > area || av.second == 0)
-                    throw std::runtime_error("replay buffer: bad visit entry");
-            }
-        }
-        g.resultForBlack = r.f32();
-        if (withOwnership) {
-            g.finalOwnership.resize(static_cast<size_t>(area));
-            r.bytes(g.finalOwnership.data(), g.finalOwnership.size());
-            for (int8_t o : g.finalOwnership)
-                if (o < -1 || o > 1) throw std::runtime_error("replay buffer: bad ownership value");
-        } else {
-            // An older file: recompute what self-play would have recorded.
-            try {
-                g.finalOwnership = replayFinalOwnership(g);
-            } catch (const std::runtime_error& e) {
-                throw std::runtime_error("replay buffer: game " + std::to_string(i) +
-                                         " does not replay: " + e.what());
-            }
-        }
-        if (withResigned) {
-            uint8_t resigned = 0;
-            r.bytes(&resigned, 1);
-            if (resigned > 1) throw std::runtime_error("replay buffer: bad resigned flag");
-            g.resigned = resigned == 1;
-        }
+        GameRecord g = readGameRecord(r, "replay buffer: game " + std::to_string(i), withOwnership,
+                                      withResigned);
         // Straight into the deque: the saved window already respected the
         // capacity, and totalAdded is restored below rather than recounted.
         buf.positions_ += g.positions();

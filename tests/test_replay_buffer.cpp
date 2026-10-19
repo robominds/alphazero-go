@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 #include "azgo/encode.hpp"
+#include "azgo/evaluator.hpp"
 #include "azgo/game.hpp"
 #include "azgo/parallel.hpp"
 #include "azgo/replay_buffer.hpp"
@@ -458,7 +459,168 @@ static void test_sample_on_a_pool_is_identical() {
     }
 }
 
+// ---- the per-game serializer -----------------------------------------------
+
+// Real self-play records on 5x5 with a uniform evaluator: played out, played
+// out with resignation on (disabled, with record lows) and resigned at once
+// (a threshold above the uniform value 0).
+static std::vector<GameRecord> selfPlayRecords() {
+    std::vector<GameRecord> out;
+    UniformEvaluator ev(5, 2);
+    SelfPlayConfig cfg;
+    cfg.mcts.simulations = 8;
+    cfg.mcts.batchSize = 4;
+    cfg.temperatureMoves = 6;
+    for (uint64_t seed : {11, 12}) {
+        Rng rng(seed);
+        out.push_back(playSelfPlayGame(ev, cfg, rng));
+    }
+    SelfPlayConfig disabled = cfg;
+    disabled.resignation = true;
+    disabled.resignThreshold = 0.5f;
+    disabled.resignDisabledFraction = 1.0f;
+    Rng r1(13);
+    out.push_back(playSelfPlayGame(ev, disabled, r1));
+    assert(out.back().resignDisabled && !out.back().resigned);
+    SelfPlayConfig resigning = disabled;
+    resigning.resignDisabledFraction = 0.0f;
+    Rng r2(14);
+    out.push_back(playSelfPlayGame(ev, resigning, r2));
+    assert(out.back().resigned && out.back().positions() == 1);
+    return out;
+}
+
+static bool sameStoredFields(const GameRecord& a, const GameRecord& b) {
+    return a.boardSize == b.boardSize && std::memcmp(&a.komi, &b.komi, sizeof a.komi) == 0 &&
+           a.moves == b.moves && a.stones == b.stones && a.visits == b.visits &&
+           std::memcmp(&a.resultForBlack, &b.resultForBlack, sizeof a.resultForBlack) == 0 &&
+           a.finalOwnership == b.finalOwnership && a.resigned == b.resigned;
+}
+
+// Every layout the buffer has had: without ownership (state.bin 1-2), without
+// the resigned flag (1-4), and today's. A layout without ownership recomputes
+// it by replay, which gives what self-play recorded; one without the flag
+// reads every game as not resigned.
+static void test_game_record_round_trip() {
+    for (const GameRecord& rec : selfPlayRecords())
+        for (bool withOwnership : {false, true})
+            for (bool withResigned : {false, true}) {
+                std::ostringstream os;
+                BinaryWriter w(os);
+                writeGameRecord(w, rec, withOwnership, withResigned);
+                std::istringstream is(os.str());
+                BinaryReader r(is);
+                const GameRecord back = readGameRecord(r, "test", withOwnership, withResigned);
+                assert(is.peek() == std::char_traits<char>::eof());   // read all of it
+                GameRecord expected = rec;
+                if (!withResigned) expected.resigned = false;
+                assert(sameStoredFields(back, expected));
+            }
+}
+
+// ReplayBuffer::save as it was before the per-game body moved into
+// writeGameRecord, copied verbatim: the golden reference for state.bin's bytes.
+static std::string legacySave(const ReplayBuffer& buf, bool withOwnership = true,
+                              bool withResigned = true) {
+    std::ostringstream os;
+    BinaryWriter w(os);
+    w.u64(buf.capacity());
+    w.u64(static_cast<uint64_t>(buf.totalPositionsAdded()));
+    w.u32(static_cast<uint32_t>(buf.games()));
+    for (size_t i = 0; i < buf.games(); ++i) {
+        const GameRecord& g = buf.game(i);
+        w.i32(g.boardSize);
+        w.f32(g.komi);
+        w.u32(static_cast<uint32_t>(g.moves.size()));
+        for (int m : g.moves) w.i32(m);
+        w.bytes(g.stones.data(), g.stones.size());
+        for (const auto& ply : g.visits) {
+            w.u32(static_cast<uint32_t>(ply.size()));
+            for (const auto& av : ply)
+                w.u32((static_cast<uint32_t>(static_cast<uint16_t>(av.first)) << 16) | av.second);
+        }
+        w.f32(g.resultForBlack);
+        if (withOwnership) w.bytes(g.finalOwnership.data(), g.finalOwnership.size());
+        if (withResigned) {
+            const uint8_t resigned = g.resigned ? 1 : 0;
+            w.bytes(&resigned, 1);
+        }
+    }
+    return os.str();
+}
+
+static void test_state_bytes_unchanged_by_record_refactor() {
+    ReplayBuffer buf(1000);
+    for (GameRecord& rec : selfPlayRecords()) buf.add(std::move(rec));
+    buf.add(makeRecord({6, 18, 12, 25}));
+    buf.add(makeRecord({25, 25}, 0.0f));
+    for (bool withOwnership : {false, true})
+        for (bool withResigned : {false, true}) {
+            std::ostringstream os;
+            BinaryWriter w(os);
+            buf.save(w, withOwnership, withResigned);
+            assert(os.str() == legacySave(buf, withOwnership, withResigned));
+        }
+}
+
+// readGameRecord refuses what ReplayBuffer::load always refused, and says
+// which record: `what` prefixes every message.
+static void test_read_game_record_refusals() {
+    const GameRecord good = makeRecord({6, 18, 12});
+    auto refusal = [](const GameRecord& rec, bool corruptFlag = false) {
+        std::ostringstream os;
+        BinaryWriter w(os);
+        writeGameRecord(w, rec);
+        std::string bytes = os.str();
+        if (corruptFlag) bytes.back() = 2;   // the resigned flag is the last byte
+        std::istringstream is(bytes);
+        BinaryReader r(is);
+        try {
+            readGameRecord(r, "slice: game 7");
+        } catch (const std::runtime_error& e) {
+            return std::string(e.what());
+        }
+        return std::string("accepted");
+    };
+    GameRecord badSize = good;
+    badSize.boardSize = 3;
+    assert(refusal(badSize) == "slice: game 7: bad board size 3");
+    GameRecord badMove = good;
+    badMove.moves[1] = 26;
+    assert(refusal(badMove) == "slice: game 7: bad move");
+    GameRecord noVisits = good;
+    noVisits.visits[0].clear();
+    assert(refusal(noVisits) == "slice: game 7: bad visit list");
+    GameRecord badVisit = good;
+    badVisit.visits[2][0].second = 0;
+    assert(refusal(badVisit) == "slice: game 7: bad visit entry");
+    GameRecord badOwner = good;
+    badOwner.finalOwnership[4] = 2;
+    assert(refusal(badOwner) == "slice: game 7: bad ownership value");
+    assert(refusal(good, true) == "slice: game 7: bad resigned flag");
+    assert(refusal(good) == "accepted");
+
+    // The old layout recomputes ownership by replay, naming the record when it cannot.
+    GameRecord illegal = makeRecord({6, 18});
+    illegal.moves[1] = 6;   // White on Black's stone
+    std::ostringstream os;
+    BinaryWriter w(os);
+    writeGameRecord(w, illegal, false, false);
+    std::istringstream is(os.str());
+    BinaryReader r(is);
+    std::string msg;
+    try {
+        readGameRecord(r, "slice: game 7", false, false);
+    } catch (const std::runtime_error& e) {
+        msg = e.what();
+    }
+    assert(msg == "slice: game 7 does not replay: move 2 (B4) is illegal");
+}
+
 int main() {
+    test_game_record_round_trip();
+    test_state_bytes_unchanged_by_record_refactor();
+    test_read_game_record_refusals();
     test_add_evicts_oldest_games();
     test_oversized_game_is_kept_alone();
     test_set_capacity_shrinks_by_evicting();

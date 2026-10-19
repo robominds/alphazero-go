@@ -9,6 +9,7 @@
 #pragma once
 #include <cstddef>
 #include <deque>
+#include <string>
 #include <utility>
 #include <vector>
 #include "azgo/rng.hpp"
@@ -35,6 +36,23 @@ struct TrainingBatch {
 // `sym`.
 void encodeTrainingSample(const GameRecord& game, int ply, int history, int sym,
                           float* input, float* pi, float* z, float* ownership = nullptr);
+
+// One game in the replay buffer's layout (ReplayBuffer::save writes one per
+// game; a self-play slice's result file reuses it): i32 boardSize, f32 komi,
+// u32 moves + i32 each, the stones as raw bytes (positions * n * n), per ply
+// u32 count + u32 (action << 16 | count) each, f32 resultForBlack, then
+// (withOwnership) finalOwnership as n * n signed bytes, then (withResigned)
+// one byte, 1 if the game ended by resignation. resignDisabled and the
+// resign lows are not part of it.
+void writeGameRecord(BinaryWriter& w, const GameRecord& game, bool withOwnership = true,
+                     bool withResigned = true);
+// Reads one game written by writeGameRecord with the same flags, refusing a
+// damaged one with a std::runtime_error whose message starts with `what`
+// (e.g. "replay buffer: game 7: bad move"). withOwnership = false recomputes
+// finalOwnership with replayFinalOwnership ("<what> does not replay: ..."
+// if it cannot); withResigned = false reads the game as not resigned.
+GameRecord readGameRecord(BinaryReader& r, const std::string& what, bool withOwnership = true,
+                          bool withResigned = true);
 
 // Sliding window of whole games. A sample is (game, ply); its history planes
 // come from the same game's earlier positions, so history costs no storage.
