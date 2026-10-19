@@ -513,6 +513,27 @@ void test_worker_evaluators_cpu_is_local() {
     }
 }
 
+// evaluations(): the positions every worker's evaluator has evaluated so
+// far, summed; with metal the hub's own count.
+void test_worker_evaluators_count() {
+    const NetConfig cfg = tinyConfig();
+    const Network net(cfg, 93);
+    const Pool pool(net, 8, 94);
+    std::vector<float> logits(8 * cfg.actions()), values(8);
+    std::vector<std::string> backends = {"naive"};
+    if (blasAvailable()) backends.push_back("blas");
+    if (metalBuilt() && metalAvailable()) backends.push_back("metal");
+    for (const std::string& name : backends) {
+        WorkerEvaluators evs(net, name, 3, 8, 256);
+        assert(evs.evaluations() == 0);
+        evs.forWorker(0).evaluate(pool.input.data(), 8, logits.data(), values.data());
+        evs.forWorker(2).evaluate(pool.input.data(), 8, logits.data(), values.data());
+        evs.forWorker(2).evaluate(pool.input.data(), 4, logits.data(), values.data());
+        assert(evs.evaluations() == 20);
+        if (evs.hub()) assert(evs.hub()->stats().positions == 20);
+    }
+}
+
 } // namespace
 
 // A runner whose begin throws (an encoding error, an allocation failure)
@@ -607,6 +628,7 @@ int main() {
     test_hub_refuses_oversized_request();
     test_selfplay_through_hub_equals_local();
     test_worker_evaluators_cpu_is_local();
+    test_worker_evaluators_count();
     std::printf("test_inference_hub: all tests passed\n");
     return 0;
 }

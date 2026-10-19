@@ -9,7 +9,9 @@
 #include "azgo/encode.hpp"
 #include "azgo/game.hpp"
 #include "azgo/parallel.hpp"
+#include "azgo/run_state.hpp"
 #include "azgo/selfplay.hpp"
+#include "azgo/selfplay_slice.hpp"
 
 using namespace azgo;
 
@@ -499,7 +501,101 @@ static void test_calibrate_resign_threshold() {
     assert(calibrateResignThreshold(std::vector<ResignTrace>(5, trace({{1, -1.0f}})), c) == -1.0f);
 }
 
+
+// ---- self-play as a slice of game indices --------------------------------------
+
+static bool sameResignFields(const GameRecord& a, const GameRecord& b) {
+    return a.resignDisabled == b.resignDisabled && a.resignLows[0] == b.resignLows[0] &&
+           a.resignLows[1] == b.resignLows[1];
+}
+
+static SelfPlayConfig sliceConfig(bool resignation) {
+    SelfPlayConfig sp;
+    sp.mcts.simulations = 8;
+    sp.mcts.batchSize = 4;
+    sp.temperatureMoves = 4;
+    sp.resignation = resignation;
+    sp.resignThreshold = -0.05f;
+    sp.resignDisabledFraction = 0.3f;
+    return sp;
+}
+
+// Game i of generation g is seeded by deriveSeed(seed, g, kPhaseSelfPlay, i)
+// whichever slice plays it, so a slice [a, b) is exactly games a..b-1 of the
+// whole generation, for any worker counts.
+static void test_slice_equals_part_of_whole() {
+    const Network net(tinyNet(), 9);
+    std::vector<std::string> backends = {"naive"};
+    if (blasAvailable()) backends.push_back("blas");
+    for (const std::string& backend : backends)
+        for (bool resignation : {false, true}) {
+            const SelfPlayConfig sp = sliceConfig(resignation);
+            const std::vector<GameRecord> whole =
+                playSelfPlayGames(net, sp, 77, 3, 0, 7, EngineRun{backend, 3});
+            const std::vector<GameRecord> middle =
+                playSelfPlayGames(net, sp, 77, 3, 2, 4, EngineRun{backend, 1});
+            const std::vector<GameRecord> last =
+                playSelfPlayGames(net, sp, 77, 3, 6, 1, EngineRun{backend, 2});
+            assert(whole.size() == 7 && middle.size() == 4 && last.size() == 1);
+            for (int k = 0; k < 4; ++k) {
+                assert(sameRecord(middle[k], whole[2 + k]));
+                assert(sameResignFields(middle[k], whole[2 + k]));
+            }
+            assert(sameRecord(last[0], whole[6]) && sameResignFields(last[0], whole[6]));
+            bool lows = false, differ = false;
+            for (int i = 0; i < 7; ++i) {
+                lows = lows || !whole[i].resignLows[0].empty();
+                differ = differ || whole[i].moves != whole[0].moves;
+            }
+            assert(lows == resignation && differ);
+            // Another generation is another set of games.
+            const std::vector<GameRecord> other =
+                playSelfPlayGames(net, sp, 77, 4, 6, 1, EngineRun{backend, 1});
+            assert(!sameRecord(other[0], whole[6]));
+        }
+}
+
+// The statistics: every position of every game, the evaluator's count of
+// evaluations (the same for any worker count: each search is deterministic),
+// and the wall time.
+static void test_slice_stats() {
+    const Network net(tinyNet(), 9);
+    const SelfPlayConfig sp = sliceConfig(false);
+    SliceStats one, three;
+    const std::vector<GameRecord> records =
+        playSelfPlayGames(net, sp, 77, 3, 1, 5, EngineRun{"naive", 1}, &one);
+    playSelfPlayGames(net, sp, 77, 3, 1, 5, EngineRun{"naive", 3}, &three);
+    long long plies = 0;
+    for (const GameRecord& r : records) plies += r.positions();
+    assert(one.positions == plies && three.positions == plies);
+    assert(one.seconds >= 0 && three.seconds >= 0);
+    // Played by hand, one evaluator per game, counting what each evaluated.
+    NaiveBackend be;
+    long long evaluations = 0;
+    for (int i = 1; i < 6; ++i) {
+        LocalEvaluator ev(net, be, sp.mcts.batchSize);
+        Rng rng(deriveSeed(77, 3, kPhaseSelfPlay, static_cast<uint64_t>(i)));
+        playSelfPlayGame(ev, sp, rng);
+        evaluations += ev.evaluations();
+    }
+    assert(evaluations > 0 && one.evaluations == evaluations && three.evaluations == evaluations);
+}
+
+// The QoS class only changes how macOS schedules the worker threads.
+static void test_qos_changes_nothing() {
+    const Network net(tinyNet(), 9);
+    const SelfPlayConfig sp = sliceConfig(true);
+    EngineRun utility{"naive", 2};
+    utility.qos = CpuQos::Utility;
+    const std::vector<GameRecord> a = playSelfPlayGames(net, sp, 5, 1, 0, 4, EngineRun{"naive", 2});
+    const std::vector<GameRecord> b = playSelfPlayGames(net, sp, 5, 1, 0, 4, utility);
+    for (int i = 0; i < 4; ++i) assert(sameRecord(a[i], b[i]) && sameResignFields(a[i], b[i]));
+}
+
 int main() {
+    test_slice_equals_part_of_whole();
+    test_slice_stats();
+    test_qos_changes_nothing();
     test_immediate_pass_pass_game();
     test_z_for_a_black_win_and_a_tie();
     test_record_is_consistent_with_a_replay();

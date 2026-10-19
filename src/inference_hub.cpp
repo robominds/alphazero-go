@@ -272,8 +272,17 @@ WorkerEvaluators::WorkerEvaluators(const Network& net, const std::string& backen
     // naive and blas: exactly the per-worker evaluators self-play always had.
     for (int w = 0; w < workers; ++w) {
         backends_.push_back(makeBackend(backend, 1));
-        evaluators_.push_back(std::make_unique<LocalEvaluator>(net, *backends_.back(), maxRequest));
+        auto local = std::make_unique<LocalEvaluator>(net, *backends_.back(), maxRequest);
+        local_.push_back(local.get());
+        evaluators_.push_back(std::move(local));
     }
+}
+
+long long WorkerEvaluators::evaluations() const {
+    if (hub_) return hub_->stats().positions;
+    long long total = 0;
+    for (const LocalEvaluator* e : local_) total += e->evaluations();
+    return total;
 }
 
 WorkerEvaluators::~WorkerEvaluators() {

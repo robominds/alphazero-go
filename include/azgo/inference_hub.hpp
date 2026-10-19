@@ -169,12 +169,16 @@ public:
     Evaluator& forWorker(int worker);
     int workers() const { return static_cast<int>(evaluators_.size()); }
     InferenceHub* hub() { return hub_.get(); }   // null for the CPU backends
+    // Positions evaluated so far, all workers together: the LocalEvaluators'
+    // counts, or the hub's. Read it once the workers have stopped.
+    long long evaluations() const;
 private:
     // Declared in this order so the evaluators go first, then the hub, then
     // the backends the LocalEvaluators used.
     std::vector<std::unique_ptr<Backend>> backends_;
     std::unique_ptr<InferenceHub> hub_;
     std::vector<std::unique_ptr<Evaluator>> evaluators_;
+    std::vector<const LocalEvaluator*> local_;   // the CPU backends' evaluators, for evaluations()
 };
 
 } // namespace azgo
