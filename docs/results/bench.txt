@@ -562,3 +562,57 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 # - Spec acceptance, the Studio GPU engine's rate beside the chosen local
 #   CPU engine >= 90% of its rate alone: 4 workers, utility QoS: 2,809 of
 #   2,931 = 95.8%. Met (default QoS: 96.2%).
+
+# =============================================================================
+# Distributed self-play: the three-machine smoke (2026-10-18)
+# =============================================================================
+# Plan task 18, at 459fdf0. The coordinator on the Studio (Apple M5 Max,
+# build-metal), mini1 (Apple M4, 16 GB) and mini2 (Apple M4, 24 GB), reached
+# over the Thunderbolt bridge with ssh; the hosts file lives outside the
+# repository. tools/cluster_sync.sh brought both minis to the commit (git
+# archive, build-metal with AZGO_BUILD_ID) and their selfplay --version
+# matched train --version.
+#
+# A tiny 5x5 run (1 block x 8 filters, 24 games of 8 simulations, 4 steps)
+# with naive training and
+#   selfplay_engines = local/metal:2, local/blas=4, mini1/metal:1, mini1/blas=4,
+#                      mini2/metal:1, mini2/blas=4
+# (slices of 6, 4, 3, 4, 3 and 4 games), 3 generations:
+#   two runs:                         identical (checkpoints, SGFs, state.bin,
+#                                     results, elo, references, log.csv without
+#                                     timings, manifest without seconds)
+#   2 generations, then resume to 3:  identical to the straight run
+#   mini1's selfplay killed (pkill in a loop) through generation 2,
+#     selfplay_fallback = local:      both mini1 slices retried, then played by
+#                                     local/metal; the manifest rows say
+#                                     "fallback: mini1: selfplay exit 255" and
+#                                     the log prints the note; generation 3
+#                                     used mini1 again. (In one window the
+#                                     retry won the race: a retried slice and
+#                                     no note, as designed.)
+#   the same with selfplay_fallback = stop:
+#                                     "error: mini1/metal failed twice (...);
+#                                     selfplay_fallback = stop"; state.bin
+#                                     stayed at generation 1, the manifest has
+#                                     no row of generation 2, and the resume
+#                                     to 3 wrote files identical to the
+#                                     failure-free run.
+#   train interrupted (SIGINT) or killed (SIGKILL) while mini1 played a
+#     long slice:                     mini1's selfplay was gone within 2 s
+#                                     both times (the held stdin's end of file
+#                                     reaches it over ssh); no local child left.
+# Afterwards no selfplay process and no work file was left on the minis.
+#
+# Per engine over the 3 generations of one straight run (seconds are 0.0
+# at this size; each generation's self-play took 2.0-2.1 s, nearly all of
+# it transfers and process start-up):
+#   engine        games  positions  evaluations  fingerprint
+#   local/metal      18        232         1720  metal; Apple M5 Max; macOS 27.0.1 (26A434); Apple M5 Max, macOS 27.0.1, shaders b7b31a09
+#   local/blas       12        129          952  blas; Apple M5 Max; macOS 27.0.1 (26A434)
+#   mini1/metal       9        117          868  metal; Apple M4; macOS 27.0.1 (26A434); Apple M4, macOS 27.0.1, shaders b7b31a09
+#   mini1/blas       12        127          940  blas; Apple M4; macOS 27.0.1 (26A434)
+#   mini2/metal       9        174         1288  metal; Apple M4; macOS 27.0.1 (26A434); Apple M4, macOS 27.0.1, shaders b7b31a09
+#   mini2/blas       12        224         1682  blas; Apple M4; macOS 27.0.1 (26A434)
+# The two minis' fingerprints are equal (same chip, macOS build and
+# shaders; their memory differs, which the arithmetic does not see), so
+# their engines may split a share without changing a bit.
