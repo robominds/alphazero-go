@@ -399,7 +399,7 @@ When `selfplay_engines` names remote machines, `Trainer::startNew` and
 3. for local engines: `checkBackendAvailable`, and for `metal`
    `checkMetalInferenceMemory`;
 4. print one line per engine:
-   `engine mini1/metal: Apple M4, macOS 26.1 (25B78), shaders b7b31a09 [09e008b]`.
+   `engine mini1/metal: Apple M4; macOS 26.1 (25B78); Apple M4, macOS 26.1, shaders b7b31a09 [09e008b]`.
 
 A version mismatch is a `ConfigError` naming the alias and both IDs, and
 suggesting `tools/cluster_sync.sh`. An unreachable machine is a
@@ -456,8 +456,8 @@ One row per slice per generation, in the run directory:
 
 ```
 generation,first,count,planned,engine,fingerprint,build,seconds,positions,evaluations,note
-12,0,52,local/metal,local/metal,"Apple M5 Max, macOS 27.0.1, shaders b7b31a09",09e008b,1512.4,14822,5304113,
-12,64,10,mini1/metal,local/metal,"Apple M5 Max, ...",09e008b,402.0,3011,1102330,fallback: mini1: ssh exit 255
+12,0,52,local/metal,local/metal,"metal; Apple M5 Max; macOS 27.0.1 (26A434); Apple M5 Max, macOS 27.0.1, shaders b7b31a09",09e008b,1512.4,14822,5304113,
+12,64,10,mini1/metal,local/metal,"metal; Apple M5 Max; ...",09e008b,402.0,3011,1102330,fallback: mini1: ssh exit 255
 ```
 
 `planned` is the assignment; `engine` and `fingerprint` say who
@@ -519,11 +519,16 @@ identical hardware.
 
 ## Build identity and keeping machines in sync
 
-Every binary embeds a build ID. CMake runs `git rev-parse HEAD` and, if
-`git status --porcelain` is non-empty, appends `+` and the first 8 hex
-digits of a hash of `git diff HEAD`. It does this at build time, through
-a small script that rewrites the generated header only when the ID
-changes. A cache variable `AZGO_BUILD_ID` overrides it, for trees without
+Every binary embeds a build ID. CMake runs `git rev-parse HEAD` and, if a
+tracked file changed (`git status --porcelain --untracked-files=no`) or an
+untracked file lies where the build globs its sources (`CMakeLists.txt`,
+`cmake`, `src`, `include`, `apps`, `tests`), appends `+` and the first 8
+hex digits of a SHA-256 over the status, `git diff HEAD` and those
+untracked files' names and contents. Untracked files elsewhere (notes,
+run directories) leave the ID clean, so every clean checkout of a commit
+gets the same ID. It does this at build time, through a small script
+(`cmake/azgo_build_info.cmake`, tested by `tests/build_id.sh`) that
+rewrites the generated header only when the ID changes. A cache variable `AZGO_BUILD_ID` overrides it, for trees without
 `.git`, such as the minis' copies made with `git archive`. A tree with
 neither gets `unknown`, which the coordinator refuses for remote engines.
 `azgo::buildId()` returns it; `train --version` and `selfplay --version`
@@ -563,8 +568,8 @@ The resume loads the old `config.cfg` (no engine keys: the defaults),
 applies the override, preflights, rewrites `config.cfg` and prints:
 
 ```
-note: self-play engines changed from local/metal to local/metal:50,local/blas=12,...;
-from here on results differ in the last bits from a run that kept local/metal
+note: self-play engines changed from local/metal to local/metal:50, local/blas=12, ...; from here on results differ in the
+last bits from a run that kept local/metal
 ```
 
 Generations before the switch are untouched. Switching back
