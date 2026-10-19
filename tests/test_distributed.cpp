@@ -1054,6 +1054,132 @@ static void test_selfplay_exe_end_to_end() {
     assert(spawnAndWait({exe, "--fingerprint", "--backend", "gpu"}, log) == 1);
 }
 
+// ---- transports ---------------------------------------------------------------------
+
+static MachineSettings sshMachine() {
+    MachineSettings m;
+    m.alias = "mini1";
+    m.ssh = "u@h";
+    m.exe = "~/azgo/build-metal/selfplay";
+    m.workdir = "~/azgo/runs/remote";
+    m.nice = 5;
+    m.timeout = 600;
+    return m;
+}
+
+// The exact command lines, and that only validated pieces reach the remote
+// shell. No test opens a connection.
+static void test_ssh_argv() {
+    const MachineSettings m = sshMachine();
+    const std::string dir = "~/azgo/runs/remote/run-1a2b3c4d";
+    const std::vector<std::string> args = {"--job", dir + "/g0001_0_a1.job", "--out", dir + "/g0001_0_a1.result",
+                                           "--backend", "metal", "--workers", "8"};
+    const std::vector<std::string> expected = {
+        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15", "-o",
+        "ServerAliveCountMax=4", "u@h",
+        "exec nice -n 5 ~/azgo/build-metal/selfplay --job " + dir + "/g0001_0_a1.job --out " + dir +
+            "/g0001_0_a1.result --backend metal --workers 8"};
+    assert(sshArgv(m, args) == expected);
+    assert((scpArgv(m, "/tmp/a/net_1.azn", dir + "/net_1.azn", true) ==
+            std::vector<std::string>{"scp", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                                     "/tmp/a/net_1.azn", "u@h:" + dir + "/net_1.azn"}));
+    assert((scpArgv(m, "/tmp/a/r.result", dir + "/r.result", false) ==
+            std::vector<std::string>{"scp", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                                     "u@h:" + dir + "/r.result", "/tmp/a/r.result"}));
+    // Settings smuggled past the hosts file's checks, or unsafe arguments.
+    auto refused = [&](const MachineSettings& bad, const std::vector<std::string>& a) {
+        try {
+            sshArgv(bad, a);
+        } catch (const std::logic_error&) {
+            return true;
+        }
+        return false;
+    };
+    MachineSettings bad = m;
+    bad.exe = "/a;rm -rf /";
+    assert(refused(bad, args));
+    bad = m;
+    bad.ssh = "u@h -oProxyCommand=x";
+    assert(refused(bad, args));
+    bad = m;
+    bad.ssh = "-oProxyCommand=x";
+    assert(refused(bad, args));
+    assert(refused(m, {"--job", "a b"}));
+    assert(refused(m, {"--job", "$(reboot)"}));
+    assert(refused(m, {"--job", "x'y"}));
+    bool threw = false;
+    try {
+        scpArgv(m, "/tmp/a b", dir + "/x", true);
+    } catch (const std::logic_error&) {
+        threw = true;
+    }
+    assert(threw);
+}
+
+static void test_subprocess_transport_round_trip() {
+    SliceWork work("transport");
+    MachineSettings m;
+    m.alias = "fake";
+    m.exe = AZGO_SELFPLAY_EXE;
+    m.workdir = (work.dir / "remote").string();
+    const std::unique_ptr<Transport> t = makeTransport(m);
+    const std::string remoteNet = m.workdir + "/run-x/net_test.azn";
+    assert(!t->exists(remoteNet));
+    t->upload((work.dir / "net_test.azn").string(), remoteNet);
+    assert(t->exists(remoteNet));
+    const std::string log = (work.dir / "fake.log").string();
+    const ProcessResult version = t->run({"--version"}, log, 30);
+    assert(version.exitCode == 0 && contains(readText(log), "selfplay " + shortBuildId()));
+    const std::string back = (work.dir / "back.azn").string();
+    t->download(remoteNet, back);
+    assert(readText(back) == readText((work.dir / "net_test.azn").string()));
+    t->remove({remoteNet, m.workdir + "/run-x/not-there"});
+    assert(!t->exists(remoteNet));
+    bool threw = false;
+    try {
+        t->download(remoteNet, back);
+    } catch (const SliceError&) {
+        threw = true;
+    }
+    assert(threw);
+    t->killStray("run-x-00000000");   // best effort: nothing to kill
+}
+
+// The in-process transport (tests) plays the job on the calling thread and
+// writes the same result as the real binary.
+static void test_in_process_transport() {
+    SliceWork work("inprocess");
+    MachineSettings m;
+    m.alias = "fake";
+    m.exe = AZGO_SELFPLAY_EXE;
+    m.workdir = (work.dir / "remote").string();
+    std::vector<std::unique_ptr<Transport>> transports;
+    transports.push_back(makeTransport(m));
+    transports.push_back(std::make_unique<InProcessTransport>(m));
+    std::vector<SliceResult> results;
+    for (const std::unique_ptr<Transport>& t : transports) {
+        const std::string dir = m.workdir + "/run-y";
+        t->upload((work.dir / "net_test.azn").string(), dir + "/net_test.azn");
+        t->upload(work.jobPath, dir + "/g0002_3_a1.job");
+        const ProcessResult r = t->run({"--job", dir + "/g0002_3_a1.job", "--out", dir + "/g0002_3_a1.result",
+                                        "--backend", "naive", "--workers", "2"},
+                                       (work.dir / "run.log").string(), 120);
+        assert(r.exitCode == 0);
+        const std::string local = (work.dir / "fetched.result").string();
+        t->download(dir + "/g0002_3_a1.result", local);
+        results.push_back(readSliceResult(local, work.jobBytes, buildId()));
+        t->remove({dir + "/g0002_3_a1.job", dir + "/g0002_3_a1.result"});
+    }
+    assert(sameRecords(results[0].records, results[1].records));
+    assert(results[0].fingerprint == results[1].fingerprint);
+    // A failing job is a non-zero exit, as from the binary.
+    InProcessTransport inProcess(m);
+    assert(inProcess.run({"--job", m.workdir + "/missing.job", "--out", m.workdir + "/x.result", "--backend",
+                          "naive"},
+                         (work.dir / "run.log").string(), 10)
+               .exitCode == 1);
+}
+
 int main() {
     test_build_id_shape();
     test_build_options();
@@ -1076,6 +1202,9 @@ int main() {
     test_run_slice_job_refusals();
     test_run_process();
     test_selfplay_exe_end_to_end();
+    test_ssh_argv();
+    test_subprocess_transport_round_trip();
+    test_in_process_transport();
     std::printf("test_distributed: OK\n");
     return 0;
 }

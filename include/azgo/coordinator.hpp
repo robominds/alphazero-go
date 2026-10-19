@@ -18,6 +18,7 @@
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #pragma once
 #include <map>
+#include <memory>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -26,6 +27,7 @@
 #include "azgo/network.hpp"
 #include "azgo/selfplay.hpp"
 #include "azgo/selfplay_slice.hpp"
+#include "azgo/subprocess.hpp"
 
 namespace azgo {
 
@@ -73,6 +75,95 @@ private:
     std::map<std::string, std::string> fingerprints_;   // local backend -> fingerprint
     std::vector<SliceReport> reports_;
 };
+
+// ---- transports ----------------------------------------------------------------
+//
+// How the coordinator reaches a machine's work directory and its selfplay
+// binary. Remote paths are the coordinator's own (workdir/run-id/...);
+// errors are SliceErrors, which the failure policy handles like a failed
+// slice.
+class Transport {
+public:
+    virtual ~Transport() = default;
+    // Copies a local file to `remote`, creating its directory.
+    virtual void upload(const std::string& local, const std::string& remote) = 0;
+    virtual bool exists(const std::string& remote) = 0;
+    // Runs the machine's selfplay binary with `args` (niced), its stdout
+    // and stderr appended to the local file `log`; timeout as runProcess.
+    virtual ProcessResult run(const std::vector<std::string>& args, const std::string& log,
+                              double timeout) = 0;
+    virtual void download(const std::string& remote, const std::string& local) = 0;
+    // Removes the files that exist; missing ones are no error.
+    virtual void remove(const std::vector<std::string>& remote) = 0;
+    // Best effort: stops selfplay processes whose command line holds runId
+    // (an orphan of a dropped connection), before a retry.
+    virtual void killStray(const std::string& runId) = 0;
+};
+
+// A machine with ssh: scp for files and ssh for commands, each a child
+// process (runProcess), never a local shell. The one string the remote
+// shell parses is built from hosts-file values and coordinator paths, each
+// checked against [A-Za-z0-9_./~@:+-] again here.
+class SshTransport : public Transport {
+public:
+    explicit SshTransport(MachineSettings machine, std::string log = "");
+    void upload(const std::string& local, const std::string& remote) override;
+    bool exists(const std::string& remote) override;
+    ProcessResult run(const std::vector<std::string>& args, const std::string& log,
+                      double timeout) override;
+    void download(const std::string& remote, const std::string& local) override;
+    void remove(const std::vector<std::string>& remote) override;
+    void killStray(const std::string& runId) override;
+private:
+    ProcessResult command(const std::vector<std::string>& words, double timeout);
+    std::string why(const ProcessResult& r) const;
+    MachineSettings m_;
+    std::string log_;   // where scp's and ssh's own messages go ("" = /dev/null)
+};
+
+// A machine without ssh: this machine, the selfplay binary as a separate
+// process, files copied with std::filesystem ("~/" is $HOME). Tests use it
+// as a fake remote; it can also run a niced CPU engine here.
+class SubprocessTransport : public Transport {
+public:
+    explicit SubprocessTransport(MachineSettings machine);
+    void upload(const std::string& local, const std::string& remote) override;
+    bool exists(const std::string& remote) override;
+    ProcessResult run(const std::vector<std::string>& args, const std::string& log,
+                      double timeout) override;
+    void download(const std::string& remote, const std::string& local) override;
+    void remove(const std::vector<std::string>& remote) override;
+    void killStray(const std::string& runId) override;
+protected:
+    MachineSettings m_;
+};
+
+// For tests: SubprocessTransport's files, but run() calls runSliceJob on
+// the calling thread (the selfplay app's arguments, parsed here).
+class InProcessTransport : public SubprocessTransport {
+public:
+    using SubprocessTransport::SubprocessTransport;
+    ProcessResult run(const std::vector<std::string>& args, const std::string& log,
+                      double timeout) override;
+};
+
+// SshTransport when the machine has ssh, else SubprocessTransport. `log`:
+// where the ssh transport's own messages go.
+std::unique_ptr<Transport> makeTransport(const MachineSettings& machine,
+                                         const std::string& log = "");
+
+// The argument vectors SshTransport runs, for tests. sshArgv runs the
+// machine's selfplay with `args`:
+//   ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15
+//       -o ServerAliveCountMax=4 <ssh> 'exec nice -n <nice> <exe> <args...>'
+// scpArgv copies local to remote (upload) or back. Both throw
+// std::logic_error if any piece holds a character outside
+// [A-Za-z0-9_./~@:+-] or the target or a path starts with '-': the
+// hosts file refuses such values, so it means a bug, not bad input.
+std::vector<std::string> sshArgv(const MachineSettings& machine,
+                                 const std::vector<std::string>& args);
+std::vector<std::string> scpArgv(const MachineSettings& machine, const std::string& local,
+                                 const std::string& remote, bool upload);
 
 // runDir/selfplay-engines.csv
 std::string manifestPath(const std::string& runDir);
