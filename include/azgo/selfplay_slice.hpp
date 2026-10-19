@@ -9,7 +9,9 @@
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #pragma once
+#include <atomic>
 #include <cstdint>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include "azgo/network.hpp"
@@ -29,11 +31,20 @@ void setThreadQos(CpuQos qos);
 // How one engine plays its slice: the backend (naive, blas or metal), its
 // worker threads, the most positions per GPU pass (metal), and the worker
 // threads' QoS class. None of these change a single bit of the games.
+// cancel, when not null, is watched at every network evaluation: once it is
+// set (another engine of the generation failed, so the generation will not
+// be committed) the slice stops with SliceCancelled.
 struct EngineRun {
     std::string backend;
     int workers = 1;
     int inferenceBatch = 256;
     CpuQos qos = CpuQos::Default;
+    const std::atomic<bool>* cancel = nullptr;
+};
+
+// What a slice throws when its EngineRun's cancel flag was set.
+struct SliceCancelled : std::runtime_error {
+    SliceCancelled() : std::runtime_error("self-play slice cancelled") {}
 };
 
 // What a slice cost: wall seconds, positions recorded, and network

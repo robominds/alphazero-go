@@ -7,6 +7,7 @@
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -23,7 +24,9 @@
 #include "azgo/coordinator.hpp"
 #include "azgo/engines.hpp"
 #include "azgo/metal.hpp"
+#include "azgo/network.hpp"
 #include "azgo/rng.hpp"
+#include "azgo/selfplay_slice.hpp"
 
 using namespace azgo;
 
@@ -472,6 +475,40 @@ static void test_manifest_rows() {
     std::filesystem::remove_all(dir);
 }
 
+// One engine failing stops the others at their next evaluation, and play()
+// throws that failure, not the others' cancellations. The metal engine
+// fails as soon as its thread starts (a hosts-file inference_batch below
+// mcts_batch, which preflight would refuse); the naive engine listed before
+// it has a slice that would take minutes. Needs a usable Metal GPU.
+static void test_failing_engine_stops_the_others() {
+    if (!metalBuilt() || !metalAvailable()) return;
+    Config cfg;
+    cfg.boardSize = 5;
+    cfg.history = 2;
+    cfg.blocks = 1;
+    cfg.filters = 4;
+    cfg.valueHidden = 8;
+    cfg.gamesPerGeneration = 2000;
+    applyOverride(cfg, "selfplay_engines=local/naive=1999, local/metal:1");
+    SelfPlayCoordinator coordinator(cfg, "unused",
+                                    parseHostsText("local cpu_workers=1 inference_batch=4\n", "h"), nullptr);
+    const Network net(cfg.netConfig(), 3);
+    SelfPlayConfig sp;
+    sp.mcts.simulations = 64;
+    sp.mcts.batchSize = 8;
+    const auto start = std::chrono::steady_clock::now();
+    std::string error;
+    try {
+        coordinator.play(1, "unused", net, sp, 2000);
+    } catch (const SliceCancelled&) {
+        error = "cancelled";
+    } catch (const std::invalid_argument& e) {
+        error = e.what();
+    }
+    assert(contains(error, "do not fit batches of 4"));
+    assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(5));
+}
+
 int main() {
     test_build_id_shape();
     test_build_options();
@@ -485,6 +522,7 @@ int main() {
     test_engine_workers();
     test_fingerprint();
     test_manifest_rows();
+    test_failing_engine_stops_the_others();
     std::printf("test_distributed: OK\n");
     return 0;
 }

@@ -13,6 +13,29 @@
 
 namespace azgo {
 
+namespace {
+
+// An evaluator that checks the cancel flag before every evaluation and
+// otherwise passes the call through unchanged, so the games are the same
+// bits with or without it.
+class CancellableEvaluator : public Evaluator {
+public:
+    CancellableEvaluator(Evaluator& inner, const std::atomic<bool>& cancel)
+        : inner_(inner), cancel_(cancel) {}
+    int boardSize() const override { return inner_.boardSize(); }
+    int history() const override { return inner_.history(); }
+    int maxBatch() const override { return inner_.maxBatch(); }
+    void evaluate(const float* input, int B, float* logits, float* values) override {
+        if (cancel_.load(std::memory_order_relaxed)) throw SliceCancelled();
+        inner_.evaluate(input, B, logits, values);
+    }
+private:
+    Evaluator& inner_;
+    const std::atomic<bool>& cancel_;
+};
+
+} // namespace
+
 void setThreadQos(CpuQos qos) {
 #ifdef __APPLE__
     if (qos == CpuQos::Utility) pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
@@ -51,7 +74,12 @@ std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConf
             const int i = first + k;
             Rng rng(deriveSeed(seed, static_cast<uint64_t>(generation), kPhaseSelfPlay,
                                static_cast<uint64_t>(i)));
-            records[static_cast<size_t>(k)] = playSelfPlayGame(evaluators.forWorker(w), sp, rng);
+            if (run.cancel) {
+                CancellableEvaluator ev(evaluators.forWorker(w), *run.cancel);
+                records[static_cast<size_t>(k)] = playSelfPlayGame(ev, sp, rng);
+            } else {
+                records[static_cast<size_t>(k)] = playSelfPlayGame(evaluators.forWorker(w), sp, rng);
+            }
         });
         evaluations = evaluators.evaluations();
     }

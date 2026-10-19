@@ -1,5 +1,6 @@
 #include "azgo/coordinator.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -106,8 +107,20 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
         reports[k].build = shortBuildId();
     }
 
+    // The BLAS backend sets its environment once, with setenv, which is not
+    // thread-safe: do that here, before any engine thread runs.
+    for (const EngineRun& run : runs)
+        if (run.backend == "blas") {
+            makeBackend("blas", 1);
+            break;
+        }
+
     // One thread per slice, all at once. Each engine has its own evaluators,
-    // so a slice's games are what playSelfPlayGames would give alone.
+    // so a slice's games are what playSelfPlayGames would give alone. The
+    // first slice to fail sets `stop`, and the others stop at their next
+    // network evaluation: the generation will not be committed anyway.
+    std::atomic<bool> stop{false};
+    for (EngineRun& run : runs) run.cancel = &stop;
     std::vector<std::vector<GameRecord>> results(n);
     std::vector<std::exception_ptr> errors(n);
     std::vector<std::thread> threads;
@@ -120,15 +133,29 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
                                                    slices[k].count, runs[k], &reports[k].stats);
                 } catch (...) {
                     errors[k] = std::current_exception();
+                    stop = true;
                 }
             });
     } catch (...) {
         launchError = std::current_exception();   // a thread could not start: join the others first
+        stop = true;
     }
     for (std::thread& t : threads) t.join();
     if (launchError) std::rethrow_exception(launchError);
-    for (const std::exception_ptr& e : errors)
-        if (e) std::rethrow_exception(e);
+    // The failure itself, by list order, rather than the cancellations it caused.
+    std::exception_ptr first;
+    for (const std::exception_ptr& e : errors) {
+        if (!e) continue;
+        try {
+            std::rethrow_exception(e);
+        } catch (const SliceCancelled&) {
+            if (!first) first = e;
+            continue;
+        } catch (...) {
+        }
+        std::rethrow_exception(e);
+    }
+    if (first) std::rethrow_exception(first);
 
     // Merge by game index: records[first + k] = slice's k-th, each index
     // filled exactly once, whatever order the slices finished in.

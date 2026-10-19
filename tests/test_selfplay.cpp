@@ -1,10 +1,13 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <atomic>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 #include "azgo/encode.hpp"
 #include "azgo/game.hpp"
@@ -592,10 +595,50 @@ static void test_qos_changes_nothing() {
     for (int i = 0; i < 4; ++i) assert(sameRecord(a[i], b[i]) && sameResignFields(a[i], b[i]));
 }
 
+// A slice stops at its next network evaluation once its cancel flag is
+// set (another engine of the generation failed): SliceCancelled, promptly.
+static void test_slice_cancel() {
+    const Network net(tinyNet(), 9);
+    SelfPlayConfig sp = sliceConfig(false);
+    sp.mcts.simulations = 64;
+    std::atomic<bool> cancel{true};
+    EngineRun run{"naive", 2};
+    run.cancel = &cancel;
+    bool threw = false;
+    try {
+        playSelfPlayGames(net, sp, 5, 1, 0, 4, run);
+    } catch (const SliceCancelled&) {
+        threw = true;
+    }
+    assert(threw);
+    // Set while it plays: a slice of hundreds of games ends at once.
+    cancel = false;
+    const auto start = std::chrono::steady_clock::now();
+    std::thread canceller([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        cancel = true;
+    });
+    threw = false;
+    try {
+        playSelfPlayGames(net, sp, 5, 1, 0, 2000, run);
+    } catch (const SliceCancelled&) {
+        threw = true;
+    }
+    canceller.join();
+    assert(threw);
+    assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(5));
+    // Not set: the games are those of a run without the flag.
+    cancel = false;
+    const std::vector<GameRecord> a = playSelfPlayGames(net, sp, 5, 1, 0, 3, run);
+    const std::vector<GameRecord> b = playSelfPlayGames(net, sp, 5, 1, 0, 3, EngineRun{"naive", 2});
+    for (int i = 0; i < 3; ++i) assert(sameRecord(a[i], b[i]));
+}
+
 int main() {
     test_slice_equals_part_of_whole();
     test_slice_stats();
     test_qos_changes_nothing();
+    test_slice_cancel();
     test_immediate_pass_pass_game();
     test_z_for_a_black_win_and_a_tie();
     test_record_is_consistent_with_a_replay();
