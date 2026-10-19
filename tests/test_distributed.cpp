@@ -19,8 +19,8 @@
 #include <stdexcept>
 #include <string>
 #include <cerrno>
-#include <fcntl.h>
-#include <spawn.h>
+#include <csignal>
+#include <dirent.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
@@ -34,9 +34,8 @@
 #include "azgo/network.hpp"
 #include "azgo/rng.hpp"
 #include "azgo/run_state.hpp"
+#include "azgo/subprocess.hpp"
 #include "azgo/selfplay_slice.hpp"
-
-extern char** environ;
 
 using namespace azgo;
 
@@ -950,23 +949,77 @@ static void test_run_slice_job_refusals() {
     }
 }
 
-// Runs argv with stdout and stderr to `log`; returns the exit status, or -1.
+// Runs argv with stdout and stderr to `log` (replaced); returns the exit
+// status, or -1.
 static int spawnAndWait(const std::vector<std::string>& args, const std::string& log) {
-    posix_spawn_file_actions_t actions;
-    posix_spawn_file_actions_init(&actions);
-    posix_spawn_file_actions_addopen(&actions, 1, log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    posix_spawn_file_actions_adddup2(&actions, 1, 2);
-    std::vector<char*> argv;
-    for (const std::string& a : args) argv.push_back(const_cast<char*>(a.c_str()));
-    argv.push_back(nullptr);
-    pid_t pid = 0;
-    const int rc = posix_spawn(&pid, argv[0], &actions, nullptr, argv.data(), environ);
-    posix_spawn_file_actions_destroy(&actions);
-    if (rc != 0) return -1;
-    int status = 0;
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    std::filesystem::remove(log);
+    return runProcess(args, log, 300).exitCode;
+}
+
+// ---- runProcess ----------------------------------------------------------------------
+
+static int openDescriptors() {
+    int count = 0;
+    if (DIR* d = opendir("/dev/fd")) {
+        while (readdir(d)) ++count;
+        closedir(d);
     }
-    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+    return count;
+}
+
+static void test_run_process() {
+    const std::string log = tempPath("process.log");
+    std::filesystem::remove(log);
+    assert(runProcess({"true"}, "", 10).exitCode == 0);
+    const ProcessResult f = runProcess({"false"}, "", 10);
+    assert(f.exitCode == 1 && !f.timedOut && f.signal == 0 && f.error.empty());
+    const ProcessResult three = runProcess({"sh", "-c", "echo hi; echo err >&2; exit 3"}, log, 10);
+    assert(three.exitCode == 3);
+    // Appended: a second run adds its lines after the first's.
+    runProcess({"sh", "-c", "echo again"}, log, 10);
+    assert(readText(log) == "hi\nerr\nagain\n");
+
+    // A timeout terminates the child (and its children: its process group).
+    auto start = std::chrono::steady_clock::now();
+    const ProcessResult slow = runProcess({"sleep", "10"}, "", 0.3);
+    assert(slow.timedOut && slow.exitCode == -1 && slow.signal == SIGTERM);
+    assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(6));
+    // One that ignores SIGTERM is killed 5 s later.
+    start = std::chrono::steady_clock::now();
+    const ProcessResult stubborn = runProcess({"sh", "-c", "trap '' TERM; sleep 30; exit 0"}, "", 0.3);
+    assert(stubborn.timedOut && stubborn.signal == SIGKILL);
+    const auto took = std::chrono::steady_clock::now() - start;
+    assert(took >= std::chrono::milliseconds(5000) && took < std::chrono::seconds(9));
+
+    const ProcessResult missing = runProcess({"/nonexistent/azgo-no-such-program"}, log, 10);
+    assert(missing.exitCode == -1 && !missing.error.empty() && !missing.timedOut);
+    const ProcessResult unnamed = runProcess({"azgo-no-such-program-on-path"}, log, 10);
+    assert(unnamed.exitCode == -1 && !unnamed.error.empty());
+    bool threw = false;
+    try {
+        runProcess({}, "", 1);
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    assert(threw);
+
+    // stdin from a file.
+    const std::string input = tempPath("process.in");
+    writeText(input, "from a file\n");
+    std::filesystem::remove(log);
+    assert(runProcess({"cat"}, log, 10, input).exitCode == 0);
+    assert(readText(log) == "from a file\n");
+    // Without one, stdin is /dev/null: cat ends at once.
+    assert(runProcess({"cat"}, "", 10).exitCode == 0);
+
+    // No zombie, no descriptor left open.
+    const int before = openDescriptors();
+    for (int i = 0; i < 200; ++i) assert(runProcess({"true"}, log, 10).exitCode == 0);
+    errno = 0;
+    assert(waitpid(-1, nullptr, WNOHANG) == -1 && errno == ECHILD);
+    assert(openDescriptors() == before);
+    std::filesystem::remove(log);
+    std::filesystem::remove(input);
 }
 
 // The real binary gives the in-process result, bit for bit (but the
@@ -1021,6 +1074,7 @@ int main() {
     test_result_refusals();
     test_run_slice_job_in_process();
     test_run_slice_job_refusals();
+    test_run_process();
     test_selfplay_exe_end_to_end();
     std::printf("test_distributed: OK\n");
     return 0;
