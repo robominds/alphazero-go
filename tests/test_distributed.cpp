@@ -161,6 +161,21 @@ static void test_assign_fixed_only() {
     assert(slices.size() == 2);
     assert(slices[0].engine == 0 && slices[0].first == 0 && slices[0].count == 6);
     assert(slices[1].engine == 2 && slices[1].first == 6 && slices[1].count == 4);
+    // An item with neither a weight nor a count (or both) is a programming error.
+    for (const auto& [weight, games] : {std::pair<int, int>{0, -1}, std::pair<int, int>{2, 3}}) {
+        EngineSpec bad;
+        bad.machine = "a";
+        bad.backend = "naive";
+        bad.weight = weight;
+        bad.games = games;
+        std::string msg;
+        try {
+            assignGames({bad}, 3);
+        } catch (const std::invalid_argument& e) {
+            msg = e.what();
+        }
+        assert(contains(msg, "a/naive needs exactly one of a weight (> 0) and a count (>= 0)"));
+    }
     // Lists checkConsistency refuses are refused here too.
     for (int games : {9, 11}) {
         bool threw = false;
@@ -298,6 +313,9 @@ static void test_hosts_refusals() {
     assert(contains(hostsError("mini1 exe=/a workdir=/w cpu_workers=x\n"), "h:1: cpu_workers: "));
     assert(contains(hostsError("mini1 exe=/a workdir=/w cpu_workers=-1\n"), "cpu_workers"));
     assert(contains(hostsError("mini1 exe=/a workdir=/w nice=4.5\n"), "nice"));
+    assert(contains(hostsError("mini1 exe=/a workdir=/w cpu_workers=+3\n"), "cpu_workers"));
+    assert(contains(hostsError("mini1 exe=/a workdir=/w timeout=+1\n"), "timeout"));
+    assert(contains(hostsError("mini1 exe=/a workdir=/w timeout=.5\n"), "timeout"));
     assert(contains(hostsError("mini1 exe=/a workdir=/w timeout=-1\n"), "timeout"));
     assert(contains(hostsError("mini1 exe=/a workdir=/w cpu_qos=low\n"), "cpu_qos"));
     assert(contains(hostsError("mini1 exe=/a workdir=/w cpu_workers=2 cpu_workers=3\n"),

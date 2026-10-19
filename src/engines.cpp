@@ -119,7 +119,7 @@ std::vector<Slice> assignGames(const std::vector<EngineSpec>& engines, int games
     for (const EngineSpec& e : engines) {
         if ((e.weight > 0) == (e.games >= 0))
             throw std::invalid_argument("assignGames: " + e.name() +
-                                        " needs a weight or a count, not both");
+                                        " needs exactly one of a weight (> 0) and a count (>= 0)");
         if (e.games >= 0) fixed += e.games;
         else weights += e.weight;
     }
@@ -175,10 +175,11 @@ bool safeChar(char c) {
            c == '-';
 }
 
-// An integer in [lo, hi], the whole value; "" or the reason.
+// An integer in [lo, hi], the whole value, digits only (no sign); "" or the reason.
 std::string hostsInt(const std::string& v, int lo, int hi, int& out) {
     const std::string reason = "expected an integer in [" + std::to_string(lo) + ", " +
                                std::to_string(hi) + "], got '" + v + "'";
+    if (v.empty() || v[0] < '0' || v[0] > '9') return reason;
     errno = 0;
     char* end = nullptr;
     const long long x = std::strtoll(v.c_str(), &end, 10);
@@ -212,6 +213,8 @@ std::string applyHostsKey(MachineSettings& m, const std::string& key, const std:
         return "";
     }
     if (key == "timeout") {
+        if (value[0] < '0' || value[0] > '9')
+            return "expected seconds in [0, 1e7], got '" + value + "'";
         errno = 0;
         char* end = nullptr;
         const double t = std::strtod(value.c_str(), &end);
