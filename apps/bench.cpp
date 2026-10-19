@@ -70,7 +70,9 @@ const char* const kUsage =
     "                     [--qos default|utility] [--seconds 10] [--net CKPT]\n"
     "\n"
     "--mixed (a build with Metal): for each k of --cpu-workers, the metal hub with N\n"
-    "threads (default: twice the cores, the metal workers rule) and k BLAS workers run\n"
+    "threads (default 0: twice the cores, the workers key's rule for backend = metal;\n"
+    "a metal engine of selfplay_engines plays every game of its slice at once\n"
+    "instead, so pass its slice's games to measure that) and k BLAS workers run\n"
     "at the same time, every thread sending batch-8 requests as self-play does; it\n"
     "prints both rates, their total, the hub's rate against k = 0 (the hub alone), the\n"
     "mean pass and slot occupancy. A second table gives the k BLAS workers alone.\n"
@@ -359,6 +361,9 @@ int runMixed(const ArgParser& args) {
     if (args.has("net") && sizes.size() != 1)
         throw std::invalid_argument("--net measures one network: give one --sizes");
 
+    // The BLAS backend sets its environment once, with setenv, which is not
+    // thread-safe: do that here, before any worker thread starts.
+    azgo::makeBackend("blas", 1);
     std::printf("gpu: %s\n", azgo::metalDescription().c_str());
     for (int n : sizes) {
         std::unique_ptr<azgo::Network> net;
@@ -412,6 +417,7 @@ double measureCpuWorkers(const azgo::NetConfig& nc, double seconds) {
     const azgo::Network net(nc, 1);
     const int workers = azgo::resolveWorkers(0);
     const std::string backendName = azgo::blasAvailable() ? "blas" : "naive";
+    azgo::makeBackend(backendName, 1);   // BLAS's one-time setenv, before the threads
     std::atomic<bool> stop{false};
     std::atomic<long long> evals{0};
     const double elapsed = runWorkers(workers, seconds, stop, [&](int w) {
@@ -543,7 +549,8 @@ int main(int argc, char** argv) {
         if (trainBatch < 1) throw std::invalid_argument("--train-batch must be positive");
         const std::string which = args->get("backend", azgo::blasAvailable() ? "all" : "naive");
         std::vector<std::string> backends;
-        const std::vector<int> hubWorkers = parseThreadList(args->get("hub-workers", "18,36,72"), "hub-workers");
+        const std::vector<int> hubWorkers =
+            parseThreadList(args->get("hub-workers", "18,36,72"), "hub-workers");
         if (which == "all") {
             backends.push_back("naive");
             if (azgo::blasAvailable()) backends.push_back("blas");
