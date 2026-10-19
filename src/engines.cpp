@@ -3,10 +3,17 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <sys/utsname.h>
 #include "azgo/arena.hpp"
+#include "azgo/backend.hpp"
+#include "azgo/metal.hpp"
+#ifdef __APPLE__
+#include <sys/sysctl.h>
+#endif
 
 namespace azgo {
 
@@ -324,6 +331,66 @@ int engineWorkers(const MachineSettings& machine, const std::string& backend, in
         workers = machine.local() ? cores / 3 : cores - 2;
     }
     return std::max(1, std::min(workers, sliceGames));
+}
+
+// ---- fingerprints ---------------------------------------------------------------
+
+namespace {
+
+#ifdef __APPLE__
+std::string sysctlString(const char* name) {
+    size_t size = 0;
+    if (sysctlbyname(name, nullptr, &size, nullptr, 0) != 0 || size == 0) return "";
+    std::string value(size, '\0');
+    if (sysctlbyname(name, value.data(), &size, nullptr, 0) != 0) return "";
+    value.resize(std::strlen(value.c_str()));
+    return value;
+}
+#endif
+
+// Commas and semicolons separate a fingerprint's parts and the manifest's
+// columns: keep them out of the parts this file builds.
+std::string tidy(std::string s) {
+    for (char& c : s)
+        if (c == ',' || c == ';' || c == '\n' || c == '\r' || c == '\t') c = ' ';
+    return trim(s);
+}
+
+std::string cpuModel() {
+#ifdef __APPLE__
+    const std::string brand = sysctlString("machdep.cpu.brand_string");
+    if (!brand.empty()) return tidy(brand);
+#else
+    std::ifstream in("/proc/cpuinfo");
+    for (std::string line; std::getline(in, line);) {
+        if (line.rfind("model name", 0) != 0) continue;
+        const size_t colon = line.find(':');
+        if (colon != std::string::npos && !tidy(line.substr(colon + 1)).empty())
+            return tidy(line.substr(colon + 1));
+    }
+#endif
+    struct utsname u;
+    return uname(&u) == 0 ? tidy(u.machine) : "unknown cpu";
+}
+
+std::string osVersion() {
+#ifdef __APPLE__
+    const std::string product = sysctlString("kern.osproductversion");
+    const std::string build = sysctlString("kern.osversion");
+    if (!product.empty())
+        return tidy("macOS " + product + (build.empty() ? "" : " (" + build + ")"));
+#endif
+    struct utsname u;
+    return uname(&u) == 0 ? tidy(std::string(u.sysname) + " " + u.release) : "unknown os";
+}
+
+} // namespace
+
+std::string engineFingerprint(const std::string& backend) {
+    checkBackendAvailable(backend);
+    std::string f = backend + "; " + cpuModel() + "; " + osVersion();
+    if (backend == "metal") f += "; " + metalDescription();
+    return f;
 }
 
 } // namespace azgo

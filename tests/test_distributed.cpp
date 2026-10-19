@@ -1,7 +1,8 @@
 // Distributed self-play, tested on one machine: the build identity every
 // binary carries, so the coordinator can tell whether two binaries run the
 // same code; the selfplay_engines list and how a generation's games are
-// assigned to its engines; the machine-local hosts file and the worker rules.
+// assigned to its engines; the machine-local hosts file and the worker rules;
+// engine fingerprints.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #include <cassert>
@@ -10,6 +11,7 @@
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <vector>
 #include "azgo/backend.hpp"
 #include "azgo/build_info.hpp"
@@ -346,6 +348,67 @@ static void test_engine_workers() {
     assert(engineWorkers(hosts.settings("mini1"), "naive", 3, 10) == 3);
 }
 
+// ---- engine fingerprints ------------------------------------------------------
+
+// What determines an engine's arithmetic: "<backend>; <cpu>; <os>", and for
+// metal "; <metalDescription()>". No host name: fingerprints go into the
+// manifest, which a run directory keeps.
+static void test_fingerprint() {
+    char host[256] = "";
+    gethostname(host, sizeof host - 1);
+    const std::string hostName = host;
+    for (const std::string backend : {"naive", "blas", "metal"}) {
+        bool available = true;
+        std::string why;
+        try {
+            checkBackendAvailable(backend);
+        } catch (const std::invalid_argument& e) {
+            available = false;
+            why = e.what();
+        }
+        if (!available) {
+            bool threw = false;
+            try {
+                engineFingerprint(backend);
+            } catch (const std::invalid_argument& e) {
+                threw = std::string(e.what()) == why;
+            }
+            assert(threw);
+            continue;
+        }
+        const std::string f = engineFingerprint(backend);
+        std::printf("fingerprint %s\n", f.c_str());
+        assert(f == engineFingerprint(backend));
+        assert(f.rfind(backend + "; ", 0) == 0);
+        assert(f.find('\n') == std::string::npos);
+        // backend; cpu; os[; metal description]
+        const size_t cpu = backend.size() + 2, os = f.find("; ", cpu);
+        assert(os != std::string::npos && os > cpu);
+        const size_t osEnd = f.find("; ", os + 2);
+        const std::string osPart = f.substr(os + 2, osEnd == std::string::npos ? std::string::npos
+                                                                                : osEnd - os - 2);
+        assert(!osPart.empty());
+#ifdef __APPLE__
+        assert(osPart.rfind("macOS ", 0) == 0);
+#endif
+        const std::string head = backend == "metal" ? f.substr(0, osEnd) : f;
+        assert(head.find(',') == std::string::npos);
+        if (backend == "metal") {
+            assert(osEnd != std::string::npos && f.substr(osEnd + 2) == metalDescription());
+        } else {
+            assert(osEnd == std::string::npos);
+        }
+        if (hostName.size() >= 4) assert(f.find(hostName) == std::string::npos);
+    }
+    bool threw = false;
+    try {
+        engineFingerprint("gpu");
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    assert(threw);
+}
+
 int main() {
     test_build_id_shape();
     test_build_options();
@@ -357,6 +420,7 @@ int main() {
     test_hosts_refusals();
     test_hosts_search_order();
     test_engine_workers();
+    test_fingerprint();
     std::printf("test_distributed: OK\n");
     return 0;
 }

@@ -112,4 +112,13 @@ std::string resolveHostsPath(const std::string& cli);
 int engineWorkers(const MachineSettings& machine, const std::string& backend, int sliceGames,
                   int cores);
 
+// What determines the arithmetic of `backend` on this machine, as one line:
+// the backend, the CPU model, the OS version and build, and with metal the
+// GPU, OS and shader hash of metalDescription(), e.g.
+//   metal; Apple M5 Max; macOS 27.0.1 (27A123); Apple M5 Max, macOS 27.0.1, shaders b7b31a09
+// Two engines with equal fingerprints and equal build IDs compute the same
+// bits. It names no host. Throws std::invalid_argument (checkBackendAvailable's
+// message) for a backend that cannot run here.
+std::string engineFingerprint(const std::string& backend);
+
 } // namespace azgo
