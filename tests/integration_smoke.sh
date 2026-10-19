@@ -445,6 +445,40 @@ out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/unknown" "${TINY
 grep -q "machine 'nowhere' is not defined in the hosts file" <<<"$out" || fail "unexpected refusal: $out"
 test ! -e "$W/unknown/config.cfg" || fail "a refused run wrote config.cfg"
 
+echo "== distributed self-play: the operations tools =="
+for script in cluster_sync.sh stop_after_generation.sh; do
+    bash -n "$SRC/tools/$script" || fail "tools/$script does not parse"
+    "$SRC/tools/$script" --help | grep -q '^usage: ' || fail "tools/$script has no usage text"
+done
+python3 -I -m py_compile "$SRC/tools/engine_weights.py" || fail "tools/engine_weights.py does not compile"
+# No machine with ssh in the hosts file: nothing to sync.
+out="$("$SRC/tools/cluster_sync.sh" --hosts "$HOSTS" --dry-run)"
+grep -q '^no remote machines' <<<"$out" || fail "cluster_sync.sh --dry-run: $out"
+# A suggested selfplay_engines value that train accepts (on a copy of the run).
+out="$(python3 -I "$SRC/tools/engine_weights.py" "$DRUN" --last 3 --hosts "$HOSTS")"
+echo "$out"
+suggested="$(sed -n 's/^selfplay_engines = //p' <<<"$out")"
+[ -n "$suggested" ] || fail "engine_weights.py printed no selfplay_engines line"
+cp -R "$DRUN" "$W/weights_copy"
+"$BUILD/train" --run "$W/weights_copy" --resume --hosts "$HOSTS" --set "selfplay_engines=$suggested" \
+    --generations 4 > /dev/null || fail "train refused the suggested selfplay_engines '$suggested'"
+# stop_after_generation.sh: SIGINT once log.csv gains a row.
+mkdir -p "$W/stoprun"
+printf 'generation,games\n1,4\n' > "$W/stoprun/log.csv"
+# (A background job of a script ignores SIGINT; perl restores the default.)
+perl -e '$SIG{INT} = "DEFAULT"; sleep 60' &
+victim=$!
+"$SRC/tools/stop_after_generation.sh" "$W/stoprun" "$victim" > "$W/stop.out" &
+stopper=$!
+sleep 0.5
+kill -0 "$victim" || fail "stop_after_generation.sh stopped the process before a new row"
+printf '2,4\n' >> "$W/stoprun/log.csv"
+wait "$stopper" || fail "stop_after_generation.sh failed"
+status=0
+wait "$victim" || status=$?
+[ "$status" -ne 0 ] || fail "the process was not interrupted"
+grep -q 'generation 2' "$W/stop.out" || fail "stop_after_generation.sh did not name generation 2: $(cat "$W/stop.out")"
+
 if [ "$METAL" = "metal=ON" ]; then
     echo "== metal: a run on the GPU, resumed and re-rated =="
     MRUN="$W/metal"
