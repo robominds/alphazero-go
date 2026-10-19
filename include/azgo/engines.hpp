@@ -107,8 +107,11 @@ std::string resolveHostsPath(const std::string& cli);
 // worker costs only a stack, and a GPU engine with fewer workers than games
 // plays in waves whose last under-fills the GPU. naive, blas: cpu_workers,
 // or with 0 max(1, cores / 3) on local (most of the machine stays with the
-// desktop and the GPU engine's searches) and max(1, cores - 2) on a remote
-// (two cores for its GPU engine). Always at most sliceGames, at least 1.
+// desktop and the GPU engine's searches; provisional until measured on the
+// coordinator) and max(1, min(2, cores - 2)) on a remote: on an M4 mini two
+// BLAS workers give 95% of what ten do, while each worker beyond them
+// slows the machine's GPU engine (bench --mixed, docs/results/bench.txt).
+// Always at most sliceGames, at least 1.
 int engineWorkers(const MachineSettings& machine, const std::string& backend, int sliceGames,
                   int cores);
 

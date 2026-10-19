@@ -328,7 +328,10 @@ int engineWorkers(const MachineSettings& machine, const std::string& backend, in
     } else if (machine.cpuWorkers > 0) {
         workers = machine.cpuWorkers;
     } else {
-        workers = machine.local() ? cores / 3 : cores - 2;
+        // Measured on an M4 mini (docs/results/bench.txt, bench --mixed):
+        // two BLAS workers already give 95% of the CPU's rate, and every
+        // further one only slows the GPU engine beside them.
+        workers = machine.local() ? cores / 3 : std::min(2, cores - 2);
     }
     return std::max(1, std::min(workers, sliceGames));
 }

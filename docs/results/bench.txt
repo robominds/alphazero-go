@@ -434,3 +434,69 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 #   9x9 preset (resignation on), filters 96, 8 games, 50 simulations, 20
 #     steps; 2 generations. blas, metal: identical.
 # (Not vacuous: the naive and blas runs' gen_0003.azn differ.)
+
+# =============================================================================
+# Distributed self-play: measuring engines side by side (2026-10-18)
+# =============================================================================
+# Branch distributed-selfplay, plan task 9. bench --mixed runs the metal hub
+# with N threads (a GPU engine) and k BLAS workers at batch 8 (a CPU
+# engine) at the same time, then the k workers alone. Mac mini, Apple M4
+# (10 cores: 4 performance, 6 efficiency), 24 GB, macOS 27.0.1, shaders
+# b7b31a09; idle apart from background apps. Network: the 19x19 run's
+# gen_0000.azn (10 x 128, value_hidden 256; --net), so the weights are a
+# real network's.
+#   bench --mixed --sizes 19 --net gen_0000.azn --hub-workers 20
+#         --cpu-workers 0,2,4,6,8,10 --qos default|utility --seconds 10
+#
+#   mixed: 19x19 10 x 128, metal hub 20 threads (inference_batch 256) + k blas workers, batch 8, qos default, 10 s each
+#   cpu workers  hub evals/s  cpu evals/s  total evals/s  hub vs alone  mean pass slots busy
+#             0          506            0            506        100.0%       56.2       100%
+#             2          480          196            676         94.8%       58.2        98%
+#             4          430          214            644         84.9%       60.4       100%
+#             6          393          251            645         77.7%       58.1        98%
+#             8          363          270            633         71.6%       68.9        96%
+#            10          358          276            633         70.6%      112.2        65%
+#
+#   cpu workers alone  cpu evals/s  per worker
+#                   2          390         195
+#                   4          330          83
+#                   6          382          64
+#                   8          409          51
+#                  10          412          41
+#
+#   mixed: 19x19 10 x 128, metal hub 20 threads (inference_batch 256) + k blas workers, batch 8, qos utility, 10 s each
+#   cpu workers  hub evals/s  cpu evals/s  total evals/s  hub vs alone  mean pass slots busy
+#             0          503            0            503        100.0%       55.9        99%
+#             2          462          165            627         91.7%       55.3       100%
+#             4          417          229            646         82.8%       57.4       100%
+#             6          386          257            643         76.6%       59.3        99%
+#             8          360          266            627         71.6%       56.9       100%
+#            10          344          277            621         68.3%       58.1        99%
+#
+#   cpu workers alone  cpu evals/s  per worker
+#                   2          252         126
+#                   4          325          81
+#                   6          392          65
+#                   8          404          50
+#                  10          415          42
+#
+# - The mini's GPU engine alone: ~505 evals/s (the spec estimated ~550).
+#   Its CPU engine alone: 390 evals/s with 2 workers, 412 with 10 (the
+#   spec estimated ~450-500): BLAS saturates at two workers (presumably
+#   because the performance cores share one matrix unit).
+# - Side by side they compete: 2 workers keep the hub at 95% and give the
+#   best total, 676 = 1.34x the GPU alone; 4 workers drop the hub to 85%,
+#   8 to 72%, and the total stays ~640. With 10 workers the hub's own
+#   threads starve (passes of 112, slots busy 65%).
+# - Utility QoS lowers the CPU workers' rate (2 workers alone: 252
+#   against 390, presumably on efficiency cores) and helps the hub not at all
+#   (91.7% at 2 workers against 94.8%). It is for the desktop on the
+#   coordinator, not for speed; remotes keep the default class.
+# - Default worker rule changed from these numbers: a remote CPU engine
+#   gets max(1, min(2, cores - 2)) workers (was cores - 2, 8 on a mini),
+#   the knee of the CPU curve with the hub >= 90%. The local rule
+#   (cores / 3, 6 on the Studio) stays provisional.
+# - Not measured yet (needs Mark's go-ahead and the 19x19 job paused): the
+#   Studio, --hub-workers 36 --cpu-workers 0,2,4,6,8,12,18, both QoS
+#   settings, and so the Studio hub's rate beside the chosen local CPU
+#   workers against the spec's >= 90% criterion.

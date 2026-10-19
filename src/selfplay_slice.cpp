@@ -13,18 +13,13 @@
 
 namespace azgo {
 
-namespace {
-
-// Lowers the calling thread's QoS class (macOS); elsewhere nothing.
-void applyQos(CpuQos qos) {
+void setThreadQos(CpuQos qos) {
 #ifdef __APPLE__
     if (qos == CpuQos::Utility) pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
 #else
     (void)qos;
 #endif
 }
-
-} // namespace
 
 std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConfig& sp,
                                           uint64_t seed, int generation, int first, int count,
@@ -50,7 +45,7 @@ std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConf
         // index i, so the result does not depend on which thread played it.
         parallelFor(count, workers, [&](int k, int w) {
             if (!qosSet[static_cast<size_t>(w)]) {
-                applyQos(run.qos);
+                setThreadQos(run.qos);
                 qosSet[static_cast<size_t>(w)] = 1;
             }
             const int i = first + k;

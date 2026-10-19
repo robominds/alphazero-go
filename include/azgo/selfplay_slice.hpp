@@ -22,6 +22,9 @@ namespace azgo {
 // keeps the desktop usable while CPU self-play runs beside a GPU engine. It
 // changes when a thread runs, never what it computes. Other systems ignore it.
 enum class CpuQos { Default, Utility };
+// Gives the calling thread that class (macOS; elsewhere nothing). Default
+// leaves the thread as it is.
+void setThreadQos(CpuQos qos);
 
 // How one engine plays its slice: the backend (naive, blas or metal), its
 // worker threads, the most positions per GPU pass (metal), and the worker

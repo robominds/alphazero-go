@@ -444,6 +444,19 @@ if [ "$METAL" = "metal=ON" ]; then
     out="$("$BUILD/bench" --sizes 5 --seconds 0.1 --backend metal --configs "$SRC/configs" --hub-workers 2)"
     grep -Eq '^5x5 +3 x 32 +metal +[0-9]+ +-$' <<<"$out" || fail "bench --backend metal printed no metal row"
     grep -q 'metal hub' <<<"$out" || fail "bench --backend metal printed no hub table"
+
+    echo "== metal: bench --mixed (the hub and CPU workers at once) =="
+    out="$("$BUILD/bench" --mixed --sizes 5 --seconds 0.2 --hub-workers 2 --cpu-workers 0,1 --configs "$SRC/configs")"
+    echo "$out"
+    grep -Eq '^cpu workers +hub evals/s +cpu evals/s +total evals/s +hub vs alone +mean pass +slots busy$' <<<"$out" \
+        || fail "bench --mixed printed no mixed table"
+    grep -Eq '^ +0 +[0-9]+ +0 +[0-9]+ +100\.0% +[0-9.]+ +[0-9]+%$' <<<"$out" || fail "bench --mixed printed no row for 0 CPU workers"
+    grep -Eq '^ +1 +[0-9]+ +[1-9][0-9]* +[0-9]+ +[0-9.]+% +[0-9.]+ +[0-9]+%$' <<<"$out" \
+        || fail "bench --mixed printed no row for 1 CPU worker"
+    grep -Eq '^cpu workers alone +cpu evals/s +per worker$' <<<"$out" || fail "bench --mixed printed no CPU-alone table"
+    grep -Eq '^ +1 +[1-9][0-9]* +[1-9][0-9]*$' <<<"$out" || fail "bench --mixed printed no CPU-alone row"
+    out="$("$BUILD/bench" --mixed --sizes 5 --seconds 0.1 --hub-workers 2 --cpu-workers 1 --qos utility --configs "$SRC/configs")"
+    grep -q 'qos utility' <<<"$out" || fail "bench --mixed --qos utility did not say so"
 else
     echo "== metal: refused in a build without it =="
     NOT_BUILT="backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON (macOS only)"
@@ -473,6 +486,10 @@ else
     out="$("$BUILD/bench" --sizes 5 --seconds 0.1 --backend metal --configs "$SRC/configs" 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "bench --backend metal without Metal exited $status, expected 1"
     grep -qF "$NOT_BUILT" <<<"$out" || fail "bench did not say metal is not built: $out"
+    status=0
+    out="$("$BUILD/bench" --mixed --sizes 5 --seconds 0.1 --configs "$SRC/configs" 2>&1)" || status=$?
+    [ "$status" -eq 1 ] || fail "bench --mixed without Metal exited $status, expected 1"
+    grep -qF "$NOT_BUILT" <<<"$out" || fail "bench --mixed did not say metal is not built: $out"
 fi
 
 echo "integration_smoke: all checks passed"

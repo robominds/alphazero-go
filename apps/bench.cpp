@@ -11,8 +11,16 @@
 // self-play does; and, for reference, every core running its own CPU worker.
 // Then raw rules-engine speed.
 //
+// --mixed measures what distributed self-play's engines on one machine
+// share: the batching hub with N threads (a GPU engine) and k BLAS workers
+// (a CPU engine) running at the same time, for each k given, and the CPU
+// workers alone. That is the number engine weights need, since a CPU engine
+// beside a busy hub is not the CPU engine alone.
+//
 //   bench [--sizes 5,9,19] [--backend naive|blas|metal|all] [--seconds 2] [--configs configs]
 //         [--train-threads 1,2,4,8] [--train-batch 256] [--hub-workers 18,36,72]
+//   bench --mixed [--sizes 19] [--hub-workers N] [--cpu-workers 0,2,4,6,8,12]
+//         [--qos default|utility] [--seconds 10] [--net CKPT]
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -30,6 +38,7 @@
 #include <vector>
 
 #include "azgo/backend.hpp"
+#include "azgo/checkpoint.hpp"
 #include "azgo/config.hpp"
 #include "azgo/game.hpp"
 #include "azgo/inference_hub.hpp"
@@ -38,6 +47,7 @@
 #include "azgo/optimizer.hpp"
 #include "azgo/parallel.hpp"
 #include "azgo/rng.hpp"
+#include "azgo/selfplay_slice.hpp"
 #include "cli.hpp"
 
 namespace {
@@ -54,7 +64,19 @@ const char* const kUsage =
     "CPU), and three tables follow: raw GPU forward passes (one at a time, and two\n"
     "in flight), the batching hub under each --hub-workers thread count (each\n"
     "thread sending batch-8 requests: evals/s, mean pass size, slot occupancy),\n"
-    "and every core running its own BLAS worker at batch 8 (the CPU reference).\n";
+    "and every core running its own BLAS worker at batch 8 (the CPU reference).\n"
+    "\n"
+    "       bench --mixed [--sizes 19] [--hub-workers N] [--cpu-workers 0,2,4,6,8,12]\n"
+    "                     [--qos default|utility] [--seconds 10] [--net CKPT]\n"
+    "\n"
+    "--mixed (a build with Metal): for each k of --cpu-workers, the metal hub with N\n"
+    "threads (default: twice the cores, the metal workers rule) and k BLAS workers run\n"
+    "at the same time, every thread sending batch-8 requests as self-play does; it\n"
+    "prints both rates, their total, the hub's rate against k = 0 (the hub alone), the\n"
+    "mean pass and slot occupancy. A second table gives the k BLAS workers alone.\n"
+    "--qos sets the CPU workers' QoS class (macOS), as the hosts file's cpu_qos does.\n"
+    "--net uses that checkpoint's network instead of a random one of the preset's\n"
+    "shape (one board size only).\n";
 
 constexpr int kInferBatch = 8;     // the default MCTS batch (mcts_batch)
 constexpr int kTrainBatch = 128;
@@ -70,18 +92,19 @@ double secondsSince(Clock::time_point start) {
     return std::chrono::duration<double>(Clock::now() - start).count();
 }
 
-// "1,2,4": positive integers (thread counts; 0 = all cores).
-std::vector<int> parseThreadList(const std::string& text) {
+// "1,2,4": thread counts in 0..256 (0 = all cores, or none for --cpu-workers),
+// for option --<name>.
+std::vector<int> parseThreadList(const std::string& text, const std::string& name) {
     std::vector<int> list;
     std::stringstream in(text);
     for (std::string item; std::getline(in, item, ',');) {
         char* end = nullptr;
         const long t = std::strtol(item.c_str(), &end, 10);
         if (item.empty() || *end != '\0' || t < 0 || t > 256)
-            throw std::invalid_argument("--train-threads: '" + item + "' is not a thread count in 0..256");
+            throw std::invalid_argument("--" + name + ": '" + item + "' is not a thread count in 0..256");
         list.push_back(static_cast<int>(t));
     }
-    if (list.empty()) throw std::invalid_argument("--train-threads is empty");
+    if (list.empty()) throw std::invalid_argument("--" + name + " is empty");
     return list;
 }
 
@@ -247,6 +270,141 @@ HubLoad measureHub(const azgo::NetConfig& nc, int workers, double seconds) {
 }
 #endif
 
+#ifdef AZ_USE_METAL
+struct MixedLoad {
+    double hubEvals, cpuEvals, meanBatch, occupancy;
+};
+
+// hubWorkers threads sending batch-8 requests through one hub
+// (inference_batch 256) and cpuWorkers BLAS workers, each evaluating its own
+// batches of 8, all at the same time: a GPU engine and a CPU engine of
+// distributed self-play on one machine. The CPU workers take QoS class `qos`.
+MixedLoad measureMixed(const azgo::Network& net, int hubWorkers, int cpuWorkers, azgo::CpuQos qos,
+                       double seconds) {
+    const azgo::NetConfig& nc = net.config();
+    azgo::InferenceHubOptions options;
+    options.maxBatch = 256;
+    azgo::InferenceHub hub(azgo::makeMetalRunner(net, options.maxBatch), nc, options);
+    std::atomic<bool> stop{false};
+    std::atomic<long long> hubEvals{0}, cpuEvals{0};
+    const double elapsed = runWorkers(hubWorkers + cpuWorkers, seconds, stop, [&](int w) {
+        azgo::Rng rng(static_cast<uint64_t>(300 + w));
+        const std::vector<float> input = randomInput(nc, kInferBatch, rng);
+        std::vector<float> logits(static_cast<size_t>(kInferBatch) * nc.actions()), values(kInferBatch);
+        long long mine = 0;
+        if (w < hubWorkers) {
+            std::unique_ptr<azgo::Evaluator> ev = hub.makeEvaluator(kInferBatch);
+            while (!stop.load(std::memory_order_relaxed)) {
+                ev->evaluate(input.data(), kInferBatch, logits.data(), values.data());
+                mine += kInferBatch;
+            }
+            hubEvals += mine;
+        } else {
+            azgo::setThreadQos(qos);
+            std::unique_ptr<azgo::Backend> backend = azgo::makeBackend("blas", 1);
+            azgo::Workspace ws(nc, kInferBatch, *backend);
+            while (!stop.load(std::memory_order_relaxed)) {
+                net.infer(ws, input.data(), kInferBatch, logits.data(), values.data());
+                mine += kInferBatch;
+            }
+            cpuEvals += mine;
+        }
+    });
+    const azgo::InferenceHub::Stats st = hub.stats();
+    return {static_cast<double>(hubEvals) / elapsed, static_cast<double>(cpuEvals) / elapsed,
+            st.batches > 0 ? static_cast<double>(st.positions) / static_cast<double>(st.batches) : 0.0,
+            st.gpuSeconds / (elapsed * azgo::kInferenceSlots)};
+}
+
+// `workers` BLAS workers alone, each evaluating its own batches of 8, with
+// QoS class `qos`: positions per second, all together.
+double measureCpuWorkersAlone(const azgo::Network& net, int workers, azgo::CpuQos qos, double seconds) {
+    const azgo::NetConfig& nc = net.config();
+    std::atomic<bool> stop{false};
+    std::atomic<long long> evals{0};
+    const double elapsed = runWorkers(workers, seconds, stop, [&](int w) {
+        azgo::setThreadQos(qos);
+        std::unique_ptr<azgo::Backend> backend = azgo::makeBackend("blas", 1);
+        azgo::Workspace ws(nc, kInferBatch, *backend);
+        azgo::Rng rng(static_cast<uint64_t>(400 + w));
+        const std::vector<float> input = randomInput(nc, kInferBatch, rng);
+        std::vector<float> logits(static_cast<size_t>(kInferBatch) * nc.actions()), values(kInferBatch);
+        long long mine = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+            net.infer(ws, input.data(), kInferBatch, logits.data(), values.data());
+            mine += kInferBatch;
+        }
+        evals += mine;
+    });
+    return static_cast<double>(evals) / elapsed;
+}
+#endif
+
+// bench --mixed: the two tables for each board size (see the usage text).
+int runMixed(const ArgParser& args) {
+    azgo::checkBackendAvailable("metal");   // the not-built message without Metal
+#ifdef AZ_USE_METAL
+    const std::vector<int> sizes = parseSizes(args.get("sizes", "19"));
+    const double seconds = args.getDouble("seconds", 10.0);
+    if (seconds <= 0) throw std::invalid_argument("--seconds must be positive");
+    const std::string configDir = args.get("configs", "configs");
+    const std::vector<int> hubList = parseThreadList(args.get("hub-workers", "0"), "hub-workers");
+    if (hubList.size() != 1) throw std::invalid_argument("--mixed takes one --hub-workers count");
+    const int hubWorkers = azgo::resolveWorkers(hubList[0], true);
+    const std::vector<int> cpuList = parseThreadList(args.get("cpu-workers", "0,2,4,6,8,12"), "cpu-workers");
+    const std::string qosName = args.get("qos", "default");
+    if (qosName != "default" && qosName != "utility")
+        throw std::invalid_argument("--qos: expected default|utility, got '" + qosName + "'");
+    const azgo::CpuQos qos = qosName == "utility" ? azgo::CpuQos::Utility : azgo::CpuQos::Default;
+    if (args.has("net") && sizes.size() != 1)
+        throw std::invalid_argument("--net measures one network: give one --sizes");
+
+    std::printf("gpu: %s\n", azgo::metalDescription().c_str());
+    for (int n : sizes) {
+        std::unique_ptr<azgo::Network> net;
+        if (args.has("net")) {
+            net = std::make_unique<azgo::Network>(azgo::loadNetwork(args.get("net")));
+            if (net->config().boardSize != n)
+                throw std::runtime_error(args.get("net") + " is not a " + std::to_string(n) + "x" +
+                                         std::to_string(n) + " network");
+        } else {
+            const std::string preset = (std::filesystem::path(configDir) /
+                                        (std::to_string(n) + "x" + std::to_string(n) + ".cfg")).string();
+            if (!std::filesystem::exists(preset))
+                throw std::runtime_error("no preset " + preset + " (use --configs DIR)");
+            net = std::make_unique<azgo::Network>(azgo::loadConfigFile(preset).netConfig(), 1);
+        }
+        const azgo::NetConfig& nc = net->config();
+        std::printf("\nmixed: %dx%d %d x %d, metal hub %d threads (inference_batch 256) + k blas "
+                    "workers, batch 8, qos %s, %g s each\n",
+                    n, n, nc.blocks, nc.filters, hubWorkers, qosName.c_str(), seconds);
+        std::printf("%-11s %12s %12s %14s %13s %10s %10s\n", "cpu workers", "hub evals/s", "cpu evals/s",
+                    "total evals/s", "hub vs alone", "mean pass", "slots busy");
+        double alone = 0;
+        for (int k : cpuList) {
+            const MixedLoad m = measureMixed(*net, hubWorkers, k, qos, seconds);
+            if (k == 0) alone = m.hubEvals;   // the hub alone: the baseline
+            char versus[16] = "-";
+            if (alone > 0) std::snprintf(versus, sizeof versus, "%.1f%%", 100.0 * m.hubEvals / alone);
+            std::printf("%11d %12.0f %12.0f %14.0f %13s %10.1f %9.0f%%\n", k, m.hubEvals, m.cpuEvals,
+                        m.hubEvals + m.cpuEvals, versus, m.meanBatch, 100.0 * m.occupancy);
+            std::fflush(stdout);
+        }
+        std::printf("\n%-17s %12s %11s\n", "cpu workers alone", "cpu evals/s", "per worker");
+        for (int k : cpuList) {
+            if (k == 0) continue;
+            const double cpu = measureCpuWorkersAlone(*net, k, qos, seconds);
+            std::printf("%17d %12.0f %11.0f\n", k, cpu, cpu / k);
+            std::fflush(stdout);
+        }
+    }
+    return 0;
+#else
+    (void)args;
+    return 1;   // checkBackendAvailable threw
+#endif
+}
+
 // Every core running its own worker at batch kInferBatch with BLAS (or the
 // naive backend without it), as self-play does on the CPU: positions per
 // second, all workers together.
@@ -360,8 +518,9 @@ int main(int argc, char** argv) {
         args = std::make_unique<ArgParser>(argc, argv,
                                            std::vector<std::string>{"sizes", "backend", "seconds", "configs",
                                                                     "train-threads", "train-batch",
-                                                                    "hub-workers"},
-                                           std::vector<std::string>{"help"});
+                                                                    "hub-workers", "cpu-workers", "qos",
+                                                                    "net"},
+                                           std::vector<std::string>{"help", "mixed"});
     } catch (const std::invalid_argument& e) {
         return usageError(e.what());
     }
@@ -371,17 +530,20 @@ int main(int argc, char** argv) {
     }
 
     try {
+        if (args->flag("mixed")) return runMixed(*args);
+        if (args->has("cpu-workers") || args->has("qos") || args->has("net"))
+            throw std::invalid_argument("--cpu-workers, --qos and --net belong to --mixed");
         const std::vector<int> sizes = parseSizes(args->get("sizes", "5,9,19"));
         const double seconds = args->getDouble("seconds", 2.0);
         if (seconds <= 0) throw std::invalid_argument("--seconds must be positive");
         const std::string configDir = args->get("configs", "configs");
         const bool threadTable = args->has("train-threads");
-        const std::vector<int> threadCounts = parseThreadList(args->get("train-threads", "0"));
+        const std::vector<int> threadCounts = parseThreadList(args->get("train-threads", "0"), "train-threads");
         const int trainBatch = args->getInt("train-batch", 256);
         if (trainBatch < 1) throw std::invalid_argument("--train-batch must be positive");
         const std::string which = args->get("backend", azgo::blasAvailable() ? "all" : "naive");
         std::vector<std::string> backends;
-        const std::vector<int> hubWorkers = parseThreadList(args->get("hub-workers", "18,36,72"));
+        const std::vector<int> hubWorkers = parseThreadList(args->get("hub-workers", "18,36,72"), "hub-workers");
         if (which == "all") {
             backends.push_back("naive");
             if (azgo::blasAvailable()) backends.push_back("blas");
