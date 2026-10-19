@@ -11,7 +11,10 @@
 # equal this repository's commit.
 #
 # A dirty tree is refused: a remote cannot rebuild uncommitted changes, and
-# their build ID would differ anyway.
+# their build ID would differ anyway. <repo> is replaced wholesale, so it
+# must be a dedicated copy (for example ~/azgo-cluster), never a checkout:
+# the script refuses a directory it did not make itself (it marks its copies
+# with a .azgo-sync file) and one holding .git or runs/.
 #
 # Mark Castelluccio, with assistance from Claude (Anthropic).
 set -euo pipefail
@@ -25,6 +28,9 @@ Syncs every machine with ssh= in the hosts file (default: $AZGO_HOSTS, else
 <repo>/<build> (default build-metal), <repo> being exe's grandparent. Checks
 that each machine's selfplay --version reports HEAD. --dry-run prints the
 commands instead of running them. Refuses a tree with uncommitted changes.
+<repo> is replaced wholesale: it must be a dedicated copy (e.g.
+~/azgo-cluster), never a checkout. A directory without the .azgo-sync marker
+this script leaves in its copies, or with .git or runs/, is refused.
 EOF
 }
 
@@ -79,37 +85,58 @@ run() {   # run CMD...: print it with --dry-run, else run it
     if [ "$DRY" = 1 ]; then printf '%q ' "$@"; echo; else "$@"; fi
 }
 
-status=0
-for machine in "${machines[@]}"; do
-    read -r alias target exe <<<"$machine"
+# sync_machine ALIAS TARGET EXE: one machine; on a failure, says which
+# step failed and returns 1 (the other machines are still synced).
+sync_machine() {
+    local alias=$1 target=$2 exe=$3
+    local repo
     repo="$(dirname "$(dirname "$exe")")"
-    case "$repo" in ''|.|/|'~'|'~/') echo "error: $alias: exe=$exe gives no usable repository directory" >&2; exit 1 ;; esac
+    case "$repo" in ''|.|/|'~'|'~/')
+        echo "error: $alias: exe=$exe gives no usable repository directory" >&2; return 1 ;;
+    esac
     echo "== $alias: $COMMIT -> $repo ($BUILD_DIR)"
-    ssh_=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$target")
-    run "${ssh_[@]}" "rm -rf $repo.new && mkdir -p $repo.new"
+    local ssh_=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$target")
+    # The repository is replaced wholesale, so it must be a copy this script
+    # made (it carries .azgo-sync), never a checkout or a directory with runs.
+    run "${ssh_[@]}" "if [ -e $repo ] && [ ! -f $repo/.azgo-sync ]; then
+            echo '$repo exists but was not made by cluster_sync.sh (no .azgo-sync); refusing to replace it: point exe at a dedicated copy such as ~/azgo-cluster/$BUILD_DIR/selfplay' >&2; exit 3; fi
+        if [ -e $repo/.git ] || [ -e $repo/runs ]; then
+            echo '$repo holds .git or runs/; refusing to replace it' >&2; exit 3; fi" ||
+        { echo "error: $alias: $repo is not a copy cluster_sync.sh may replace" >&2; return 1; }
+    run "${ssh_[@]}" "rm -rf $repo.new && mkdir -p $repo.new && touch $repo.new/.azgo-sync" ||
+        { echo "error: $alias: cannot create $repo.new" >&2; return 1; }
     if [ "$DRY" = 1 ]; then
         echo "git archive $COMMIT | ${ssh_[*]} 'tar -x -m -C $repo.new'"
     else
         # -m: files get the time of extraction, not of their commit, so make
         # never takes an object built earlier for newer than a changed source
         # (every sync then rebuilds what the moved build directory holds).
-        git archive "$COMMIT" | "${ssh_[@]}" "tar -x -m -C $repo.new"
+        git archive "$COMMIT" | "${ssh_[@]}" "tar -x -m -C $repo.new" ||
+            { echo "error: $alias: copying the tree failed" >&2; return 1; }
     fi
     # Swap the trees; the build directory (CMake cache and objects) moves along.
-    run "${ssh_[@]}" "if [ -d $repo/$BUILD_DIR ]; then mv $repo/$BUILD_DIR $repo.new/; fi;
-        rm -rf $repo.old; if [ -d $repo ]; then mv $repo $repo.old; fi; mv $repo.new $repo; rm -rf $repo.old"
+    run "${ssh_[@]}" "if [ -d $repo/$BUILD_DIR ]; then mv $repo/$BUILD_DIR $repo.new/; fi &&
+        rm -rf $repo.old && if [ -d $repo ]; then mv $repo $repo.old; fi && mv $repo.new $repo && rm -rf $repo.old" ||
+        { echo "error: $alias: swapping in the new tree failed" >&2; return 1; }
     run "${ssh_[@]}" "cmake -S $repo -B $repo/$BUILD_DIR -DCMAKE_BUILD_TYPE=Release -DAZ_USE_METAL=ON \
-        -DAZGO_BUILD_ID=$COMMIT > /dev/null && cmake --build $repo/$BUILD_DIR -j \$(sysctl -n hw.ncpu) --target selfplay"
+        -DAZGO_BUILD_ID=$COMMIT > /dev/null && cmake --build $repo/$BUILD_DIR -j \$(sysctl -n hw.ncpu) --target selfplay" ||
+        { echo "error: $alias: building selfplay failed" >&2; return 1; }
     if [ "$DRY" = 1 ]; then
         run "${ssh_[@]}" "$exe --version"
-        continue
+        return 0
     fi
-    remote_id="$("${ssh_[@]}" "$exe --version" | sed -n 's/^build //p')"
-    if [ "$remote_id" = "$COMMIT" ]; then
-        echo "$alias: selfplay $remote_id"
-    else
+    local remote_id
+    remote_id="$("${ssh_[@]}" "$exe --version" | sed -n 's/^build //p')" || true
+    if [ "$remote_id" != "$COMMIT" ]; then
         echo "error: $alias: selfplay reports build '$remote_id', expected $COMMIT" >&2
-        status=1
+        return 1
     fi
+    echo "$alias: selfplay $remote_id"
+}
+
+status=0
+for machine in "${machines[@]}"; do
+    read -r alias target exe <<<"$machine"
+    sync_machine "$alias" "$target" "$exe" || status=1
 done
 exit $status

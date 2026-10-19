@@ -559,7 +559,10 @@ every remote in the hosts file to the coordinator's commit:
 4. checks `selfplay --version` there against `train --version` here.
 
 The repo path on each remote comes from the hosts file's `exe` value, as
-`exe`'s grandparent directory. GNU Parallel stays a convenience for ad
+`exe`'s grandparent directory. It is replaced wholesale, so it must be a
+dedicated copy (for example `~/azgo-cluster`), never an existing checkout:
+the script refuses a directory without the `.azgo-sync` marker it leaves
+in its own copies, and one holding `.git` or `runs/`. GNU Parallel stays a convenience for ad
 hoc commands. The trainer does not use it, because it needs per-slice
 exit status, timeouts, retries and verification under its own control.
 

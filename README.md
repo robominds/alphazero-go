@@ -355,7 +355,11 @@ engine (`bench --mixed`, `docs/results/bench.txt`). Values may hold only
 `[A-Za-z0-9_./~@:+-]`, so they go into an ssh command line unquoted.
 `tools/cluster_sync.sh` sends `HEAD` to every machine with `ssh=` and builds
 `selfplay` there; at the start of a run, `train` checks that each
-machine's `selfplay --version` reports its own build ID.
+machine's `selfplay --version` reports its own build ID. The repository on
+a machine (`exe`'s grandparent) is replaced wholesale at every sync, so
+it must be a dedicated copy such as `~/azgo-cluster`, never a checkout:
+the script refuses a directory it did not create (it marks its copies with
+`.azgo-sync`) and one holding `.git` or `runs/`.
 
 **What stays exact.** A game is a function of its seed, the network, the
 settings and the engine that played it:
