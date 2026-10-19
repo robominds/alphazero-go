@@ -5,7 +5,9 @@
 # bad input) -> bench -> grow (deeper, wider, and a run started from the grown network), plus the refusal to change the architecture on resume,
 # then the ownership head: a run with it, grow --ownership, and analyze's ownership map,
 # and resignation: a run with it, and its refusal alongside the ownership head,
-# and the GTP engine: a scripted session and a two-game match through tools/gtp_match.py.
+# and the GTP engine: a scripted session and a two-game match through tools/gtp_match.py,
+# and distributed self-play: selfplay's version and fingerprint, a run with a fake remote
+# (the subprocess transport) resumed and compared with the default run, AZGO_HOSTS, a refused alias.
 #
 # and backend = metal: with metal=ON a run on the GPU (start, resume, re-rate) and arena
 # matches on it; with metal=OFF the refusals, which write nothing.
@@ -396,6 +398,52 @@ status=0
 out="$(python3 "$SRC/tools/gtp_match.py" --a "$ENGINE" --b "$ENGINE" --size 9 --out "$W/match9" 2>&1)" || status=$?
 [ "$status" -eq 1 ] || fail "gtp_match on a size the engine refuses exited $status, expected 1"
 grep -q "refused 'boardsize 9': unacceptable size" <<<"$out" || fail "unexpected gtp_match error: $out"
+
+echo "== distributed self-play: selfplay, a fake remote, resume, refusals =="
+# The build ID: train and selfplay are built from the same tree.
+train_id="$("$BUILD/train" --version | sed -n 's/^build //p')"
+selfplay_id="$("$BUILD/selfplay" --version | sed -n 's/^build //p')"
+[ -n "$train_id" ] && [ "$train_id" = "$selfplay_id" ] || fail "selfplay --version '$selfplay_id' differs from train's '$train_id'"
+"$BUILD/selfplay" --fingerprint --backend naive | grep -q '^naive; ' || fail "selfplay --fingerprint --backend naive failed"
+if [ "$METAL" != "metal=ON" ]; then
+    status=0
+    out="$("$BUILD/selfplay" --fingerprint --backend metal 2>&1)" || status=$?
+    [ "$status" -eq 1 ] || fail "selfplay --fingerprint --backend metal without Metal exited $status, expected 1"
+    grep -q "backend 'metal' not available" <<<"$out" || fail "selfplay did not say metal is not built: $out"
+fi
+# A machine-local hosts file (never in the repo): "fake" has no ssh, so its
+# slices run the selfplay binary here, as a separate process.
+HOSTS="$W/hosts"
+echo "fake exe=$BUILD/selfplay workdir=$W/remote" > "$HOSTS"
+DRUN="$W/distributed"
+ENGINES="selfplay_engines=local/naive:1,fake/naive=2"
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$DRUN" "${TINY[@]}" --hosts "$HOSTS" --set "$ENGINES" \
+    --generations 2 > "$W/distributed.out"
+grep -q '^engine fake/naive: ' "$W/distributed.out" || fail "no engine line for fake/naive"
+grep -q '^selfplay engines: local/naive 2 .* | fake/naive 2 ' "$W/distributed.out" || fail "no selfplay engines line"
+"$BUILD/train" --run "$DRUN" --resume --hosts "$HOSTS" --generations 3 > /dev/null
+MANIFEST="$DRUN/selfplay-engines.csv"
+for g in 1 2 3; do
+    [ "$(grep -c "^$g," "$MANIFEST")" = 2 ] || fail "selfplay-engines.csv should have 2 rows for generation $g"
+done
+# The same arithmetic on both engines: equal fingerprint columns.
+[ "$(awk -F, 'NR > 1 { print $6 }' "$MANIFEST" | sort -u | wc -l | tr -d ' ')" = 1 ] \
+    || fail "local/naive and fake/naive have different fingerprints"
+grep -q '^3,2,2,fake/naive,fake/naive,"naive; ' "$MANIFEST" || fail "no fake/naive row for generation 3"
+# Without engines, the same run: naive on one machine computes the same bits.
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/plain" "${TINY[@]}" --generations 3 > /dev/null
+cmp -s "$W/plain/state.bin" "$DRUN/state.bin" || fail "the run with a fake remote differs from the default run"
+# AZGO_HOSTS in place of --hosts.
+AZGO_HOSTS="$HOSTS" "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/byenv" "${TINY[@]}" --set "$ENGINES" \
+    --generations 1 > /dev/null || fail "AZGO_HOSTS was not used"
+cmp -s "$W/plain/checkpoints/gen_0001.azn" "$W/byenv/checkpoints/gen_0001.azn" || fail "AZGO_HOSTS run differs"
+# An alias the hosts file does not define: refused, nothing written.
+status=0
+out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/unknown" "${TINY[@]}" --hosts "$HOSTS" \
+       --set "selfplay_engines=local/naive:1,nowhere/naive:1" --generations 1 2>&1)" || status=$?
+[ "$status" -eq 1 ] || fail "an unknown alias exited $status, expected 1"
+grep -q "machine 'nowhere' is not defined in the hosts file" <<<"$out" || fail "unexpected refusal: $out"
+test ! -e "$W/unknown/config.cfg" || fail "a refused run wrote config.cfg"
 
 if [ "$METAL" = "metal=ON" ]; then
     echo "== metal: a run on the GPU, resumed and re-rated =="
