@@ -55,8 +55,9 @@ ProcessResult runProcess(const std::vector<std::string>& argv, const std::string
 // Installs handlers for SIGINT, SIGTERM and SIGHUP that send SIGTERM to
 // the process group of every child runProcess is waiting for, then let the
 // signal end this process as it would have. Children run in their own
-// groups, so a Ctrl-C at the terminal would not reach them otherwise. Call
-// once, early, from a program's main (train does).
+// groups, so a Ctrl-C at the terminal would not reach them otherwise. A
+// signal already ignored (nohup's SIGHUP, a background job's SIGINT) is left
+// ignored. Call once, early, from a program's main (train does).
 void forwardTerminationSignals();
 
 } // namespace azgo

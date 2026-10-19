@@ -191,7 +191,13 @@ void forwardTerminationSignals() {
     std::memset(&sa, 0, sizeof sa);
     sa.sa_handler = forwardAndDie;
     sigemptyset(&sa.sa_mask);
-    for (int sig : {SIGINT, SIGTERM, SIGHUP}) sigaction(sig, &sa, nullptr);
+    for (int sig : {SIGINT, SIGTERM, SIGHUP}) {
+        // A signal this process was started ignoring (nohup, a background
+        // job's SIGINT) stays ignored: forwarding it would make it fatal.
+        struct sigaction old;
+        if (sigaction(sig, nullptr, &old) == 0 && old.sa_handler == SIG_IGN) continue;
+        sigaction(sig, &sa, nullptr);
+    }
 }
 
 } // namespace azgo

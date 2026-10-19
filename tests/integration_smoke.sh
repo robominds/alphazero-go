@@ -445,6 +445,15 @@ out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/unknown" "${TINY
 grep -q "machine 'nowhere' is not defined in the hosts file" <<<"$out" || fail "unexpected refusal: $out"
 test ! -e "$W/unknown/config.cfg" || fail "a refused run wrote config.cfg"
 
+# nohup: a train started with SIGHUP ignored keeps ignoring it.
+( trap '' HUP; exec "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/nohup" "${TINY[@]}" --generations 3 \
+      > "$W/nohup.out" 2>&1 ) &
+nohup_pid=$!
+sleep 0.3
+kill -HUP "$nohup_pid" 2>/dev/null || true
+wait "$nohup_pid" || fail "train with SIGHUP ignored died of SIGHUP"
+test -s "$W/nohup/checkpoints/gen_0003.azn" || fail "the nohup run did not finish"
+
 echo "== distributed self-play: the operations tools =="
 for script in cluster_sync.sh stop_after_generation.sh; do
     bash -n "$SRC/tools/$script" || fail "tools/$script does not parse"

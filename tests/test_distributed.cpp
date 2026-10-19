@@ -1087,6 +1087,18 @@ static void test_termination_signals_reach_children() {
     assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM);
     assert(goneWithin(grandchild, 2));
     std::filesystem::remove(pidFile);
+
+    // A signal ignored when the program started (nohup, a background job)
+    // stays ignored: no handler is installed for it.
+    const pid_t ignoring = fork();
+    if (ignoring == 0) {
+        signal(SIGHUP, SIG_IGN);
+        forwardTerminationSignals();
+        kill(getpid(), SIGHUP);
+        _exit(7);
+    }
+    waitpid(ignoring, &status, 0);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 7);
 }
 
 // Runs argv with stdout and stderr to `log` (replaced); returns the exit
