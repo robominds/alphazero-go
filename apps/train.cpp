@@ -4,6 +4,7 @@
 //   train --config configs/9x9.cfg --run runs/ten --init-from CKPT [--buffer-from RUNDIR]
 //   train --run runs/nine --resume [--set key=value]... [--generations N]
 //   train --run runs/nine --rerate [--set key=value]...
+//   train ... [--hosts FILE]   (distributed self-play: the machine-local hosts file)
 //   train --version
 #include <cstdio>
 #include <exception>
@@ -41,6 +42,9 @@ const char* const kUsage =
     "--set applies to the replay only and may change any key but the architecture\n"
     "keys, e.g. --set bot_simulations= --set reference_networks=CKPT to measure the\n"
     "run against other fixed players.\n"
+    "--hosts FILE: the machine-local hosts file that defines the machines named in\n"
+    "selfplay_engines (default: $AZGO_HOSTS, else ~/.config/azgo/hosts); read only when\n"
+    "selfplay_engines is set. Never commit it.\n"
     "--version prints the build ID (the git commit, with +HASH when the tree had\n"
     "uncommitted changes) and the strongest backend built, e.g. 'train 09e008b (metal)',\n"
     "then the full ID on a line 'build <40 hex>[+HASH]'.\n";
@@ -56,7 +60,8 @@ int main(int argc, char** argv) {
     std::unique_ptr<ArgParser> args;
     try {
         args = std::make_unique<ArgParser>(argc, argv,
-                                           std::vector<std::string>{"config", "run", "set", "generations", "init-from", "buffer-from"},
+                                           std::vector<std::string>{"config", "run", "set", "generations", "init-from", "buffer-from",
+                                                                    "hosts"},
                                            std::vector<std::string>{"resume", "rerate", "help", "version"});
     } catch (const std::invalid_argument& e) {
         return usageError(e.what());
@@ -102,16 +107,18 @@ int main(int argc, char** argv) {
         if (args->has("generations"))
             overrides.push_back("generations=" + std::to_string(args->getInt("generations", 0)));
 
+        azgo::TrainerOptions opts;
+        opts.hostsFile = args->get("hosts");
         std::unique_ptr<azgo::Trainer> trainer;
         if (resume) {
-            trainer = azgo::Trainer::resume(runDir, overrides);
+            trainer = azgo::Trainer::resume(runDir, overrides, &std::cout, opts);
         } else {
             azgo::Config cfg = azgo::loadConfigFile(args->get("config"));
             for (const std::string& o : overrides) azgo::applyOverride(cfg, o);
             azgo::Trainer::RunInit init;
             init.initFrom = args->get("init-from");
             init.bufferFrom = args->get("buffer-from");
-            trainer = azgo::Trainer::startNew(cfg, runDir, init);
+            trainer = azgo::Trainer::startNew(cfg, runDir, init, &std::cout, opts);
         }
 
         std::cout << (resume ? "resuming " : "starting ") << runDir << " at generation "

@@ -21,6 +21,7 @@
 #include "azgo/checkpoint.hpp"
 #include "azgo/build_info.hpp"
 #include "azgo/config.hpp"
+#include "azgo/coordinator.hpp"
 #include "azgo/elo.hpp"
 #include "azgo/engines.hpp"
 #include "azgo/metal.hpp"
@@ -2034,17 +2035,111 @@ static void test_resume_prunes_uncommitted_manifest_rows() {
     }
 }
 
-// Remote machines come with the remote transport; until then they are
-// refused before anything is written.
-static void test_remote_engines_refused_for_now() {
-    TempDir dir("engines_remote");
-    bool threw = false;
-    try {
-        startEngines(withEngines(tinyConfig(), "local/naive:1, mini1/naive:1"), dir, dir.file("none"));
-    } catch (const ConfigError& e) {
-        threw = std::string(e.what()).find("remote engines are not supported yet") != std::string::npos;
+// ---- remote slices through a fake remote ------------------------------------------
+
+// A hosts file defining `fake`: no ssh, so the subprocess transport runs
+// the real selfplay binary here, in its own work directory.
+static std::string fakeHosts(const TempDir& dir, const std::string& extra = "") {
+    fs::create_directories(dir.path);
+    writeFile(dir.file("hosts"), "fake exe=" + std::string(AZGO_SELFPLAY_EXE) + " workdir=" +
+                                     dir.file("remote") + (extra.empty() ? "" : " " + extra) + "\n");
+    return dir.file("hosts");
+}
+
+// Both engines are naive on this machine: the same arithmetic, so a run
+// with half its games played by another process is the default run.
+static void test_fake_remote_equals_local() {
+    TempDir plain("fake_default"), engines("fake_engines");
+    startQuiet(resignConfig(), plain)->runUntil(3);
+    const Config c = withEngines(resignConfig(), "local/naive:1, fake/naive:1");
+    TrainerOptions opts;
+    opts.hostsFile = fakeHosts(engines);
+    std::ostringstream startup;
+    std::unique_ptr<Trainer> t = Trainer::startNew(c, engines.str(), {}, &startup, opts);
+    t->setLog(nullptr);
+    t->runUntil(3);
+    const std::string fp = engineFingerprint("naive").substr(7);
+    assert(startup.str().find("engine local/naive: " + fp + " [" + shortBuildId() + "]\n") !=
+           std::string::npos);
+    assert(startup.str().find("engine fake/naive: " + fp + " [" + shortBuildId() + "]\n") !=
+           std::string::npos);
+    assert(runFingerprint(plain, 3) == runFingerprint(engines, 3));
+    const std::vector<std::string> rows = splitLines(readFile(engines.file("selfplay-engines.csv")));
+    assert(rows.size() == 7);
+    const std::vector<std::string> local = csvFields(rows[1]), fake = csvFields(rows[2]);
+    assert(local[4] == "local/naive" && fake[3] == "fake/naive" && fake[4] == "fake/naive");
+    assert(fake[1] == "4" && fake[2] == "4" && fake[5] == local[5] && fake[6] == shortBuildId());
+    assert(std::stoll(fake[8]) > 0 && std::stoll(fake[9]) > 0 && fake[10].empty());
+}
+
+static void test_fake_remote_resume() {
+    TempDir straight("fake_straight"), resumed("fake_resumed");
+    const Config c = withEngines(resignConfig(), "fake/naive:2, local/naive=3");
+    startEngines(c, straight, fakeHosts(straight))->runUntil(4);
+    startEngines(c, resumed, fakeHosts(resumed))->runUntil(2);
+    resumeEngines(resumed, {}, resumed.file("hosts"))->runUntil(4);
+    assert(runFingerprint(straight, 4) == runFingerprint(resumed, 4));
+    assert(manifestWithoutTimings(straight) == manifestWithoutTimings(resumed));
+}
+
+// Preflight refuses, before anything is written: a remote built from
+// another commit, an alias the hosts file lacks, a backend the remote
+// cannot run.
+static void test_preflight_refusals() {
+    auto startError = [](const TempDir& dir, const std::string& engines, const std::string& hosts) {
+        try {
+            startEngines(withEngines(tinyConfig(), engines), dir, hosts);
+        } catch (const ConfigError& e) {
+            return std::string(e.what());
+        }
+        return std::string("accepted");
+    };
+    {
+        TempDir dir("preflight_build");
+        const std::string hosts = fakeHosts(dir);
+        distributed_probe::setRemoteBuildId("0000000000000000000000000000000000000000");
+        const std::string msg = startError(dir, "local/naive:1, fake/naive:1", hosts);
+        distributed_probe::reset();
+        assert(msg.find("fake") != std::string::npos && msg.find(buildId()) != std::string::npos &&
+               msg.find("0000000000000000000000000000000000000000") != std::string::npos);
+        assert(!fs::exists(statePath(dir.str())) && !fs::exists(configPath(dir.str())));
+        // The same on resume: config.cfg is left as it was.
+        startQuiet(tinyConfig(), dir)->runUntil(1);
+        const std::string config = readFile(configPath(dir.str()));
+        distributed_probe::setRemoteBuildId("0000000000000000000000000000000000000000");
+        bool threw = false;
+        try {
+            resumeEngines(dir, {"selfplay_engines=local/naive:1, fake/naive:1"}, hosts);
+        } catch (const ConfigError&) {
+            threw = true;
+        }
+        distributed_probe::reset();
+        assert(threw && readFile(configPath(dir.str())) == config);
     }
-    assert(threw && !fs::exists(statePath(dir.str())) && !fs::exists(configPath(dir.str())));
+    {
+        TempDir dir("preflight_alias");
+        const std::string msg = startError(dir, "local/naive:1, mini9/naive:1", fakeHosts(dir));
+        assert(msg.find("mini9") != std::string::npos && !fs::exists(configPath(dir.str())));
+    }
+    if (!metalBuilt()) {
+        TempDir dir("preflight_metal");
+        const std::string msg = startError(dir, "local/naive:1, fake/metal:1", fakeHosts(dir));
+        assert(msg.find("fake/metal") != std::string::npos && msg.find("metal") != std::string::npos);
+        assert(!fs::exists(configPath(dir.str())));
+    }
+}
+
+// After a generation the remote work directory holds only the network,
+// and the local work directory is empty.
+static void test_remote_cleanup() {
+    TempDir dir("fake_cleanup");
+    startEngines(withEngines(tinyConfig(), "local/naive:1, fake/naive:1"), dir, fakeHosts(dir))
+        ->runUntil(2);
+    std::vector<std::string> remote;
+    for (const auto& e : fs::recursive_directory_iterator(dir.file("remote")))
+        if (e.is_regular_file()) remote.push_back(e.path().filename().string());
+    assert(remote.size() == 1 && remote[0].rfind("net_", 0) == 0);
+    assert(fs::is_directory(dir.file("selfplay-work")) && fs::is_empty(dir.file("selfplay-work")));
 }
 
 // Different backends on one machine give different bits, but each game is
@@ -2076,7 +2171,10 @@ int main() {
     test_split_local_engines_equal_default();
     test_engines_resume_is_byte_identical();
     test_switch_on_at_resume();
-    test_remote_engines_refused_for_now();
+    test_fake_remote_equals_local();
+    test_fake_remote_resume();
+    test_preflight_refusals();
+    test_remote_cleanup();
     test_resume_prunes_uncommitted_manifest_rows();
     test_mixed_local_engines_deterministic();
     test_rerate_ignores_uncommitted_checkpoint();

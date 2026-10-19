@@ -1180,6 +1180,48 @@ static void test_in_process_transport() {
                .exitCode == 1);
 }
 
+// Three remote slices (in-process transport) finishing in each of the six
+// orders, by delays: the merged records are the same, and are the games of
+// one engine playing the whole generation.
+static void test_merge_order_independent() {
+    SliceWork work("merge");
+    Config cfg;
+    cfg.boardSize = 5;
+    cfg.history = 2;
+    cfg.blocks = 1;
+    cfg.filters = 4;
+    cfg.valueHidden = 8;
+    cfg.gamesPerGeneration = 6;
+    cfg.seed = 11;
+    applyOverride(cfg, "selfplay_engines=fa/naive:1, fb/naive:1, fc/naive:1");
+    std::string hostsText;
+    for (const char* alias : {"fa", "fb", "fc"})
+        hostsText += std::string(alias) + " exe=unused workdir=" + (work.dir / "remote").string() + "\n";
+    const HostsFile hosts = parseHostsText(hostsText, "h");
+    const std::string netPath = (work.dir / "net_test.azn").string();
+    const Network net = loadNetwork(netPath);
+    SelfPlayConfig sp = work.job.sp;
+    const std::vector<GameRecord> whole =
+        playSelfPlayGames(net, sp, cfg.seed, 2, 0, 6, EngineRun{"naive", 1});
+    const double delays[3] = {0.0, 0.15, 0.3};
+    int order[3] = {0, 1, 2};
+    int orders = 0;
+    distributed_probe::useInProcessTransport(true);
+    do {
+        distributed_probe::delaySlice("fa/naive", delays[order[0]]);
+        distributed_probe::delaySlice("fb/naive", delays[order[1]]);
+        distributed_probe::delaySlice("fc/naive", delays[order[2]]);
+        SelfPlayCoordinator coordinator(cfg, (work.dir / "run").string(), hosts, nullptr);
+        coordinator.preflight();
+        const std::vector<GameRecord> merged = coordinator.play(2, netPath, net, sp, 6);
+        assert(sameRecords(merged, whole));
+        assert(coordinator.reports().size() == 3 && coordinator.reports()[2].engine == "fc/naive");
+        ++orders;
+    } while (std::next_permutation(order, order + 3));
+    distributed_probe::reset();
+    assert(orders == 6);
+}
+
 int main() {
     test_build_id_shape();
     test_build_options();
@@ -1205,6 +1247,7 @@ int main() {
     test_ssh_argv();
     test_subprocess_transport_round_trip();
     test_in_process_transport();
+    test_merge_order_independent();
     std::printf("test_distributed: OK\n");
     return 0;
 }

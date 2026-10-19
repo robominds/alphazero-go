@@ -8,7 +8,9 @@
 // hub and a CPU engine's per-worker BLAS backends share nothing but the
 // read-only network. The slices are then merged by game index, never by
 // the order they finished in, so the generation's records depend only on
-// the assignment and on what each engine computes.
+// the assignment and on what each engine computes. A remote engine's slice
+// (a machine of the hosts file) is a job file sent through a Transport to
+// that machine's selfplay binary, whose verified result file comes back.
 //
 // Every slice is written to the run's manifest, selfplay-engines.csv: the
 // engine planned for it, the engine that played it, that engine's
@@ -19,6 +21,8 @@
 #pragma once
 #include <map>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -39,41 +43,6 @@ struct SliceReport {
     Slice slice;
     std::string planned, engine, fingerprint, build, note;
     SliceStats stats;
-};
-
-class SelfPlayCoordinator {
-public:
-    // cfg.selfplayEngines must not be empty. `hosts` gives each machine's
-    // settings (local's defaults when it has no line). Progress and notes go
-    // to `log` (null: silent).
-    SelfPlayCoordinator(const Config& cfg, const std::string& runDir, HostsFile hosts,
-                        std::ostream* log);
-
-    // Before a run writes anything: refuses (ConfigError) a remote engine,
-    // which this version cannot reach yet; checks each local backend
-    // (checkBackendAvailable, and for metal checkMetalInferenceMemory for
-    // one two-slot hub per metal item); takes each local engine's
-    // fingerprint and prints one line per engine:
-    //   engine local/metal: Apple M5 Max; macOS 27.0.1 (25A123); Apple M5 Max, ... [09e008b]
-    void preflight();
-
-    // Generation g's `games` self-play games from `net` (the checkpoint at
-    // networkPath), merged in index order. Throws the first failure of any
-    // slice, by list order, after every slice has stopped.
-    std::vector<GameRecord> play(int g, const std::string& networkPath, const Network& net,
-                                 const SelfPlayConfig& sp, int games);
-    // The last play()'s slices, in list order.
-    const std::vector<SliceReport>& reports() const { return reports_; }
-    void setLog(std::ostream* log) { log_ = log; }
-
-private:
-    std::string fingerprint(const std::string& backend);   // cached per backend
-    Config cfg_;
-    std::string runDir_;
-    HostsFile hosts_;
-    std::ostream* log_;
-    std::map<std::string, std::string> fingerprints_;   // local backend -> fingerprint
-    std::vector<SliceReport> reports_;
 };
 
 // ---- transports ----------------------------------------------------------------
@@ -139,7 +108,8 @@ protected:
 };
 
 // For tests: SubprocessTransport's files, but run() calls runSliceJob on
-// the calling thread (the selfplay app's arguments, parsed here).
+// the calling thread (the selfplay app's arguments, parsed here), and
+// answers --version and --fingerprint as the app does.
 class InProcessTransport : public SubprocessTransport {
 public:
     using SubprocessTransport::SubprocessTransport;
@@ -164,6 +134,84 @@ std::vector<std::string> sshArgv(const MachineSettings& machine,
                                  const std::vector<std::string>& args);
 std::vector<std::string> scpArgv(const MachineSettings& machine, const std::string& local,
                                  const std::string& remote, bool upload);
+
+// ---- the coordinator ---------------------------------------------------------------
+
+class SelfPlayCoordinator {
+public:
+    // cfg.selfplayEngines must not be empty. `hosts` gives each machine's
+    // settings (local's defaults when it has no line). Progress and notes go
+    // to `log` (null: silent). runDir names the run on remotes (runIdOf).
+    SelfPlayCoordinator(const Config& cfg, const std::string& runDir, HostsFile hosts,
+                        std::ostream* log);
+
+    // Before a run writes anything (and writing nothing):
+    //  - local engines: checkBackendAvailable, and for metal
+    //    checkMetalInferenceMemory for one two-slot hub per metal item;
+    //  - remote machines: every alias must be in the hosts file (else
+    //    ConfigError); `selfplay --version` there must report this binary's
+    //    build ID (else ConfigError naming the alias and both IDs), and
+    //    `selfplay --fingerprint --backend B` must succeed for each of its
+    //    engines (a backend it cannot run: ConfigError). A machine that
+    //    cannot be reached at all is a ConfigError with selfplay_fallback =
+    //    stop, and a warning with local;
+    //  - one line per engine, its fingerprint and build:
+    //      engine mini1/metal: Apple M4; macOS 26.1 (25B78); Apple M4, ... [09e008b]
+    //    and a note for an engine whose fingerprint differs from the
+    //    manifest's last row for it (its games' last bits change from here).
+    void preflight();
+
+    // Generation g's `games` self-play games from `net` (the checkpoint at
+    // networkPath), merged in index order. Local slices run in this
+    // process, each on its own thread; each remote slice on a thread that
+    // uploads the network (unless that machine has it) and the job, runs
+    // selfplay there, downloads the result and verifies it
+    // (readSliceResult). Work files go to runDir/selfplay-work/gen_NNNN and
+    // workdir/<run-id>/ on the machine, and are removed after the merge
+    // (the network stays until the next one replaces it). Throws the first
+    // failure of any slice, by list order, after every slice has stopped.
+    std::vector<GameRecord> play(int g, const std::string& networkPath, const Network& net,
+                                 const SelfPlayConfig& sp, int games);
+    // The last play()'s slices, in list order.
+    const std::vector<SliceReport>& reports() const { return reports_; }
+    void setLog(std::ostream* log) { log_ = log; }
+
+private:
+    std::unique_ptr<Transport> transportFor(const MachineSettings& m, const std::string& log) const;
+    std::string remoteDir(const MachineSettings& m) const;
+    void unreachable(const std::string& alias, const std::string& why);
+    // One remote slice, start to verified records; fills report.
+    std::vector<GameRecord> playRemote(int g, const Slice& slice, const EngineSpec& e,
+                                       const std::string& networkPath, uint64_t networkHash,
+                                       const SelfPlayConfig& sp, const std::string& workDir,
+                                       SliceReport& report);
+    Config cfg_;
+    std::string runDir_, runId_;
+    HostsFile hosts_;
+    std::ostream* log_;
+    std::map<std::string, std::string> fingerprints_;   // engine name -> fingerprint
+    std::map<std::string, std::string> remoteBuilds_;   // alias -> its full build ID
+    std::set<std::string> unreachable_;                 // aliases preflight could not reach
+    std::mutex uploadMutex_;
+    std::map<std::string, std::string> uploadedNet_;    // alias -> network path uploaded there
+    std::vector<SliceReport> reports_;
+};
+
+// How a run is named on remotes: its directory's name (characters outside
+// [A-Za-z0-9_.-] become '_'), '-', and 8 hex digits of the FNV-1a hash of
+// its absolute path, so two runs of one name never share files.
+std::string runIdOf(const std::string& runDir);
+
+// Test hooks; a run's configuration can never reach them.
+namespace distributed_probe {
+// Preflight sees this as every remote's build ID ("" = the real one).
+void setRemoteBuildId(const std::string& id);
+// The engine's remote slices wait this long before running selfplay.
+void delaySlice(const std::string& engine, double seconds);
+// Machines without ssh run slices with InProcessTransport, not as processes.
+void useInProcessTransport(bool on);
+void reset();
+} // namespace distributed_probe
 
 // runDir/selfplay-engines.csv
 std::string manifestPath(const std::string& runDir);
