@@ -384,6 +384,13 @@ static void test_engine_workers() {
     assert(engineWorkers(hosts.settings("local"), "blas", 12, 18) == 6);
     assert(engineWorkers(hosts.settings("mini1"), "naive", 20, 10) == 8);
     assert(engineWorkers(hosts.settings("mini1"), "naive", 3, 10) == 3);
+    // What selfplay uses on a remote: --workers, else the remote rule.
+    assert(sliceWorkers("blas", 0, 12, 10) == 2);
+    assert(sliceWorkers("naive", 0, 12, 3) == 1);
+    assert(sliceWorkers("metal", 0, 12, 10) == 12);
+    assert(sliceWorkers("metal", 0, 300, 10) == 256);
+    assert(sliceWorkers("naive", 5, 3, 10) == 3);
+    assert(sliceWorkers("blas", 7, 12, 10) == 7);
 }
 
 // ---- engine fingerprints ------------------------------------------------------

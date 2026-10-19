@@ -115,6 +115,11 @@ std::string resolveHostsPath(const std::string& cli);
 // Always at most sliceGames, at least 1.
 int engineWorkers(const MachineSettings& machine, const std::string& backend, int sliceGames,
                   int cores);
+// The selfplay app's worker threads on a machine with `cores` cores:
+// `requested` (its --workers, capped at the slice's games) when positive,
+// else a remote's default rule of engineWorkers (every game at once with
+// metal, max(1, min(2, cores - 2)) for naive and blas).
+int sliceWorkers(const std::string& backend, int requested, int sliceGames, int cores);
 
 // What determines the arithmetic of `backend` on this machine, as one line:
 // the backend, the CPU model, the OS version and build, and with metal the

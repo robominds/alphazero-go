@@ -341,6 +341,13 @@ int engineWorkers(const MachineSettings& machine, const std::string& backend, in
     return std::max(1, std::min(workers, sliceGames));
 }
 
+int sliceWorkers(const std::string& backend, int requested, int sliceGames, int cores) {
+    if (requested > 0) return std::max(1, std::min(requested, sliceGames));
+    MachineSettings remote;
+    remote.alias = "remote";
+    return engineWorkers(remote, backend, sliceGames, cores);
+}
+
 // ---- fingerprints ---------------------------------------------------------------
 
 namespace {

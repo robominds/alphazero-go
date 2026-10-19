@@ -7,7 +7,6 @@
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
-#include "azgo/arena.hpp"
 #include "azgo/backend.hpp"
 #include "azgo/board.hpp"
 #include "azgo/build_info.hpp"
@@ -488,9 +487,7 @@ int runSliceJob(const std::string& jobPath, const std::string& outPath, const st
                              std::to_string(job.boardSize) + " network");
         EngineRun run;
         run.backend = backend;
-        run.workers = workers > 0 ? workers
-                                  : (backend == "metal" ? std::min(job.count, kMaxArenaWorkers)
-                                                        : resolveWorkers(0));
+        run.workers = sliceWorkers(backend, workers, job.count, resolveWorkers(0));
         run.inferenceBatch = inferenceBatch > 0 ? inferenceBatch : job.inferenceBatch;
         SliceResult result;
         result.jobHash = fnv1a64(jobBytes);
