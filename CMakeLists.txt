@@ -158,6 +158,10 @@ add_test(NAME integration_smoke
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration_smoke.sh ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR}
                  ${AZGO_SMOKE_METAL})
 
+# The build ID script in a scratch git repository (77 = skipped without git).
+add_test(NAME build_id COMMAND bash ${CMAKE_SOURCE_DIR}/tests/build_id.sh ${CMAKE_SOURCE_DIR})
+set_tests_properties(build_id PROPERTIES SKIP_RETURN_CODE 77)
+
 foreach(app arena analyze bench grow gtp)
   add_executable(${app} apps/${app}.cpp)
   target_link_libraries(${app} PRIVATE azgo)
