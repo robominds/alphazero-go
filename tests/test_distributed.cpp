@@ -801,7 +801,7 @@ static void test_result_refusals() {
                         g.moves[1] = g.moves[0];
                         g.visits[1] = {{static_cast<int16_t>(g.moves[0]), 8}};
                     })),
-                    "is illegal"));
+                    "illegal move"));
     assert(contains(errorOf(edited([&](SliceResult& r) {
                         r.records[playedOut].resultForBlack = -r.records[playedOut].resultForBlack;
                         if (r.records[playedOut].resultForBlack == 0) r.records[playedOut].resultForBlack = 1;
@@ -849,12 +849,56 @@ static void test_result_refusals() {
                             }),
                             offBytes),
                     "resign"));
-    // A game that went below v_resign without resigning (not disabled).
+    // Resignation as v_resign dictates. A resigned game must end with a
+    // low below it, at the position it resigned in.
     assert(contains(errorOf(edited([&](SliceResult& r) {
-                        r.records[resignedGame].resignDisabled = true;
-                        r.records[resignedGame].resigned = false;
+                        GameRecord& g = r.records[resignedGame];
+                        g.resignLows[g.positions() % 2].pop_back();
                     })),
-                    "game"));
+                    "resigned without a value below v_resign"));
+    // Whether resignation was disabled is the game's first draw from its seed.
+    assert(contains(errorOf(edited([&](SliceResult& r) { r.records[disabledGame].resignDisabled = false; })),
+                    "resign-disabled flag does not match the game's seed"));
+    assert(contains(errorOf(edited([&](SliceResult& r) { r.records[resignedGame].resignDisabled = true; })),
+                    "resigned with resignation disabled"));
+    // A game that played on has no low at its last position (no search ran there).
+    assert(contains(errorOf(edited([&](SliceResult& r) {
+                        GameRecord& g = r.records[disabledGame];
+                        const int side = g.positions() % 2;
+                        const float below = g.resignLows[side].empty() ? 0.0f : g.resignLows[side].back().second;
+                        g.resignLows[side].push_back({g.positions(), std::max(-1.0f, below - 0.01f)});
+                    })),
+                    "a resign low after the last move"));
+    // Every visited move was legal where it was searched.
+    assert(contains(errorOf(edited([&](SliceResult& r) {
+                        GameRecord& g = r.records[stoneFirst];
+                        g.visits[1].push_back({static_cast<int16_t>(g.moves[0]), 1});   // Black's stone
+                    })),
+                    "visit to an illegal move"));
+    {
+        // With v_resign at -0.9 nobody resigns; a game whose lows go below it
+        // without resigning (and without resignation disabled) is refused.
+        SelfPlayJob low = job;
+        low.sp.resignThreshold = -0.9f;
+        const std::string lowBytes = serializeJob(low);
+        SliceResult lowResult = sliceResult(low);
+        size_t k = 0;
+        while (k < lowResult.records.size() &&
+               (lowResult.records[k].resignDisabled || lowResult.records[k].resigned ||
+                lowResult.records[k].positions() < 4))
+            ++k;
+        assert(k < lowResult.records.size());
+        assert(errorOf(serializeSliceResult(lowResult, low.first), lowBytes) == "accepted");
+        GameRecord& g = lowResult.records[k];
+        // Black's next record low: a later even ply before the last position.
+        ResignLows& lows = g.resignLows[0];
+        const int after = lows.empty() ? 0 : lows.back().first;
+        const int ply = ((g.positions() - 1) / 2) * 2;
+        assert(ply > after && ply >= 2);
+        lows.push_back({ply, -0.95f});
+        assert(contains(errorOf(serializeSliceResult(lowResult, low.first), lowBytes),
+                        "Black went below v_resign at ply " + std::to_string(ply) + " without resigning"));
+    }
     // Another board size than the job's.
     SelfPlayJob nine = job;
     nine.boardSize = 9;

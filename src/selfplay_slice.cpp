@@ -174,8 +174,13 @@ void verifyRecord(const SelfPlayJob& job, const GameRecord& g, int index) {
                              " differs from the replayed one");
         const int move = g.moves[static_cast<size_t>(ply)];
         bool visited = false;
-        for (const auto& av : g.visits[static_cast<size_t>(ply)])
+        for (const auto& av : g.visits[static_cast<size_t>(ply)]) {
             visited = visited || av.first == move;
+            // The search only ever visits legal moves.
+            if (!replay.isLegal(av.first))
+                throw SliceError(game + "a visit to an illegal move (" + actionToString(av.first, n) +
+                                 ") at position " + std::to_string(ply));
+        }
         const std::string what =
             game + "move " + std::to_string(ply + 1) + " (" + actionToString(move, n) + ")";
         if (!visited) throw SliceError(what + " is not among the visited moves");
@@ -210,12 +215,24 @@ void verifyRecord(const SelfPlayJob& job, const GameRecord& g, int index) {
     }
     if (g.resigned && g.resignDisabled)
         throw SliceError(game + "resigned with resignation disabled");
+    // Whether resignation was off for this game is its first draw from its
+    // own seed (playSelfPlayGame): recompute it.
+    Rng rng(deriveSeed(job.seed, static_cast<uint64_t>(job.generation), kPhaseSelfPlay,
+                       static_cast<uint64_t>(index)));
+    if (g.resignDisabled != (rng.uniform() < job.sp.resignDisabledFraction))
+        throw SliceError(game + "resign-disabled flag does not match the game's seed");
     for (int side = 0; side < 2; ++side) {
         const ResignLows& lows = g.resignLows[side];
         for (size_t k = 0; k < lows.size(); ++k) {
             const auto [ply, value] = lows[k];
             const bool falling =
                 k == 0 || (ply > lows[k - 1].first && value < lows[k - 1].second);
+            // Searched positions only: the last position too only when the
+            // side to move resigned there (a game that played on ended at
+            // its last move, with no search after it).
+            if (ply == g.positions() && !g.resigned)
+                throw SliceError(game + "a resign low after the last move (" + ownerName(side) +
+                                 ", ply " + std::to_string(ply) + ")");
             const bool ok = ply >= 1 && ply <= g.positions() && ply % 2 == side &&
                             value >= -1.0f && value <= 1.0f && falling;
             if (!ok)

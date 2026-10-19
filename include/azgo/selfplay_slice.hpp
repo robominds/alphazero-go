@@ -126,7 +126,9 @@ std::string serializeSliceResult(const SliceResult& result, int first);
 // count of games, or indices out of order; and any game that does not
 // replay: another board size or komi, a position that differs from the
 // replayed one, a move that is illegal or was not among the searched
-// moves, a game that ends before its last move or does not end, a played-out
+// moves, a visit to an illegal move, a game that ends before its last move
+// or does not end, a resign-disabled flag that is not the game's first draw
+// from its seed, a played-out
 // game whose result is not the replayed board's, a resigned game that is not
 // a loss for the side that resigned, resignation flags or lows with
 // resignation off, resign lows that are not record lows, a game that went
