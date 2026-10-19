@@ -4,6 +4,7 @@
 //   train --config configs/9x9.cfg --run runs/ten --init-from CKPT [--buffer-from RUNDIR]
 //   train --run runs/nine --resume [--set key=value]... [--generations N]
 //   train --run runs/nine --rerate [--set key=value]...
+//   train --version
 #include <cstdio>
 #include <exception>
 #include <iostream>
@@ -12,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "azgo/build_info.hpp"
 #include "azgo/config.hpp"
 #include "azgo/run_state.hpp"
 #include "azgo/trainer.hpp"
@@ -25,6 +27,7 @@ const char* const kUsage =
     "  train --config FILE --run DIR --init-from CKPT [--buffer-from RUNDIR] [--set key=value]...\n"
     "  train --run DIR --resume [--set key=value]... [--generations N]\n"
     "  train --run DIR --rerate [--set key=value]...\n"
+    "  train --version\n"
     "\n"
     "A new run copies FILE (plus overrides) to DIR/config.cfg. --resume continues\n"
     "from DIR/state.bin; tunable keys may be overridden, architecture keys may not.\n"
@@ -37,7 +40,9 @@ const char* const kUsage =
     "references.csv, log.csv). state.bin and config.cfg are left as they are;\n"
     "--set applies to the replay only and may change any key but the architecture\n"
     "keys, e.g. --set bot_simulations= --set reference_networks=CKPT to measure the\n"
-    "run against other fixed players.\n";
+    "run against other fixed players.\n"
+    "--version prints the build ID (the git commit, with +HASH when the tree had\n"
+    "uncommitted changes) and the strongest backend built, e.g. 'train 09e008b (metal)'.\n";
 
 int usageError(const std::string& message) {
     std::fprintf(stderr, "error: %s\n\n%s", message.c_str(), kUsage);
@@ -51,12 +56,16 @@ int main(int argc, char** argv) {
     try {
         args = std::make_unique<ArgParser>(argc, argv,
                                            std::vector<std::string>{"config", "run", "set", "generations", "init-from", "buffer-from"},
-                                           std::vector<std::string>{"resume", "rerate", "help"});
+                                           std::vector<std::string>{"resume", "rerate", "help", "version"});
     } catch (const std::invalid_argument& e) {
         return usageError(e.what());
     }
     if (args->flag("help")) {
         std::fputs(kUsage, stdout);
+        return 0;
+    }
+    if (args->flag("version")) {
+        std::printf("train %s (%s)\n", azgo::shortBuildId().c_str(), azgo::buildOptions().c_str());
         return 0;
     }
     if (!args->has("run")) return usageError("--run DIR is required");

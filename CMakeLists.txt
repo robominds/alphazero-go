@@ -59,6 +59,23 @@ target_include_directories(azgo PUBLIC include)
 target_compile_options(azgo PRIVATE -Wall -Wextra)
 target_link_libraries(azgo PUBLIC Threads::Threads)
 
+# The build ID (azgo/build_info.hpp): the git commit, plus a hash of any
+# uncommitted changes, computed on every build by a script that rewrites
+# generated/azgo_build_info.inc only when the ID changed, so an untouched
+# rebuild recompiles nothing. AZGO_BUILD_ID replaces git for a copy without
+# .git (one made with `git archive`, as tools/cluster_sync.sh does).
+set(AZGO_BUILD_ID "" CACHE STRING
+    "Build ID to embed instead of git's: 40 lowercase hex, optionally +8 hex (empty: ask git)")
+set(AZGO_BUILD_INFO ${CMAKE_BINARY_DIR}/generated/azgo_build_info.inc)
+add_custom_target(azgo_build_info ALL
+  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${AZGO_BUILD_INFO}
+          -DTEMPLATE=${CMAKE_SOURCE_DIR}/cmake/build_info.hpp.in -DOVERRIDE=${AZGO_BUILD_ID}
+          -P ${CMAKE_SOURCE_DIR}/cmake/azgo_build_info.cmake
+  BYPRODUCTS ${AZGO_BUILD_INFO}
+  VERBATIM)
+add_dependencies(azgo azgo_build_info)
+target_include_directories(azgo PRIVATE ${CMAKE_BINARY_DIR}/generated)
+
 if(AZ_USE_METAL)
   # The kernels are compiled by the OS at run time (newLibraryWithSource), so
   # the build needs no `metal` shader compiler, which only Xcode ships: the
@@ -74,7 +91,6 @@ if(AZ_USE_METAL)
                  ${CMAKE_BINARY_DIR}/generated/azgo_metal_kernels.inc @ONLY)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
                ${AZGO_METAL_DIR}/shader_types.h ${AZGO_METAL_DIR}/kernels.metal)
-  target_include_directories(azgo PRIVATE ${CMAKE_BINARY_DIR}/generated)
   target_compile_options(azgo PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
   target_link_libraries(azgo PUBLIC "-framework Metal" "-framework Foundation")
   target_compile_definitions(azgo PUBLIC AZ_USE_METAL)
