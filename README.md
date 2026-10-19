@@ -380,7 +380,9 @@ the generation ends uncommitted and `--resume` replays it as planned.
 
 **Switching a running run on.** Build and sync, stop the run just after a
 commit with `tools/stop_after_generation.sh RUN_DIR PID`, then
-`train --run RUN_DIR --resume --set selfplay_engines=...`.
+`train --run RUN_DIR --resume --set selfplay_engines=...`. If `train` runs
+inside a wrapper script that would resume it or go on when it stops, stop
+the wrapper first; the tool warns when `train`'s parent looks like one.
 `tools/engine_weights.py RUN_DIR` suggests weights from a run's manifest.
 On the Studio with two M4 minis, the measured rates (19×19, 10×128) add up
 to about 1.5 times the Studio GPU alone, before tails and transfers.

@@ -19,6 +19,11 @@ Waits until RUN_DIR/log.csv gains a row (train appends it right after
 committing a generation in state.bin), sends SIGINT to PID (the train
 process) and prints the generation it stopped after. Resume with
 train --run RUN_DIR --resume [--set ...].
+
+If train was started by a wrapper script that goes on after it ends (a
+loop that resumes it, or a job that runs more steps), stop that script
+first, or it will carry on with its own settings as soon as train stops.
+The script warns when PID's parent looks like such a script, and names it.
 EOF
 }
 
@@ -28,6 +33,21 @@ RUN="$1" PID="$2"
 LOG="$RUN/log.csv"
 [ -f "$LOG" ] || { echo "error: no $LOG" >&2; exit 1; }
 kill -0 "$PID" 2>/dev/null || { echo "error: no process $PID" >&2; exit 1; }
+
+# A wrapper script around train would go on when train stops: say so.
+parent="$(ps -o ppid= -p "$PID" | tr -d ' ')"
+if [ -n "$parent" ] && [ "$parent" -gt 1 ]; then
+    parent_command="$(ps -o command= -p "$parent" 2>/dev/null || true)"
+    case "$(basename "$(ps -o comm= -p "$parent" 2>/dev/null | sed 's/^-//')")" in
+        bash|sh|zsh|dash|ksh)
+            words=($parent_command)
+            if [ ${#words[@]} -gt 1 ]; then
+                echo "warning: process $PID was started by process $parent ($parent_command)." >&2
+                echo "  If that script restarts train or runs more steps when train ends, stop it" >&2
+                echo "  first (kill $parent), or it will go on with its own settings." >&2
+            fi ;;
+    esac
+fi
 
 rows() { wc -l < "$LOG" | tr -d ' '; }
 start="$(rows)"

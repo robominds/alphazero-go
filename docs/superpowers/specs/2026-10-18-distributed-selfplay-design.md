@@ -577,7 +577,9 @@ To switch it on:
    `tools/stop_after_generation.sh RUN_DIR PID` polls `log.csv`, which
    is appended right after `state.bin`, and sends SIGINT to the trainer
    when a new row appears. At most the first seconds of the next
-   generation's self-play are lost.
+   generation's self-play are lost. A wrapper script around `train` that
+   would resume it or run more steps must be stopped first; the tool
+   warns when `train`'s parent looks like a script and names it.
 3. `train --run RUN_DIR --resume --set selfplay_engines=... [--hosts FILE]`.
 
 The resume loads the old `config.cfg` (no engine keys: the defaults),

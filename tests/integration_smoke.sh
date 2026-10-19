@@ -477,7 +477,7 @@ printf 'generation,games\n1,4\n' > "$W/stoprun/log.csv"
 # (A background job of a script ignores SIGINT; perl restores the default.)
 perl -e '$SIG{INT} = "DEFAULT"; sleep 60' &
 victim=$!
-"$SRC/tools/stop_after_generation.sh" "$W/stoprun" "$victim" > "$W/stop.out" &
+"$SRC/tools/stop_after_generation.sh" "$W/stoprun" "$victim" > "$W/stop.out" 2> "$W/stop.err" &
 stopper=$!
 sleep 0.5
 kill -0 "$victim" || fail "stop_after_generation.sh stopped the process before a new row"
@@ -487,6 +487,8 @@ status=0
 wait "$victim" || status=$?
 [ "$status" -ne 0 ] || fail "the process was not interrupted"
 grep -q 'generation 2' "$W/stop.out" || fail "stop_after_generation.sh did not name generation 2: $(cat "$W/stop.out")"
+# The process's parent is this script: the tool warns about a wrapper.
+grep -q "was started by process $$ " "$W/stop.err" || fail "no warning about the parent script: $(cat "$W/stop.err")"
 
 if [ "$METAL" = "metal=ON" ]; then
     echo "== metal: a run on the GPU, resumed and re-rated =="
