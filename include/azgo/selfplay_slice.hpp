@@ -48,8 +48,8 @@ struct SliceStats {
 // generation and the indices, and on the arithmetic of the backend on this
 // machine; never on workers, inferenceBatch or qos. Throws what
 // WorkerEvaluators or a game throws (the first, after every worker stopped).
-std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConfig& sp, uint64_t seed,
-                                          int generation, int first, int count, const EngineRun& run,
-                                          SliceStats* stats = nullptr);
+std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConfig& sp,
+                                          uint64_t seed, int generation, int first, int count,
+                                          const EngineRun& run, SliceStats* stats = nullptr);
 
 } // namespace azgo

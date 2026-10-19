@@ -26,10 +26,11 @@ void applyQos(CpuQos qos) {
 
 } // namespace
 
-std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConfig& sp, uint64_t seed,
-                                          int generation, int first, int count, const EngineRun& run,
-                                          SliceStats* stats) {
-    if (first < 0 || count < 0) throw std::invalid_argument("playSelfPlayGames: negative index range");
+std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConfig& sp,
+                                          uint64_t seed, int generation, int first, int count,
+                                          const EngineRun& run, SliceStats* stats) {
+    if (first < 0 || count < 0)
+        throw std::invalid_argument("playSelfPlayGames: negative index range");
     const auto start = std::chrono::steady_clock::now();
     std::vector<GameRecord> records(static_cast<size_t>(count));
     long long evaluations = 0;
@@ -40,7 +41,8 @@ std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConf
         // GPU passes; a position's outputs do not depend on its batch, so
         // the games are the same either way (azgo/inference_hub.hpp).
         const int workers = std::max(1, std::min(run.workers, count));
-        WorkerEvaluators evaluators(net, run.backend, workers, sp.mcts.batchSize, run.inferenceBatch);
+        WorkerEvaluators evaluators(net, run.backend, workers, sp.mcts.batchSize,
+                                    run.inferenceBatch);
         // Each worker is one thread for the whole loop: it sets its QoS
         // class once, before its first game.
         std::vector<char> qosSet(static_cast<size_t>(workers), 0);
@@ -59,7 +61,8 @@ std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConf
         evaluations = evaluators.evaluations();
     }
     if (stats) {
-        stats->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        stats->seconds = std::chrono::duration<double>(elapsed).count();
         stats->positions = 0;
         for (const GameRecord& r : records) stats->positions += r.positions();
         stats->evaluations = evaluations;

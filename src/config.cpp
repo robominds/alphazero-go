@@ -7,6 +7,7 @@
 #include <fstream>
 #include <map>
 #include <sstream>
+#include "azgo/engines.hpp"
 #include "azgo/game.hpp"
 #include "azgo/optimizer.hpp"
 #include "azgo/parallel.hpp"
@@ -206,6 +207,23 @@ const KeyEntry kKeys[] = {
     {"simulations", false, intKey<&Config::simulations, 1, 100000>, printInt<&Config::simulations>},
     {"mcts_batch", false, intKey<&Config::mctsBatch, 1, 256>, printInt<&Config::mctsBatch>},
     {"inference_batch", false, intKey<&Config::inferenceBatch, 1, 1024>, printInt<&Config::inferenceBatch>},
+    {"selfplay_engines", false,
+     [](Config& c, const std::string& v) -> std::string {
+         try {
+             c.selfplayEngines = parseEngineList(v);
+         } catch (const std::invalid_argument& e) {
+             return e.what();
+         }
+         return "";
+     },
+     [](const Config& c) { return printEngineList(c.selfplayEngines); }},
+    {"selfplay_fallback", false,
+     [](Config& c, const std::string& v) -> std::string {
+         if (v != "local" && v != "stop") return "expected local|stop, got " + quoted(v);
+         c.selfplayFallback = v;
+         return "";
+     },
+     [](const Config& c) { return c.selfplayFallback; }},
     {"c_puct", false, [](Config& c, const std::string& v) { return parseFloat(v, 0, 100, c.cPuct, true); },
      printFloat<&Config::cPuct>},
     {"dirichlet_scale", false,
@@ -416,6 +434,26 @@ void checkConsistency(const Config& cfg) {
         throw ConfigError("resign_min_games (" + std::to_string(cfg.resignMinGames) +
                           ") exceeds resign_window (" + std::to_string(cfg.resignWindow) +
                           "): the threshold could never be calibrated");
+    // selfplay_engines: the fixed counts come first, the weights share the
+    // rest (assignGames), so the counts must leave a rest that is not
+    // negative, and none at all when nothing is weighted.
+    if (!cfg.selfplayEngines.empty()) {
+        long long fixed = 0;
+        bool weighted = false;
+        for (const EngineSpec& e : cfg.selfplayEngines) {
+            if (e.games >= 0) fixed += e.games;
+            else weighted = true;
+        }
+        const std::string games = std::to_string(cfg.gamesPerGeneration);
+        if (fixed > cfg.gamesPerGeneration)
+            throw ConfigError("selfplay_engines: the fixed counts (=N) add up to " +
+                              std::to_string(fixed) + " games, more than games_per_generation (" +
+                              games + ")");
+        if (!weighted && fixed != cfg.gamesPerGeneration)
+            throw ConfigError("selfplay_engines: with no weighted item (:W), the fixed counts "
+                              "must add up to exactly games_per_generation (" + games + "), not " +
+                              std::to_string(fixed));
+    }
 }
 
 } // namespace azgo

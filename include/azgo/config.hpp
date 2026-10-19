@@ -22,6 +22,18 @@ constexpr int kMaxFilters = 512;
 
 struct ConfigError : std::runtime_error { using std::runtime_error::runtime_error; };
 
+// One item of selfplay_engines: an engine (a machine alias and a backend)
+// and its share of a generation's games, either a weight (weight > 0,
+// games = -1) or an exact count (games >= 0, weight = 0). Items are
+// identified by their position in the list, so an engine may appear twice.
+// Parsing, printing and the assignment of games live in azgo/engines.hpp.
+struct EngineSpec {
+    std::string machine, backend;
+    int weight = 0;
+    int games = -1;
+    std::string name() const;   // "machine/backend"
+};
+
 struct Config {
     // run
     uint64_t seed = 1;
@@ -60,6 +72,14 @@ struct Config {
     // Most positions per GPU pass (backend = metal), at least mcts_batch.
     // Changes speed only: results do not depend on it.
     int inferenceBatch = 256;
+    // Distributed self-play: which engine plays which of a generation's
+    // games, e.g. "local/metal:50, local/blas=12, mini1/metal:10" (machine
+    // aliases; remotes are defined in a machine-local hosts file, never
+    // here). Empty: one engine, local/<backend>, through today's code.
+    std::vector<EngineSpec> selfplayEngines;
+    // When a remote slice fails twice: "local" plays it on the coordinator
+    // and records that in the manifest; "stop" ends the generation uncommitted.
+    std::string selfplayFallback = "local";
     float cPuct = 1.5f;
     float dirichletScale = 10.0f;
     float noiseFraction = 0.25f;
@@ -135,7 +155,9 @@ std::vector<std::string> resumeLockedDiff(const Config& a, const Config& b);
 // with ownership (a resigned game has no final position to take ownership
 // targets from) or with resign_disabled_fraction = 0 (no games to measure
 // false positives on), resign_min_games exceeds resign_window, or
-// inference_batch is below mcts_batch (a request must fit in one GPU pass).
+// inference_batch is below mcts_batch (a request must fit in one GPU pass),
+// or selfplay_engines' fixed counts add up to more than
+// games_per_generation (or, with no weighted item, to anything else).
 void checkConsistency(const Config& cfg);
 
 } // namespace azgo

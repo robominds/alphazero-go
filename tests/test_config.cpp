@@ -653,8 +653,69 @@ static void test_metal_backend_and_inference_batch() {
     assert(parseConfigText("filters = 96\n", "old.cfg").inferenceBatch == 256);
 }
 
+
+// Distributed self-play's keys: selfplay_engines (empty: today's single
+// engine) after inference_batch, and selfplay_fallback (local | stop).
+static void test_config_selfplay_keys() {
+    Config d;
+    assert(d.selfplayEngines.empty() && d.selfplayFallback == "local");
+    // main's 50 keys, and these two.
+    const std::string text = configToString(d);
+    assert(std::count(text.begin(), text.end(), '\n') == 52);
+    assert(contains(text, "\ninference_batch = 256\nselfplay_engines = \n"
+                          "selfplay_fallback = local\n"));
+    // A config.cfg written before the keys existed gets the defaults.
+    const Config old = parseConfigText("filters = 96\n", "old.cfg");
+    assert(old.selfplayEngines.empty() && old.selfplayFallback == "local");
+
+    Config c = parseConfigText("games_per_generation = 100\n"
+                               "selfplay_engines = local/metal:50 ,local/blas = 12, "
+                               "mini1/metal:10\n"
+                               "selfplay_fallback = stop\n",
+                               "t.cfg");
+    assert(c.selfplayEngines.size() == 3 && c.selfplayFallback == "stop");
+    assert(c.selfplayEngines[1].machine == "local" && c.selfplayEngines[1].backend == "blas");
+    assert(c.selfplayEngines[1].games == 12 && c.selfplayEngines[1].weight == 0);
+    assert(contains(configToString(c),
+                    "\nselfplay_engines = local/metal:50, local/blas=12, mini1/metal:10\n"));
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    applyOverride(c, "selfplay_engines=");
+    assert(c.selfplayEngines.empty());
+    applyOverride(c, "selfplay_engines=local/naive:1,local/naive:1");
+    assert(c.selfplayEngines.size() == 2);
+    assert(contains(errorOf("selfplay_engines = local/gpu:1"), "t.cfg:1: selfplay_engines: "));
+    assert(contains(errorOf("selfplay_fallback = remote"), "expected local|stop"));
+    // Tunable: changing them on resume is allowed.
+    Config e;
+    e.selfplayEngines = c.selfplayEngines;
+    e.selfplayFallback = "stop";
+    assert(architectureDiff(d, e).empty() && resumeLockedDiff(d, e).empty());
+
+    // Fixed counts may not exceed games_per_generation, and without a
+    // weighted item they must add up to it.
+    auto consistencyError = [](const std::string& engines, int games) {
+        Config k;
+        k.gamesPerGeneration = games;
+        applyOverride(k, "selfplay_engines=" + engines);
+        try {
+            checkConsistency(k);
+        } catch (const ConfigError& err) {
+            return std::string(err.what());
+        }
+        return std::string();
+    };
+    assert(contains(consistencyError("local/metal:1, local/blas=12", 10), "selfplay_engines"));
+    assert(contains(consistencyError("local/metal:1, local/blas=12", 10), "12"));
+    assert(contains(consistencyError("local/blas=6, local/naive=3", 10), "exactly"));
+    assert(consistencyError("local/blas=6, local/naive=4", 10).empty());
+    assert(consistencyError("local/metal:1, local/blas=10", 10).empty());
+    assert(consistencyError("local/metal:1, local/metal:1", 1).empty());
+    assert(consistencyError("", 10).empty());
+}
+
 int main() {
     test_defaults();
+    test_config_selfplay_keys();
     test_metal_backend_and_inference_batch();
     test_presets_load();
     test_missing_file();
