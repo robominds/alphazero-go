@@ -89,8 +89,9 @@ struct HostsFile {
 // Keys: ssh, exe, workdir, metal_workers, cpu_workers, inference_batch,
 // cpu_qos (default|utility), nice, timeout. Refuses, with ConfigError
 // "<source>:<line>: <reason>", a bad alias, an alias or key repeated, an
-// unknown key, a pair without '=', an empty value or one with a character
-// outside [A-Za-z0-9_./~@:+-], a bad number, ssh on local, and a remote
+// unknown key, a pair without '=', an empty value, one starting with '-'
+// or one with a character outside [A-Za-z0-9_./~@:+-], a bad number, ssh
+// on local, and a remote
 // without exe or workdir.
 HostsFile parseHostsText(const std::string& text, const std::string& source);
 // The file at `path`, or an empty HostsFile when there is none (only

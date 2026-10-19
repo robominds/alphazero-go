@@ -338,6 +338,10 @@ static void test_hosts_refusals() {
         assert(contains(msg, "h:1: exe: ") && contains(msg, "character"));
     }
     assert(contains(hostsError("mini1 ssh= exe=/a workdir=/w\n"), "ssh"));
+    // A value that could be taken for an option.
+    assert(contains(hostsError("mini1 ssh=-oProxyCommand=x exe=/a workdir=/w\n"), "h:1: ssh: "));
+    assert(contains(hostsError("mini1 ssh=u@h exe=-x workdir=/w\n"), "h:1: exe: "));
+    assert(contains(hostsError("mini1 ssh=u@h exe=/a workdir=-w\n"), "h:1: workdir: "));
     assert(contains(hostsError("Mini1 exe=/a workdir=/w\n"), "h:1: "));
     assert(contains(hostsError("Mini1 exe=/a workdir=/w\n"), "alias"));
     assert(contains(hostsError("mini1 exe\n"), "key=value"));
@@ -651,6 +655,9 @@ static void test_job_round_trip() {
     SelfPlayJob unresolved = job;
     unresolved.sp.maxMoves = 0;
     assert(contains(jobError(serializeJob(unresolved)), "max_moves"));
+    SelfPlayJob overflow = job;
+    overflow.first = 2147483647 - 2;
+    assert(contains(jobError(serializeJob(overflow)), "game range"));
 }
 
 static bool sameRecords(const std::vector<GameRecord>& a, const std::vector<GameRecord>& b) {
@@ -763,6 +770,8 @@ static void test_result_refusals() {
     other.seed = 12;
     assert(contains(errorOf(goodBytes, serializeJob(other)), "another job"));
     assert(contains(errorOf(goodBytes, "", "fedcba9876543210fedcba9876543210fedcba98"), "build"));
+    assert(contains(errorOf(edited([](SliceResult& r) { r.fingerprint = "naive; x\ny"; })), "fingerprint"));
+    assert(contains(errorOf(edited([](SliceResult& r) { r.fingerprint.clear(); })), "fingerprint"));
     assert(contains(errorOf(edited([](SliceResult& r) { r.records.pop_back(); })), "6 games"));
     {
         // The first record's index (just after the header) made first + 1.

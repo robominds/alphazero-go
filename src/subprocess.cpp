@@ -112,12 +112,13 @@ ProcessResult runProcess(const std::vector<std::string>& argv, const ProcessOpti
     if (rc == 0) rc = posix_spawnattr_setsigdefault(&s.attr, &all);
     if (rc == 0) rc = posix_spawnattr_setpgroup(&s.attr, 0);
     if (rc == 0) rc = posix_spawnattr_setflags(&s.attr, flags);
+    posix_spawn_file_actions_t* actions = &s.actions;
     if (rc == 0)
-        rc = options.holdStdin ? posix_spawn_file_actions_adddup2(&s.actions, pipeFds[0], 0)
-                               : posix_spawn_file_actions_addopen(&s.actions, 0, in.c_str(), O_RDONLY, 0);
+        rc = options.holdStdin ? posix_spawn_file_actions_adddup2(actions, pipeFds[0], 0)
+                               : posix_spawn_file_actions_addopen(actions, 0, in.c_str(), O_RDONLY, 0);
     if (rc == 0)
-        rc = posix_spawn_file_actions_addopen(&s.actions, 1, out.c_str(), O_WRONLY | O_CREAT | O_APPEND,
-                                              0644);
+        rc = posix_spawn_file_actions_addopen(actions, 1, out.c_str(),
+                                              O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (rc == 0) rc = posix_spawn_file_actions_adddup2(&s.actions, 1, 2);
     if (rc != 0) {
         closePipe(0);

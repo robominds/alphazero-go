@@ -283,6 +283,9 @@ HostsFile parseHostsText(const std::string& text, const std::string& source) {
                 throw ConfigError(where + key + ": repeated");
             seen.push_back(key);
             if (value.empty()) throw ConfigError(where + key + ": empty value");
+            // ssh, scp or a shell could take such a value for an option.
+            if (value[0] == '-')
+                throw ConfigError(where + key + ": a value may not start with '-'");
             for (char c : value)
                 if (!safeChar(c))
                     throw ConfigError(where + key + ": character '" + std::string(1, c) +

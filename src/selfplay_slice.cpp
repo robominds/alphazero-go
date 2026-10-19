@@ -178,8 +178,9 @@ void verifyRecord(const SelfPlayJob& job, const GameRecord& g, int index) {
             visited = visited || av.first == move;
             // The search only ever visits legal moves.
             if (!replay.isLegal(av.first))
-                throw SliceError(game + "a visit to an illegal move (" + actionToString(av.first, n) +
-                                 ") at position " + std::to_string(ply));
+                throw SliceError(game + "a visit to an illegal move (" +
+                                 actionToString(av.first, n) + ") at position " +
+                                 std::to_string(ply));
         }
         const std::string what =
             game + "move " + std::to_string(ply + 1) + " (" + actionToString(move, n) + ")";
@@ -348,7 +349,8 @@ SelfPlayJob parseJob(const std::string& bytes) {
         throw SliceError(std::string("job truncated: ") + e.what());
     }
     if (is.peek() != std::char_traits<char>::eof()) throw SliceError("job: trailing bytes");
-    if (job.generation < 0 || job.first < 0 || job.count < 0 || job.count > 1000000)
+    if (job.generation < 0 || job.first < 0 || job.count < 0 || job.count > 1000000 ||
+        static_cast<long long>(job.first) + job.count > 1000000)
         throw SliceError("job: bad generation or game range");
     if (job.boardSize < kMinBoardSize || job.boardSize > kMaxBoardSize)
         throw SliceError("job: bad board size " + std::to_string(job.boardSize));
@@ -436,6 +438,11 @@ SliceResult readSliceResult(const std::string& path, const std::string& jobBytes
             throw SliceError("built from another commit (build ID " + result.buildId +
                              ", expected " + expectedBuild + ")");
         result.fingerprint = r.str();
+        bool printable = !result.fingerprint.empty() && result.fingerprint.size() <= 1024;
+        for (char c : result.fingerprint)
+            printable = printable && static_cast<unsigned char>(c) >= 0x20;
+        if (!printable)
+            throw SliceError("bad engine fingerprint (empty, too long or not printable)");
         const SelfPlayJob job = parseJob(jobBytes);
         const uint32_t count = r.u32();
         if (count != static_cast<uint32_t>(job.count))

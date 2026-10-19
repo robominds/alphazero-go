@@ -295,6 +295,12 @@ void SelfPlayCoordinator::preflight() {
                 unreachable(alias, describe(r));
                 break;
             }
+            bool printable = line.size() <= 1024;
+            for (char c : line) printable = printable && static_cast<unsigned char>(c) >= 0x20;
+            if (!printable) {
+                unreachable(alias, "an unprintable fingerprint");
+                break;
+            }
             fingerprints_[e.name()] = line;
         }
     }
