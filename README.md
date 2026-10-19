@@ -45,8 +45,9 @@ It needs only the Command Line Tools, not Xcode. The GPU kernels
 macOS when a program first uses the GPU, so no `metal` shader compiler runs
 at build time.
 
-Each build has 29 component tests plus an integration smoke test (30 in
-ctest; `ctest -N | tail -1` prints `Total Tests: 30`). The GPU tests,
+Each build has 31 component tests plus an integration smoke test and a
+check of the build ID script (33 in ctest; `ctest -N | tail -1` prints
+`Total Tests: 33`). The GPU tests,
 `test_metal`, run only in a build configured with `-DAZ_USE_METAL=ON` on a
 Mac with a usable GPU; elsewhere ctest reports them as Skipped. The smoke
 test checks `backend = metal` end to end in a Metal build and its refusal
@@ -62,9 +63,11 @@ with the `build-blas` binaries. On the default build, add
 
 ## Usage
 
-Six programs are built next to the tests. Each prints its options with
-`--help`. The sixth, `gtp`, plays other Go programs and is described in
-Playing other programs via GTP below.
+Seven programs are built next to the tests. Each prints its options with
+`--help`. `gtp` plays other Go programs and is described in Playing other
+programs via GTP below; `selfplay` plays one slice of a generation's
+self-play for distributed self-play, described in Distributed self-play
+below.
 
 **`train`** runs the generation loop (self-play, training, checkpoint,
 arena, commit). A new run copies the config into the run directory:
@@ -274,8 +277,10 @@ Policy prior, % of legal moves ("." below 1%):
 `train_threads = 0` runs it) and the raw rules engine
 (`docs/results/bench.txt`). `--train-threads 1,2,4,8` adds a table of the
 training step's time at each thread count, at batch `--train-batch`
-(default 256). The table below is from the M4 before the step was
-multithreaded:
+(default 256). `--mixed` (a Metal build) runs the GPU hub and k BLAS
+workers at the same time and prints both rates, which is what distributed
+self-play's engine weights need. The table below is from the M4 before the
+step was multithreaded:
 
 ```
 $ ./build-blas/bench
@@ -303,6 +308,78 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 9x9    6 x 96            blas        256        8          105.6    3.06x
 9x9    6 x 96            blas        256       18           92.9    3.48x
 ```
+
+### Distributed self-play
+
+Self-play can use several machines at once: the coordinator's GPU and
+CPU, and the GPUs and CPUs of other Macs reached over ssh
+([design](docs/superpowers/specs/2026-10-18-distributed-selfplay-design.md),
+[plan](docs/superpowers/plans/2026-10-18-distributed-selfplay.md)). An
+*engine* is a machine and a backend, written `machine/backend`; `local` is
+the coordinator, other names are aliases. The `selfplay_engines` key lists
+the engines with each one's share, a weight (`:w`) or an exact number of
+games (`=n`):
+
+```
+selfplay_engines = local/metal:50, local/blas=12, mini1/metal:10, mini1/blas=8, mini2/metal:10, mini2/blas=8
+```
+
+Each generation, `assignGames` turns the list into contiguous slices of
+game indices: the fixed counts first, then the weights share the rest by
+the largest-remainder method, in integers. Here that gives 52, 12, 10, 8,
+10 and 8 of 100 games. Local engines play their slices in `train`'s own
+process, each on its own threads. A remote engine's slice is a job file
+copied to the machine, where `selfplay` plays it and writes a result file;
+`train` copies that back, checks it (checksum, job, build, a replay of
+every game), and merges all slices by game index. Empty (the default), the
+key means today's single engine, through today's code: a run without it is
+byte-identical to one from before the key existed. It is tunable on
+resume, and a change prints a note like a backend switch does.
+
+**The hosts file.** How to reach a machine is not part of a run, so it
+lives outside the repository, in `~/.config/azgo/hosts` (or `$AZGO_HOSTS`,
+or `train --hosts FILE`). Never commit it:
+
+```
+# alias  key=value ...
+local  cpu_workers=4 cpu_qos=utility
+mini1  ssh=<user>@<address> exe=<repo>/build-metal/selfplay workdir=<repo>/runs/remote
+mini2  ssh=<user>@<address> exe=<repo>/build-metal/selfplay workdir=<repo>/runs/remote
+```
+
+Other keys are `metal_workers` (0: every game of the slice at once),
+`inference_batch`, `nice` and `timeout`. A CPU engine uses
+`min(4, cores / 3)` workers on `local` and 2 on a remote by default,
+because BLAS saturates early and more workers only slow the machine's GPU
+engine (`bench --mixed`, `docs/results/bench.txt`). Values may hold only
+`[A-Za-z0-9_./~@:+-]`, so they go into an ssh command line unquoted.
+`tools/cluster_sync.sh` sends `HEAD` to every machine with `ssh=` and builds
+`selfplay` there; at the start of a run, `train` checks that each
+machine's `selfplay --version` reports its own build ID.
+
+**What stays exact.** A game is a function of its seed, the network, the
+settings and the engine that played it:
+
+- two runs with the same config, on machines with the same fingerprints
+  (chip, OS, shaders) and the same build, write identical files;
+- a resume continues byte for byte;
+- worker counts, timing and the order slices finish in change nothing;
+- engines with equal fingerprints can split a share freely;
+- `selfplay-engines.csv` records each slice's planned and actual engine and
+  its fingerprint, so the run can be replayed exactly.
+
+**When a remote fails** (its run fails, times out or returns a result that
+does not verify), the slice is retried once. Then, with
+`selfplay_fallback = local` (the default), `train` plays it itself on the
+first local engine and notes it in the manifest and the log; with `stop`,
+the generation ends uncommitted and `--resume` replays it as planned.
+
+**Switching a running run on.** Build and sync, stop the run just after a
+commit with `tools/stop_after_generation.sh RUN_DIR PID`, then
+`train --run RUN_DIR --resume --set selfplay_engines=...`.
+`tools/engine_weights.py RUN_DIR` suggests weights from a run's manifest.
+On the Studio with two M4 minis, the measured rates (19×19, 10×128) add up
+to about 1.5 times the Studio GPU alone, before tails and transfers.
 
 ### Batch norm calibration of generation 0
 
@@ -1293,6 +1370,9 @@ python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-mai
   — an arena round's independent matches played at once, one hub per network.
 - [`docs/superpowers/specs/2026-10-10-bn-calibration-design.md`](docs/superpowers/specs/2026-10-10-bn-calibration-design.md)
   — batch norm calibration of a new run's generation 0, so a deep random network does not saturate in inference mode.
+- [`docs/superpowers/specs/2026-10-18-distributed-selfplay-design.md`](docs/superpowers/specs/2026-10-18-distributed-selfplay-design.md)
+  and [`docs/superpowers/plans/2026-10-18-distributed-selfplay.md`](docs/superpowers/plans/2026-10-18-distributed-selfplay.md)
+  — distributed self-play: games assigned to engines by index, remote slices, and what stays exact.
 
 `python3 tools/check_citations.py` checks that every `file:line` citation
 in both explainers still points at the quoted definition.

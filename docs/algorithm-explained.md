@@ -1778,6 +1778,117 @@ average against 88 played out, and about 51 in the recipe with
 target (0.041 and 0.048 on average). Combined with 200 games and 400
 steps per generation, it is part of the recipe that the 9×9 preset now uses.
 
+**More than one machine.** Every self-play game is seeded by its index,
+`deriveSeed(seed, g, kPhaseSelfPlay, i)`, and stored at its index. That
+rule was made so that the thread count could not change a game (chapter
+08), and it also means a game does not care which *process*, or which
+*machine*, plays it. Distributed self-play (the `selfplay_engines` key)
+builds on that. A generation's games are cut into contiguous slices of
+indices, one per *engine*: a machine and a backend, such as
+`local/metal` or `mini1/blas`. Every slice runs the same function,
+`playSelfPlayGames`, either in the coordinator's process or on another
+Mac through the small `selfplay` program.
+
+What may not move is the engine. The GPU and BLAS compute the same
+network to within 1e-5, and an M4 and an M5 Max may differ in the last
+bits too. Over a few hundred moves, a last bit can change a move. If
+games went to whichever engine was free, the engine that played game i,
+and so the game itself, would depend on timing. So the assignment is
+fixed before any game starts, in integers, from the key and the number
+of games alone:
+
+```cpp
+std::vector<Slice> assignGames(const std::vector<EngineSpec>& engines, int games) {
+    /* ... fixed = the counts' sum, weights = the weights' sum; refuse
+           counts above games, or a rest that no weighted item takes ... */
+    const long long rest = games - fixed;
+    /* ... */
+    // 1. and 2.: the counts, in 64-bit integers (rest * w <= 10^12).
+    std::vector<long long> count(n, 0), remainder(n, -1);
+    long long given = 0;
+    for (size_t e = 0; e < n; ++e) {
+        if (engines[e].games >= 0) {
+            count[e] = engines[e].games;
+        } else {
+            count[e] = rest * engines[e].weight / weights;
+            remainder[e] = rest * engines[e].weight % weights;
+            given += count[e];
+        }
+    }
+    // Fewer leftover games than weighted items: each gets at most one, the
+    // largest remainder first, the earlier item on a tie.
+    for (long long left = weights > 0 ? rest - given : 0; left > 0; --left) {
+        size_t best = n;
+        for (size_t e = 0; e < n; ++e)
+            if (remainder[e] >= 0 && (best == n || remainder[e] > remainder[best])) best = e;
+        ++count[best];
+        remainder[best] = -1;
+    }
+
+    // 3. Contiguous slices in list order.
+    std::vector<Slice> slices;
+    int first = 0;
+    for (size_t e = 0; e < n; ++e) {
+        if (count[e] == 0) continue;
+        slices.push_back({static_cast<int>(e), first, static_cast<int>(count[e])});
+        first += static_cast<int>(count[e]);
+    }
+    return slices;
+}
+```
+*src/engines.cpp:115 — `assignGames` (abridged)*
+
+For 100 games and `local/metal:50, local/blas=12, mini1/metal:10,
+mini1/blas=8, mini2/metal:10, mini2/blas=8`, the fixed counts take 28
+games and the weights share the other 72 as 51.4, 10.3 and 10.3. The
+leftover game goes to the largest remainder, so the slices are 52, 12,
+10, 8, 10 and 8 games. A remote slice comes back as a result file that
+is checked before any of it is used: its checksum, the job it answers,
+the build that played it, and a replay of every game, move by move. The
+slices are then merged by game index, never by the order they finished
+in:
+
+```cpp
+std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& networkPath,
+                                                  const Network& net, const SelfPlayConfig& sp,
+                                                  int games) {
+    const std::vector<Slice> slices = assignGames(cfg_.selfplayEngines, games);
+    /* ... one thread per slice: a local engine runs playSelfPlayGames,
+           a remote one sends a job, runs selfplay there and verifies the
+           result (retried once, then played here or stopped) ... */
+    // Merge by game index: records[first + k] = slice's k-th, each index
+    // filled exactly once, whatever order the slices finished in.
+    std::vector<GameRecord> records(static_cast<size_t>(games));
+    std::vector<char> filled(static_cast<size_t>(games), 0);
+    for (size_t k = 0; k < n; ++k) {
+        /* ... a slice returned its count of games ... */
+        for (int j = 0; j < slices[k].count; ++j) {
+            const size_t i = static_cast<size_t>(slices[k].first + j);
+            if (i >= records.size() || filled[i])
+                throw std::logic_error("game " + std::to_string(i) +
+                                       " assigned twice or out of range");
+            filled[i] = 1;
+            records[i] = std::move(results[k][static_cast<size_t>(j)]);
+        }
+    }
+    /* ... every index filled; the work files removed ... */
+    return records;
+}
+```
+*src/coordinator.cpp:549 — `SelfPlayCoordinator::play` (abridged)*
+
+A run with several engines is therefore reproducible given which engine
+played each game, and it resumes byte for byte. The run's manifest,
+`selfplay-engines.csv`, records exactly that: the engine and its
+fingerprint (chip, OS, shaders) for every slice. Engines with equal
+fingerprints can split a share without changing a bit. When a remote
+fails twice, the coordinator plays the slice itself and says so in the
+manifest. AlphaGo Zero's self-play is unchanged: the same games, seeded
+the same way, computed in more places. How much that gains depends on
+the machines. On the Studio, four BLAS workers beside the GPU add about
+11% to its 2,930 evaluations per second (19×19, 10×128); each M4 mini
+adds about 676 more (`docs/results/bench.txt`).
+
 ---
 
 ## 05 — Assigning credit
@@ -2730,28 +2841,39 @@ The output is identical for any W anyway, because of three rules:
   value is computed by exactly one chunk with the same sequence of
   floating-point operations.
 
+`Trainer::runGeneration` plays generation g's games as one slice, games
+[0, G), with `playSelfPlayGames`:
+
 ```cpp
-GenerationStats Trainer::runGeneration() {
-    /* ... g = state_.generation + 1, workers, the self-play settings ... */
+std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConfig& sp,
+                                          uint64_t seed, int generation, int first, int count,
+                                          const EngineRun& run, SliceStats* stats) {
+    /* ... */
         // One evaluator per worker; the network itself is shared read-only.
         // naive, blas: a single-threaded backend and workspace per worker.
         // metal: one batching hub that gathers every worker's leaves into
         // GPU passes; a position's outputs do not depend on its batch, so
         // the games are the same either way (azgo/inference_hub.hpp).
-        const int selfPlayWorkers = std::min(workers, numGames);
-        WorkerEvaluators evaluators(selfPlayNet, cfg_.backend, selfPlayWorkers, cfg_.mctsBatch,
-                                    cfg_.inferenceBatch);
+        const int workers = std::max(1, std::min(run.workers, count));
+        WorkerEvaluators evaluators(net, run.backend, workers, sp.mcts.batchSize,
+                                    run.inferenceBatch);
+        /* ... */
         // Game i's randomness depends only on i, and its record is stored at
         // index i, so the result does not depend on which thread played it.
-        parallelFor(numGames, selfPlayWorkers, [&](int i, int w) {
-            Rng rng(deriveSeed(cfg_.seed, static_cast<uint64_t>(g), kPhaseSelfPlay,
+        parallelFor(count, workers, [&](int k, int w) {
+            /* ... the worker's QoS class, once ... */
+            const int i = first + k;
+            Rng rng(deriveSeed(seed, static_cast<uint64_t>(generation), kPhaseSelfPlay,
                                static_cast<uint64_t>(i)));
-            records[static_cast<size_t>(i)] = playSelfPlayGame(evaluators.forWorker(w), sp, rng);
+            /* ... */
+                Evaluator& ev = evaluators.forWorker(w);
+                records[static_cast<size_t>(k)] = playSelfPlayGame(ev, sp, rng);
+            /* ... */
         });
-    /* ... statistics, SGF, then every record into the buffer in index order ... */
+    /* ... statistics: seconds, positions, evaluations ... */
 }
 ```
-*src/trainer.cpp:627 — `Trainer::runGeneration` (abridged)*
+*src/selfplay_slice.cpp:60 — `playSelfPlayGames` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not.
@@ -3050,6 +3172,7 @@ see again in place.
 | Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:225` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
 | Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:540` |
+| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:115`; `SelfPlayCoordinator::play` — `src/coordinator.cpp:549` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |
 
 ---

@@ -1643,6 +1643,121 @@ public:
 }</code></pre>
 <span class="src">src/selfplay.cpp:135 — <code>calibrateResignThreshold</code> (abridged)</span>
 <p>Until <code>resign_min_games</code> (20) disabled games exist, the threshold is <code>resign_threshold_initial</code> (−0.9). Generation g resigns at the threshold calibrated after generation g − 1, from earlier games only, and the one "disabled?" draw comes from each game's own <code>Rng</code>, so a run stays reproducible from its seed and independent of the worker count; <code>state.bin</code> keeps the window, so a resumed run continues byte for byte. <code>resign_disabled_fraction = 0</code> is refused with resignation on, since there would be nothing to measure. <code>log.csv</code> records the threshold, the share of resignation-enabled games that resigned and the false-positive rate. Resignation is on in the 9×9 preset and off in the 5×5 and 19×19 ones, and it is refused together with the ownership head (chapter 06): a resigned game has no final board to take ownership targets from. The replay buffer marks resigned games, so <code>--buffer-from</code> refuses to seed an ownership run with them. The reference runs did not use it; two 9×9 experiment arms did (<code>docs/results/README.md</code>, "Resignation in self-play" and "The recipe"). It made self-play games about half as long, 41 plies on average against 88 played out, and about 51 in the recipe with <code>temperature_moves = 7</code>, with the false-positive rate near the 5% target (0.041 and 0.048 on average). Combined with 200 games and 400 steps per generation, it is part of the recipe that the 9×9 preset now uses.</p>
+<p><strong>More than one machine.</strong> Every self-play game is seeded by its index, <code>deriveSeed(seed, g, kPhaseSelfPlay, i)</code>, and stored at its index. That rule was made so that the thread count could not change a game (chapter 08), and it also means a game does not care which <em>process</em>, or which <em>machine</em>, plays it. Distributed self-play (the <code>selfplay_engines</code> key) builds on that. A generation's games are cut into contiguous slices of indices, one per <em>engine</em>: a machine and a backend, such as <code>local/metal</code> or <code>mini1/blas</code>. Every slice runs the same function, <code>playSelfPlayGames</code>, either in the coordinator's process or on another Mac through the small <code>selfplay</code> program.  What may not move is the engine. The GPU and BLAS compute the same network to within 1e-5, and an M4 and an M5 Max may differ in the last bits too. Over a few hundred moves, a last bit can change a move. If games went to whichever engine was free, the engine that played game i, and so the game itself, would depend on timing. So the assignment is fixed before any game starts, in integers, from the key and the number of games alone:</p>
+<figure>
+<div class="fig-frame">
+<div class="diagram-wrap">
+<svg viewBox="0 0 440 300" role="img" class="diagram" aria-label="Distributed self-play: assignGames cuts games 0 to G minus 1 into contiguous slices, one per engine; local engines play theirs in the coordinator's process, remote engines through a job file, the selfplay program and a verified result; the slices are merged by game index into one generation of records">
+<text x="220" y="16" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">games 0 … G−1, cut by assignGames</text>
+<rect x="20" y="26" width="208" height="24" fill="var(--surface)" class="black-stroke" stroke-width="1.5"/>
+<rect x="228" y="26" width="48" height="24" fill="var(--surface)" class="black-stroke" stroke-width="1.5" stroke-dasharray="4 3"/>
+<rect x="276" y="26" width="40" height="24" fill="var(--surface)" class="white-stroke" stroke-width="1.5"/>
+<rect x="316" y="26" width="32" height="24" fill="var(--surface)" class="white-stroke" stroke-width="1.5" stroke-dasharray="4 3"/>
+<rect x="348" y="26" width="40" height="24" fill="var(--surface)" class="rule" stroke-width="1.5"/>
+<rect x="388" y="26" width="32" height="24" fill="var(--surface)" class="rule" stroke-width="1.5" stroke-dasharray="4 3"/>
+<text x="124" y="43" text-anchor="middle" font-size="11" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">[0, 52) local/metal</text>
+<text x="252" y="43" text-anchor="middle" font-size="10" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">blas</text>
+<text x="296" y="43" text-anchor="middle" font-size="10" class="white-fill" font-family="IBM Plex Mono, ui-monospace, monospace">mtl</text>
+<text x="332" y="43" text-anchor="middle" font-size="10" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">blas</text>
+<text x="368" y="43" text-anchor="middle" font-size="10" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">mtl</text>
+<text x="404" y="43" text-anchor="middle" font-size="10" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">blas</text>
+<line x1="148" y1="50" x2="95" y2="84" class="rule" stroke-width="1.4"/>
+<line x1="296" y1="50" x2="256" y2="84" class="rule" stroke-width="1.4"/>
+<line x1="384" y1="50" x2="378" y2="84" class="rule" stroke-width="1.4"/>
+<rect x="20" y="84" width="170" height="78" rx="5" fill="var(--surface)" class="black-stroke" stroke-width="1.5"/>
+<text x="30" y="103" font-size="12.5" font-weight="600" class="black-fill" font-family="IBM Plex Mono, ui-monospace, monospace">local (coordinator)</text>
+<text x="30" y="122" font-size="11.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">a thread per engine:</text>
+<text x="30" y="138" font-size="11.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">GPU hub, CPU workers,</text>
+<text x="30" y="154" font-size="11.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">playSelfPlayGames</text>
+<rect x="200" y="84" width="112" height="78" rx="5" fill="var(--surface)" class="white-stroke" stroke-width="1.5"/>
+<text x="210" y="103" font-size="12.5" font-weight="600" class="white-fill" font-family="IBM Plex Mono, ui-monospace, monospace">mini1</text>
+<text x="210" y="122" font-size="11.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">job → ssh</text>
+<text x="210" y="138" font-size="11.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">selfplay →</text>
+<text x="210" y="154" font-size="11.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">result</text>
+<rect x="322" y="84" width="98" height="78" rx="5" fill="var(--surface)" class="rule" stroke-width="1.5"/>
+<text x="332" y="103" font-size="12.5" font-weight="600" font-family="IBM Plex Mono, ui-monospace, monospace">mini2</text>
+<text x="332" y="122" font-size="11.5" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">the same</text>
+<line x1="105" y1="162" x2="140" y2="200" class="rule" stroke-width="1.4"/>
+<line x1="256" y1="162" x2="230" y2="200" class="rule" stroke-width="1.4"/>
+<line x1="371" y1="162" x2="320" y2="200" class="rule" stroke-width="1.4"/>
+<rect x="190" y="174" width="204" height="16" fill="var(--surface)"/>
+<text x="292" y="186" text-anchor="middle" font-size="11" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">verified: checksum, job, build, replay</text>
+<rect x="20" y="200" width="400" height="34" rx="5" fill="var(--surface)" class="black-stroke" stroke-width="1.5"/>
+<text x="220" y="222" text-anchor="middle" font-size="12.5" font-weight="600" font-family="IBM Plex Mono, ui-monospace, monospace">merge by index: records[first + k] = slice[k]</text>
+<path d="M220 234 V256" fill="none" class="rule" stroke-width="1.4"/>
+<path d="M220 262 l-5 -8 h10 z" class="dim"/>
+<text x="220" y="282" text-anchor="middle" font-size="12" class="dim" font-family="IBM Plex Mono, ui-monospace, monospace">resignation, SGF, validation, buffer, train, arena, commit</text>
+</svg>
+</div>
+</div>
+<figcaption>Distributed self-play. <code>assignGames</code> cuts the generation's game indices into contiguous slices from the key alone. <span class="black-word">Local engines</span> play theirs in the coordinator's process; <span class="white-word">remote engines</span> through a job file, the <code>selfplay</code> program over ssh and a result file that is verified before use. Merging goes by index, so the order the slices finish in plays no part, and everything after it is the single-machine code.</figcaption>
+</figure>
+<pre><code>std::vector&lt;Slice&gt; assignGames(const std::vector&lt;EngineSpec&gt;&amp; engines, int games) {
+    /* ... fixed = the counts' sum, weights = the weights' sum; refuse
+           counts above games, or a rest that no weighted item takes ... */
+    const long long rest = games - fixed;
+    /* ... */
+    // 1. and 2.: the counts, in 64-bit integers (rest * w &lt;= 10^12).
+    std::vector&lt;long long&gt; count(n, 0), remainder(n, -1);
+    long long given = 0;
+    for (size_t e = 0; e &lt; n; ++e) {
+        if (engines[e].games &gt;= 0) {
+            count[e] = engines[e].games;
+        } else {
+            count[e] = rest * engines[e].weight / weights;
+            remainder[e] = rest * engines[e].weight % weights;
+            given += count[e];
+        }
+    }
+    // Fewer leftover games than weighted items: each gets at most one, the
+    // largest remainder first, the earlier item on a tie.
+    for (long long left = weights &gt; 0 ? rest - given : 0; left &gt; 0; --left) {
+        size_t best = n;
+        for (size_t e = 0; e &lt; n; ++e)
+            if (remainder[e] &gt;= 0 &amp;&amp; (best == n || remainder[e] &gt; remainder[best])) best = e;
+        ++count[best];
+        remainder[best] = -1;
+    }
+
+    // 3. Contiguous slices in list order.
+    std::vector&lt;Slice&gt; slices;
+    int first = 0;
+    for (size_t e = 0; e &lt; n; ++e) {
+        if (count[e] == 0) continue;
+        slices.push_back({static_cast&lt;int&gt;(e), first, static_cast&lt;int&gt;(count[e])});
+        first += static_cast&lt;int&gt;(count[e]);
+    }
+    return slices;
+}</code></pre>
+<span class="src">src/engines.cpp:115 — <code>assignGames</code> (abridged)</span>
+<p>For 100 games and <code>local/metal:50, local/blas=12, mini1/metal:10, mini1/blas=8, mini2/metal:10, mini2/blas=8</code>, the fixed counts take 28 games and the weights share the other 72 as 51.4, 10.3 and 10.3. The leftover game goes to the largest remainder, so the slices are 52, 12, 10, 8, 10 and 8 games. A remote slice comes back as a result file that is checked before any of it is used: its checksum, the job it answers, the build that played it, and a replay of every game, move by move. The slices are then merged by game index, never by the order they finished in:</p>
+<pre><code>std::vector&lt;GameRecord&gt; SelfPlayCoordinator::play(int g, const std::string&amp; networkPath,
+                                                  const Network&amp; net, const SelfPlayConfig&amp; sp,
+                                                  int games) {
+    const std::vector&lt;Slice&gt; slices = assignGames(cfg_.selfplayEngines, games);
+    /* ... one thread per slice: a local engine runs playSelfPlayGames,
+           a remote one sends a job, runs selfplay there and verifies the
+           result (retried once, then played here or stopped) ... */
+    // Merge by game index: records[first + k] = slice's k-th, each index
+    // filled exactly once, whatever order the slices finished in.
+    std::vector&lt;GameRecord&gt; records(static_cast&lt;size_t&gt;(games));
+    std::vector&lt;char&gt; filled(static_cast&lt;size_t&gt;(games), 0);
+    for (size_t k = 0; k &lt; n; ++k) {
+        /* ... a slice returned its count of games ... */
+        for (int j = 0; j &lt; slices[k].count; ++j) {
+            const size_t i = static_cast&lt;size_t&gt;(slices[k].first + j);
+            if (i &gt;= records.size() || filled[i])
+                throw std::logic_error("game " + std::to_string(i) +
+                                       " assigned twice or out of range");
+            filled[i] = 1;
+            records[i] = std::move(results[k][static_cast&lt;size_t&gt;(j)]);
+        }
+    }
+    /* ... every index filled; the work files removed ... */
+    return records;
+}</code></pre>
+<span class="src">src/coordinator.cpp:549 — <code>SelfPlayCoordinator::play</code> (abridged)</span>
+<p>A run with several engines is therefore reproducible given which engine played each game, and it resumes byte for byte. The run's manifest, <code>selfplay-engines.csv</code>, records exactly that: the engine and its fingerprint (chip, OS, shaders) for every slice. Engines with equal fingerprints can split a share without changing a bit. When a remote fails twice, the coordinator plays the slice itself and says so in the manifest. AlphaGo Zero's self-play is unchanged: the same games, seeded the same way, computed in more places. How much that gains depends on the machines. On the Studio, four BLAS workers beside the GPU add about 11% to its 2,930 evaluations per second (19×19, 10×128); each M4 mini adds about 676 more (<code>docs/results/bench.txt</code>).</p>
 </section>
 
 <section id="credit">
@@ -2163,26 +2278,35 @@ A wins 4, B wins 0, draws 0</code></pre>
   <li>results are stored by index, not by completion order;</li>
   <li>the training phase, on threads of its own, cuts its work into chunks fixed by the data's shapes, never by the thread count, so every output value is computed by exactly one chunk with the same sequence of floating-point operations.</li>
 </ul>
-<pre><code>GenerationStats Trainer::runGeneration() {
-    /* ... g = state_.generation + 1, workers, the self-play settings ... */
+<p><code>Trainer::runGeneration</code> plays generation g's games as one slice, games [0, G), with <code>playSelfPlayGames</code>:</p>
+<pre><code>std::vector&lt;GameRecord&gt; playSelfPlayGames(const Network&amp; net, const SelfPlayConfig&amp; sp,
+                                          uint64_t seed, int generation, int first, int count,
+                                          const EngineRun&amp; run, SliceStats* stats) {
+    /* ... */
         // One evaluator per worker; the network itself is shared read-only.
         // naive, blas: a single-threaded backend and workspace per worker.
         // metal: one batching hub that gathers every worker's leaves into
         // GPU passes; a position's outputs do not depend on its batch, so
         // the games are the same either way (azgo/inference_hub.hpp).
-        const int selfPlayWorkers = std::min(workers, numGames);
-        WorkerEvaluators evaluators(selfPlayNet, cfg_.backend, selfPlayWorkers, cfg_.mctsBatch,
-                                    cfg_.inferenceBatch);
+        const int workers = std::max(1, std::min(run.workers, count));
+        WorkerEvaluators evaluators(net, run.backend, workers, sp.mcts.batchSize,
+                                    run.inferenceBatch);
+        /* ... */
         // Game i's randomness depends only on i, and its record is stored at
         // index i, so the result does not depend on which thread played it.
-        parallelFor(numGames, selfPlayWorkers, [&amp;](int i, int w) {
-            Rng rng(deriveSeed(cfg_.seed, static_cast&lt;uint64_t&gt;(g), kPhaseSelfPlay,
+        parallelFor(count, workers, [&amp;](int k, int w) {
+            /* ... the worker's QoS class, once ... */
+            const int i = first + k;
+            Rng rng(deriveSeed(seed, static_cast&lt;uint64_t&gt;(generation), kPhaseSelfPlay,
                                static_cast&lt;uint64_t&gt;(i)));
-            records[static_cast&lt;size_t&gt;(i)] = playSelfPlayGame(evaluators.forWorker(w), sp, rng);
+            /* ... */
+                Evaluator&amp; ev = evaluators.forWorker(w);
+                records[static_cast&lt;size_t&gt;(k)] = playSelfPlayGame(ev, sp, rng);
+            /* ... */
         });
-    /* ... statistics, SGF, then every record into the buffer in index order ... */
+    /* ... statistics: seconds, positions, evaluations ... */
 }</code></pre>
-<span class="src">src/trainer.cpp:627 — <code>Trainer::runGeneration</code> (abridged)</span>
+<span class="src">src/selfplay_slice.cpp:60 — <code>playSelfPlayGames</code> (abridged)</span>
 <p><code>parallelFor</code> hands out indices from an atomic counter; which worker plays game 17 varies from run to run, but game 17 itself does not.</p>
 <p>Training has threads of its own. With BLAS, every training step used to run on one core: the BLAS backend is single-threaded, which suits self-play, where every worker already has a core to itself. Now <code>runGeneration</code> makes one <code>ThreadPool trainPool(cfg_.effectiveTrainThreads())</code> — <code>train_threads</code> threads, 0 (the default) meaning every core — and hands it to the <code>Workspace</code> of the validation loss and of the training steps, to <code>ReplayBuffer::sample</code> and to <code>SgdMomentum::step</code>. The pool (<code>include/azgo/parallel.hpp</code>) starts its threads once, because a step is about a hundred short parallel loops, and lets them spin briefly, then sleep, between loops. <code>ThreadPool::run(chunks, fn)</code> (<code>src/parallel.cpp</code>) calls <code>fn</code> once per chunk, handing chunk indices out from an atomic counter as <code>parallelFor</code> hands out games, with the calling thread taking chunks too, and returns when every chunk is done. On an Apple M5 Max with 18 cores, a 9×9 step at batch 256 with BLAS went from 427 ms to 93 ms on a 6 × 96 network, and from 266 to 52 ms on the 6 × 64 preset (<code>docs/results/bench.txt</code>). Part of that is the rewritten loops alone, 323 and 201 ms on one thread: ReLU's backward lost a mispredicted branch per element, and <code>im2col</code> and <code>col2im</code> their per-pixel bounds checks.</p>
 <p>Every layer cuts its loops into chunks fixed by the shapes, never by the thread count: a channel for batch norm and for <code>im2col</code> and <code>col2im</code>, a block of 512 gemm columns — 512 pixels — for a convolution's forward product and its input gradient, a run of 32,768 elements for ReLU, the residual sums and the SGD update, and 16 samples for per-sample work such as encoding the batch and the loss's softmax. The weight gradient, a sum over every pixel, is not cut into columns; it runs as one call beside the input gradient's blocks (the naive backend cuts it into bands of 16 output rows instead). The pool hands chunks to whichever thread is free, but each output value belongs to exactly one chunk and is computed with the same operations in the same order as on one thread. Sums over the whole batch keep their old order: batch norm sums each channel inside that channel's chunk, and the loss adds up its per-sample terms serially afterwards. A block of gemm columns is one plain gemm call on its own columns of C:</p>
@@ -2370,6 +2494,8 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
   <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:45</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:540</span></dd>
+  <dt>Self-play on several engines and machines</dt>
+  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:115</span>; <code>SelfPlayCoordinator::play</code> <span class="loc">— src/coordinator.cpp:549</span></dd>
   <dt>Inspecting a position</dt>
   <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:81, 121</span></dd>
 </dl>
