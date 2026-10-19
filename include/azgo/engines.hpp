@@ -106,11 +106,12 @@ std::string resolveHostsPath(const std::string& cli);
 // every game of the slice at once (at most kMaxArenaWorkers, 256): a waiting
 // worker costs only a stack, and a GPU engine with fewer workers than games
 // plays in waves whose last under-fills the GPU. naive, blas: cpu_workers,
-// or with 0 max(1, cores / 3) on local (most of the machine stays with the
-// desktop and the GPU engine's searches; provisional until measured on the
-// coordinator) and max(1, min(2, cores - 2)) on a remote: on an M4 mini two
-// BLAS workers give 95% of what ten do, while each worker beyond them
-// slows the machine's GPU engine (bench --mixed, docs/results/bench.txt).
+// or with 0 max(1, min(4, cores / 3)) on local (most of the machine stays
+// with the desktop and the GPU engine's searches; on the M5 Max Studio four
+// BLAS workers give 91% of the CPU's rate alone and keep the hub at 96%) and
+// max(1, min(2, cores - 2)) on a remote (on an M4 mini two give 95% of what
+// ten do, while each worker beyond them slows the machine's GPU engine;
+// bench --mixed, docs/results/bench.txt).
 // Always at most sliceGames, at least 1.
 int engineWorkers(const MachineSettings& machine, const std::string& backend, int sliceGames,
                   int cores);

@@ -494,9 +494,71 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 #   coordinator, not for speed; remotes keep the default class.
 # - Default worker rule changed from these numbers: a remote CPU engine
 #   gets max(1, min(2, cores - 2)) workers (was cores - 2, 8 on a mini),
-#   the knee of the CPU curve with the hub >= 90%. The local rule
-#   (cores / 3, 6 on the Studio) stays provisional.
-# - Not measured yet (needs Mark's go-ahead and the 19x19 job paused): the
-#   Studio, --hub-workers 36 --cpu-workers 0,2,4,6,8,12,18, both QoS
-#   settings, and so the Studio hub's rate beside the chosen local CPU
-#   workers against the spec's >= 90% criterion.
+#   the knee of the CPU curve with the hub >= 90%. The local rule is set
+#   from the Studio's measurement below.
+# - The Studio: measured below.
+#
+# ---- The Studio (2026-10-18) ----
+# Apple M5 Max, 18 cores, 128 GB, macOS 27.0.1, shaders b7b31a09. With
+# Mark's go-ahead the 19x19 training job was paused (SIGSTOP/SIGCONT, with
+# a watchdog) for 4 min 23 s, the two runs below; the desktop was idle.
+#   bench --mixed --sizes 19 --net gen_0000.azn --hub-workers 36
+#         --cpu-workers 0,2,4,6,8,12,18 --qos default|utility --seconds 10
+#
+#   mixed: 19x19 10 x 128, metal hub 36 threads (inference_batch 256) + k blas workers, batch 8, qos default, 10 s each
+#   cpu workers  hub evals/s  cpu evals/s  total evals/s  hub vs alone  mean pass slots busy
+#             0         2906            0           2906        100.0%       96.1       100%
+#             2         2899          363           3262         99.8%       96.1       100%
+#             4         2795          443           3238         96.2%       96.0       100%
+#             6         2771          507           3277         95.4%       96.1       100%
+#             8         2721          582           3303         93.6%       95.5       100%
+#            12         2729          543           3272         93.9%       95.7        99%
+#            18         2607          701           3308         89.7%      101.2        99%
+#
+#   cpu workers alone  cpu evals/s  per worker
+#                   2          554         277
+#                   4          801         200
+#                   6          790         132
+#                   8          850         106
+#                  12          703          59
+#                  18          876          49
+#
+#   mixed: 19x19 10 x 128, metal hub 36 threads (inference_batch 256) + k blas workers, batch 8, qos utility, 10 s each
+#   cpu workers  hub evals/s  cpu evals/s  total evals/s  hub vs alone  mean pass slots busy
+#             0         2931            0           2931        100.0%       96.1       100%
+#             2         2861          266           3127         97.6%       95.9       100%
+#             4         2809          339           3148         95.8%       96.2       100%
+#             6         2937          325           3262        100.2%       95.9       100%
+#             8         2778          422           3200         94.8%       95.5       100%
+#            12         2725          459           3184         93.0%       96.3        99%
+#            18         2688          551           3239         91.7%       96.6        99%
+#
+#   cpu workers alone  cpu evals/s  per worker
+#                   2          477         238
+#                   4          554         138
+#                   6          448          75
+#                   8          596          75
+#                  12          619          52
+#                  18          759          42
+#
+# - The hub alone: 2,906-2,931 evals/s (2,743 in the Metal measurement of
+#   2026-10-09 with a random network). The CPU engine alone saturates
+#   early: 554 evals/s with 2 workers, 801 with 4, 703-876 with 8-18.
+# - Side by side, the hub keeps >= 90% with up to 12 workers, but the CPU
+#   engine adds only 363-582 evals/s (default QoS): the total is
+#   3,238-3,308, 1.11-1.14x the hub alone, against the spec's estimate of
+#   adding the CPU's 863 alone. Unified memory and the matrix units are
+#   shared; the hub's 36 search threads also need CPU.
+# - Utility QoS costs the CPU engine 20-40% of its rate (4 workers: 339
+#   against 443) and leaves the hub as it was (95.8% at 4 workers, 96.2%
+#   with default QoS).
+# - Default local rule set from these numbers: max(1, min(4, cores / 3)),
+#   4 on the Studio (was cores / 3 = 6). Four workers are the knee of the
+#   CPU curve (91% of the 18-worker rate alone); beside the hub they give
+#   443 (default QoS) or 339 (utility), with the hub at 96%, while 6 or 8
+#   add at most ~140 evals/s (~4% of the total) and take two to four more
+#   cores from the desktop. cpu_qos stays utility on local, for the
+#   desktop; cpu_qos=default in the hosts file buys ~100 evals/s.
+# - Spec acceptance, the Studio GPU engine's rate beside the chosen local
+#   CPU engine >= 90% of its rate alone: 4 workers, utility QoS: 2,809 of
+#   2,931 = 95.8%. Met (default QoS: 96.2%).

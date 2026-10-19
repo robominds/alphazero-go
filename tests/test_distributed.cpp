@@ -353,9 +353,9 @@ static void test_hosts_search_order() {
 }
 
 // Worker threads per engine: a GPU engine plays every game of its slice at
-// once (at most 256); a CPU engine keeps cores free for the desktop (a
-// third of them used locally) or for the machine's GPU engine (two workers
-// on a remote, where BLAS saturates early).
+// once (at most 256); a CPU engine keeps cores free for the desktop and
+// for the machine's GPU engine: at most four workers (a third of the cores)
+// locally, two on a remote, where BLAS saturates early.
 // Never more workers than games.
 static void test_engine_workers() {
     const HostsFile hosts = parseHostsText(kHostsExample, "hosts");
@@ -365,7 +365,8 @@ static void test_engine_workers() {
     assert(engineWorkers(remote, "metal", 300, 10) == 256);
     assert(engineWorkers(hosts.settings("fake"), "metal", 100, 10) == 64);
     assert(engineWorkers(hosts.settings("fake"), "metal", 10, 10) == 10);
-    assert(engineWorkers(local, "blas", 12, 18) == 6);
+    assert(engineWorkers(local, "blas", 12, 18) == 4);   // min(4, 18 / 3)
+    assert(engineWorkers(local, "blas", 12, 10) == 3);   // min(4, 10 / 3)
     assert(engineWorkers(local, "naive", 12, 2) == 1);
     assert(engineWorkers(local, "blas", 4, 18) == 4);
     assert(engineWorkers(remote, "blas", 12, 10) == 2);

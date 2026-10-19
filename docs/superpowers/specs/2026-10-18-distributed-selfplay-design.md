@@ -25,18 +25,23 @@ that is the Studio's GPU alone (`docs/results/bench.txt`):
 | engine | 19×19 10×128 evals/s | source |
 |---|---|---|
 | Studio GPU (M5 Max), hub, 36 threads | 2,743 | measured |
-| Studio CPU, 18 BLAS workers | 863 | measured |
+| Studio CPU, 18 BLAS workers | 863 | measured (876 on 2026-10-18; 801 with 4 workers) |
+| Studio GPU and 4 CPU workers at once | 2,795 + 443 = 3,238 (default QoS); 2,809 + 339 = 3,148 (utility) | measured: `bench --mixed`, hub alone 2,906–2,931 |
 | each mini GPU (M4), hub, 20 threads | 506 | measured (estimate was ~550) |
 | each mini CPU (M4, 10 cores), BLAS alone | 390 (2 workers) – 412 (10) | measured (estimate was ~450–500) |
 | each mini, GPU and 2 CPU workers at once | 480 + 196 = 676 | measured: `bench --mixed` |
-| **all six** | **~5,600** (estimate) | ≈ 2.05 × the Studio GPU alone; with the minis measured at 676 each and the Studio's CPU at its alone rate, ≤ ~4,960 ≈ 1.8×; the Studio's mixed rate is not measured yet |
+| **all six** | **~5,600** (estimate) | ≈ 2.05 × the Studio GPU alone; measured: the Studio's 3,148 (4 CPU workers, utility) plus 676 per mini ≈ 4,500 ≈ 1.54× the Studio GPU alone (2,931), before tails and transfers |
 
-The mini rows come from `bench --mixed` on an idle M4 mini
-(`docs/results/bench.txt`, "Measuring engines side by side"). A CPU
-engine beside a busy hub is not the CPU engine alone: on the M4, two
-BLAS workers lower the hub's rate by 5% and add 196 evals/s, and more
-workers lower the hub further without raising the total (8 workers: hub
-72%, total 633).
+The measured rows come from `bench --mixed` on an idle M4 mini and on the
+Studio with the 19×19 job paused (`docs/results/bench.txt`, "Measuring
+engines side by side"). A CPU engine beside a busy hub is not the CPU
+engine alone: on the M4, two BLAS workers lower the hub's rate by 5% and
+add 196 evals/s, and more workers lower the hub further without raising
+the total (8 workers: hub 72%, total 633). On the Studio the hub keeps
+≥ 90% with up to 12 workers, but the CPU engine adds only 340–580
+evals/s, not its 863 alone: the CPU engine is worth ~11–14% there, the
+minis most of the rest. The estimate of ~2× falls to ~1.5× before tails,
+below the 1.6× acceptance target; see "Performance".
 
 While the GPU runs, the Studio's CPU is nearly idle: a worker blocked on
 the hub uses no CPU, and the hub is saturated at 18 threads (2,742) and
@@ -243,23 +248,26 @@ mini2  ssh=<user>@<address> exe=<repo>/build-metal/selfplay workdir=<repo>/runs/
 | `exe` | path of the `selfplay` binary on that machine | required for remotes |
 | `workdir` | a directory on that machine for networks, jobs and results | required for remotes |
 | `metal_workers` | worker threads of that machine's `metal` engine; 0 = every game of its slice at once (≤ 256) | 0 |
-| `cpu_workers` | worker threads of its `blas`/`naive` engine; 0 = the default rule (`cores / 3` locally, 2 on a remote) | 0 |
+| `cpu_workers` | worker threads of its `blas`/`naive` engine; 0 = the default rule (`min(4, cores / 3)` locally, 2 on a remote) | 0 |
 | `inference_batch` | overrides the run's `inference_batch` there (GPU memory on a 16 GB mini) | the run's |
 | `cpu_qos` | `default` or `utility`: the QoS class of CPU engine threads | `utility` for `local`, `default` otherwise |
 | `nice` | `nice` value of the remote `selfplay` process | 0 |
 | `timeout` | seconds after which a slice counts as failed; 0 = none (dead connections are still caught by ssh keep-alives) | 0 |
 
-The default CPU worker rule is `max(1, cores / 3)` on `local` (6 on the
-18-core Studio, leaving most of the machine to the desktop, the GPU
-engine's searches and its dispatcher) and `max(1, min(2, cores − 2))` on
-a remote (2 on a mini). BLAS throughput saturates early because cores
+The default CPU worker rule is `max(1, min(4, cores / 3))` on `local` (4
+on the 18-core Studio, leaving most of the machine to the desktop, the
+GPU engine's searches and its dispatcher) and `max(1, min(2, cores − 2))`
+on a remote (2 on a mini). BLAS throughput saturates early because cores
 share their matrix units (18 workers give only 2.2× one worker on 19×19
 on the Studio). `bench --mixed` on an M4 mini set the remote rule: two
 workers give 390 evals/s alone, 95% of ten workers' 412, and beside the
 hub they keep it at 95% of its rate alone; four workers drop it to 85%
 and eight to 72% without raising the total. The first rule, `cores − 2`
-(8 on a mini), is replaced. The local rule stays provisional until the
-same measurement is made on the Studio, which needs the 19×19 job paused.
+(8 on a mini), is replaced. On the Studio four workers are the knee (801
+evals/s alone, 91% of 18 workers' 876) and keep the hub at 96%; six or
+eight add at most ~140 evals/s (~4% of the total) and take more cores
+from the desktop, so the first local rule, `cores / 3` (6), became
+`min(4, cores / 3)`.
 
 Values are checked when the file is read. Unknown keys, a repeated
 alias, `ssh` on `local`, and characters outside `[A-Za-z0-9_./~@:+-]`
@@ -611,7 +619,9 @@ should be a multiple of their workers.
 **A worked example** for G = 100, from the estimates above (the bench
 task replaces them with measurements): Studio GPU 2,700, Studio CPU (6
 workers) ~700, each mini GPU ~550, each mini CPU (8 workers) ~475; total
-~5,450 evals/s. (Measured since, on the minis: GPU 506 alone, 480 beside two
+~5,450 evals/s. (Measured since, on the Studio: GPU 2,931 alone, 2,809
+beside four utility-QoS BLAS workers that add 339, so `local/blas` is worth
+about a quarter of the estimate here; on the minis: GPU 506 alone, 480 beside two
 BLAS workers that add 196; their eight-worker CPU engine would give 270
 and slow the GPU to 363. With the measured rates the minis' items become,
 for example, `mini1/metal:9, mini1/blas=2`; `tools/engine_weights.py`
@@ -788,7 +798,8 @@ subprocess or in-process transport.
 - self-play phase ≥ 1.6× faster than the Studio GPU alone (ideal ~2.0×;
   the margin covers tails, transfers and CPU engines beside the hub);
 - the Studio GPU engine's rate beside the local CPU engine ≥ 90% of its
-  rate alone (`bench --mixed`);
+  rate alone (`bench --mixed`; measured: 95.8% with the default 4 workers
+  at utility QoS, 96.2% at default QoS);
 - the desktop stays usable during self-play (Mark's judgement; no
   freezes, no input lag in the terminal and browser);
 - transfers and launch ≤ 2% of the self-play phase.

@@ -331,10 +331,12 @@ int engineWorkers(const MachineSettings& machine, const std::string& backend, in
     } else if (machine.cpuWorkers > 0) {
         workers = machine.cpuWorkers;
     } else {
-        // Measured on an M4 mini (docs/results/bench.txt, bench --mixed):
-        // two BLAS workers already give 95% of the CPU's rate, and every
-        // further one only slows the GPU engine beside them.
-        workers = machine.local() ? cores / 3 : std::min(2, cores - 2);
+        // From bench --mixed (docs/results/bench.txt): beside the hub, BLAS
+        // saturates early. On the M5 Max Studio four workers give most of
+        // the CPU's rate (801 of 876 evals/s alone) and keep the hub at 96%;
+        // more add little and take cores from the desktop. On an M4 mini
+        // two give 95% of ten and keep its hub at 95%.
+        workers = machine.local() ? std::min(4, cores / 3) : std::min(2, cores - 2);
     }
     return std::max(1, std::min(workers, sliceGames));
 }
