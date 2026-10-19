@@ -1,12 +1,13 @@
 // Distributed self-play, tested on one machine: the build identity every
 // binary carries, so the coordinator can tell whether two binaries run the
 // same code; the selfplay_engines list and how a generation's games are
-// assigned to its engines.
+// assigned to its engines; the machine-local hosts file and the worker rules.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -217,6 +218,134 @@ static void test_assign_properties() {
     }
 }
 
+// ---- the hosts file -----------------------------------------------------------
+
+static const char* const kHostsExample =
+    "# hosts -- machine-local; never commit this file.\n"
+    "# alias  key=value ...   (values: no spaces or shell metacharacters)\n"
+    "local  cpu_workers=6 cpu_qos=utility\n"
+    "\n"
+    "mini1  ssh=u@h1 exe=~/azgo/build-metal/selfplay workdir=~/azgo/runs/remote cpu_workers=8\n"
+    "mini2  ssh=u@h2 exe=/opt/azgo/selfplay workdir=/tmp/w  # a comment after the values\n"
+    "fake   exe=build/selfplay workdir=/tmp/fake metal_workers=64 inference_batch=128 nice=5 "
+    "timeout=0.5 cpu_qos=default\n";
+
+static void test_hosts_parse() {
+    const HostsFile hosts = parseHostsText(kHostsExample, "hosts");
+    assert(hosts.machines.size() == 4);
+    const MachineSettings local = hosts.settings("local");
+    assert(local.local() && local.cpuWorkers == 6 && local.cpuQos == CpuQos::Utility);
+    assert(local.ssh.empty());
+    const MachineSettings mini1 = hosts.settings("mini1");
+    assert(!mini1.local() && mini1.alias == "mini1" && mini1.ssh == "u@h1");
+    assert(mini1.exe == "~/azgo/build-metal/selfplay" && mini1.workdir == "~/azgo/runs/remote");
+    assert(mini1.cpuWorkers == 8 && mini1.metalWorkers == 0 && mini1.inferenceBatch == 0);
+    assert(mini1.nice == 0 && mini1.timeout == 0 && mini1.cpuQos == CpuQos::Default);
+    const MachineSettings mini2 = hosts.settings("mini2");
+    assert(mini2.exe == "/opt/azgo/selfplay" && mini2.workdir == "/tmp/w" && mini2.cpuWorkers == 0);
+    const MachineSettings fake = hosts.settings("fake");
+    assert(fake.ssh.empty() && !fake.local() && fake.metalWorkers == 64);
+    assert(fake.inferenceBatch == 128);
+    assert(fake.nice == 5 && fake.timeout == 0.5 && fake.cpuQos == CpuQos::Default);
+    // local needs no line: its defaults (utility QoS).
+    const HostsFile empty = parseHostsText("", "hosts");
+    const MachineSettings defaults = empty.settings("local");
+    assert(defaults.local() && defaults.cpuQos == CpuQos::Utility && defaults.cpuWorkers == 0);
+    const HostsFile defaultQos = parseHostsText("local cpu_qos=default\n", "h");
+    assert(defaultQos.settings("local").cpuQos == CpuQos::Default);
+    // A remote that is not defined is an error naming it.
+    bool threw = false;
+    try {
+        empty.settings("mini1");
+    } catch (const ConfigError& e) {
+        threw = contains(e.what(), "mini1");
+    }
+    assert(threw);
+}
+
+static std::string hostsError(const std::string& text) {
+    try {
+        parseHostsText(text, "h");
+    } catch (const ConfigError& e) {
+        return e.what();
+    }
+    return "accepted";
+}
+
+// Each refusal names the file and line: "h:2: <reason>".
+static void test_hosts_refusals() {
+    const std::string ok = "mini1 ssh=u@h exe=/a/selfplay workdir=/w\n";
+    assert(hostsError(ok) == "accepted");
+    assert(contains(hostsError("local cpu_workers=2\nmini1 colour=red exe=/a workdir=/w\n"),
+                    "h:2: unknown key 'colour'"));
+    assert(contains(hostsError(ok + "\n" + ok), "h:3: "));
+    assert(contains(hostsError(ok + ok), "repeated"));
+    assert(contains(hostsError("local ssh=u@h\n"), "h:1: "));
+    assert(contains(hostsError("local ssh=u@h\n"), "ssh"));
+    assert(contains(hostsError("mini1 ssh=u@h workdir=/w\n"), "h:1: "));
+    assert(contains(hostsError("mini1 ssh=u@h workdir=/w\n"), "exe"));
+    assert(contains(hostsError("mini1 ssh=u@h exe=/a\n"), "workdir"));
+    assert(contains(hostsError("mini1 exe=/a workdir=/w cpu_workers=x\n"), "h:1: cpu_workers: "));
+    assert(contains(hostsError("mini1 exe=/a workdir=/w cpu_workers=-1\n"), "cpu_workers"));
+    assert(contains(hostsError("mini1 exe=/a workdir=/w nice=4.5\n"), "nice"));
+    assert(contains(hostsError("mini1 exe=/a workdir=/w timeout=-1\n"), "timeout"));
+    assert(contains(hostsError("mini1 exe=/a workdir=/w cpu_qos=low\n"), "cpu_qos"));
+    assert(contains(hostsError("mini1 exe=/a workdir=/w cpu_workers=2 cpu_workers=3\n"),
+                    "repeated"));
+    assert(contains(hostsError("mini1 exe=/a b workdir=/w\n"), "h:1: "));   // a value with a space
+    for (const char* bad : {";", "$", "`", "'", "|", "\"", "&", "(", "*", "\\"}) {
+        const std::string msg =
+            hostsError("mini1 ssh=u@h exe=/a" + std::string(bad) + "b workdir=/w\n");
+        assert(contains(msg, "h:1: exe: ") && contains(msg, "character"));
+    }
+    assert(contains(hostsError("mini1 ssh= exe=/a workdir=/w\n"), "ssh"));
+    assert(contains(hostsError("Mini1 exe=/a workdir=/w\n"), "h:1: "));
+    assert(contains(hostsError("Mini1 exe=/a workdir=/w\n"), "alias"));
+    assert(contains(hostsError("mini1 exe\n"), "key=value"));
+}
+
+// The hosts file's path: --hosts, else $AZGO_HOSTS, else ~/.config/azgo/hosts.
+static void test_hosts_search_order() {
+    const char* home = std::getenv("HOME");
+    const std::string savedHome = home ? home : "";
+    setenv("HOME", "/home/someone", 1);
+    unsetenv("AZGO_HOSTS");
+    assert(resolveHostsPath("") == "/home/someone/.config/azgo/hosts");
+    setenv("AZGO_HOSTS", "/etc/azgo-hosts", 1);
+    assert(resolveHostsPath("") == "/etc/azgo-hosts");
+    assert(resolveHostsPath("my-hosts") == "my-hosts");
+    setenv("AZGO_HOSTS", "", 1);
+    assert(resolveHostsPath("") == "/home/someone/.config/azgo/hosts");
+    unsetenv("AZGO_HOSTS");
+    if (home) setenv("HOME", savedHome.c_str(), 1);
+    else unsetenv("HOME");
+    // A missing file is an empty one: only remotes need it.
+    const HostsFile none = loadHostsFile("/nonexistent/azgo/hosts");
+    assert(none.machines.empty() && none.settings("local").local());
+}
+
+// Worker threads per engine: a GPU engine plays every game of its slice at
+// once (at most 256); a CPU engine keeps cores free for the desktop (a
+// third of them locally) or for the machine's GPU engine (two, remotely).
+// Never more workers than games.
+static void test_engine_workers() {
+    const HostsFile hosts = parseHostsText(kHostsExample, "hosts");
+    MachineSettings local = parseHostsText("", "h").settings("local");
+    MachineSettings remote = hosts.settings("mini2");
+    assert(engineWorkers(local, "metal", 52, 18) == 52);
+    assert(engineWorkers(remote, "metal", 300, 10) == 256);
+    assert(engineWorkers(hosts.settings("fake"), "metal", 100, 10) == 64);
+    assert(engineWorkers(hosts.settings("fake"), "metal", 10, 10) == 10);
+    assert(engineWorkers(local, "blas", 12, 18) == 6);
+    assert(engineWorkers(local, "naive", 12, 2) == 1);
+    assert(engineWorkers(local, "blas", 4, 18) == 4);
+    assert(engineWorkers(remote, "blas", 12, 10) == 8);
+    assert(engineWorkers(remote, "blas", 12, 2) == 1);
+    assert(engineWorkers(hosts.settings("local"), "blas", 12, 18) == 6);
+    assert(engineWorkers(hosts.settings("mini1"), "naive", 20, 10) == 8);
+    assert(engineWorkers(hosts.settings("mini1"), "naive", 3, 10) == 3);
+}
+
 int main() {
     test_build_id_shape();
     test_build_options();
@@ -224,6 +353,10 @@ int main() {
     test_assign_largest_remainder();
     test_assign_fixed_only();
     test_assign_properties();
+    test_hosts_parse();
+    test_hosts_refusals();
+    test_hosts_search_order();
+    test_engine_workers();
     std::printf("test_distributed: OK\n");
     return 0;
 }

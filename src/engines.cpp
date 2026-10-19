@@ -1,7 +1,12 @@
 #include "azgo/engines.hpp"
+#include <algorithm>
 #include <cerrno>
+#include <cmath>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
+#include "azgo/arena.hpp"
 
 namespace azgo {
 
@@ -150,6 +155,175 @@ std::vector<Slice> assignGames(const std::vector<EngineSpec>& engines, int games
         first += static_cast<int>(count[e]);
     }
     return slices;
+}
+
+// ---- the hosts file ------------------------------------------------------------
+
+namespace {
+
+// [A-Za-z0-9_./~@:+-]: safe in an ssh command line without quoting.
+bool safeChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+           c == '_' || c == '.' || c == '/' || c == '~' || c == '@' || c == ':' || c == '+' ||
+           c == '-';
+}
+
+// An integer in [lo, hi], the whole value; "" or the reason.
+std::string hostsInt(const std::string& v, int lo, int hi, int& out) {
+    const std::string reason = "expected an integer in [" + std::to_string(lo) + ", " +
+                               std::to_string(hi) + "], got '" + v + "'";
+    errno = 0;
+    char* end = nullptr;
+    const long long x = std::strtoll(v.c_str(), &end, 10);
+    if (v.empty() || errno == ERANGE || *end != '\0' || x < lo || x > hi) return reason;
+    out = static_cast<int>(x);
+    return "";
+}
+
+// Applies key=value to m; "" or the reason.
+std::string applyHostsKey(MachineSettings& m, const std::string& key, const std::string& value) {
+    if (key == "ssh") {
+        m.ssh = value;
+        return "";
+    }
+    if (key == "exe") {
+        m.exe = value;
+        return "";
+    }
+    if (key == "workdir") {
+        m.workdir = value;
+        return "";
+    }
+    if (key == "metal_workers") return hostsInt(value, 0, kMaxArenaWorkers, m.metalWorkers);
+    if (key == "cpu_workers") return hostsInt(value, 0, 256, m.cpuWorkers);
+    if (key == "inference_batch") return hostsInt(value, 0, 1024, m.inferenceBatch);
+    if (key == "nice") return hostsInt(value, 0, 19, m.nice);
+    if (key == "cpu_qos") {
+        if (value == "default") m.cpuQos = CpuQos::Default;
+        else if (value == "utility") m.cpuQos = CpuQos::Utility;
+        else return "expected default|utility, got '" + value + "'";
+        return "";
+    }
+    if (key == "timeout") {
+        errno = 0;
+        char* end = nullptr;
+        const double t = std::strtod(value.c_str(), &end);
+        if (errno == ERANGE || *end != '\0' || !std::isfinite(t) || t < 0 || t > 1e7)
+            return "expected seconds in [0, 1e7], got '" + value + "'";
+        m.timeout = t;
+        return "";
+    }
+    return "?";   // unknown keys are refused before this is called
+}
+
+const char* const kHostsKeys[] = {"ssh",     "exe",  "workdir", "metal_workers", "cpu_workers",
+                                  "inference_batch", "cpu_qos", "nice", "timeout"};
+
+} // namespace
+
+MachineSettings HostsFile::settings(const std::string& alias) const {
+    auto it = machines.find(alias);
+    if (it != machines.end()) return it->second;
+    if (alias == "local") {
+        MachineSettings m;
+        m.alias = "local";
+        m.cpuQos = CpuQos::Utility;
+        return m;
+    }
+    throw ConfigError("machine '" + alias + "' is not defined in the hosts file" +
+                      (source.empty() ? std::string() : " " + source) +
+                      " (add a line: " + alias +
+                      " ssh=<user>@<address> exe=<path> workdir=<path>)");
+}
+
+HostsFile parseHostsText(const std::string& text, const std::string& source) {
+    HostsFile hosts;
+    hosts.source = source;
+    std::map<std::string, int> firstLine;
+    std::istringstream in(text);
+    int lineNo = 0;
+    for (std::string raw; std::getline(in, raw);) {
+        ++lineNo;
+        const std::string where = source + ":" + std::to_string(lineNo) + ": ";
+        const size_t hash = raw.find('#');
+        if (hash != std::string::npos) raw.erase(hash);
+        std::istringstream words(raw);
+        std::string alias;
+        if (!(words >> alias)) continue;   // blank or comment
+        if (!validAlias(alias))
+            throw ConfigError(where + "bad machine alias '" + alias +
+                              "' (expected [a-z][a-z0-9_-]{0,31})");
+        if (firstLine.count(alias))
+            throw ConfigError(where + "machine '" + alias + "' repeated (first on line " +
+                              std::to_string(firstLine[alias]) + ")");
+        firstLine[alias] = lineNo;
+        MachineSettings m;
+        m.alias = alias;
+        m.cpuQos = alias == "local" ? CpuQos::Utility : CpuQos::Default;
+        std::vector<std::string> seen;
+        for (std::string pair; words >> pair;) {
+            const size_t eq = pair.find('=');
+            if (eq == std::string::npos || eq == 0)
+                throw ConfigError(where + "expected key=value, got '" + pair + "'");
+            const std::string key = pair.substr(0, eq), value = pair.substr(eq + 1);
+            const auto known = std::find(std::begin(kHostsKeys), std::end(kHostsKeys), key);
+            if (known == std::end(kHostsKeys))
+                throw ConfigError(where + "unknown key '" + key + "'");
+            if (std::find(seen.begin(), seen.end(), key) != seen.end())
+                throw ConfigError(where + key + ": repeated");
+            seen.push_back(key);
+            if (value.empty()) throw ConfigError(where + key + ": empty value");
+            for (char c : value)
+                if (!safeChar(c))
+                    throw ConfigError(where + key + ": character '" + std::string(1, c) +
+                                      "' not allowed (values may hold only [A-Za-z0-9_./~@:+-])");
+            const std::string reason = applyHostsKey(m, key, value);
+            if (!reason.empty()) throw ConfigError(where + key + ": " + reason);
+        }
+        if (m.local() && !m.ssh.empty())
+            throw ConfigError(where + "local is this machine: it takes no ssh");
+        if (!m.local() && m.exe.empty())
+            throw ConfigError(where + alias + " needs exe=<path of its selfplay binary>");
+        if (!m.local() && m.workdir.empty())
+            throw ConfigError(where + alias +
+                              " needs workdir=<directory for networks, jobs and results>");
+        hosts.machines[alias] = m;
+    }
+    return hosts;
+}
+
+HostsFile loadHostsFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        HostsFile none;
+        none.source = path;
+        return none;
+    }
+    std::ostringstream text;
+    text << in.rdbuf();
+    return parseHostsText(text.str(), path);
+}
+
+std::string resolveHostsPath(const std::string& cli) {
+    if (!cli.empty()) return cli;
+    const char* env = std::getenv("AZGO_HOSTS");
+    if (env && *env) return env;
+    const char* home = std::getenv("HOME");
+    if (home && *home) return std::string(home) + "/.config/azgo/hosts";
+    return "";
+}
+
+int engineWorkers(const MachineSettings& machine, const std::string& backend, int sliceGames,
+                  int cores) {
+    int workers;
+    if (backend == "metal") {
+        workers = machine.metalWorkers > 0 ? machine.metalWorkers : kMaxArenaWorkers;
+    } else if (machine.cpuWorkers > 0) {
+        workers = machine.cpuWorkers;
+    } else {
+        workers = machine.local() ? cores / 3 : cores - 2;
+    }
+    return std::max(1, std::min(workers, sliceGames));
 }
 
 } // namespace azgo
