@@ -8,7 +8,10 @@
 // seed, independent of the worker count, and a resumed run continues
 // byte-identically to one that was never interrupted. With backend = metal,
 // self-play, the arena and the validation loss evaluate the network on the
-// GPU through batching hubs, under the same guarantees on one machine.
+// GPU through batching hubs, under the same guarantees on one machine. With
+// selfplay_engines, a SelfPlayCoordinator plays each generation's games on
+// several engines at once (azgo/coordinator.hpp); without it, self-play is
+// one engine, exactly as before.
 #include <iostream>
 #include <memory>
 #include <ostream>
@@ -53,6 +56,16 @@ struct GenerationStats {
     float seenPolicyLoss = -1, seenValueLoss = -1, seenOwnershipLoss = -1;
 };
 
+class SelfPlayCoordinator;   // azgo/coordinator.hpp
+
+// How a run reaches other machines; nothing here changes a result.
+// hostsFile: the machine-local hosts file (azgo/engines.hpp); empty means
+// $AZGO_HOSTS, else ~/.config/azgo/hosts. Read only when selfplay_engines
+// is set.
+struct TrainerOptions {
+    std::string hostsFile;
+};
+
 // The generation loop: self-play -> (validation loss) -> train -> arena/Elo
 // -> checkpoint + state.
 class Trainer {
@@ -83,8 +96,13 @@ public:
     // backend (checkBackendAvailable) before writing anything; with metal it
     // prints the device line to `log` (null: silent):
     //   gpu: Apple M5 Max, macOS 27.0.1, shaders 3f1c9a07 (inference: self-play, arena, validation)
+    // With selfplay_engines, the coordinator's preflight runs first, before
+    // anything is written: it reads the hosts file (opts.hostsFile), checks
+    // every engine and prints one line per engine (SelfPlayCoordinator::preflight).
     static std::unique_ptr<Trainer> startNew(const Config& cfg, const std::string& runDir,
-                                             const RunInit& init = {}, std::ostream* log = &std::cout);
+                                             const RunInit& init = {},
+                                             std::ostream* log = &std::cout,
+                                             const TrainerOptions& opts = {});
     // Loads config.cfg (one without bn_calibrate, from before the key, as
     // bn_calibrate = false), applies overrides, refuses (ConfigError listing keys)
     // if an architecture key, bot_simulations or reference_networks changed,
@@ -98,16 +116,20 @@ public:
     // columns (empty). Refuses an unavailable backend first, like startNew,
     // and prints to `log` the device line with metal and, when backend
     // differs from the saved config.cfg, a note that the results' last bits
-    // will differ from a run that kept the old one.
+    // will differ from a run that kept the old one. The same preflight as
+    // startNew with selfplay_engines, and the same kind of note when
+    // selfplay_engines differs from the saved config.cfg's.
     static std::unique_ptr<Trainer> resume(const std::string& runDir,
                                            const std::vector<std::string>& overrides,
-                                           std::ostream* log = &std::cout);
+                                           std::ostream* log = &std::cout,
+                                           const TrainerOptions& opts = {});
+    ~Trainer();
 
     int generation() const { return state_.generation; }
     const Config& config() const { return cfg_; }
     GenerationStats runGeneration();
     void runUntil(int lastGeneration);   // while generation() < lastGeneration
-    void setLog(std::ostream* os) { log_ = os; }   // progress lines; nullptr = silent
+    void setLog(std::ostream* os);   // progress lines; nullptr = silent
 
 private:
     Trainer(const Config& cfg, const std::string& runDir, Network net, TrainingState state);
@@ -119,6 +141,8 @@ private:
     // The run's reference networks, read once and fitted to its shape: fixed
     // player -(bots + j + 1) is referenceNets_[j].
     std::vector<Network> referenceNets_;
+    // Plays self-play when selfplay_engines is set; null on the default path.
+    std::unique_ptr<SelfPlayCoordinator> coordinator_;
 };
 
 // Re-rates the run in runDir without training it: replays the arena phase of

@@ -2,13 +2,17 @@
 // binary carries, so the coordinator can tell whether two binaries run the
 // same code; the selfplay_engines list and how a generation's games are
 // assigned to its engines; the machine-local hosts file and the worker rules;
-// engine fingerprints.
+// engine fingerprints; the manifest of who played which slice.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
@@ -16,6 +20,7 @@
 #include "azgo/backend.hpp"
 #include "azgo/build_info.hpp"
 #include "azgo/config.hpp"
+#include "azgo/coordinator.hpp"
 #include "azgo/engines.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/rng.hpp"
@@ -409,6 +414,62 @@ static void test_fingerprint() {
     assert(threw);
 }
 
+// ---- the manifest ---------------------------------------------------------------
+
+static std::string readText(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+static SliceReport report(int first, int count, const std::string& engine,
+                          const std::string& note = "") {
+    SliceReport r;
+    r.slice = {0, first, count};
+    r.planned = "fake/naive";
+    r.engine = engine;
+    r.fingerprint = "metal; Apple M4; macOS 26.1 (25B78); Apple M4, macOS 26.1, shaders b7b31a09";
+    r.build = "09e008b";
+    r.note = note;
+    r.stats.seconds = 12.3;
+    r.stats.positions = 300;
+    r.stats.evaluations = 4567;
+    return r;
+}
+
+// One row per slice per generation; rewriting generation g first drops
+// every row of g and later, so a redone generation (after a crash between
+// the manifest and state.bin) leaves exactly one set of rows.
+static void test_manifest_rows() {
+    const std::filesystem::path dir =
+        std::filesystem::temp_directory_path() / ("azgo_test_manifest_" + std::to_string(getpid()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const std::string path = manifestPath(dir.string());
+    assert(path == (dir / "selfplay-engines.csv").string());
+    const std::string header =
+        "generation,first,count,planned,engine,fingerprint,build,seconds,positions,evaluations,note\n";
+    const std::string row1 = "1,0,3,fake/naive,fake/naive,\"metal; Apple M4; macOS 26.1 (25B78); "
+                             "Apple M4, macOS 26.1, shaders b7b31a09\",09e008b,12.3,300,4567,\n";
+    writeManifest(dir.string(), 1, {report(0, 3, "fake/naive")});
+    assert(readText(path) == header + row1);
+    writeManifest(dir.string(), 2,
+                  {report(0, 3, "fake/naive"), report(3, 1, "local/naive", "fallback: a, b")});
+    const std::string text = readText(path);
+    assert(text.find(header + row1 + "2,0,3,") == 0);
+    assert(text.find("\n2,3,1,fake/naive,local/naive,\"") != std::string::npos);
+    const std::string noteEnd = ",\"fallback: a, b\"\n";
+    assert(text.size() > noteEnd.size() && text.substr(text.size() - noteEnd.size()) == noteEnd);
+    writeManifest(dir.string(), 3, {report(0, 4, "fake/naive")});
+    // Generation 2 redone: rows of 2 and 3 go, the new ones come.
+    writeManifest(dir.string(), 2, {report(0, 4, "fake/naive")});
+    const std::string redone = readText(path);
+    assert(redone.find(header + row1 + "2,0,4,") == 0);
+    assert(std::count(redone.begin(), redone.end(), '\n') == 3);
+    std::filesystem::remove_all(dir);
+}
+
 int main() {
     test_build_id_shape();
     test_build_options();
@@ -421,6 +482,7 @@ int main() {
     test_hosts_search_order();
     test_engine_workers();
     test_fingerprint();
+    test_manifest_rows();
     std::printf("test_distributed: OK\n");
     return 0;
 }

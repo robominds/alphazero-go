@@ -20,7 +20,9 @@
 #include "azgo/backend.hpp"
 #include "azgo/bn_calibration.hpp"
 #include "azgo/checkpoint.hpp"
+#include "azgo/coordinator.hpp"
 #include "azgo/elo.hpp"
+#include "azgo/engines.hpp"
 #include "azgo/evaluator.hpp"
 #include "azgo/game.hpp"
 #include "azgo/grow.hpp"
@@ -394,14 +396,42 @@ void checkReferenceHashes(const ReferenceNetworks& loaded, const std::vector<Ref
                               "hash in state.bin); restore the original file");
 }
 
+// With selfplay_engines: the coordinator, its preflight done (it refuses
+// what cannot run and prints the engine lines). Null on the default path,
+// which reads no hosts file.
+std::unique_ptr<SelfPlayCoordinator> makeCoordinator(const Config& cfg, const std::string& runDir,
+                                                     const TrainerOptions& opts,
+                                                     std::ostream* log) {
+    if (cfg.selfplayEngines.empty()) return nullptr;
+    auto coordinator = std::make_unique<SelfPlayCoordinator>(
+        cfg, runDir, loadHostsFile(resolveHostsPath(opts.hostsFile)), log);
+    coordinator->preflight();
+    return coordinator;
+}
+
+// The engines a config plays self-play with, for the note on a change:
+// the list, or the default path's one engine.
+std::string describeEngines(const Config& cfg) {
+    if (cfg.selfplayEngines.empty()) return "local/" + cfg.backend;
+    return printEngineList(cfg.selfplayEngines);
+}
+
 } // namespace
 
 Trainer::Trainer(const Config& cfg, const std::string& runDir, Network net, TrainingState state)
     : cfg_(cfg), runDir_(runDir), net_(std::move(net)), state_(std::move(state)),
       log_(&std::cout) {}
 
+Trainer::~Trainer() = default;
+
+void Trainer::setLog(std::ostream* os) {
+    log_ = os;
+    if (coordinator_) coordinator_->setLog(os);
+}
+
 std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string& runDir,
-                                           const RunInit& init, std::ostream* log) {
+                                           const RunInit& init, std::ostream* log,
+                                           const TrainerOptions& opts) {
     checkConsistency(cfg);
     checkBackend(cfg);
     try {
@@ -458,6 +488,8 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
         }
     }
 
+    std::unique_ptr<SelfPlayCoordinator> coordinator = makeCoordinator(cfg, runDir, opts, log);
+
     // Every check passed: the run starts here.
     printDeviceLine(cfg, log);
     fs::create_directories(fs::path(runDir) / "checkpoints");
@@ -501,11 +533,13 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
 
     std::unique_ptr<Trainer> trainer(new Trainer(cfg, runDir, std::move(net), std::move(state)));
     trainer->referenceNets_ = std::move(referenceNets.networks);
+    trainer->coordinator_ = std::move(coordinator);
     return trainer;
 }
 
 std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
-                                         const std::vector<std::string>& overrides, std::ostream* log) {
+                                         const std::vector<std::string>& overrides,
+                                         std::ostream* log, const TrainerOptions& opts) {
     if (!fs::exists(statePath(runDir)))
         throw ConfigError(runDir + " does not contain a run (no state.bin); start one with --config");
 
@@ -566,11 +600,17 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     // a state.bin from before resignation has no window and gets
     // resign_threshold_initial.
     state.resignThreshold = calibrateResignThreshold(state.resignWindow, resignCalibration(cfg));
+    std::unique_ptr<SelfPlayCoordinator> coordinator = makeCoordinator(cfg, runDir, opts, log);
     printDeviceLine(cfg, log);
     if (log && saved.backend != cfg.backend)
         *log << "note: backend changed from " << saved.backend << " to " << cfg.backend
              << "; from here on results differ in the\nlast bits from a run that kept " << saved.backend
              << "\n";
+    // Which engine plays which game is part of the result, like the backend.
+    if (log && printEngineList(saved.selfplayEngines) != printEngineList(cfg.selfplayEngines))
+        *log << "note: self-play engines changed from " << describeEngines(saved) << " to "
+             << describeEngines(cfg) << "; from here on results differ in the\n"
+             << "last bits from a run that kept " << describeEngines(saved) << "\n";
     // Rewritten only after every check passed, so a refused resume leaves the
     // run directory untouched.
     writeFileAtomically(configPath(runDir), configToString(cfg));
@@ -578,6 +618,7 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
 
     std::unique_ptr<Trainer> trainer(new Trainer(cfg, runDir, std::move(net), std::move(state)));
     trainer->referenceNets_ = std::move(referenceNets.networks);
+    trainer->coordinator_ = std::move(coordinator);
     return trainer;
 }
 
@@ -627,8 +668,15 @@ GenerationStats Trainer::runGeneration() {
         // (azgo/inference_hub.hpp). Game i's randomness depends only on i,
         // and its record is stored at index i, so the result does not
         // depend on which thread played it.
-        const EngineRun run{cfg_.backend, std::min(workers, numGames), cfg_.inferenceBatch};
-        records = playSelfPlayGames(selfPlayNet, sp, cfg_.seed, g, 0, numGames, run);
+        if (coordinator_) {
+            // selfplay_engines: a slice per engine, all at once, merged by index.
+            const int selfPlayGeneration = bestNet ? state_.bestGeneration : state_.generation;
+            const std::string networkPath = checkpointPath(runDir_, selfPlayGeneration);
+            records = coordinator_->play(g, networkPath, selfPlayNet, sp, numGames);
+        } else {
+            const EngineRun run{cfg_.backend, std::min(workers, numGames), cfg_.inferenceBatch};
+            records = playSelfPlayGames(selfPlayNet, sp, cfg_.seed, g, 0, numGames, run);
+        }
     }
 
     long long plies = 0, passes = 0;
@@ -856,6 +904,9 @@ GenerationStats Trainer::runGeneration() {
     // ---- 5. Training state --------------------------------------------------
     state_.bestGeneration = newBest;
     state_.generation = g;
+    // Who played which slice, written before the commit point: a crash in
+    // between leaves rows of an uncommitted generation, which its redo replaces.
+    if (coordinator_) writeManifest(runDir_, g, coordinator_->reports());
     saveTrainingState(statePath(runDir_), state_);
     // log.csv is a human-facing record (it contains timings) and is appended
     // after state.bin: a crash between the two loses one row, never corrupts
@@ -889,6 +940,7 @@ GenerationStats Trainer::runGeneration() {
                 validation += " seen p " + formatLoss(stats.seenPolicyLoss, 2) + " v " +
                               formatLoss(stats.seenValueLoss, 2);
         }
+        if (coordinator_) *log_ << enginesLine(coordinator_->reports()) << "\n";
         char line[512];
         std::snprintf(line, sizeof line,
                       "gen %d | selfplay %d games avg %.1f plies%s %.1fs | "

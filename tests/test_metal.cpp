@@ -1501,6 +1501,36 @@ void test_metal_rounds_at_once_equal_one_at_a_time() {
                readBytes(sequential.file(std::string("rerate/") + f)));
 }
 
+// A metal engine plays every game of its slice at once by default
+// (metal_workers = 0); with 8 or 64 workers, or as the default path with
+// the workers key's rule, the files are the same.
+void test_metal_engine_workers_change_nothing() {
+    RunDir plain("engine_default");
+    startRun(metalRunConfig(), plain)->runUntil(2);
+    const std::string reference = runFingerprint(plain, 2);
+    for (int workers : {0, 8, 64}) {
+        RunDir dir("engine_workers");
+        fs::create_directories(dir.path);
+        const std::string hosts = dir.file("hosts");
+        {
+            std::ofstream out(hosts);
+            out << "local metal_workers=" << workers << "\n";
+        }
+        Config c = metalRunConfig();
+        applyOverride(c, "selfplay_engines=local/metal:1");
+        TrainerOptions opts;
+        opts.hostsFile = hosts;
+        std::ostringstream startup;
+        std::unique_ptr<Trainer> t = Trainer::startNew(c, dir.str(), {}, &startup, opts);
+        assert(startup.str().find("engine local/metal: ") != std::string::npos);
+        t->setLog(nullptr);
+        t->runUntil(2);
+        assert(runFingerprint(dir, 2) == reference);
+        const std::string manifest = readBytes(dir.file("selfplay-engines.csv"));
+        assert(manifest.find(metalDescription()) != std::string::npos);
+    }
+}
+
 #endif // AZ_USE_METAL
 
 
@@ -1555,6 +1585,7 @@ int main() {
     test_single_search_hub_matches_alone();
     test_metal_play_matches_equal_one_at_a_time();
     test_metal_rounds_at_once_equal_one_at_a_time();
+    test_metal_engine_workers_change_nothing();
 #endif
     std::printf("test_metal: all tests passed\n");
     return 0;

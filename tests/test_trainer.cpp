@@ -19,8 +19,10 @@
 #include "azgo/backend.hpp"
 #include "azgo/bn_calibration.hpp"
 #include "azgo/checkpoint.hpp"
+#include "azgo/build_info.hpp"
 #include "azgo/config.hpp"
 #include "azgo/elo.hpp"
+#include "azgo/engines.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/network.hpp"
 #include "azgo/rng.hpp"
@@ -1865,7 +1867,191 @@ static void test_rounds_at_once_equal_one_at_a_time() {
     }
 }
 
+// ---- self-play engines (distributed self-play, one machine) -------------------
+
+// The fields of one CSV row; a quoted field may hold commas.
+static std::vector<std::string> csvFields(const std::string& row) {
+    std::vector<std::string> fields(1);
+    bool quoted = false;
+    for (char ch : row) {
+        if (ch == '"') quoted = !quoted;
+        else if (ch == ',' && !quoted) fields.emplace_back();
+        else fields.back() += ch;
+    }
+    return fields;
+}
+
+// selfplay-engines.csv without its timing column (seconds, the 8th).
+static std::string manifestWithoutTimings(const TempDir& dir) {
+    std::string out;
+    for (const std::string& row : splitLines(readFile(dir.file("selfplay-engines.csv")))) {
+        const std::vector<std::string> fields = csvFields(row);
+        assert(fields.size() == 11);
+        for (size_t i = 0; i < fields.size(); ++i)
+            if (i != 7) out += fields[i] + "|";
+        out += "\n";
+    }
+    return out;
+}
+
+static int manifestRows(const TempDir& dir) {
+    return static_cast<int>(splitLines(readFile(dir.file("selfplay-engines.csv"))).size()) - 1;
+}
+
+// A run with the given hosts file (a path that does not exist: none), its
+// startup lines discarded.
+static std::unique_ptr<Trainer> startEngines(const Config& c, const TempDir& dir,
+                                             const std::string& hosts) {
+    TrainerOptions opts;
+    opts.hostsFile = hosts;
+    std::ostringstream startup;
+    std::unique_ptr<Trainer> t = Trainer::startNew(c, dir.str(), {}, &startup, opts);
+    t->setLog(nullptr);
+    return t;
+}
+
+static std::unique_ptr<Trainer> resumeEngines(const TempDir& dir,
+                                              const std::vector<std::string>& overrides,
+                                              const std::string& hosts,
+                                              std::ostream* out = nullptr) {
+    TrainerOptions opts;
+    opts.hostsFile = hosts;
+    std::ostringstream quiet;
+    std::unique_ptr<Trainer> t = Trainer::resume(dir.str(), overrides, out ? out : &quiet, opts);
+    t->setLog(nullptr);
+    return t;
+}
+
+static Config withEngines(Config c, const std::string& engines) {
+    applyOverride(c, "selfplay_engines=" + engines);
+    return c;
+}
+
+// selfplay_engines = local/naive:1 is the default run's engine with the
+// default worker rule's results: every file is the same, and only the
+// engine run writes a manifest, one row per generation.
+static void test_single_local_engine_equals_default() {
+    TempDir plain("engines_default"), engines("engines_single");
+    const std::string noHosts = engines.file("no-hosts");
+    startQuiet(tinyConfig(), plain)->runUntil(2);
+    std::ostringstream startup;
+    TrainerOptions opts;
+    opts.hostsFile = noHosts;
+    const Config single = withEngines(tinyConfig(), "local/naive:1");
+    std::unique_ptr<Trainer> t = Trainer::startNew(single, engines.str(), {}, &startup, opts);
+    t->setLog(nullptr);
+    t->runUntil(2);
+    assert(startup.str() == "engine local/naive: " + engineFingerprint("naive").substr(7) + " [" +
+                                shortBuildId() + "]\n");
+    assert(runFingerprint(plain, 2) == runFingerprint(engines, 2));
+    assert(!fs::exists(plain.file("selfplay-engines.csv")));
+    assert(manifestRows(engines) == 2);
+    const std::vector<std::string> rows = splitLines(readFile(engines.file("selfplay-engines.csv")));
+    assert(rows[0] == "generation,first,count,planned,engine,fingerprint,build,seconds,positions,"
+                      "evaluations,note");
+    const std::vector<std::string> row = csvFields(rows[1]);
+    assert(row[0] == "1" && row[1] == "0" && row[2] == "4" && row[3] == "local/naive");
+    assert(row[4] == "local/naive" && row[5] == engineFingerprint("naive"));
+    assert(row[6] == shortBuildId() && row[10].empty());
+    assert(std::stoll(row[8]) > 0 && std::stoll(row[9]) > 0);
+}
+
+// Two items of one engine split its games without changing a bit: one
+// weighted, one fixed, with resignation on.
+static void test_split_local_engines_equal_default() {
+    TempDir plain("split_default"), engines("split_engines");
+    startQuiet(resignConfig(), plain)->runUntil(3);
+    const Config split = withEngines(resignConfig(), "local/naive:2, local/naive=1");
+    startEngines(split, engines, engines.file("none"))->runUntil(3);
+    assert(runFingerprint(plain, 3) == runFingerprint(engines, 3));
+    assert(manifestRows(engines) == 6);
+    const std::string manifest = readFile(engines.file("selfplay-engines.csv"));
+    const std::vector<std::string> row = csvFields(splitLines(manifest)[2]);
+    assert(row[0] == "1" && row[1] == "7" && row[2] == "1");   // 8 games: 7 weighted, 1 fixed
+}
+
+static void test_engines_resume_is_byte_identical() {
+    TempDir straight("engines_straight"), resumed("engines_resumed");
+    const Config c = withEngines(resignConfig(), "local/naive:1, local/naive:3");
+    startEngines(c, straight, straight.file("none"))->runUntil(4);
+    startEngines(c, resumed, resumed.file("none"))->runUntil(2);
+    resumeEngines(resumed, {}, resumed.file("none"))->runUntil(4);
+    assert(runFingerprint(straight, 4) == runFingerprint(resumed, 4));
+    assert(manifestWithoutTimings(straight) == manifestWithoutTimings(resumed));
+    assert(manifestRows(resumed) == 8);
+}
+
+// Engines can be switched on (and off) at a generation boundary. The
+// earlier generations stay what they were, the switch is noted once, and
+// config.cfg records it.
+static void test_switch_on_at_resume() {
+    TempDir plain("switch_default"), switched("switch_engines");
+    const std::string none = switched.file("none");
+    startQuiet(tinyConfig(), plain)->runUntil(4);
+    startQuiet(tinyConfig(), switched)->runUntil(2);
+    std::ostringstream out;
+    resumeEngines(switched, {"selfplay_engines=local/naive:1,local/naive:1"}, none, &out)->runUntil(4);
+    const std::string note = "note: self-play engines changed from local/naive to "
+                             "local/naive:1, local/naive:1; from here on results differ in the\n"
+                             "last bits from a run that kept local/naive\n";
+    assert(out.str().find(note) != std::string::npos);
+    assert(out.str().find("note:") == out.str().rfind("note:"));   // once
+    // Naive on one machine: the same arithmetic, so even generations 3-4 agree.
+    assert(runFingerprint(plain, 4) == runFingerprint(switched, 4));
+    for (int g = 1; g <= 2; ++g)
+        assert(readFile(checkpointPath(plain.str(), g)) == readFile(checkpointPath(switched.str(), g)));
+    const std::string config = readFile(configPath(switched.str()));
+    assert(config.find("\nselfplay_engines = local/naive:1, local/naive:1\n") != std::string::npos);
+    const std::vector<std::string> rows = splitLines(readFile(switched.file("selfplay-engines.csv")));
+    assert(rows.size() == 5 && rows[1].rfind("3,0,2,", 0) == 0 && rows[4].rfind("4,2,2,", 0) == 0);
+    // Resuming without a change says nothing; switching back is noted again.
+    std::ostringstream same, back;
+    resumeEngines(switched, {}, none, &same);
+    assert(same.str().find("note:") == std::string::npos);
+    resumeEngines(switched, {"selfplay_engines="}, none, &back)->runUntil(5);
+    assert(back.str() == "note: self-play engines changed from local/naive:1, local/naive:1 to "
+                         "local/naive; from here on results differ in the\nlast bits from a run "
+                         "that kept local/naive:1, local/naive:1\n");
+    assert(manifestRows(switched) == 4);   // generation 5 played on the default path
+}
+
+// Remote machines come with the remote transport; until then they are
+// refused before anything is written.
+static void test_remote_engines_refused_for_now() {
+    TempDir dir("engines_remote");
+    bool threw = false;
+    try {
+        startEngines(withEngines(tinyConfig(), "local/naive:1, mini1/naive:1"), dir, dir.file("none"));
+    } catch (const ConfigError& e) {
+        threw = std::string(e.what()).find("remote engines are not supported yet") != std::string::npos;
+    }
+    assert(threw && !fs::exists(statePath(dir.str())) && !fs::exists(configPath(dir.str())));
+}
+
+// Different backends on one machine give different bits, but each game is
+// still a function of its engine: two runs agree byte for byte.
+static void test_mixed_local_engines_deterministic() {
+    if (!blasAvailable()) return;
+    TempDir a("mixed_a"), b("mixed_b");
+    const Config c = withEngines(tinyConfig(), "local/naive:1, local/blas=3");
+    startEngines(c, a, a.file("none"))->runUntil(2);
+    Config fewer = c;
+    fewer.workers = 1;
+    startEngines(fewer, b, b.file("none"))->runUntil(2);
+    assert(runFingerprint(a, 2) == runFingerprint(b, 2));
+    assert(manifestWithoutTimings(a) == manifestWithoutTimings(b));
+    const std::string manifest = readFile(a.file("selfplay-engines.csv"));
+    const std::vector<std::string> row = csvFields(splitLines(manifest)[2]);
+    assert(row[3] == "local/blas" && row[5] == engineFingerprint("blas"));
+}
+
 int main() {
+    test_single_local_engine_equals_default();
+    test_split_local_engines_equal_default();
+    test_engines_resume_is_byte_identical();
+    test_switch_on_at_resume();
+    test_remote_engines_refused_for_now();
+    test_mixed_local_engines_deterministic();
     test_rerate_ignores_uncommitted_checkpoint();
     test_metal_unavailable_writes_nothing();
     test_backend_switch_prints_note();
