@@ -223,10 +223,10 @@ SelfPlayCoordinator::SelfPlayCoordinator(const Config& cfg, const std::string& r
 }
 
 SelfPlayCoordinator::~SelfPlayCoordinator() {
-    for (const auto& [alias, net] : uploadedNet_) {
-        if (net.empty()) continue;
+    for (const auto& [alias, state] : machines_) {
+        if (state->uploadedNet.empty()) continue;
         try {
-            transportFor(hosts_.settings(alias), "")->remove({net});
+            transportFor(hosts_.settings(alias), "")->remove({state->uploadedNet});
         } catch (const std::exception&) {
         }
     }
@@ -238,11 +238,8 @@ std::unique_ptr<Transport> SelfPlayCoordinator::transportFor(const MachineSettin
     return makeTransport(m, log);
 }
 
-std::mutex& SelfPlayCoordinator::machineMutex(const std::string& alias) {
-    std::lock_guard<std::mutex> lock(machinesMutex_);
-    std::unique_ptr<std::mutex>& m = machineMutexes_[alias];
-    if (!m) m = std::make_unique<std::mutex>();
-    return *m;
+SelfPlayCoordinator::MachineState& SelfPlayCoordinator::machine(const std::string& alias) {
+    return *machines_.at(alias);   // a lookup only: no slice thread inserts
 }
 
 std::string SelfPlayCoordinator::remoteDir(const MachineSettings& m) const {
@@ -387,14 +384,15 @@ std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, c
     const std::string remoteNet = dir + "/" + netName;
     checkStop();
     {
-        std::lock_guard<std::mutex> lock(machineMutex(e.machine));
-        if (!contacted_.count(e.machine)) {
+        MachineState& state = machine(e.machine);
+        std::lock_guard<std::mutex> lock(state.mutex);
+        if (!state.contacted) {
             std::vector<std::string> stale;
             for (const std::string& name : t->list(dir)) stale.push_back(dir + "/" + name);
             t->remove(stale);
-            contacted_.insert(e.machine);
+            state.contacted = true;
         }
-        std::string& uploaded = uploadedNet_[e.machine];
+        std::string& uploaded = state.uploadedNet;
         if (uploaded != remoteNet) {
             t->upload(networkPath, remoteNet);
             if (!uploaded.empty()) t->remove({uploaded});
@@ -461,8 +459,9 @@ std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, c
             // A network the binary refused (damaged on the machine since the
             // upload): forget it, so the next attempt uploads it again.
             if (line.find("network") != std::string::npos) {
-                std::lock_guard<std::mutex> lock(machineMutex(e.machine));
-                if (uploadedNet_[e.machine] == remoteNet) uploadedNet_[e.machine].clear();
+                MachineState& state = machine(e.machine);
+                std::lock_guard<std::mutex> lock(state.mutex);
+                if (state.uploadedNet == remoteNet) state.uploadedNet.clear();
             }
             throw SliceError(e.machine + ": selfplay " + describe(r) +
                              (line.empty() || r.error.rfind("probe", 0) == 0 ? "" : ": " + line));
@@ -562,6 +561,8 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
         reports[k].planned = reports[k].engine = e.name();
         if (!m.local()) {
             anyRemote = true;
+            // Every remote machine's entry exists before the threads start.
+            if (!machines_.count(e.machine)) machines_[e.machine] = std::make_unique<MachineState>();
             continue;
         }
         runs[k].backend = e.backend;

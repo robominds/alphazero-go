@@ -1248,6 +1248,49 @@ static void test_failing_engine_stops_remote_slices() {
     assert(runProcess({"pgrep", "-f", runIdOf(runDir)}, "", 10).exitCode == 1);   // none left
 }
 
+// Several remote machines making their first contact at once (each cleans
+// its run directory and uploads the network), then a new network for all:
+// the slices merge into the generation one engine would play. Run under
+// ThreadSanitizer, this catches shared bookkeeping touched from several
+// machines' threads.
+static void test_remote_machines_at_once() {
+    SliceWork work("machines");
+    Config cfg;
+    cfg.boardSize = 5;
+    cfg.history = 2;
+    cfg.blocks = 1;
+    cfg.filters = 4;
+    cfg.valueHidden = 8;
+    cfg.gamesPerGeneration = 6;
+    cfg.seed = 11;
+    applyOverride(cfg, "selfplay_engines=fa/naive:1, fb/naive:1, fc/naive:1");
+    std::string hostsText;
+    for (const char* alias : {"fa", "fb", "fc"})
+        hostsText += std::string(alias) + " exe=" + AZGO_SELFPLAY_EXE + " workdir=" +
+                     (work.dir / ("remote_" + std::string(alias))).string() + "\n";
+    SelfPlayCoordinator coordinator(cfg, (work.dir / "run").string(), parseHostsText(hostsText, "h"),
+                                    nullptr);
+    coordinator.preflight();
+    const std::string netA = (work.dir / "net_test.azn").string();
+    const std::string netB = (work.dir / "net_other.azn").string();
+    Network other(sliceNet(), 34);
+    saveNetwork(other, netB);
+    for (int g : {1, 2}) {
+        const std::string path = g == 1 ? netA : netB;
+        const Network net = loadNetwork(path);
+        const std::vector<GameRecord> whole =
+            playSelfPlayGames(net, work.job.sp, cfg.seed, g, 0, 6, EngineRun{"naive", 1});
+        assert(sameRecords(coordinator.play(g, path, net, work.job.sp, 6), whole));
+    }
+    // Each machine holds just the second network.
+    for (const char* alias : {"fa", "fb", "fc"}) {
+        int files = 0;
+        for (const auto& e : std::filesystem::recursive_directory_iterator(work.dir / ("remote_" + std::string(alias))))
+            files += e.is_regular_file() ? 1 : 0;
+        assert(files == 1);
+    }
+}
+
 // ---- transports ---------------------------------------------------------------------
 
 static MachineSettings sshMachine() {
@@ -1459,6 +1502,7 @@ int main() {
     test_subprocess_transport_round_trip();
     test_in_process_transport();
     test_merge_order_independent();
+    test_remote_machines_at_once();
     std::printf("test_distributed: OK\n");
     return 0;
 }

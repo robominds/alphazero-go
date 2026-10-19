@@ -227,11 +227,16 @@ private:
     std::map<std::string, std::string> fingerprints_;   // engine name -> fingerprint
     std::map<std::string, std::string> remoteBuilds_;   // alias -> its full build ID
     std::set<std::string> unreachable_;                 // aliases preflight could not reach
-    std::mutex& machineMutex(const std::string& alias);   // one per machine, for its uploads
-    std::mutex machinesMutex_;                           // guards machineMutexes_
-    std::map<std::string, std::unique_ptr<std::mutex>> machineMutexes_;
-    std::map<std::string, std::string> uploadedNet_;    // alias -> network path uploaded there
-    std::set<std::string> contacted_;                   // machines cleaned of stale files
+    // What the coordinator knows of a remote machine. The map is filled by
+    // play() before any slice thread starts and never changes while they
+    // run; each entry's fields are touched only under its own mutex.
+    struct MachineState {
+        std::mutex mutex;          // its uploads and cleanup, one slice at a time
+        bool contacted = false;    // stale files of an earlier coordinator cleared
+        std::string uploadedNet;   // the network path uploaded there ("" = none)
+    };
+    MachineState& machine(const std::string& alias);   // must exist (play() made it)
+    std::map<std::string, std::unique_ptr<MachineState>> machines_;   // by alias
     std::mutex logMutex_;                               // slices' notes, from their threads
     std::atomic<bool> failedSlices_{false};             // this generation: keep the logs
     std::vector<SliceReport> reports_;
