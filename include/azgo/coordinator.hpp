@@ -54,7 +54,8 @@ struct SliceReport {
 class Transport {
 public:
     virtual ~Transport() = default;
-    // Copies a local file to `remote`, creating its directory.
+    // Copies a local file to `remote`, creating its directory, atomically
+    // (to a unique remote + ".part-..." name, then renamed).
     virtual void upload(const std::string& local, const std::string& remote) = 0;
     virtual bool exists(const std::string& remote) = 0;
     // Runs the machine's selfplay binary with `args` (niced), its stdout
@@ -192,7 +193,9 @@ private:
     std::map<std::string, std::string> fingerprints_;   // engine name -> fingerprint
     std::map<std::string, std::string> remoteBuilds_;   // alias -> its full build ID
     std::set<std::string> unreachable_;                 // aliases preflight could not reach
-    std::mutex uploadMutex_;
+    std::mutex& machineMutex(const std::string& alias);   // one per machine, for its uploads
+    std::mutex machinesMutex_;                           // guards machineMutexes_
+    std::map<std::string, std::unique_ptr<std::mutex>> machineMutexes_;
     std::map<std::string, std::string> uploadedNet_;    // alias -> network path uploaded there
     std::vector<SliceReport> reports_;
 };

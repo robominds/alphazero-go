@@ -2131,6 +2131,28 @@ static void test_preflight_refusals() {
 
 // After a generation the remote work directory holds only the network,
 // and the local work directory is empty.
+// A truncated network left on a remote (an upload cut short before this
+// coordinator started) is never trusted: each coordinator uploads the
+// network itself, atomically, and the run is the default run.
+static void test_partial_remote_network_is_replaced() {
+    TempDir plain("partial_default"), engines("partial_engines");
+    startQuiet(tinyConfig(), plain)->runUntil(2);
+    const Config c = withEngines(tinyConfig(), "local/naive:1, fake/naive:1");
+    std::unique_ptr<Trainer> t = startEngines(c, engines, fakeHosts(engines));
+    char name[48];
+    std::snprintf(name, sizeof name, "net_%016llx.azn",
+                  static_cast<unsigned long long>(fileHash(checkpointPath(engines.str(), 0))));
+    const fs::path remoteDir = fs::path(engines.file("remote")) / runIdOf(engines.str());
+    fs::create_directories(remoteDir);
+    const std::string full = readFile(checkpointPath(engines.str(), 0));
+    writeFile((remoteDir / name).string(), full.substr(0, full.size() / 2));
+    t->runUntil(2);
+    assert(runFingerprint(plain, 2) == runFingerprint(engines, 2));
+    // No partial upload is left behind either.
+    for (const auto& e : fs::recursive_directory_iterator(engines.file("remote")))
+        assert(e.path().filename().string().find(".part") == std::string::npos);
+}
+
 static void test_remote_cleanup() {
     TempDir dir("fake_cleanup");
     startEngines(withEngines(tinyConfig(), "local/naive:1, fake/naive:1"), dir, fakeHosts(dir))
@@ -2175,6 +2197,7 @@ int main() {
     test_fake_remote_resume();
     test_preflight_refusals();
     test_remote_cleanup();
+    test_partial_remote_network_is_replaced();
     test_resume_prunes_uncommitted_manifest_rows();
     test_mixed_local_engines_deterministic();
     test_rerate_ignores_uncommitted_checkpoint();

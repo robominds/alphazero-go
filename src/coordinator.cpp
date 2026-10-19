@@ -100,6 +100,13 @@ std::string describe(const ProcessResult& r) {
     return "exit " + std::to_string(r.exitCode);
 }
 
+// A temporary name beside `path` for an upload in progress, unique to
+// this upload (two machines may share a work directory).
+std::string partName(const std::string& path) {
+    static std::atomic<unsigned long> counter{0};
+    return path + ".part-" + std::to_string(getpid()) + "-" + std::to_string(++counter);
+}
+
 // "~/x" on this machine.
 std::string expandHome(const std::string& path) {
     if (path.rfind("~/", 0) != 0) return path;
@@ -198,6 +205,13 @@ std::unique_ptr<Transport> SelfPlayCoordinator::transportFor(const MachineSettin
                                                              const std::string& log) const {
     if (m.ssh.empty() && probeInProcess()) return std::make_unique<InProcessTransport>(m);
     return makeTransport(m, log);
+}
+
+std::mutex& SelfPlayCoordinator::machineMutex(const std::string& alias) {
+    std::lock_guard<std::mutex> lock(machinesMutex_);
+    std::unique_ptr<std::mutex>& m = machineMutexes_[alias];
+    if (!m) m = std::make_unique<std::mutex>();
+    return *m;
 }
 
 std::string SelfPlayCoordinator::remoteDir(const MachineSettings& m) const {
@@ -321,16 +335,18 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
     const std::unique_ptr<Transport> t = transportFor(m, log);
     const std::string dir = remoteDir(m);
 
-    // The network, once per machine and hash; the one it replaces goes.
+    // The network, uploaded by this coordinator once per machine and hash
+    // (a file already there may be a stranger's or cut short: it is
+    // replaced, atomically); the one it replaces goes.
     char netName[48];
     std::snprintf(netName, sizeof netName, "net_%016llx.azn",
                   static_cast<unsigned long long>(networkHash));
     const std::string remoteNet = dir + "/" + netName;
     {
-        std::lock_guard<std::mutex> lock(uploadMutex_);
+        std::lock_guard<std::mutex> lock(machineMutex(e.machine));
         std::string& uploaded = uploadedNet_[e.machine];
         if (uploaded != remoteNet) {
-            if (!t->exists(remoteNet)) t->upload(networkPath, remoteNet);
+            t->upload(networkPath, remoteNet);
             if (!uploaded.empty()) t->remove({uploaded});
             uploaded = remoteNet;
         }
@@ -368,9 +384,21 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
     const double delay = probeDelay(e.name());
     if (delay > 0) std::this_thread::sleep_for(std::chrono::duration<double>(delay));
     const ProcessResult r = t->run(args, log, m.timeout);
-    if (r.exitCode != 0)
+    if (r.exitCode != 0) {
+        const std::string line = lastLine(log);
+        // A network the binary refused (damaged on the machine since the
+        // upload): forget it, so the next attempt uploads it again.
+        if (line.find("network") != std::string::npos) {
+            std::lock_guard<std::mutex> lock(machineMutex(e.machine));
+            if (uploadedNet_[e.machine] == remoteNet) uploadedNet_[e.machine].clear();
+            try {
+                t->remove({remoteNet});
+            } catch (const SliceError&) {
+            }
+        }
         throw SliceError(e.name() + ": selfplay " + describe(r) +
-                         (lastLine(log).empty() ? "" : ": " + lastLine(log)));
+                         (line.empty() ? "" : ": " + line));
+    }
     t->download(remoteResult, localResult);
     SliceResult result = readSliceResult(localResult, jobBytes, buildId());
     t->remove({remoteJob, remoteResult});
@@ -558,9 +586,15 @@ void SshTransport::upload(const std::string& local, const std::string& remote) {
     if (dir.exitCode != 0)
         throw SliceError(m_.alias + ": cannot create " + parentOf(remote) + " (ssh " + why(dir) +
                          ")");
-    const ProcessResult copy = runProcess(scpArgv(m_, local, remote, true), log_, kTransferTimeout);
+    // To a temporary name, then renamed: a cut upload never leaves a
+    // partial file under the final name (only, at worst, a .part file).
+    const std::string part = partName(remote);
+    const ProcessResult copy = runProcess(scpArgv(m_, local, part, true), log_, kTransferTimeout);
     if (copy.exitCode != 0)
         throw SliceError(m_.alias + ": upload of " + remote + " failed (scp " + why(copy) + ")");
+    const ProcessResult move = command({"mv", "-f", part, remote}, kCommandTimeout);
+    if (move.exitCode != 0)
+        throw SliceError(m_.alias + ": cannot rename " + part + " (ssh " + why(move) + ")");
 }
 
 bool SshTransport::exists(const std::string& remote) {
@@ -601,8 +635,10 @@ void SubprocessTransport::upload(const std::string& local, const std::string& re
     namespace fs = std::filesystem;
     std::error_code ec;
     const fs::path to = expandHome(remote);
+    const fs::path part = partName(to.string());
     fs::create_directories(to.parent_path(), ec);
-    if (!ec) fs::copy_file(local, to, fs::copy_options::overwrite_existing, ec);
+    if (!ec) fs::copy_file(local, part, fs::copy_options::overwrite_existing, ec);
+    if (!ec) fs::rename(part, to, ec);   // atomic: never a partial file under the final name
     if (ec) throw SliceError(m_.alias + ": upload of " + remote + " failed: " + ec.message());
 }
 
