@@ -95,7 +95,13 @@ ProcessResult runProcess(const std::vector<std::string>& argv, const ProcessOpti
 #endif
     int pipeFds[2] = {-1, -1};
     if (options.holdStdin) {
-        if (pipe(pipeFds) != 0) {
+#ifdef __linux__
+        const int made = pipe2(pipeFds, O_CLOEXEC);   // atomically close-on-exec
+#else
+        // POSIX_SPAWN_CLOEXEC_DEFAULT keeps it from other children meanwhile.
+        const int made = pipe(pipeFds);
+#endif
+        if (made != 0) {
             result.error = std::string("pipe: ") + std::strerror(errno);
             return result;
         }

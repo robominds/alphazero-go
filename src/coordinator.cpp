@@ -38,7 +38,7 @@ std::string csvField(const std::string& v, bool always = false) {
 }
 
 
-constexpr double kCommandTimeout = 60;    // mkdir, test, rm, pkill over ssh
+constexpr double kCleanupTimeout = 10;    // cleanup after a cancel or a failure
 constexpr double kTransferTimeout = 900;  // one scp of a network or a result
 
 // [A-Za-z0-9_./~@:+-], not starting with '-': safe as one word of a remote
@@ -93,6 +93,23 @@ std::string lastLine(const std::string& log) {
     return last;
 }
 
+// What happened to a process, without paths or hosts: what a fallback's
+// note in the manifest may say (the details stay in the slice's log).
+std::string brief(const ProcessResult& r) {
+    if (r.timedOut) return "timed out";
+    if (r.cancelled) return "cancelled";
+    if (!r.error.empty()) return "could not run";
+    if (r.signal != 0) return "killed by signal " + std::to_string(r.signal);
+    return "exit " + std::to_string(r.exitCode);
+}
+
+// A remote path's last part, for messages: a work directory can hold a
+// user's home path.
+std::string fileName(const std::string& path) {
+    const size_t slash = path.find_last_of('/');
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
 std::string describe(const ProcessResult& r) {
     if (!r.error.empty()) return r.error;
     if (r.timedOut) return "timed out";
@@ -101,7 +118,7 @@ std::string describe(const ProcessResult& r) {
 }
 
 // A temporary name beside `path` for an upload in progress, unique to
-// this upload (two machines may share a work directory).
+// this upload: concurrent uploads never share one, even of the same file.
 std::string partName(const std::string& path) {
     static std::atomic<unsigned long> counter{0};
     return path + ".part-" + std::to_string(getpid()) + "-" + std::to_string(++counter);
@@ -226,7 +243,11 @@ SelfPlayCoordinator::~SelfPlayCoordinator() {
     for (const auto& [alias, state] : machines_) {
         if (state->uploadedNet.empty()) continue;
         try {
-            transportFor(hosts_.settings(alias), "")->remove({state->uploadedNet});
+            const MachineSettings m = hosts_.settings(alias);
+            const std::unique_ptr<Transport> t = transportFor(m, "");
+            t->setCommandTimeout(kCleanupTimeout);
+            t->remove({state->uploadedNet});
+            t->removeDirIfEmpty(remoteDir(m));   // the run's directory, now empty
         } catch (const std::exception&) {
         }
     }
@@ -288,6 +309,16 @@ void SelfPlayCoordinator::preflight() {
     if (!remotes.empty() && buildId() == "unknown")
         throw ConfigError("this binary has no build ID (built without git and without "
                           "AZGO_BUILD_ID), so remote engines cannot be checked; rebuild it");
+    // Two aliases of one directory on one machine would clean each other's
+    // files away (each clears the run's directory at its first contact).
+    for (size_t a = 0; a < remotes.size(); ++a)
+        for (size_t b = a + 1; b < remotes.size(); ++b) {
+            const MachineSettings x = hosts_.settings(remotes[a]), y = hosts_.settings(remotes[b]);
+            if (x.ssh == y.ssh && x.workdir == y.workdir)
+                throw ConfigError("selfplay_engines: " + remotes[a] + " and " + remotes[b] +
+                                  " are the same machine and work directory in the hosts file; "
+                                  "give each alias its own workdir");
+        }
     for (const std::string& alias : remotes) {
         const MachineSettings m = hosts_.settings(alias);
         // Outside the run directory: preflight writes nothing there.
@@ -445,7 +476,6 @@ std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, c
         switch (failure) {
         case ProbeFailure::Exit:   // the run fails as a dead connection would (ssh's 255)
             r.exitCode = 255;
-            r.error = "probe: failed run";
             break;
         case ProbeFailure::Timeout:   // a remote that hangs, in place of the real run
             r = runProcess({"sleep", "600"}, log, m.timeout > 0 ? m.timeout : 1.0);
@@ -463,8 +493,9 @@ std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, c
                 std::lock_guard<std::mutex> lock(state.mutex);
                 if (state.uploadedNet == remoteNet) state.uploadedNet.clear();
             }
-            throw SliceError(e.machine + ": selfplay " + describe(r) +
-                             (line.empty() || r.error.rfind("probe", 0) == 0 ? "" : ": " + line));
+            // No log line in the message: selfplay's own words can hold the
+            // machine's paths; the log keeps them.
+            throw SliceError(e.machine + ": selfplay " + brief(r));
         }
         t->download(remoteResult, localResult);
         if (failure == ProbeFailure::Corrupt) {   // damage the copy as a bad transfer would
@@ -484,6 +515,7 @@ std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, c
         // This attempt is over: its process (if it outlived its connection)
         // and its files go, best effort; the log stays.
         try {
+            t->setCommandTimeout(kCleanupTimeout);   // a dead machine must not hold this up
             t->killJob(pattern);
             t->remove({remoteJob, remoteResult});
         } catch (const std::exception&) {
@@ -504,17 +536,59 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
                                                         const std::atomic<bool>& stop,
                                                         SliceReport& report) {
     // Two attempts on the planned engine: a transient failure costs time,
-    // not reproducibility.
+    // not reproducibility. A machine that does not answer at all costs
+    // only a quick probe: one known to be down this generation, or found
+    // down after a failure, goes straight to the fallback, and one that was
+    // down earlier is probed before it is tried.
+    std::string engineFile = e.name();
+    std::replace(engineFile.begin(), engineFile.end(), '/', '_');
+    const std::string log = workDir + "/" + engineFile + ".log";
+    const MachineSettings m = hosts_.settings(e.machine);
+    const std::unique_ptr<Transport> probe = transportFor(m, log);
+    MachineState& state = machine(e.machine);
+    auto isDown = [&] {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        return state.down;
+    };
+    auto checkReachable = [&] {
+        const bool up = probe->reachable();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.suspect = !up;
+        if (!up) state.down = true;
+        return up;
+    };
+    auto logLine = [&](const std::string& text) {
+        std::ofstream out(log, std::ios::app | std::ios::binary);
+        out << "azgo: " << text << "\n";
+    };
     std::string reason;
-    for (int attempt = 1; attempt <= 2; ++attempt) {
-        try {
-            return attemptRemote(attempt, g, slice, e, networkPath, networkHash, sp, workDir, stop,
-                                 report);
-        } catch (const SliceCancelled&) {
-            throw;
-        } catch (const std::exception& ex) {
-            reason = ex.what();
-            failedSlices_ = true;
+    bool suspect;
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        suspect = state.suspect;
+    }
+    if (isDown() || (suspect && !checkReachable())) {
+        reason = e.machine + " unreachable";
+        logLine("slice " + std::to_string(slice.first) + ": " + reason + "; not tried");
+        failedSlices_ = true;
+    } else {
+        for (int attempt = 1; attempt <= 2; ++attempt) {
+            try {
+                return attemptRemote(attempt, g, slice, e, networkPath, networkHash, sp, workDir,
+                                     stop, report);
+            } catch (const SliceCancelled&) {
+                throw;
+            } catch (const std::exception& ex) {
+                reason = ex.what();
+                failedSlices_ = true;
+                logLine("slice " + std::to_string(slice.first) + ", attempt " +
+                        std::to_string(attempt) + " failed: " + reason);
+                if (stop) throw SliceCancelled();
+                if (!checkReachable()) {
+                    reason = e.machine + " unreachable";
+                    break;
+                }
+            }
         }
     }
     if (cfg_.selfplayFallback == "stop")
@@ -562,7 +636,11 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
         if (!m.local()) {
             anyRemote = true;
             // Every remote machine's entry exists before the threads start.
-            if (!machines_.count(e.machine)) machines_[e.machine] = std::make_unique<MachineState>();
+            if (!machines_.count(e.machine)) {
+                machines_[e.machine] = std::make_unique<MachineState>();
+                machines_[e.machine]->suspect = unreachable_.count(e.machine) > 0;
+            }
+            machines_[e.machine]->down = false;   // tried afresh every generation
             continue;
         }
         runs[k].backend = e.backend;
@@ -665,8 +743,16 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
     for (size_t i = 0; i < filled.size(); ++i)
         if (!filled[i]) throw std::logic_error("game " + std::to_string(i) + " was not played");
     // The remote files went slice by slice; the local ones too, but for the
-    // logs of failed attempts, which stay.
-    if (anyRemote && !failedSlices_) std::filesystem::remove_all(workDir);
+    // logs of failed attempts, which stay (empty logs go).
+    if (anyRemote && !failedSlices_) {
+        std::filesystem::remove_all(workDir);
+    } else if (anyRemote) {
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator(workDir, ec))
+            if (entry.is_regular_file() && entry.file_size() == 0)
+                std::filesystem::remove(entry.path(), ec);
+        if (std::filesystem::is_empty(workDir, ec)) std::filesystem::remove(workDir, ec);
+    }
     reports_ = std::move(reports);
     return records;
 }
@@ -716,33 +802,33 @@ SshTransport::SshTransport(MachineSettings machine, std::string log)
     : m_(std::move(machine)), log_(std::move(log)) {}
 
 // The failure and the last line scp or ssh wrote about it.
-std::string SshTransport::why(const ProcessResult& r) const {
-    const std::string line = log_.empty() ? "" : lastLine(log_);
-    return describe(r) + (line.empty() ? "" : ": " + line);
-}
+// The failure as messages give it: no ssh or scp output, which can name
+// hosts and addresses; that stays in the log.
+std::string SshTransport::why(const ProcessResult& r) const { return brief(r); }
 
 ProcessResult SshTransport::command(const std::vector<std::string>& words, double timeout) {
     return runProcess(sshCommand(m_, words), log_, timeout);
 }
 
 void SshTransport::upload(const std::string& local, const std::string& remote) {
-    const ProcessResult dir = command({"mkdir", "-p", parentOf(remote)}, kCommandTimeout);
+    const ProcessResult dir = command({"mkdir", "-p", parentOf(remote)}, commandTimeout_);
     if (dir.exitCode != 0)
-        throw SliceError(m_.alias + ": cannot create " + parentOf(remote) + " (ssh " + why(dir) +
-                         ")");
+        throw SliceError(m_.alias + ": cannot create the work directory (ssh " + why(dir) + ")");
     // To a temporary name, then renamed: a cut upload never leaves a
     // partial file under the final name (only, at worst, a .part file).
     const std::string part = partName(remote);
     const ProcessResult copy = runProcess(scpArgv(m_, local, part, true), log_, kTransferTimeout);
     if (copy.exitCode != 0)
-        throw SliceError(m_.alias + ": upload of " + remote + " failed (scp " + why(copy) + ")");
-    const ProcessResult move = command({"mv", "-f", part, remote}, kCommandTimeout);
+        throw SliceError(m_.alias + ": upload of " + fileName(remote) + " failed (scp " +
+                         why(copy) + ")");
+    const ProcessResult move = command({"mv", "-f", part, remote}, commandTimeout_);
     if (move.exitCode != 0)
-        throw SliceError(m_.alias + ": cannot rename " + part + " (ssh " + why(move) + ")");
+        throw SliceError(m_.alias + ": cannot rename " + fileName(part) + " (ssh " + why(move) +
+                         ")");
 }
 
 bool SshTransport::exists(const std::string& remote) {
-    const ProcessResult r = command({"test", "-f", remote}, kCommandTimeout);
+    const ProcessResult r = command({"test", "-f", remote}, commandTimeout_);
     if (r.exitCode == 0) return true;
     if (r.exitCode == 1) return false;
     throw SliceError(m_.alias + ": cannot reach the machine (ssh " + why(r) + ")");
@@ -754,7 +840,7 @@ std::vector<std::string> SshTransport::list(const std::string& remoteDir) {
     const std::string out = (std::filesystem::temp_directory_path() / name).string();
     std::vector<std::string> names;
     const ProcessResult r =
-        runProcess(sshCommand(m_, {"ls", "-1A", remoteDir}), out, kCommandTimeout);
+        runProcess(sshCommand(m_, {"ls", "-1A", remoteDir}), out, commandTimeout_);
     if (r.exitCode == 0) {
         std::ifstream in(out, std::ios::binary);
         for (std::string line; std::getline(in, line);)
@@ -762,7 +848,7 @@ std::vector<std::string> SshTransport::list(const std::string& remoteDir) {
     }
     std::filesystem::remove(out);
     if (r.exitCode == 255 || !r.error.empty())
-        throw SliceError(m_.alias + ": cannot reach the machine (ssh " + describe(r) + ")");
+        throw SliceError(m_.alias + ": cannot reach the machine (ssh " + brief(r) + ")");
     return names;   // another exit: no such directory yet, nothing in it
 }
 
@@ -780,20 +866,32 @@ void SshTransport::download(const std::string& remote, const std::string& local)
     const ProcessResult copy =
         runProcess(scpArgv(m_, local, remote, false), log_, kTransferTimeout);
     if (copy.exitCode != 0)
-        throw SliceError(m_.alias + ": download of " + remote + " failed (scp " + why(copy) + ")");
+        throw SliceError(m_.alias + ": download of " + fileName(remote) + " failed (scp " +
+                         why(copy) + ")");
 }
 
 void SshTransport::remove(const std::vector<std::string>& remote) {
     if (remote.empty()) return;
     std::vector<std::string> words = {"rm", "-f"};
     words.insert(words.end(), remote.begin(), remote.end());
-    const ProcessResult r = command(words, kCommandTimeout);
+    const ProcessResult r = command(words, commandTimeout_);
     if (r.exitCode != 0)
         throw SliceError(m_.alias + ": cannot remove work files (ssh " + why(r) + ")");
 }
 
+bool SshTransport::reachable() {
+    std::vector<std::string> argv = sshCommand(m_, {"true"});
+    // Before the usual ConnectTimeout=10: ssh takes an option's first value.
+    argv.insert(argv.begin() + 1, {"-o", "ConnectTimeout=3"});
+    return runProcess(argv, log_, 15).exitCode == 0;
+}
+
+void SshTransport::removeDirIfEmpty(const std::string& remoteDir) {
+    command({"rmdir", remoteDir}, commandTimeout_);   // fails, harmlessly, unless empty
+}
+
 void SshTransport::killJob(const std::string& pattern) {
-    command({"pkill", "-f", pattern}, kCommandTimeout);   // best effort; 1 = nothing matched
+    command({"pkill", "-f", pattern}, commandTimeout_);   // best effort; 1 = nothing matched
 }
 
 SubprocessTransport::SubprocessTransport(MachineSettings machine) : m_(std::move(machine)) {}
@@ -806,7 +904,8 @@ void SubprocessTransport::upload(const std::string& local, const std::string& re
     fs::create_directories(to.parent_path(), ec);
     if (!ec) fs::copy_file(local, part, fs::copy_options::overwrite_existing, ec);
     if (!ec) fs::rename(part, to, ec);   // atomic: never a partial file under the final name
-    if (ec) throw SliceError(m_.alias + ": upload of " + remote + " failed: " + ec.message());
+    if (ec)
+        throw SliceError(m_.alias + ": upload of " + fileName(remote) + " failed: " + ec.message());
 }
 
 bool SubprocessTransport::exists(const std::string& remote) {
@@ -839,7 +938,9 @@ void SubprocessTransport::download(const std::string& remote, const std::string&
     std::error_code ec;
     std::filesystem::copy_file(expandHome(remote), local,
                                std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) throw SliceError(m_.alias + ": download of " + remote + " failed: " + ec.message());
+    if (ec)
+        throw SliceError(m_.alias + ": download of " + fileName(remote) + " failed: " +
+                         ec.message());
 }
 
 void SubprocessTransport::remove(const std::vector<std::string>& remote) {
@@ -849,8 +950,18 @@ void SubprocessTransport::remove(const std::vector<std::string>& remote) {
     }
 }
 
+bool SubprocessTransport::reachable() {
+    return access(expandHome(m_.exe).c_str(), X_OK) == 0;
+}
+
+void SubprocessTransport::removeDirIfEmpty(const std::string& remoteDir) {
+    std::error_code ec;
+    if (std::filesystem::is_empty(expandHome(remoteDir), ec) && !ec)
+        std::filesystem::remove(expandHome(remoteDir), ec);
+}
+
 void SubprocessTransport::killJob(const std::string& pattern) {
-    runProcess({"pkill", "-f", pattern}, "", kCommandTimeout);   // best effort
+    runProcess({"pkill", "-f", pattern}, "", commandTimeout_);   // best effort
 }
 
 ProcessResult InProcessTransport::run(const std::vector<std::string>& given, const std::string& log,

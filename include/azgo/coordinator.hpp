@@ -80,6 +80,16 @@ public:
     // timeout or a cancel and before a retry, in case the remote outlived
     // its connection.
     virtual void killJob(const std::string& pattern) = 0;
+    // Whether the machine answers at all, quickly (ssh with a 3 s connect
+    // timeout running `true`; for this machine, whether exe exists).
+    virtual bool reachable() = 0;
+    // Removes a remote directory if it is empty (best effort).
+    virtual void removeDirIfEmpty(const std::string& remoteDir) = 0;
+    // The timeout of the small commands (mkdir, test, ls, rm, pkill); short
+    // for the cleanup after a cancel, so a dead machine cannot hold it up.
+    void setCommandTimeout(double seconds) { commandTimeout_ = seconds; }
+protected:
+    double commandTimeout_ = 60;
 };
 
 // A machine with ssh: scp for files and ssh for commands, each a child
@@ -98,6 +108,8 @@ public:
     void download(const std::string& remote, const std::string& local) override;
     void remove(const std::vector<std::string>& remote) override;
     void killJob(const std::string& pattern) override;
+    bool reachable() override;
+    void removeDirIfEmpty(const std::string& remoteDir) override;
 private:
     ProcessResult command(const std::vector<std::string>& words, double timeout);
     std::string why(const ProcessResult& r) const;
@@ -120,6 +132,8 @@ public:
     void download(const std::string& remote, const std::string& local) override;
     void remove(const std::vector<std::string>& remote) override;
     void killJob(const std::string& pattern) override;
+    bool reachable() override;
+    void removeDirIfEmpty(const std::string& remoteDir) override;
 protected:
     MachineSettings m_;
 };
@@ -234,6 +248,8 @@ private:
         std::mutex mutex;          // its uploads and cleanup, one slice at a time
         bool contacted = false;    // stale files of an earlier coordinator cleared
         std::string uploadedNet;   // the network path uploaded there ("" = none)
+        bool suspect = false;      // unreachable at preflight or in an earlier generation
+        bool down = false;         // found unreachable this generation: slices fall back
     };
     MachineState& machine(const std::string& alias);   // must exist (play() made it)
     std::map<std::string, std::unique_ptr<MachineState>> machines_;   // by alias

@@ -1458,7 +1458,8 @@ static void test_merge_order_independent() {
     applyOverride(cfg, "selfplay_engines=fa/naive:1, fb/naive:1, fc/naive:1");
     std::string hostsText;
     for (const char* alias : {"fa", "fb", "fc"})
-        hostsText += std::string(alias) + " exe=unused workdir=" + (work.dir / "remote").string() + "\n";
+        hostsText += std::string(alias) + " exe=unused workdir=" +
+                     (work.dir / ("remote_" + std::string(alias))).string() + "\n";
     const HostsFile hosts = parseHostsText(hostsText, "h");
     const std::string netPath = (work.dir / "net_test.azn").string();
     const Network net = loadNetwork(netPath);

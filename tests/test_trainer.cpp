@@ -2185,9 +2185,11 @@ static void test_remote_cleanup() {
         assert(fs::is_directory(dir.file("selfplay-work")) && fs::is_empty(dir.file("selfplay-work")));
     }
     assert(remoteFiles(dir).empty());
+    assert(!fs::exists(fs::path(dir.file("remote")) / runIdOf(dir.str())));   // the run's directory too
     // Leftovers of a crashed coordinator: an old network, a job, a result,
     // a part of an upload.
     const fs::path runRemote = fs::path(dir.file("remote")) / runIdOf(dir.str());
+    fs::create_directories(runRemote);
     for (const char* name : {"net_0000000000000001.azn", "g0003_2_a1.job", "g0003_2_a1.result",
                              "net_0000000000000002.azn.part-1-1"})
         writeFile((runRemote / name).string(), "stale");
@@ -2239,7 +2241,8 @@ static void test_two_failures_fall_back() {
     assert(runFingerprint(plain, 2) == runFingerprint(dir, 2));
     const std::vector<std::string> row = csvFields(splitLines(readFile(dir.file("selfplay-engines.csv")))[2]);
     assert(row[0] == "1" && row[3] == "fake/naive" && row[4] == "local/naive");
-    assert(row[5] == engineFingerprint("naive") && row[10].rfind("fallback: ", 0) == 0);
+    // The note says why without a path or a host: details are in the slice's log.
+    assert(row[5] == engineFingerprint("naive") && row[10] == "fallback: fake: selfplay exit 255");
     assert(manifestNote(dir, 4).empty());   // generation 2 tried the remote again, and it worked
     assert(log.str().find("note: generation 1: games 2-3 (fake/naive) played by local/naive: ") !=
            std::string::npos);
@@ -2323,8 +2326,24 @@ static void test_unreachable_at_preflight() {
     assert(startup.str().find("its slices fall back to local/naive") != std::string::npos);
     t->setLog(nullptr);
     t->runUntil(2);
-    assert(manifestNote(localDir, 2).rfind("fallback: ", 0) == 0);
-    assert(manifestNote(localDir, 4).rfind("fallback: ", 0) == 0);
+    // A machine that does not answer is not tried twice per generation: a
+    // quick probe, then the fallback.
+    assert(manifestNote(localDir, 2) == "fallback: fake unreachable");
+    assert(manifestNote(localDir, 4) == "fallback: fake unreachable");
+    // Two aliases for one machine's work directory would clean each
+    // other's files away: refused.
+    TempDir twin("twin_aliases");
+    fs::create_directories(twin.path);
+    writeFile(twin.file("hosts"), "fa exe=" + std::string(AZGO_SELFPLAY_EXE) + " workdir=" + twin.file("w") +
+                                      "\nfb exe=" + std::string(AZGO_SELFPLAY_EXE) + " workdir=" + twin.file("w") +
+                                      "\n");
+    threw = false;
+    try {
+        startEngines(withEngines(tinyConfig(), "fa/naive:1, fb/naive:1"), twin, twin.file("hosts"));
+    } catch (const ConfigError& e) {
+        threw = std::string(e.what()).find("fa and fb") != std::string::npos;
+    }
+    assert(threw && !fs::exists(configPath(twin.str())));
 }
 
 // Different backends on one machine give different bits, but each game is
