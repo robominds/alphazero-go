@@ -1875,7 +1875,7 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
     return records;
 }
 ```
-*src/coordinator.cpp:549 — `SelfPlayCoordinator::play` (abridged)*
+*src/coordinator.cpp:622 — `SelfPlayCoordinator::play` (abridged)*
 
 A run with several engines is therefore reproducible given which engine
 played each game, and it resumes byte for byte. The run's manifest,
@@ -3172,7 +3172,7 @@ see again in place.
 | Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:225` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
 | Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:540` |
-| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:115`; `SelfPlayCoordinator::play` — `src/coordinator.cpp:549` |
+| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:115`; `SelfPlayCoordinator::play` — `src/coordinator.cpp:622` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |
 
 ---

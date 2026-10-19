@@ -1756,7 +1756,7 @@ public:
     /* ... every index filled; the work files removed ... */
     return records;
 }</code></pre>
-<span class="src">src/coordinator.cpp:549 — <code>SelfPlayCoordinator::play</code> (abridged)</span>
+<span class="src">src/coordinator.cpp:622 — <code>SelfPlayCoordinator::play</code> (abridged)</span>
 <p>A run with several engines is therefore reproducible given which engine played each game, and it resumes byte for byte. The run's manifest, <code>selfplay-engines.csv</code>, records exactly that: the engine and its fingerprint (chip, OS, shaders) for every slice. Engines with equal fingerprints can split a share without changing a bit. When a remote fails twice, the coordinator plays the slice itself and says so in the manifest. AlphaGo Zero's self-play is unchanged: the same games, seeded the same way, computed in more places. How much that gains depends on the machines. On the Studio, four BLAS workers beside the GPU add about 11% to its 2,930 evaluations per second (19×19, 10×128); each M4 mini adds about 676 more (<code>docs/results/bench.txt</code>).</p>
 </section>
 
@@ -2495,7 +2495,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Training state and resume</dt>
   <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:45</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:540</span></dd>
   <dt>Self-play on several engines and machines</dt>
-  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:115</span>; <code>SelfPlayCoordinator::play</code> <span class="loc">— src/coordinator.cpp:549</span></dd>
+  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:115</span>; <code>SelfPlayCoordinator::play</code> <span class="loc">— src/coordinator.cpp:622</span></dd>
   <dt>Inspecting a position</dt>
   <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:81, 121</span></dd>
 </dl>
