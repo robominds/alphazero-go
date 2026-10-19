@@ -2030,14 +2030,21 @@ static void test_remote_engines_refused_for_now() {
 
 // Different backends on one machine give different bits, but each game is
 // still a function of its engine: two runs agree byte for byte.
+// The hosts file's local line, written to dir/hosts; returns its path.
+static std::string localHosts(const TempDir& dir, const std::string& settings) {
+    fs::create_directories(dir.path);
+    writeFile(dir.file("hosts"), "local " + settings + "\n");
+    return dir.file("hosts");
+}
+
 static void test_mixed_local_engines_deterministic() {
     if (!blasAvailable()) return;
     TempDir a("mixed_a"), b("mixed_b");
     const Config c = withEngines(tinyConfig(), "local/naive:1, local/blas=3");
-    startEngines(c, a, a.file("none"))->runUntil(2);
-    Config fewer = c;
-    fewer.workers = 1;
-    startEngines(fewer, b, b.file("none"))->runUntil(2);
+    // The engines' worker counts and QoS come from the hosts file (the
+    // workers key is the default path's); neither changes a bit.
+    startEngines(c, a, localHosts(a, "cpu_workers=3 cpu_qos=default"))->runUntil(2);
+    startEngines(c, b, localHosts(b, "cpu_workers=1 cpu_qos=utility"))->runUntil(2);
     assert(runFingerprint(a, 2) == runFingerprint(b, 2));
     assert(manifestWithoutTimings(a) == manifestWithoutTimings(b));
     const std::string manifest = readFile(a.file("selfplay-engines.csv"));

@@ -1531,6 +1531,60 @@ void test_metal_engine_workers_change_nothing() {
     }
 }
 
+// GPU and CPU engines at once, all three backends: the files do not depend
+// on the hosts file's worker counts or QoS classes.
+void test_metal_mixed_engines_independent_of_hosts_settings() {
+    const char* const settings[] = {"metal_workers=0 cpu_workers=0",
+                                    "metal_workers=2 cpu_workers=1 cpu_qos=default",
+                                    "metal_workers=64 cpu_workers=3 cpu_qos=utility"};
+    std::string reference, referenceManifest;
+    for (const char* line : settings) {
+        RunDir dir("mixed_engines");
+        fs::create_directories(dir.path);
+        {
+            std::ofstream out(dir.file("hosts"));
+            out << "local " << line << "\n";
+        }
+        Config c = metalRunConfig();
+        c.gamesPerGeneration = 12;
+        applyOverride(c, "selfplay_engines=local/metal:3, local/blas=3, local/naive:1");
+        TrainerOptions opts;
+        opts.hostsFile = dir.file("hosts");
+        std::ostringstream startup;
+        std::unique_ptr<Trainer> t = Trainer::startNew(c, dir.str(), {}, &startup, opts);
+        t->setLog(nullptr);
+        t->runUntil(2);
+        // The manifest without its seconds column (the 8th; the metal
+        // fingerprint is quoted and holds commas, so split on the quotes).
+        std::string manifest;
+        std::istringstream rows(readBytes(dir.file("selfplay-engines.csv")));
+        for (std::string row; std::getline(rows, row);) {
+            std::vector<std::string> fields(1);
+            bool quoted = false;
+            for (char ch : row) {
+                if (ch == '"') quoted = !quoted;
+                else if (ch == ',' && !quoted) fields.emplace_back();
+                else fields.back() += ch;
+            }
+            assert(fields.size() == 11);
+            for (size_t i = 0; i < fields.size(); ++i)
+                if (i != 7) manifest += fields[i] + "|";
+            manifest += "\n";
+        }
+        // 12 games: blas 3 fixed, then 9 shared 3:1 as 7 (6 and the larger
+        // remainder) and 2.
+        assert(manifest.find("\n1|0|7|local/metal|") != std::string::npos);
+        assert(manifest.find("\n1|7|3|local/blas|") != std::string::npos);
+        assert(manifest.find("\n1|10|2|local/naive|") != std::string::npos);
+        const std::string fp = runFingerprint(dir, 2);
+        if (reference.empty()) {
+            reference = fp;
+            referenceManifest = manifest;
+        }
+        assert(fp == reference && manifest == referenceManifest);
+    }
+}
+
 #endif // AZ_USE_METAL
 
 
@@ -1586,6 +1640,7 @@ int main() {
     test_metal_play_matches_equal_one_at_a_time();
     test_metal_rounds_at_once_equal_one_at_a_time();
     test_metal_engine_workers_change_nothing();
+    test_metal_mixed_engines_independent_of_hosts_settings();
 #endif
     std::printf("test_metal: all tests passed\n");
     return 0;
