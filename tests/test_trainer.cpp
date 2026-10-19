@@ -2211,7 +2211,7 @@ static void test_one_failure_is_retried() {
         TempDir dir("retry_" + std::to_string(static_cast<int>(mode)));
         const Config c = withEngines(tinyConfig(), "local/naive:1, fake/naive:1");
         std::unique_ptr<Trainer> t =
-            startEngines(c, dir, fakeHosts(dir, mode == Fail::Timeout ? "timeout=2" : ""));
+            startEngines(c, dir, fakeHosts(dir, mode == Fail::Timeout ? "timeout=5" : ""));
         distributed_probe::failSlice("fake/naive", 1, mode);
         t->runUntil(2);
         distributed_probe::reset();
