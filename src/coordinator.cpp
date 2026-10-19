@@ -177,6 +177,27 @@ std::mutex gProbeMutex;
 std::string gRemoteBuild;
 std::map<std::string, double> gDelays;
 bool gInProcess = false;
+struct ProbeFail {
+    int times = 0;
+    distributed_probe::Fail mode = distributed_probe::Fail::Exit;
+};
+std::map<std::string, ProbeFail> gFailures;
+
+enum class ProbeFailure { None, Exit, Timeout, Corrupt };
+
+// Takes one of the engine's injected failures, if any are left.
+ProbeFailure probeFailure(const std::string& engine) {
+    std::lock_guard<std::mutex> lock(gProbeMutex);
+    auto it = gFailures.find(engine);
+    if (it == gFailures.end() || it->second.times <= 0) return ProbeFailure::None;
+    --it->second.times;
+    switch (it->second.mode) {
+    case distributed_probe::Fail::Exit: return ProbeFailure::Exit;
+    case distributed_probe::Fail::Timeout: return ProbeFailure::Timeout;
+    case distributed_probe::Fail::Corrupt: return ProbeFailure::Corrupt;
+    }
+    return ProbeFailure::None;
+}
 
 std::string probeRemoteBuild() {
     std::lock_guard<std::mutex> lock(gProbeMutex);
@@ -199,6 +220,16 @@ SelfPlayCoordinator::SelfPlayCoordinator(const Config& cfg, const std::string& r
     : cfg_(cfg), runDir_(runDir), runId_(runIdOf(runDir)), hosts_(std::move(hosts)), log_(log) {
     if (cfg_.selfplayEngines.empty())
         throw std::logic_error("SelfPlayCoordinator: selfplay_engines is empty (the default path)");
+}
+
+SelfPlayCoordinator::~SelfPlayCoordinator() {
+    for (const auto& [alias, net] : uploadedNet_) {
+        if (net.empty()) continue;
+        try {
+            transportFor(hosts_.settings(alias), "")->remove({net});
+        } catch (const std::exception&) {
+        }
+    }
 }
 
 std::unique_ptr<Transport> SelfPlayCoordinator::transportFor(const MachineSettings& m,
@@ -327,14 +358,14 @@ void SelfPlayCoordinator::preflight() {
     }
 }
 
-std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slice,
-                                                        const EngineSpec& e,
-                                                        const std::string& networkPath,
-                                                        uint64_t networkHash,
-                                                        const SelfPlayConfig& sp,
-                                                        const std::string& workDir,
-                                                        const std::atomic<bool>& stop,
-                                                        SliceReport& report) {
+std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, const Slice& slice,
+                                                           const EngineSpec& e,
+                                                           const std::string& networkPath,
+                                                           uint64_t networkHash,
+                                                           const SelfPlayConfig& sp,
+                                                           const std::string& workDir,
+                                                           const std::atomic<bool>& stop,
+                                                           SliceReport& report) {
     auto checkStop = [&] {
         if (stop) throw SliceCancelled();
     };
@@ -347,7 +378,9 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
 
     // The network, uploaded by this coordinator once per machine and hash
     // (a file already there may be a stranger's or cut short: it is
-    // replaced, atomically); the one it replaces goes.
+    // replaced, atomically); the one it replaces goes. At the first contact
+    // with a machine, what an earlier coordinator of this run left there (a
+    // crash: networks, jobs, results, parts of uploads) goes first.
     char netName[48];
     std::snprintf(netName, sizeof netName, "net_%016llx.azn",
                   static_cast<unsigned long long>(networkHash));
@@ -355,6 +388,12 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
     checkStop();
     {
         std::lock_guard<std::mutex> lock(machineMutex(e.machine));
+        if (!contacted_.count(e.machine)) {
+            std::vector<std::string> stale;
+            for (const std::string& name : t->list(dir)) stale.push_back(dir + "/" + name);
+            t->remove(stale);
+            contacted_.insert(e.machine);
+        }
         std::string& uploaded = uploadedNet_[e.machine];
         if (uploaded != remoteNet) {
             t->upload(networkPath, remoteNet);
@@ -363,7 +402,9 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
         }
     }
 
-    // The job: exactly what determines the slice's games.
+    // The job: exactly what determines the slice's games. The file names
+    // carry the attempt, so a straggler of attempt 1 cannot be taken for
+    // attempt 2.
     SelfPlayJob job;
     job.seed = cfg_.seed;
     job.generation = g;
@@ -377,60 +418,132 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
     job.inferenceBatch = cfg_.inferenceBatch;
     const std::string jobBytes = serializeJob(job);
     char base[64];
-    std::snprintf(base, sizeof base, "g%04d_%d_a%d", g, slice.first, 1);
+    std::snprintf(base, sizeof base, "g%04d_%d_a%d", g, slice.first, attempt);
     const std::string localJob = workDir + "/" + base + ".job";
     const std::string localResult = workDir + "/" + base + ".result";
     const std::string remoteJob = dir + "/" + base + ".job";
     const std::string remoteResult = dir + "/" + base + ".result";
-    writeFileAtomically(localJob, jobBytes);
-    checkStop();
-    t->upload(localJob, remoteJob);
+    const std::string pattern = runId_ + "/" + base + ".job";
+    try {
+        writeFileAtomically(localJob, jobBytes);
+        checkStop();
+        t->upload(localJob, remoteJob);
 
-    // --exit-on-stdin-eof: the remote stops if this process or the
-    // connection goes away (the transport holds its stdin).
-    std::vector<std::string> args = {"--job",     remoteJob, "--out",
-                                     remoteResult, "--backend", e.backend,
-                                     "--exit-on-stdin-eof"};
-    // Worker counts the hosts file sets; otherwise the remote's own rule.
-    const int workers = e.backend == "metal" ? m.metalWorkers : m.cpuWorkers;
-    if (workers > 0) args.insert(args.end(), {"--workers", std::to_string(workers)});
-    if (m.inferenceBatch > 0)
-        args.insert(args.end(), {"--inference-batch", std::to_string(m.inferenceBatch)});
-    const double delay = probeDelay(e.name());
-    if (delay > 0) std::this_thread::sleep_for(std::chrono::duration<double>(delay));
-    checkStop();
-    const ProcessResult r = t->run(args, log, m.timeout, &stop);
-    if (r.timedOut || r.cancelled) {
-        // Its connection is gone; the remote selfplay should be too, but a
-        // dead network can hide that: stop this attempt's process for sure.
-        try {
-            t->killJob(runId_ + "/" + base + ".job");
-        } catch (const SliceError&) {
+        // --exit-on-stdin-eof: the remote stops if this process or the
+        // connection goes away (the transport holds its stdin).
+        std::vector<std::string> args = {"--job",     remoteJob, "--out",
+                                         remoteResult, "--backend", e.backend,
+                                         "--exit-on-stdin-eof"};
+        // Worker counts the hosts file sets; otherwise the remote's own rule.
+        const int workers = e.backend == "metal" ? m.metalWorkers : m.cpuWorkers;
+        if (workers > 0) args.insert(args.end(), {"--workers", std::to_string(workers)});
+        if (m.inferenceBatch > 0)
+            args.insert(args.end(), {"--inference-batch", std::to_string(m.inferenceBatch)});
+        const double delay = probeDelay(e.name());
+        if (delay > 0) std::this_thread::sleep_for(std::chrono::duration<double>(delay));
+        checkStop();
+        ProcessResult r;
+        const ProbeFailure failure = probeFailure(e.name());
+        switch (failure) {
+        case ProbeFailure::Exit:   // the run fails as a dead connection would (ssh's 255)
+            r.exitCode = 255;
+            r.error = "probe: failed run";
+            break;
+        case ProbeFailure::Timeout:   // a remote that hangs, in place of the real run
+            r = runProcess({"sleep", "600"}, log, m.timeout > 0 ? m.timeout : 1.0);
+            break;
+        default:
+            r = t->run(args, log, m.timeout, &stop);
         }
         if (r.cancelled) throw SliceCancelled();
-    }
-    if (r.exitCode != 0) {
-        const std::string line = lastLine(log);
-        // A network the binary refused (damaged on the machine since the
-        // upload): forget it, so the next attempt uploads it again.
-        if (line.find("network") != std::string::npos) {
-            std::lock_guard<std::mutex> lock(machineMutex(e.machine));
-            if (uploadedNet_[e.machine] == remoteNet) uploadedNet_[e.machine].clear();
-            try {
-                t->remove({remoteNet});
-            } catch (const SliceError&) {
+        if (r.exitCode != 0) {
+            const std::string line = lastLine(log);
+            // A network the binary refused (damaged on the machine since the
+            // upload): forget it, so the next attempt uploads it again.
+            if (line.find("network") != std::string::npos) {
+                std::lock_guard<std::mutex> lock(machineMutex(e.machine));
+                if (uploadedNet_[e.machine] == remoteNet) uploadedNet_[e.machine].clear();
             }
+            throw SliceError(e.machine + ": selfplay " + describe(r) +
+                             (line.empty() || r.error.rfind("probe", 0) == 0 ? "" : ": " + line));
         }
-        throw SliceError(e.name() + ": selfplay " + describe(r) +
-                         (line.empty() ? "" : ": " + line));
+        t->download(remoteResult, localResult);
+        if (failure == ProbeFailure::Corrupt) {   // damage the copy as a bad transfer would
+            std::fstream f(localResult, std::ios::in | std::ios::out | std::ios::binary);
+            f.seekp(40);
+            f.put('\x7f');
+        }
+        SliceResult result = readSliceResult(localResult, jobBytes, buildId());
+        t->remove({remoteJob, remoteResult});
+        std::filesystem::remove(localJob);
+        std::filesystem::remove(localResult);
+        report.fingerprint = result.fingerprint;
+        report.build = shortOf(result.buildId);
+        report.stats = result.stats;
+        return std::move(result.records);
+    } catch (...) {
+        // This attempt is over: its process (if it outlived its connection)
+        // and its files go, best effort; the log stays.
+        try {
+            t->killJob(pattern);
+            t->remove({remoteJob, remoteResult});
+        } catch (const std::exception&) {
+        }
+        std::error_code ec;
+        std::filesystem::remove(localJob, ec);
+        std::filesystem::remove(localResult, ec);
+        throw;
     }
-    t->download(remoteResult, localResult);
-    SliceResult result = readSliceResult(localResult, jobBytes, buildId());
-    t->remove({remoteJob, remoteResult});
-    report.fingerprint = result.fingerprint;
-    report.build = shortOf(result.buildId);
-    report.stats = result.stats;
-    return std::move(result.records);
+}
+
+std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slice,
+                                                        const EngineSpec& e,
+                                                        const std::string& networkPath,
+                                                        uint64_t networkHash, const Network& net,
+                                                        const SelfPlayConfig& sp,
+                                                        const std::string& workDir,
+                                                        const std::atomic<bool>& stop,
+                                                        SliceReport& report) {
+    // Two attempts on the planned engine: a transient failure costs time,
+    // not reproducibility.
+    std::string reason;
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+        try {
+            return attemptRemote(attempt, g, slice, e, networkPath, networkHash, sp, workDir, stop,
+                                 report);
+        } catch (const SliceCancelled&) {
+            throw;
+        } catch (const std::exception& ex) {
+            reason = ex.what();
+            failedSlices_ = true;
+        }
+    }
+    if (cfg_.selfplayFallback == "stop")
+        throw SliceError(e.name() + " failed twice (" + reason + "); selfplay_fallback = stop");
+
+    // selfplay_fallback = local: the coordinator plays the slice itself, on
+    // the fallback engine, and says so in the manifest and the log.
+    const std::string fallback = fallbackEngine(cfg_);
+    const std::string backend = fallback.substr(fallback.find('/') + 1);
+    const MachineSettings local = hosts_.settings("local");
+    EngineRun run;
+    run.backend = backend;
+    run.workers = engineWorkers(local, backend, slice.count, resolveWorkers(0));
+    run.inferenceBatch = local.inferenceBatch > 0 ? local.inferenceBatch : cfg_.inferenceBatch;
+    run.qos = backend == "metal" ? CpuQos::Default : local.cpuQos;
+    run.cancel = &stop;
+    report.engine = fallback;
+    report.fingerprint = engineFingerprint(backend);
+    report.build = shortBuildId();
+    report.note = "fallback: " + reason;
+    if (log_) {
+        std::lock_guard<std::mutex> lock(logMutex_);
+        *log_ << "note: generation " << g << ": games " << slice.first << "-"
+              << slice.first + slice.count - 1 << " (" << e.name() << ") played by " << fallback
+              << ": " << reason
+              << "; from here on results differ in the last bits from a run without the failure\n";
+    }
+    return playSelfPlayGames(net, sp, cfg_.seed, g, slice.first, slice.count, run, &report.stats);
 }
 
 std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& networkPath,
@@ -475,6 +588,7 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
     const std::string workDir =
         (std::filesystem::path(runDir_) / "selfplay-work" / genDir).string();
     uint64_t networkHash = 0;
+    failedSlices_ = false;
     if (anyRemote) {
         std::filesystem::remove_all(workDir);
         std::filesystem::create_directories(workDir);
@@ -502,8 +616,8 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
                         results[k] = playSelfPlayGames(net, sp, cfg_.seed, g, slices[k].first,
                                                        slices[k].count, runs[k], &reports[k].stats);
                     else
-                        results[k] = playRemote(g, slices[k], e, networkPath, networkHash, sp,
-                                                workDir, stop, reports[k]);
+                        results[k] = playRemote(g, slices[k], e, networkPath, networkHash, net,
+                                                sp, workDir, stop, reports[k]);
                 } catch (...) {
                     errors[k] = std::current_exception();
                     stop = true;
@@ -549,7 +663,9 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
     }
     for (size_t i = 0; i < filled.size(); ++i)
         if (!filled[i]) throw std::logic_error("game " + std::to_string(i) + " was not played");
-    if (anyRemote) std::filesystem::remove_all(workDir);   // the remote files went slice by slice
+    // The remote files went slice by slice; the local ones too, but for the
+    // logs of failed attempts, which stay.
+    if (anyRemote && !failedSlices_) std::filesystem::remove_all(workDir);
     reports_ = std::move(reports);
     return records;
 }
@@ -631,6 +747,24 @@ bool SshTransport::exists(const std::string& remote) {
     throw SliceError(m_.alias + ": cannot reach the machine (ssh " + why(r) + ")");
 }
 
+std::vector<std::string> SshTransport::list(const std::string& remoteDir) {
+    static std::atomic<unsigned long> counter{0};
+    const std::string name = "azgo_ls_" + std::to_string(getpid()) + "_" + std::to_string(++counter);
+    const std::string out = (std::filesystem::temp_directory_path() / name).string();
+    std::vector<std::string> names;
+    const ProcessResult r =
+        runProcess(sshCommand(m_, {"ls", "-1A", remoteDir}), out, kCommandTimeout);
+    if (r.exitCode == 0) {
+        std::ifstream in(out, std::ios::binary);
+        for (std::string line; std::getline(in, line);)
+            if (!line.empty()) names.push_back(line);
+    }
+    std::filesystem::remove(out);
+    if (r.exitCode == 255 || !r.error.empty())
+        throw SliceError(m_.alias + ": cannot reach the machine (ssh " + describe(r) + ")");
+    return names;   // another exit: no such directory yet, nothing in it
+}
+
 ProcessResult SshTransport::run(const std::vector<std::string>& args, const std::string& log,
                                 double timeout, const std::atomic<bool>* cancel) {
     ProcessOptions options;
@@ -676,6 +810,14 @@ void SubprocessTransport::upload(const std::string& local, const std::string& re
 
 bool SubprocessTransport::exists(const std::string& remote) {
     return std::filesystem::is_regular_file(expandHome(remote));
+}
+
+std::vector<std::string> SubprocessTransport::list(const std::string& remoteDir) {
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(expandHome(remoteDir), ec))
+        if (entry.is_regular_file()) names.push_back(entry.path().filename().string());
+    return names;
 }
 
 ProcessResult SubprocessTransport::run(const std::vector<std::string>& args, const std::string& log,
@@ -842,8 +984,13 @@ void useInProcessTransport(bool on) {
     std::lock_guard<std::mutex> lock(gProbeMutex);
     gInProcess = on;
 }
+void failSlice(const std::string& engine, int times, Fail mode) {
+    std::lock_guard<std::mutex> lock(gProbeMutex);
+    gFailures[engine] = {times, mode};
+}
 void reset() {
     std::lock_guard<std::mutex> lock(gProbeMutex);
+    gFailures.clear();
     gRemoteBuild.clear();
     gDelays.clear();
     gInProcess = false;

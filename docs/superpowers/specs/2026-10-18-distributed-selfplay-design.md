@@ -410,10 +410,13 @@ When `selfplay_engines` names remote machines, `Trainer::startNew` and
    `engine mini1/metal: Apple M4; macOS 26.1 (25B78); Apple M4, macOS 26.1, shaders b7b31a09 [09e008b]`.
 
 A version mismatch is a `ConfigError` naming the alias and both IDs, and
-suggesting `tools/cluster_sync.sh`. An unreachable machine is a
+suggesting `tools/cluster_sync.sh`. A backend that a reachable machine's
+`selfplay --fingerprint` refuses (Metal not built or not usable there) is
+a `ConfigError` under either fallback setting: it is a configuration
+error, not a transient failure. An unreachable machine is a
 `ConfigError` with `selfplay_fallback = stop`. With `local`, it is a
-warning, and that machine's slices fall back from the first generation
-on. A fingerprint that differs from the previous generation's manifest
+warning; every generation still tries the machine first, and its slices
+fall back when the attempts fail. A fingerprint that differs from the previous generation's manifest
 row for that engine (a macOS update on a mini) prints a note: from here
 on, that engine's games differ in their last bits from before.
 
@@ -488,9 +491,11 @@ A remote slice fails when ssh or scp exits non-zero, the slice exceeds
 the host's `timeout`, or its result does not verify. Then:
 
 1. **Retry once on the same engine.** First a best-effort `pkill -f`
-   on the remote for this run-id's `selfplay` processes, so an orphan of
-   a dropped connection does not compete for the GPU. A transient
-   hiccup costs time, not reproducibility.
+   on the remote for the failed attempt's job file (`<run-id>/g<NNNN>_<first>_a<attempt>.job`,
+   unique to that attempt, so no sibling slice is hit), so an orphan of
+   a dropped connection does not compete for the GPU, and the attempt's
+   job and result files are removed. The retry's files are named
+   `..._a2`. A transient hiccup costs time, not reproducibility.
 2. If the retry fails, act on **`selfplay_fallback`**:
    - `local` (default): the coordinator plays the slice itself, on the
      *fallback engine*: the first `local/...` engine in the list, or
@@ -710,7 +715,8 @@ Hence, with `selfplay_engines` set:
 | bad `selfplay_engines` value, fixed counts > G (or ≠ G with no weighted item) | `ConfigError` at start or resume, nothing written |
 | a remote alias not in the hosts file; a hosts file with bad keys or values | `ConfigError` naming the alias or line |
 | remote build ID ≠ coordinator's | `ConfigError`, suggesting `tools/cluster_sync.sh` |
-| remote unreachable or backend unusable at preflight | `stop`: `ConfigError`; `local`: warning, slices fall back |
+| remote unreachable at preflight | `stop`: `ConfigError`; `local`: warning, each generation tries it, then its slices fall back |
+| a backend a reachable remote cannot run (preflight) | `ConfigError` under either setting |
 | slice fails (exit status, timeout, verification) | retry once on the same engine, then fallback or stop (above) |
 | a local engine throws (e.g. GPU failure) | the generation fails as today; `state.bin` stays at g − 1 |
 | the coordinator dies mid-generation | as today: `--resume` redoes the generation. Remote orphans are killed by the next attempt's `pkill`, and their files are named by attempt |

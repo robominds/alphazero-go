@@ -2162,15 +2162,169 @@ static void test_partial_remote_network_is_replaced() {
         assert(e.path().filename().string().find(".part") == std::string::npos);
 }
 
+static std::vector<std::string> remoteFiles(const TempDir& dir) {
+    std::vector<std::string> files;
+    if (!fs::exists(dir.file("remote"))) return files;
+    for (const auto& e : fs::recursive_directory_iterator(dir.file("remote")))
+        if (e.is_regular_file()) files.push_back(e.path().filename().string());
+    return files;
+}
+
+// While the run goes on, the remote work directory holds only the network,
+// and the local work directory is empty; once the run's coordinator is
+// gone, the network is gone too. Stale files of an earlier coordinator
+// (a crash) are cleared at the first contact.
 static void test_remote_cleanup() {
     TempDir dir("fake_cleanup");
-    startEngines(withEngines(tinyConfig(), "local/naive:1, fake/naive:1"), dir, fakeHosts(dir))
-        ->runUntil(2);
-    std::vector<std::string> remote;
-    for (const auto& e : fs::recursive_directory_iterator(dir.file("remote")))
-        if (e.is_regular_file()) remote.push_back(e.path().filename().string());
-    assert(remote.size() == 1 && remote[0].rfind("net_", 0) == 0);
-    assert(fs::is_directory(dir.file("selfplay-work")) && fs::is_empty(dir.file("selfplay-work")));
+    {
+        std::unique_ptr<Trainer> t =
+            startEngines(withEngines(tinyConfig(), "local/naive:1, fake/naive:1"), dir, fakeHosts(dir));
+        t->runUntil(2);
+        const std::vector<std::string> remote = remoteFiles(dir);
+        assert(remote.size() == 1 && remote[0].rfind("net_", 0) == 0);
+        assert(fs::is_directory(dir.file("selfplay-work")) && fs::is_empty(dir.file("selfplay-work")));
+    }
+    assert(remoteFiles(dir).empty());
+    // Leftovers of a crashed coordinator: an old network, a job, a result,
+    // a part of an upload.
+    const fs::path runRemote = fs::path(dir.file("remote")) / runIdOf(dir.str());
+    for (const char* name : {"net_0000000000000001.azn", "g0003_2_a1.job", "g0003_2_a1.result",
+                             "net_0000000000000002.azn.part-1-1"})
+        writeFile((runRemote / name).string(), "stale");
+    resumeEngines(dir, {}, dir.file("hosts"))->runUntil(3);
+    assert(remoteFiles(dir).empty());
+}
+
+// ---- failures: retry, fallback, stop ---------------------------------------------
+
+static std::string manifestNote(const TempDir& dir, int row) {
+    return csvFields(splitLines(readFile(dir.file("selfplay-engines.csv")))[static_cast<size_t>(row)])[10];
+}
+
+// One failure of any kind is retried on the same engine, with new file
+// names: nothing of it shows in the result.
+static void test_one_failure_is_retried() {
+    TempDir plain("retry_default");
+    startQuiet(tinyConfig(), plain)->runUntil(2);
+    using Fail = distributed_probe::Fail;
+    for (Fail mode : {Fail::Exit, Fail::Timeout, Fail::Corrupt}) {
+        TempDir dir("retry_" + std::to_string(static_cast<int>(mode)));
+        const Config c = withEngines(tinyConfig(), "local/naive:1, fake/naive:1");
+        std::unique_ptr<Trainer> t =
+            startEngines(c, dir, fakeHosts(dir, mode == Fail::Timeout ? "timeout=2" : ""));
+        distributed_probe::failSlice("fake/naive", 1, mode);
+        t->runUntil(2);
+        distributed_probe::reset();
+        assert(runFingerprint(plain, 2) == runFingerprint(dir, 2));
+        for (int row = 1; row <= 4; ++row) assert(manifestNote(dir, row).empty());
+        // The failed attempt's log is kept; its files are gone.
+        assert(fs::exists(dir.file("selfplay-work/gen_0001/fake_naive.log")));
+        for (const std::string& f : remoteFiles(dir)) assert(f.rfind("net_", 0) == 0);
+    }
+}
+
+// Two failures under selfplay_fallback = local: the coordinator plays the
+// slice itself, and the manifest and the log say so. local/naive has the
+// fake remote's fingerprint, so here the files are still the default run's.
+static void test_two_failures_fall_back() {
+    TempDir plain("fallback_default"), dir("fallback");
+    startQuiet(tinyConfig(), plain)->runUntil(2);
+    std::unique_ptr<Trainer> t =
+        startEngines(withEngines(tinyConfig(), "local/naive:1, fake/naive:1"), dir, fakeHosts(dir));
+    std::ostringstream log;
+    t->setLog(&log);
+    distributed_probe::failSlice("fake/naive", 2, distributed_probe::Fail::Exit);
+    t->runUntil(2);
+    distributed_probe::reset();
+    assert(runFingerprint(plain, 2) == runFingerprint(dir, 2));
+    const std::vector<std::string> row = csvFields(splitLines(readFile(dir.file("selfplay-engines.csv")))[2]);
+    assert(row[0] == "1" && row[3] == "fake/naive" && row[4] == "local/naive");
+    assert(row[5] == engineFingerprint("naive") && row[10].rfind("fallback: ", 0) == 0);
+    assert(manifestNote(dir, 4).empty());   // generation 2 tried the remote again, and it worked
+    assert(log.str().find("note: generation 1: games 2-3 (fake/naive) played by local/naive: ") !=
+           std::string::npos);
+    assert(log.str().find("from here on results differ in the last bits from a run without the failure") !=
+           std::string::npos);
+}
+
+// A fallback on another backend changes the games; the same failures
+// reproduce them exactly (the manifest records who played what).
+static void test_fallback_to_different_backend() {
+    if (!blasAvailable()) return;
+    TempDir plain("fallback_blas_default"), a("fallback_blas_a"), b("fallback_blas_b");
+    // Resignation on: state.bin keeps the disabled games' search values,
+    // whose last bits show which arithmetic played them even when no move
+    // changed.
+    const Config c = withEngines(resignConfig(), "local/blas:1, fake/naive:1");
+    startEngines(c, plain, fakeHosts(plain))->runUntil(1);
+    for (const TempDir* dir : {&a, &b}) {
+        std::unique_ptr<Trainer> t = startEngines(c, *dir, fakeHosts(*dir));
+        distributed_probe::failSlice("fake/naive", 2, distributed_probe::Fail::Corrupt);
+        t->runUntil(1);
+        distributed_probe::reset();
+    }
+    assert(readFile(statePath(a.str())) != readFile(statePath(plain.str())));
+    assert(runFingerprint(a, 1) == runFingerprint(b, 1));
+    assert(manifestWithoutTimings(a) == manifestWithoutTimings(b));
+    assert(csvFields(splitLines(readFile(a.file("selfplay-engines.csv")))[2])[4] == "local/blas");
+}
+
+// Under stop, two failures end the generation before anything of it is
+// committed; a resume replays it as planned, as if nothing had failed.
+static void test_stop_keeps_last_good_state() {
+    TempDir plain("stop_default"), dir("stop");
+    const Config c = withEngines(tinyConfig(), "local/naive:1, fake/naive:1");
+    Config stop = c;
+    stop.selfplayFallback = "stop";
+    startEngines(stop, plain, fakeHosts(plain))->runUntil(3);
+    std::unique_ptr<Trainer> t = startEngines(stop, dir, fakeHosts(dir));
+    t->runUntil(1);
+    distributed_probe::failSlice("fake/naive", 2, distributed_probe::Fail::Exit);
+    bool threw = false;
+    try {
+        t->runUntil(2);
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find("fake/naive") != std::string::npos;
+    }
+    distributed_probe::reset();
+    assert(threw && t->generation() == 1);
+    t.reset();
+    assert(loadTrainingState(statePath(dir.str())).generation == 1);
+    assert(manifestRows(dir) == 2);   // generation 1's only
+    resumeEngines(dir, {}, dir.file("hosts"))->runUntil(3);
+    assert(runFingerprint(plain, 3) == runFingerprint(dir, 3));
+    assert(manifestWithoutTimings(plain) == manifestWithoutTimings(dir));
+}
+
+// A remote that cannot be reached at the start: stop refuses the run;
+// local warns, and its slices fall back every generation.
+static void test_unreachable_at_preflight() {
+    TempDir stopDir("unreachable_stop"), localDir("unreachable_local");
+    auto hostsWithoutExe = [](const TempDir& dir) {
+        fs::create_directories(dir.path);
+        writeFile(dir.file("hosts"), "fake exe=" + dir.file("no-such-selfplay") + " workdir=" + dir.file("remote") + "\n");
+        return dir.file("hosts");
+    };
+    Config c = withEngines(tinyConfig(), "local/naive:1, fake/naive:1");
+    c.selfplayFallback = "stop";
+    bool threw = false;
+    try {
+        startEngines(c, stopDir, hostsWithoutExe(stopDir));
+    } catch (const ConfigError& e) {
+        threw = std::string(e.what()).find("fake") != std::string::npos;
+    }
+    assert(threw && !fs::exists(configPath(stopDir.str())));
+    c.selfplayFallback = "local";
+    TrainerOptions opts;
+    opts.hostsFile = hostsWithoutExe(localDir);
+    std::ostringstream startup;
+    std::unique_ptr<Trainer> t = Trainer::startNew(c, localDir.str(), {}, &startup, opts);
+    assert(startup.str().find("warning: fake unreachable (") != std::string::npos);
+    assert(startup.str().find("its slices fall back to local/naive") != std::string::npos);
+    t->setLog(nullptr);
+    t->runUntil(2);
+    assert(manifestNote(localDir, 2).rfind("fallback: ", 0) == 0);
+    assert(manifestNote(localDir, 4).rfind("fallback: ", 0) == 0);
 }
 
 // Different backends on one machine give different bits, but each game is
@@ -2207,6 +2361,11 @@ int main() {
     test_fake_remote_unusual_run_dir();
     test_preflight_refusals();
     test_remote_cleanup();
+    test_one_failure_is_retried();
+    test_two_failures_fall_back();
+    test_fallback_to_different_backend();
+    test_stop_keeps_last_good_state();
+    test_unreachable_at_preflight();
     test_partial_remote_network_is_replaced();
     test_resume_prunes_uncommitted_manifest_rows();
     test_mixed_local_engines_deterministic();

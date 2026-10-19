@@ -405,7 +405,10 @@ SliceResult readSliceResult(const std::string& path, const std::string& jobBytes
     std::ifstream in(path, std::ios::binary);
     if (!in) throw SliceError(path + ": cannot read the slice result");
     const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    const std::string where = "slice result " + path + ": ";
+    // The file's name only: a refusal can end up in the manifest (a
+    // fallback's note), which must not depend on where the run lives.
+    const std::string where =
+        "slice result " + std::filesystem::path(path).filename().string() + ": ";
     const std::string size = std::to_string(bytes.size());
     if (bytes.size() < 24) throw SliceError(where + "truncated (" + size + " bytes)");
     if (bytes.compare(0, 4, kResultMagic, 4) != 0)

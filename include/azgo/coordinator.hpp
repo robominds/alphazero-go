@@ -59,6 +59,8 @@ public:
     // (to a unique remote + ".part-..." name, then renamed).
     virtual void upload(const std::string& local, const std::string& remote) = 0;
     virtual bool exists(const std::string& remote) = 0;
+    // The names of the files in a remote directory (none if it is missing).
+    virtual std::vector<std::string> list(const std::string& remoteDir) = 0;
     // Runs the machine's selfplay binary with `args` (niced), its stdout
     // and stderr appended to the local file `log`; timeout and cancel as
     // runProcess. The process gets a held stdin (ProcessOptions::holdStdin):
@@ -66,7 +68,8 @@ public:
     // connection drops.
     virtual ProcessResult run(const std::vector<std::string>& args, const std::string& log,
                               double timeout, const std::atomic<bool>* cancel) = 0;
-    ProcessResult run(const std::vector<std::string>& args, const std::string& log, double timeout) {
+    ProcessResult run(const std::vector<std::string>& args, const std::string& log,
+                      double timeout) {
         return run(args, log, timeout, nullptr);
     }
     virtual void download(const std::string& remote, const std::string& local) = 0;
@@ -88,6 +91,7 @@ public:
     explicit SshTransport(MachineSettings machine, std::string log = "");
     void upload(const std::string& local, const std::string& remote) override;
     bool exists(const std::string& remote) override;
+    std::vector<std::string> list(const std::string& remoteDir) override;
     using Transport::run;
     ProcessResult run(const std::vector<std::string>& args, const std::string& log, double timeout,
                       const std::atomic<bool>* cancel) override;
@@ -109,6 +113,7 @@ public:
     explicit SubprocessTransport(MachineSettings machine);
     void upload(const std::string& local, const std::string& remote) override;
     bool exists(const std::string& remote) override;
+    std::vector<std::string> list(const std::string& remoteDir) override;
     using Transport::run;
     ProcessResult run(const std::vector<std::string>& args, const std::string& log, double timeout,
                       const std::atomic<bool>* cancel) override;
@@ -159,6 +164,9 @@ public:
     // to `log` (null: silent). runDir names the run on remotes (runIdOf).
     SelfPlayCoordinator(const Config& cfg, const std::string& runDir, HostsFile hosts,
                         std::ostream* log);
+    // Removes the networks it uploaded (best effort): a remote keeps no
+    // file of a run between two coordinators.
+    ~SelfPlayCoordinator();
 
     // Before a run writes anything (and writing nothing):
     //  - local engines: checkBackendAvailable, and for metal
@@ -195,12 +203,23 @@ private:
     std::unique_ptr<Transport> transportFor(const MachineSettings& m, const std::string& log) const;
     std::string remoteDir(const MachineSettings& m) const;
     void unreachable(const std::string& alias, const std::string& why);
-    // One remote slice, start to verified records; fills report. Stops
-    // (SliceCancelled) once `stop` is set, killing the remote selfplay.
+    // One attempt at a remote slice, start to verified records; fills
+    // report. Throws SliceError on a failure, after removing the attempt's
+    // files and process, and SliceCancelled once `stop` is set.
+    std::vector<GameRecord> attemptRemote(int attempt, int g, const Slice& slice,
+                                          const EngineSpec& e, const std::string& networkPath,
+                                          uint64_t networkHash,
+                                          const SelfPlayConfig& sp, const std::string& workDir,
+                                          const std::atomic<bool>& stop, SliceReport& report);
+    // A remote slice with the failure policy: two attempts, then with
+    // selfplay_fallback = local the fallback engine plays it (report.engine,
+    // fingerprint and note say so, and a note goes to the log), with stop a
+    // SliceError.
     std::vector<GameRecord> playRemote(int g, const Slice& slice, const EngineSpec& e,
                                        const std::string& networkPath, uint64_t networkHash,
-                                       const SelfPlayConfig& sp, const std::string& workDir,
-                                       const std::atomic<bool>& stop, SliceReport& report);
+                                       const Network& net, const SelfPlayConfig& sp,
+                                       const std::string& workDir, const std::atomic<bool>& stop,
+                                       SliceReport& report);
     Config cfg_;
     std::string runDir_, runId_;
     HostsFile hosts_;
@@ -212,6 +231,9 @@ private:
     std::mutex machinesMutex_;                           // guards machineMutexes_
     std::map<std::string, std::unique_ptr<std::mutex>> machineMutexes_;
     std::map<std::string, std::string> uploadedNet_;    // alias -> network path uploaded there
+    std::set<std::string> contacted_;                   // machines cleaned of stale files
+    std::mutex logMutex_;                               // slices' notes, from their threads
+    std::atomic<bool> failedSlices_{false};             // this generation: keep the logs
     std::vector<SliceReport> reports_;
 };
 
@@ -222,6 +244,11 @@ std::string runIdOf(const std::string& runDir);
 
 // Test hooks; a run's configuration can never reach them.
 namespace distributed_probe {
+// The next `times` attempts at the engine's remote slices fail: Exit as a
+// failed run (ssh's exit 255), Timeout as a run that hangs past the
+// machine's timeout, Corrupt as a result damaged after the download.
+enum class Fail { Exit, Timeout, Corrupt };
+void failSlice(const std::string& engine, int times, Fail mode);
 // Preflight sees this as every remote's build ID ("" = the real one).
 void setRemoteBuildId(const std::string& id);
 // The engine's remote slices wait this long before running selfplay.
