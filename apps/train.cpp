@@ -17,6 +17,7 @@
 #include "azgo/build_info.hpp"
 #include "azgo/config.hpp"
 #include "azgo/run_state.hpp"
+#include "azgo/subprocess.hpp"
 #include "azgo/trainer.hpp"
 #include "cli.hpp"
 
@@ -101,6 +102,9 @@ int main(int argc, char** argv) {
     if (!resume && !args->has("config"))
         return usageError("a new run needs --config FILE (or pass --resume to continue one)");
 
+    // A Ctrl-C or kill also stops the selfplay, ssh and scp children of
+    // distributed self-play, which run in their own process groups.
+    azgo::forwardTerminationSignals();
     try {
         const std::string runDir = args->get("run");
         std::vector<std::string> overrides = args->sets();

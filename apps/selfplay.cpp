@@ -5,6 +5,7 @@
 // verifies the result. It needs no run directory.
 //
 //   selfplay --job JOB --out OUT --backend naive|blas|metal [--workers N] [--inference-batch N]
+//            [--exit-on-stdin-eof]
 //   selfplay --version
 //   selfplay --fingerprint --backend B
 //
@@ -12,12 +13,16 @@
 // usage error.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <unistd.h>
 #include <vector>
 
 #include "azgo/build_info.hpp"
@@ -30,6 +35,7 @@ namespace {
 const char* const kUsage =
     "usage:\n"
     "  selfplay --job JOB --out OUT --backend naive|blas|metal [--workers N] [--inference-batch N]\n"
+    "           [--exit-on-stdin-eof]\n"
     "  selfplay --version\n"
     "  selfplay --fingerprint --backend B\n"
     "\n"
@@ -39,7 +45,8 @@ const char* const kUsage =
     "The job's build ID must be this binary's. --workers: threads (default: every game\n"
     "at once with metal, max(1, min(2, cores - 2)) with naive and blas, the remote\n"
     "rule of the hosts file); --inference-batch: most positions per GPU pass (default:\n"
-    "the job's). Neither changes a result.\n"
+    "the job's). Neither changes a result. --exit-on-stdin-eof stops at once when\n"
+    "stdin reaches its end: the coordinator holds it open while it waits.\n"
     "--version prints the build ID, short and full, and the strongest backend built.\n"
     "--fingerprint checks that backend B can run here and prints what determines its\n"
     "arithmetic (backend, CPU, OS, and with metal the GPU and shaders).\n"
@@ -56,7 +63,8 @@ int main(int argc, char** argv) {
     std::unique_ptr<ArgParser> args;
     try {
         const std::vector<std::string> values = {"job", "out", "backend", "workers", "inference-batch"};
-        const std::vector<std::string> flags = {"help", "version", "fingerprint"};
+        const std::vector<std::string> flags = {"help", "version", "fingerprint",
+                                                "exit-on-stdin-eof"};
         args = std::make_unique<ArgParser>(argc, argv, values, flags);
     } catch (const std::invalid_argument& e) {
         return usageError(e.what());
@@ -82,6 +90,22 @@ int main(int argc, char** argv) {
         }
     }
     if (!args->has("job") || !args->has("out")) return usageError("--job and --out are required");
+    if (args->flag("exit-on-stdin-eof")) {
+        // The coordinator holds our stdin open while it waits for us (over
+        // ssh too): end of file means it is gone, and so is any use for
+        // the slice. A detached thread watches; the slice's normal end
+        // exits the process with it.
+        std::thread([] {
+            char buf[256];
+            for (;;) {
+                const ssize_t got = read(0, buf, sizeof buf);
+                if (got == 0 || (got < 0 && errno != EINTR)) {
+                    std::fputs("selfplay: stdin closed (the coordinator is gone); stopping\n", stderr);
+                    std::_Exit(1);
+                }
+            }
+        }).detach();
+    }
     int workers = 0, inferenceBatch = 0;
     try {
         workers = args->getInt("workers", 0);

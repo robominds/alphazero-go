@@ -19,6 +19,7 @@
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #pragma once
+#include <atomic>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -59,15 +60,23 @@ public:
     virtual void upload(const std::string& local, const std::string& remote) = 0;
     virtual bool exists(const std::string& remote) = 0;
     // Runs the machine's selfplay binary with `args` (niced), its stdout
-    // and stderr appended to the local file `log`; timeout as runProcess.
+    // and stderr appended to the local file `log`; timeout and cancel as
+    // runProcess. The process gets a held stdin (ProcessOptions::holdStdin):
+    // with --exit-on-stdin-eof it stops when the coordinator is gone or the
+    // connection drops.
     virtual ProcessResult run(const std::vector<std::string>& args, const std::string& log,
-                              double timeout) = 0;
+                              double timeout, const std::atomic<bool>* cancel) = 0;
+    ProcessResult run(const std::vector<std::string>& args, const std::string& log, double timeout) {
+        return run(args, log, timeout, nullptr);
+    }
     virtual void download(const std::string& remote, const std::string& local) = 0;
     // Removes the files that exist; missing ones are no error.
     virtual void remove(const std::vector<std::string>& remote) = 0;
-    // Best effort: stops selfplay processes whose command line holds runId
-    // (an orphan of a dropped connection), before a retry.
-    virtual void killStray(const std::string& runId) = 0;
+    // Best effort: stops the processes whose command line holds `pattern`,
+    // a job file's run-id/name (unique to one slice attempt), after a
+    // timeout or a cancel and before a retry, in case the remote outlived
+    // its connection.
+    virtual void killJob(const std::string& pattern) = 0;
 };
 
 // A machine with ssh: scp for files and ssh for commands, each a child
@@ -79,11 +88,12 @@ public:
     explicit SshTransport(MachineSettings machine, std::string log = "");
     void upload(const std::string& local, const std::string& remote) override;
     bool exists(const std::string& remote) override;
-    ProcessResult run(const std::vector<std::string>& args, const std::string& log,
-                      double timeout) override;
+    using Transport::run;
+    ProcessResult run(const std::vector<std::string>& args, const std::string& log, double timeout,
+                      const std::atomic<bool>* cancel) override;
     void download(const std::string& remote, const std::string& local) override;
     void remove(const std::vector<std::string>& remote) override;
-    void killStray(const std::string& runId) override;
+    void killJob(const std::string& pattern) override;
 private:
     ProcessResult command(const std::vector<std::string>& words, double timeout);
     std::string why(const ProcessResult& r) const;
@@ -99,11 +109,12 @@ public:
     explicit SubprocessTransport(MachineSettings machine);
     void upload(const std::string& local, const std::string& remote) override;
     bool exists(const std::string& remote) override;
-    ProcessResult run(const std::vector<std::string>& args, const std::string& log,
-                      double timeout) override;
+    using Transport::run;
+    ProcessResult run(const std::vector<std::string>& args, const std::string& log, double timeout,
+                      const std::atomic<bool>* cancel) override;
     void download(const std::string& remote, const std::string& local) override;
     void remove(const std::vector<std::string>& remote) override;
-    void killStray(const std::string& runId) override;
+    void killJob(const std::string& pattern) override;
 protected:
     MachineSettings m_;
 };
@@ -114,8 +125,9 @@ protected:
 class InProcessTransport : public SubprocessTransport {
 public:
     using SubprocessTransport::SubprocessTransport;
-    ProcessResult run(const std::vector<std::string>& args, const std::string& log,
-                      double timeout) override;
+    using Transport::run;
+    ProcessResult run(const std::vector<std::string>& args, const std::string& log, double timeout,
+                      const std::atomic<bool>* cancel) override;
 };
 
 // SshTransport when the machine has ssh, else SubprocessTransport. `log`:
@@ -183,11 +195,12 @@ private:
     std::unique_ptr<Transport> transportFor(const MachineSettings& m, const std::string& log) const;
     std::string remoteDir(const MachineSettings& m) const;
     void unreachable(const std::string& alias, const std::string& why);
-    // One remote slice, start to verified records; fills report.
+    // One remote slice, start to verified records; fills report. Stops
+    // (SliceCancelled) once `stop` is set, killing the remote selfplay.
     std::vector<GameRecord> playRemote(int g, const Slice& slice, const EngineSpec& e,
                                        const std::string& networkPath, uint64_t networkHash,
                                        const SelfPlayConfig& sp, const std::string& workDir,
-                                       SliceReport& report);
+                                       const std::atomic<bool>& stop, SliceReport& report);
     Config cfg_;
     std::string runDir_, runId_;
     HostsFile hosts_;

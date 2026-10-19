@@ -6,22 +6,24 @@
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <cerrno>
-#include <csignal>
-#include <dirent.h>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 #include "azgo/backend.hpp"
@@ -956,6 +958,84 @@ static void test_run_slice_job_refusals() {
     }
 }
 
+// Waits up to `seconds` for process `pid` to be gone.
+static bool goneWithin(pid_t pid, double seconds) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+    while (std::chrono::steady_clock::now() < end) {
+        if (kill(pid, 0) != 0 && errno == ESRCH) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return false;
+}
+
+static pid_t readPid(const std::string& path, double seconds) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds);
+    while (std::chrono::steady_clock::now() < end) {
+        const std::string text = readText(path);
+        if (!text.empty() && text.back() == '\n') return static_cast<pid_t>(std::atoi(text.c_str()));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return 0;
+}
+
+// A timeout or a cancel stops the child and everything it started (its
+// process group): a grandchild must be gone too.
+static void test_run_process_stops_the_whole_group() {
+    const std::string pidFile = tempPath("grandchild.pid");
+    const std::vector<std::string> parentOfSleep = {"sh", "-c", "sleep 30 & echo $! > " + pidFile + "; wait"};
+    std::filesystem::remove(pidFile);
+    ProcessResult r = runProcess(parentOfSleep, "", 0.5);
+    assert(r.timedOut);
+    pid_t grandchild = readPid(pidFile, 1);
+    assert(grandchild > 0 && goneWithin(grandchild, 2));
+
+    std::filesystem::remove(pidFile);
+    std::atomic<bool> cancel{false};
+    std::thread canceller([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        cancel = true;
+    });
+    ProcessOptions options;
+    options.cancel = &cancel;
+    const auto start = std::chrono::steady_clock::now();
+    r = runProcess(parentOfSleep, options);
+    canceller.join();
+    assert(r.cancelled && !r.timedOut && r.exitCode == -1);
+    assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(6));
+    grandchild = readPid(pidFile, 1);
+    assert(grandchild > 0 && goneWithin(grandchild, 2));
+    std::filesystem::remove(pidFile);
+
+    // holdStdin: the child's stdin stays open until the child is reaped,
+    // so cat waits; without it, cat reads /dev/null and ends at once.
+    ProcessOptions hold;
+    hold.holdStdin = true;
+    hold.timeout = 0.4;
+    assert(runProcess({"cat"}, hold).timedOut);
+    assert(runProcess({"cat"}, "", 5).exitCode == 0);
+}
+
+// A coordinator killed by SIGINT or SIGTERM (forwardTerminationSignals)
+// takes its children's process groups with it.
+static void test_termination_signals_reach_children() {
+    const std::string pidFile = tempPath("forwarded.pid");
+    std::filesystem::remove(pidFile);
+    const pid_t child = fork();
+    if (child == 0) {
+        forwardTerminationSignals();
+        runProcess({"sh", "-c", "sleep 30 & echo $! > " + pidFile + "; wait"}, "", 60);
+        _exit(0);
+    }
+    const pid_t grandchild = readPid(pidFile, 5);
+    assert(grandchild > 0);
+    kill(child, SIGTERM);
+    int status = 0;
+    waitpid(child, &status, 0);
+    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM);
+    assert(goneWithin(grandchild, 2));
+    std::filesystem::remove(pidFile);
+}
+
 // Runs argv with stdout and stderr to `log` (replaced); returns the exit
 // status, or -1.
 static int spawnAndWait(const std::vector<std::string>& args, const std::string& log) {
@@ -1061,6 +1141,60 @@ static void test_selfplay_exe_end_to_end() {
     assert(spawnAndWait({exe, "--fingerprint", "--backend", "gpu"}, log) == 1);
 }
 
+// With --exit-on-stdin-eof, selfplay stops as soon as its stdin closes
+// (the coordinator, or the ssh connection to it, is gone).
+static void test_selfplay_exits_when_stdin_closes() {
+    SliceWork work("stdin_eof");
+    work.job.count = 400;
+    work.writeJob();
+    const std::string log = (work.dir / "eof.log").string();
+    const auto start = std::chrono::steady_clock::now();
+    // runProcess gives it /dev/null: end of file at once.
+    const int status = spawnAndWait({AZGO_SELFPLAY_EXE, "--job", work.jobPath, "--out", work.outPath,
+                                     "--backend", "naive", "--workers", "1", "--exit-on-stdin-eof"},
+                                    log);
+    assert(status == 1 && contains(readText(log), "stdin closed"));
+    assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(5));
+    assert(!std::filesystem::exists(work.outPath));
+}
+
+// A remote slice honours the generation's stop: when a local engine fails,
+// the fake remote's selfplay (a child process) is stopped at once and its
+// process is gone.
+static void test_failing_engine_stops_remote_slices() {
+    if (!metalBuilt() || !metalAvailable()) return;
+    SliceWork work("stop_remote");
+    Config cfg;
+    cfg.boardSize = 5;
+    cfg.history = 2;
+    cfg.blocks = 1;
+    cfg.filters = 4;
+    cfg.valueHidden = 8;
+    cfg.gamesPerGeneration = 2000;
+    applyOverride(cfg, "selfplay_engines=fake/naive=1999, local/metal:1");
+    const HostsFile hosts = parseHostsText("local inference_batch=4\nfake exe=" + std::string(AZGO_SELFPLAY_EXE) +
+                                               " workdir=" + (work.dir / "remote").string() + " cpu_workers=1\n",
+                                           "h");
+    const std::string runDir = (work.dir / "run").string();
+    std::filesystem::create_directories(runDir);
+    SelfPlayCoordinator coordinator(cfg, runDir, hosts, nullptr);
+    const Network net = loadNetwork((work.dir / "net_test.azn").string());
+    SelfPlayConfig sp;
+    sp.mcts.simulations = 64;
+    sp.mcts.batchSize = 8;
+    sp.maxMoves = 50;
+    const auto start = std::chrono::steady_clock::now();
+    std::string error;
+    try {
+        coordinator.play(1, (work.dir / "net_test.azn").string(), net, sp, 2000);
+    } catch (const std::exception& e) {
+        error = e.what();
+    }
+    assert(contains(error, "do not fit batches of 4"));
+    assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(10));
+    assert(runProcess({"pgrep", "-f", runIdOf(runDir)}, "", 10).exitCode == 1);   // none left
+}
+
 // ---- transports ---------------------------------------------------------------------
 
 static MachineSettings sshMachine() {
@@ -1162,7 +1296,7 @@ static void test_subprocess_transport_round_trip() {
         threw = true;
     }
     assert(threw);
-    t->killStray("run-x-00000000");   // best effort: nothing to kill
+    t->killJob("run-x/g0001_0_a1.job");   // best effort: nothing to kill
 }
 
 // The in-process transport (tests) plays the job on the calling thread and
@@ -1263,7 +1397,11 @@ int main() {
     test_run_slice_job_in_process();
     test_run_slice_job_refusals();
     test_run_process();
+    test_run_process_stops_the_whole_group();
+    test_termination_signals_reach_children();
     test_selfplay_exe_end_to_end();
+    test_selfplay_exits_when_stdin_closes();
+    test_failing_engine_stops_remote_slices();
     test_ssh_argv();
     test_subprocess_transport_round_trip();
     test_in_process_transport();

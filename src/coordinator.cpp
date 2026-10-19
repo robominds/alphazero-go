@@ -327,7 +327,11 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
                                                         uint64_t networkHash,
                                                         const SelfPlayConfig& sp,
                                                         const std::string& workDir,
+                                                        const std::atomic<bool>& stop,
                                                         SliceReport& report) {
+    auto checkStop = [&] {
+        if (stop) throw SliceCancelled();
+    };
     const MachineSettings m = hosts_.settings(e.machine);
     std::string engineFile = e.name();
     std::replace(engineFile.begin(), engineFile.end(), '/', '_');
@@ -342,6 +346,7 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
     std::snprintf(netName, sizeof netName, "net_%016llx.azn",
                   static_cast<unsigned long long>(networkHash));
     const std::string remoteNet = dir + "/" + netName;
+    checkStop();
     {
         std::lock_guard<std::mutex> lock(machineMutex(e.machine));
         std::string& uploaded = uploadedNet_[e.machine];
@@ -372,10 +377,14 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
     const std::string remoteJob = dir + "/" + base + ".job";
     const std::string remoteResult = dir + "/" + base + ".result";
     writeFileAtomically(localJob, jobBytes);
+    checkStop();
     t->upload(localJob, remoteJob);
 
-    std::vector<std::string> args = {"--job",  remoteJob,  "--out",
-                                     remoteResult, "--backend", e.backend};
+    // --exit-on-stdin-eof: the remote stops if this process or the
+    // connection goes away (the transport holds its stdin).
+    std::vector<std::string> args = {"--job",     remoteJob, "--out",
+                                     remoteResult, "--backend", e.backend,
+                                     "--exit-on-stdin-eof"};
     // Worker counts the hosts file sets; otherwise the remote's own rule.
     const int workers = e.backend == "metal" ? m.metalWorkers : m.cpuWorkers;
     if (workers > 0) args.insert(args.end(), {"--workers", std::to_string(workers)});
@@ -383,7 +392,17 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
         args.insert(args.end(), {"--inference-batch", std::to_string(m.inferenceBatch)});
     const double delay = probeDelay(e.name());
     if (delay > 0) std::this_thread::sleep_for(std::chrono::duration<double>(delay));
-    const ProcessResult r = t->run(args, log, m.timeout);
+    checkStop();
+    const ProcessResult r = t->run(args, log, m.timeout, &stop);
+    if (r.timedOut || r.cancelled) {
+        // Its connection is gone; the remote selfplay should be too, but a
+        // dead network can hide that: stop this attempt's process for sure.
+        try {
+            t->killJob(runId_ + "/" + base + ".job");
+        } catch (const SliceError&) {
+        }
+        if (r.cancelled) throw SliceCancelled();
+    }
     if (r.exitCode != 0) {
         const std::string line = lastLine(log);
         // A network the binary refused (damaged on the machine since the
@@ -478,7 +497,7 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
                                                        slices[k].count, runs[k], &reports[k].stats);
                     else
                         results[k] = playRemote(g, slices[k], e, networkPath, networkHash, sp,
-                                                workDir, reports[k]);
+                                                workDir, stop, reports[k]);
                 } catch (...) {
                     errors[k] = std::current_exception();
                     stop = true;
@@ -607,8 +626,13 @@ bool SshTransport::exists(const std::string& remote) {
 }
 
 ProcessResult SshTransport::run(const std::vector<std::string>& args, const std::string& log,
-                                double timeout) {
-    return runProcess(sshArgv(m_, args), log, timeout);
+                                double timeout, const std::atomic<bool>* cancel) {
+    ProcessOptions options;
+    options.log = log;
+    options.timeout = timeout;
+    options.cancel = cancel;
+    options.holdStdin = true;   // ssh forwards its end of file to the remote selfplay
+    return runProcess(sshArgv(m_, args), options);
 }
 
 void SshTransport::download(const std::string& remote, const std::string& local) {
@@ -627,8 +651,8 @@ void SshTransport::remove(const std::vector<std::string>& remote) {
         throw SliceError(m_.alias + ": cannot remove work files (ssh " + why(r) + ")");
 }
 
-void SshTransport::killStray(const std::string& runId) {
-    command({"pkill", "-f", runId}, kCommandTimeout);   // best effort; 1 = nothing matched
+void SshTransport::killJob(const std::string& pattern) {
+    command({"pkill", "-f", pattern}, kCommandTimeout);   // best effort; 1 = nothing matched
 }
 
 SubprocessTransport::SubprocessTransport(MachineSettings machine) : m_(std::move(machine)) {}
@@ -649,12 +673,17 @@ bool SubprocessTransport::exists(const std::string& remote) {
 }
 
 ProcessResult SubprocessTransport::run(const std::vector<std::string>& args, const std::string& log,
-                                       double timeout) {
+                                       double timeout, const std::atomic<bool>* cancel) {
     std::vector<std::string> argv;
     if (m_.nice > 0) argv = {"nice", "-n", std::to_string(m_.nice)};
     argv.push_back(expandHome(m_.exe));
     for (const std::string& a : args) argv.push_back(a[0] == '~' ? expandHome(a) : a);
-    return runProcess(argv, log, timeout);
+    ProcessOptions options;
+    options.log = log;
+    options.timeout = timeout;
+    options.cancel = cancel;
+    options.holdStdin = true;
+    return runProcess(argv, options);
 }
 
 void SubprocessTransport::download(const std::string& remote, const std::string& local) {
@@ -671,13 +700,18 @@ void SubprocessTransport::remove(const std::vector<std::string>& remote) {
     }
 }
 
-void SubprocessTransport::killStray(const std::string& runId) {
-    runProcess({"pkill", "-f", runId}, "", kCommandTimeout);   // best effort
+void SubprocessTransport::killJob(const std::string& pattern) {
+    runProcess({"pkill", "-f", pattern}, "", kCommandTimeout);   // best effort
 }
 
-ProcessResult InProcessTransport::run(const std::vector<std::string>& args, const std::string& log,
-                                      double timeout) {
+ProcessResult InProcessTransport::run(const std::vector<std::string>& given, const std::string& log,
+                                      double timeout, const std::atomic<bool>* cancel) {
     (void)timeout;
+    (void)cancel;
+    // The app's flag for a held stdin; a call has no stdin to watch.
+    std::vector<std::string> args;
+    for (const std::string& a : given)
+        if (a != "--exit-on-stdin-eof") args.push_back(a);
     // What the binary answers to --version and --fingerprint, for preflight.
     auto append = [&](const std::string& text) {
         if (log.empty()) return;
