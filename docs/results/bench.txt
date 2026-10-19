@@ -410,3 +410,27 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 # in flight and one pass in flight per hub reverse that. Each hub's slots
 # stay busy ~95% of the wave, so the GPU itself, with passes of 30-115
 # positions, now sets the pace.
+
+# =============================================================================
+# Distributed self-play: default path, old against new (2026-10-18)
+# =============================================================================
+# Branch distributed-selfplay, Phase 1 (docs/superpowers/plans/
+# 2026-10-18-distributed-selfplay.md, task 8). Old = main 09e008b, new =
+# eff209a (tasks 1-7: build ID, the per-game serializer, self-play as a
+# slice, selfplay_engines, hosts file, fingerprints, the coordinator), both
+# built from git archive on a Mac mini (Apple M4, 10 cores, macOS 27.0.1;
+# build-metal, Release; the new one with -DAZGO_BUILD_ID). Both binaries
+# hold naive, blas and metal. selfplay_engines empty: the default path.
+#
+# Compared: every checkpoint, every SGF, state.bin, results.csv, elo.csv,
+# references.csv, log.csv without selfplay_s, train_s and arena_s, the list
+# of files (the new binary writes no selfplay-engines.csv), and config.cfg
+# without the new binary's two new lines (selfplay_engines =,
+# selfplay_fallback = local), which it must have.
+#   5x5 preset, 40 games, 50 steps, 64 simulations; arena 10 games at 48
+#     simulations, calibration_games 10, one bot (50 simulations); started
+#     for 2 generations with workers 0, resumed to 3 with workers 3.
+#     naive, blas, metal: identical.
+#   9x9 preset (resignation on), filters 96, 8 games, 50 simulations, 20
+#     steps; 2 generations. blas, metal: identical.
+# (Not vacuous: the naive and blas runs' gen_0003.azn differ.)
