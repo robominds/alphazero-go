@@ -2072,6 +2072,15 @@ static void test_fake_remote_equals_local() {
     assert(std::stoll(fake[8]) > 0 && std::stoll(fake[9]) > 0 && fake[10].empty());
 }
 
+// A run directory whose name no remote shell could take (a space, ':')
+// still has a safe run id there.
+static void test_fake_remote_unusual_run_dir() {
+    TempDir dir("fake run:dir"), remote("fake_unusual_remote");
+    startEngines(withEngines(tinyConfig(), "local/naive:1, fake/naive:1"), dir, fakeHosts(remote))
+        ->runUntil(1);
+    assert(manifestRows(dir) == 2);
+}
+
 static void test_fake_remote_resume() {
     TempDir straight("fake_straight"), resumed("fake_resumed");
     const Config c = withEngines(resignConfig(), "fake/naive:2, local/naive=3");
@@ -2195,6 +2204,7 @@ int main() {
     test_switch_on_at_resume();
     test_fake_remote_equals_local();
     test_fake_remote_resume();
+    test_fake_remote_unusual_run_dir();
     test_preflight_refusals();
     test_remote_cleanup();
     test_partial_remote_network_is_replaced();

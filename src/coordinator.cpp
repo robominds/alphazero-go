@@ -539,9 +539,9 @@ std::string runIdOf(const std::string& runDir) {
               c == '_' || c == '.' || c == '-'))
             c = '_';
     if (name.empty() || name[0] == '-' || name[0] == '.') name = "run" + name;
-    char hash[16];
-    std::snprintf(hash, sizeof hash, "%08llx",
-                  static_cast<unsigned long long>(fnv1a64(absolute.string()) & 0xffffffffull));
+    char hash[24];
+    std::snprintf(hash, sizeof hash, "%016llx",
+                  static_cast<unsigned long long>(fnv1a64(absolute.string())));
     return name + "-" + hash;
 }
 
@@ -559,12 +559,14 @@ std::vector<std::string> sshArgv(const MachineSettings& machine,
 std::vector<std::string> scpArgv(const MachineSettings& machine, const std::string& local,
                                  const std::string& remote, bool upload) {
     requireSafe(safeWord(machine.ssh), "ssh target", machine.ssh);
-    requireSafe(safeWord(local), "local path", local);
     requireSafe(safeWord(remote), "remote path", remote);
+    // The local path never reaches a shell, so any characters are fine;
+    // absolute, so neither a ':' (read as host:path) nor a '-' can mislead scp.
+    const std::string here = std::filesystem::absolute(local).string();
     const std::string far = machine.ssh + ":" + remote;
     std::vector<std::string> argv = {"scp", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"};
-    argv.push_back(upload ? local : far);
-    argv.push_back(upload ? far : local);
+    argv.push_back(upload ? here : far);
+    argv.push_back(upload ? far : here);
     return argv;
 }
 

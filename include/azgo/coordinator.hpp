@@ -130,7 +130,9 @@ std::unique_ptr<Transport> makeTransport(const MachineSettings& machine,
 // scpArgv copies local to remote (upload) or back. Both throw
 // std::logic_error if any piece holds a character outside
 // [A-Za-z0-9_./~@:+-] or the target or a path starts with '-': the
-// hosts file refuses such values, so it means a bug, not bad input.
+// hosts file refuses such values, so it means a bug, not bad input. The
+// local path of scpArgv is not checked (it reaches no shell) but made
+// absolute.
 std::vector<std::string> sshArgv(const MachineSettings& machine,
                                  const std::vector<std::string>& args);
 std::vector<std::string> scpArgv(const MachineSettings& machine, const std::string& local,
@@ -201,8 +203,8 @@ private:
 };
 
 // How a run is named on remotes: its directory's name (characters outside
-// [A-Za-z0-9_.-] become '_'), '-', and 8 hex digits of the FNV-1a hash of
-// its absolute path, so two runs of one name never share files.
+// [A-Za-z0-9_.-] become '_'), '-', and the 16 hex digits of the FNV-1a hash
+// of its absolute path, so two runs of one name never share files.
 std::string runIdOf(const std::string& runDir);
 
 // Test hooks; a run's configuration can never reach them.

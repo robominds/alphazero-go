@@ -1107,13 +1107,26 @@ static void test_ssh_argv() {
     assert(refused(m, {"--job", "a b"}));
     assert(refused(m, {"--job", "$(reboot)"}));
     assert(refused(m, {"--job", "x'y"}));
+    // Local paths never reach a shell: any characters, made absolute so a
+    // ':' cannot be read as a host.
+    assert(scpArgv(m, "/tmp/run dir/x.job", dir + "/x.job", true)[6] == "/tmp/run dir/x.job");
+    const std::string relative = scpArgv(m, "a:b/x.result", dir + "/x.result", false)[7];
+    assert(relative[0] == '/' && relative.size() > 13 &&
+           relative.substr(relative.size() - 13) == "/a:b/x.result");
     bool threw = false;
     try {
-        scpArgv(m, "/tmp/a b", dir + "/x", true);
+        scpArgv(m, "/tmp/x", dir + "/a b", true);   // the remote path still must be safe
     } catch (const std::logic_error&) {
         threw = true;
     }
     assert(threw);
+    // The run id of any run directory is safe on a remote.
+    for (const std::string& run : {std::string("/tmp/my run"), std::string("a:b"), std::string("x;y/"),
+                                   std::string("-run")}) {
+        const std::string id = runIdOf(run);
+        assert(sshArgv(m, {"--job", "~/w/" + id + "/g.job"}).size() == 11);
+        assert(id.size() > 17 && id[id.size() - 17] == '-');   // 16 hex digits of the path's hash
+    }
 }
 
 static void test_subprocess_transport_round_trip() {
