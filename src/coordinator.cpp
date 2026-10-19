@@ -184,7 +184,11 @@ std::string manifestPath(const std::string& runDir) {
     return (std::filesystem::path(runDir) / "selfplay-engines.csv").string();
 }
 
-void writeManifest(const std::string& runDir, int g, const std::vector<SliceReport>& reports) {
+namespace {
+
+// The manifest's header and its rows of generations before g; *dropped
+// counts the others.
+std::string manifestBefore(const std::string& runDir, int g, int* dropped = nullptr) {
     std::string out = kManifestHeader;
     std::ifstream in(manifestPath(runDir), std::ios::binary);
     if (in) {
@@ -195,8 +199,23 @@ void writeManifest(const std::string& runDir, int g, const std::vector<SliceRepo
             // Earlier generations stay; g and later (a redone or abandoned
             // generation) go.
             if (std::atoi(line.c_str()) < g) out += line + "\n";
+            else if (dropped) ++*dropped;
         }
     }
+    return out;
+}
+
+} // namespace
+
+void pruneManifest(const std::string& runDir, int g) {
+    if (!std::filesystem::exists(manifestPath(runDir))) return;
+    int dropped = 0;
+    const std::string kept = manifestBefore(runDir, g, &dropped);
+    if (dropped > 0) writeFileAtomically(manifestPath(runDir), kept);
+}
+
+void writeManifest(const std::string& runDir, int g, const std::vector<SliceReport>& reports) {
+    std::string out = manifestBefore(runDir, g);
     for (const SliceReport& r : reports) {
         char numbers[96];
         std::snprintf(numbers, sizeof numbers, "%.1f,%lld,%lld", r.stats.seconds, r.stats.positions,

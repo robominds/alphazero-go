@@ -2015,6 +2015,25 @@ static void test_switch_on_at_resume() {
     assert(manifestRows(switched) == 4);   // generation 5 played on the default path
 }
 
+// A crash between the manifest and state.bin leaves rows of a generation
+// that was never committed. Every resume drops them, with engines on or
+// off, so the manifest only describes committed generations.
+static void test_resume_prunes_uncommitted_manifest_rows() {
+    for (bool enginesOn : {true, false}) {
+        TempDir dir(enginesOn ? "prune_on" : "prune_off");
+        const std::string none = dir.file("none");
+        startEngines(withEngines(tinyConfig(), "local/naive:1, local/naive:1"), dir, none)->runUntil(2);
+        const std::string committed = readFile(dir.file("selfplay-engines.csv"));
+        // What a crash after the manifest of generation 3 would leave.
+        writeFile(dir.file("selfplay-engines.csv"),
+                  committed + "3,0,2,local/naive,local/naive,\"x\",b,1.0,10,20,\n");
+        const std::vector<std::string> overrides =
+            enginesOn ? std::vector<std::string>{} : std::vector<std::string>{"selfplay_engines="};
+        resumeEngines(dir, overrides, none);
+        assert(readFile(dir.file("selfplay-engines.csv")) == committed);
+    }
+}
+
 // Remote machines come with the remote transport; until then they are
 // refused before anything is written.
 static void test_remote_engines_refused_for_now() {
@@ -2058,6 +2077,7 @@ int main() {
     test_engines_resume_is_byte_identical();
     test_switch_on_at_resume();
     test_remote_engines_refused_for_now();
+    test_resume_prunes_uncommitted_manifest_rows();
     test_mixed_local_engines_deterministic();
     test_rerate_ignores_uncommitted_checkpoint();
     test_metal_unavailable_writes_nothing();

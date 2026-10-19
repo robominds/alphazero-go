@@ -118,7 +118,8 @@ public:
     // differs from the saved config.cfg, a note that the results' last bits
     // will differ from a run that kept the old one. The same preflight as
     // startNew with selfplay_engines, and the same kind of note when
-    // selfplay_engines differs from the saved config.cfg's.
+    // selfplay_engines differs from the saved config.cfg's. Drops the
+    // manifest's rows of uncommitted generations (pruneManifest).
     static std::unique_ptr<Trainer> resume(const std::string& runDir,
                                            const std::vector<std::string>& overrides,
                                            std::ostream* log = &std::cout,

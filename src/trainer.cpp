@@ -615,6 +615,8 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     // run directory untouched.
     writeFileAtomically(configPath(runDir), configToString(cfg));
     addMissingLogColumns(runDir);
+    // The manifest describes committed generations only (engines on or off).
+    pruneManifest(runDir, state.generation + 1);
 
     std::unique_ptr<Trainer> trainer(new Trainer(cfg, runDir, std::move(net), std::move(state)));
     trainer->referenceNets_ = std::move(referenceNets.networks);

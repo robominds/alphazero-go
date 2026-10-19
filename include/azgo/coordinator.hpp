@@ -86,6 +86,12 @@ std::string manifestPath(const std::string& runDir);
 // log.csv's timings, not part of a run's byte-identity.
 void writeManifest(const std::string& runDir, int g, const std::vector<SliceReport>& reports);
 
+// Drops the manifest's rows of generations g and later, if it has any (a
+// crash between the manifest and state.bin leaves rows of an uncommitted
+// generation). No manifest: nothing. A resume calls it with
+// g = the committed generation + 1, with engines on or off.
+void pruneManifest(const std::string& runDir, int g);
+
 // "selfplay engines: local/metal 52 1512s 3.5k ev/s | local/blas 12 1490s 0.9k": each
 // slice's engine, games, wall time and network evaluations per second.
 std::string enginesLine(const std::vector<SliceReport>& reports);
