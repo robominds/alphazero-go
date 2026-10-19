@@ -91,6 +91,7 @@ def main():
         sys.exit(f"error: {manifest} has no rows")
     last = max(int(r["generation"]) for r in rows)
     window = [r for r in rows if int(r["generation"]) > last - args.last]
+    first = min(int(r["generation"]) for r in window)
     games = args.games or int(read_config(run_dir).get("games_per_generation", "0") or 0)
     if games <= 0:
         sys.exit("error: give --games (the run's config.cfg has no games_per_generation)")
@@ -99,11 +100,17 @@ def main():
 
     # Rates of the engines that played as planned, in the manifest's order.
     order, evaluations, seconds = [], {}, {}
+    fallbacks = {}   # (planned, engine) -> games played as a fallback
+    planned_engines = []
     total_evals = total_games = 0
     for r in window:
         total_evals += int(r["evaluations"])
         total_games += int(r["count"])
+        if r["planned"] not in planned_engines:
+            planned_engines.append(r["planned"])
         if r["planned"] != r["engine"] or r["note"]:
+            key = (r["planned"], r["engine"])
+            fallbacks[key] = fallbacks.get(key, 0) + int(r["count"])
             continue
         name = r["planned"]
         if name not in evaluations:
@@ -111,8 +118,16 @@ def main():
             evaluations[name] = seconds[name] = 0
         evaluations[name] += int(r["evaluations"])
         seconds[name] += max(float(r["seconds"]), MIN_SECONDS)
+    for (planned, engine), n in fallbacks.items():
+        print(f"note: {n} games planned for {planned} were played by {engine} as a fallback "
+              "(not counted in any rate)")
+    missing = [e for e in planned_engines if e not in order]
+    for e in missing:
+        print(f"warning: {e} only ran as a fallback in these generations: it has no rate and is "
+              "left out of the suggestion; check the machine, or measure over more generations",
+              file=sys.stderr)
     if not order:
-        sys.exit(f"error: no engine played as planned in generations {last - args.last + 1}-{last}")
+        sys.exit(f"error: no engine played as planned in generations {first}-{last}")
     rate = {e: evaluations[e] / seconds[e] for e in order}
     per_game = total_evals / max(1, total_games)
     total_rate = sum(rate.values())
@@ -135,7 +150,7 @@ def main():
     for e in weighted:
         count[e] = rest * rate[e] / weight_total   # an estimate: assignGames apportions it
 
-    print(f"generations {last - args.last + 1}-{last}: {per_game:.0f} evaluations per game, {games} games")
+    print(f"generations {first}-{last}: {per_game:.0f} evaluations per game, {games} games")
     print(f"{'engine':<20} {'evals/s':>10} {'games':>8} {'predicted s':>12}")
     items = []
     for e in order:

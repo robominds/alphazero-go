@@ -415,8 +415,10 @@ suggesting `tools/cluster_sync.sh`. A backend that a reachable machine's
 a `ConfigError` under either fallback setting: it is a configuration
 error, not a transient failure. An unreachable machine is a
 `ConfigError` with `selfplay_fallback = stop`. With `local`, it is a
-warning; every generation still tries the machine first, and its slices
-fall back when the attempts fail. A fingerprint that differs from the previous generation's manifest
+warning. Every generation probes the machine first (ssh with a 3 s connect
+timeout running `true`); if it does not answer, its slices fall back at
+once, and so do they for the rest of a generation in which an attempt
+failed and the probe then found the machine gone. A fingerprint that differs from the previous generation's manifest
 row for that engine (a macOS update on a mini) prints a note: from here
 on, that engine's games differ in their last bits from before.
 
@@ -547,16 +549,24 @@ neither gets `unknown`, which the coordinator refuses for remote engines.
 `azgo::buildId()` returns it; `train --version` and `selfplay --version`
 print it with the build options (`metal`, `blas`).
 
-`tools/cluster_sync.sh [--hosts FILE] [--build build-metal]` brings
-every remote in the hosts file to the coordinator's commit:
+`tools/cluster_sync.sh [--hosts FILE] [--build build-metal] [--dry-run]`
+brings every remote in the hosts file to the coordinator's commit:
 
 1. refuses a dirty tree, since a remote cannot rebuild uncommitted changes;
-2. per remote: `git archive HEAD | ssh <target> 'tar -x -C <repo>.new'`,
-   then swaps directories, keeping the old build directory's CMake cache
-   and objects so rebuilds are incremental;
+2. per remote: `git archive HEAD | ssh <target> 'tar -x -m -C <repo>.new'`,
+   then swaps directories, moving the old build directory (its CMake
+   cache) into the new tree. `-m` gives every file the time of the sync,
+   not of its commit, so make rebuilds everything rather than ever keeping
+   an object older than a changed source; the kept cache only saves the
+   configure step;
 3. configures with `-DAZ_USE_METAL=ON -DAZGO_BUILD_ID=<sha>` and builds
-   with `-j <cores>`;
-4. checks `selfplay --version` there against `train --version` here.
+   `selfplay` with `-j <cores>`;
+4. checks that `selfplay --version` there reports `HEAD`'s full commit,
+   the build ID the coordinator's own binary carries when built from a
+   clean `HEAD`.
+
+A failure on one machine is reported with the step that failed, and the
+other machines are still synced.
 
 The repo path on each remote comes from the hosts file's `exe` value, as
 `exe`'s grandparent directory. It is replaced wholesale, so it must be a
@@ -720,11 +730,11 @@ Hence, with `selfplay_engines` set:
 | bad `selfplay_engines` value, fixed counts > G (or ≠ G with no weighted item) | `ConfigError` at start or resume, nothing written |
 | a remote alias not in the hosts file; a hosts file with bad keys or values | `ConfigError` naming the alias or line |
 | remote build ID ≠ coordinator's | `ConfigError`, suggesting `tools/cluster_sync.sh` |
-| remote unreachable at preflight | `stop`: `ConfigError`; `local`: warning, each generation tries it, then its slices fall back |
+| remote unreachable at preflight | `stop`: `ConfigError`; `local`: warning; each generation probes it quickly and its slices fall back while it does not answer |
 | a backend a reachable remote cannot run (preflight) | `ConfigError` under either setting |
 | slice fails (exit status, timeout, verification) | retry once on the same engine, then fallback or stop (above) |
 | a local engine throws (e.g. GPU failure) | the generation fails as today; `state.bin` stays at g − 1 |
-| the coordinator dies mid-generation | as today: `--resume` redoes the generation. Remote orphans are killed by the next attempt's `pkill`, and their files are named by attempt |
+| the coordinator dies mid-generation | as today: `--resume` redoes the generation. Its children stop with it: `train` forwards SIGINT, SIGTERM and SIGHUP (unless ignored) to their process groups, and every `selfplay` runs with `--exit-on-stdin-eof` on a stdin only the coordinator holds, so it ends when the coordinator does, however it dies, over ssh too. The next coordinator's first contact clears the run's remote directory, and file names carry the attempt |
 | disk full on a remote | the slice fails (scp or the atomic write), handled as above |
 
 ## Alternatives considered
