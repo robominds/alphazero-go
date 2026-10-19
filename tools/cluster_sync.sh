@@ -88,9 +88,12 @@ for machine in "${machines[@]}"; do
     ssh_=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$target")
     run "${ssh_[@]}" "rm -rf $repo.new && mkdir -p $repo.new"
     if [ "$DRY" = 1 ]; then
-        echo "git archive $COMMIT | ${ssh_[*]} 'tar -x -C $repo.new'"
+        echo "git archive $COMMIT | ${ssh_[*]} 'tar -x -m -C $repo.new'"
     else
-        git archive "$COMMIT" | "${ssh_[@]}" "tar -x -C $repo.new"
+        # -m: files get the time of extraction, not of their commit, so make
+        # never takes an object built earlier for newer than a changed source
+        # (every sync then rebuilds what the moved build directory holds).
+        git archive "$COMMIT" | "${ssh_[@]}" "tar -x -m -C $repo.new"
     fi
     # Swap the trees; the build directory (CMake cache and objects) moves along.
     run "${ssh_[@]}" "if [ -d $repo/$BUILD_DIR ]; then mv $repo/$BUILD_DIR $repo.new/; fi;
