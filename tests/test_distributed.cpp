@@ -11,8 +11,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -26,6 +28,7 @@
 #include "azgo/metal.hpp"
 #include "azgo/network.hpp"
 #include "azgo/rng.hpp"
+#include "azgo/run_state.hpp"
 #include "azgo/selfplay_slice.hpp"
 
 using namespace azgo;
@@ -528,6 +531,327 @@ static void test_failing_engine_stops_the_others() {
     assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(5));
 }
 
+// ---- job and result files --------------------------------------------------------
+
+static std::string tempPath(const std::string& name) {
+    return (std::filesystem::temp_directory_path() /
+            ("azgo_test_slice_" + std::to_string(getpid()) + "_" + name))
+        .string();
+}
+
+static void writeText(const std::string& path, const std::string& bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << bytes;
+    assert(out);
+}
+
+static NetConfig sliceNet() {
+    NetConfig c;
+    c.boardSize = 5;
+    c.history = 2;
+    c.blocks = 1;
+    c.filters = 4;
+    c.valueHidden = 8;
+    return c;
+}
+
+// A job for games [3, 9) of generation 2, resignation on with a threshold
+// the tiny random network crosses, so the slice holds resigned, disabled
+// and played-out games.
+static SelfPlayJob sliceJob() {
+    SelfPlayJob job;
+    job.seed = 11;
+    job.generation = 2;
+    job.first = 3;
+    job.count = 6;
+    job.boardSize = 5;
+    job.sp.mcts.simulations = 8;
+    job.sp.mcts.batchSize = 4;
+    job.sp.mcts.cPuct = 1.25f;
+    job.sp.mcts.dirichletScale = 9.5f;
+    job.sp.mcts.noiseFraction = 0.1f;
+    job.sp.mcts.randomSymmetry = true;
+    job.sp.temperatureMoves = 4;
+    job.sp.komi = 7.5f;
+    job.sp.maxMoves = 50;
+    job.sp.resignation = true;
+    job.sp.resignThreshold = -0.0f;
+    job.sp.resignDisabledFraction = 0.5f;
+    job.networkFile = "net_0123456789abcdef.azn";
+    job.networkHash = 0x0123456789abcdefull;
+    job.buildId = "0123456789abcdef0123456789abcdef01234567";
+    job.inferenceBatch = 64;
+    return job;
+}
+
+static SliceResult sliceResult(const SelfPlayJob& job) {
+    const Network net(sliceNet(), 21);
+    SliceResult r;
+    r.jobHash = fnv1a64(serializeJob(job));
+    r.buildId = job.buildId;
+    r.fingerprint = "naive; test cpu; test os";
+    r.records = playSelfPlayGames(net, job.sp, job.seed, job.generation, job.first, job.count,
+                                  EngineRun{"naive", 2}, &r.stats);
+    return r;
+}
+
+static void test_job_round_trip() {
+    SelfPlayJob job = sliceJob();
+    job.sp.mcts.addNoise = true;
+    job.sp.resignThreshold = -0.87f;
+    job.sp.mcts.noiseFraction = 0.1f;
+    const std::string bytes = serializeJob(job);
+    assert(bytes.compare(0, 4, "AZSJ") == 0);
+    const SelfPlayJob back = parseJob(bytes);
+    assert(back.seed == job.seed && back.generation == job.generation && back.first == job.first &&
+           back.count == job.count && back.boardSize == job.boardSize);
+    const MctsConfig& a = back.sp.mcts;
+    const MctsConfig& b = job.sp.mcts;
+    assert(a.simulations == b.simulations && a.batchSize == b.batchSize && a.addNoise == b.addNoise &&
+           a.randomSymmetry == b.randomSymmetry);
+    for (auto [x, y] : {std::pair<float, float>{a.cPuct, b.cPuct}, {a.dirichletScale, b.dirichletScale},
+                        {a.noiseFraction, b.noiseFraction}, {back.sp.komi, job.sp.komi},
+                        {back.sp.resignThreshold, job.sp.resignThreshold},
+                        {back.sp.resignDisabledFraction, job.sp.resignDisabledFraction}})
+        assert(std::memcmp(&x, &y, sizeof x) == 0);
+    assert(back.sp.temperatureMoves == job.sp.temperatureMoves && back.sp.maxMoves == job.sp.maxMoves &&
+           back.sp.resignation == job.sp.resignation);
+    assert(back.networkFile == job.networkFile && back.networkHash == job.networkHash &&
+           back.buildId == job.buildId && back.inferenceBatch == job.inferenceBatch);
+    assert(serializeJob(back) == bytes);
+    // A damaged job is refused, naming the defect.
+    auto jobError = [](const std::string& b) {
+        try {
+            parseJob(b);
+        } catch (const SliceError& e) {
+            return std::string(e.what());
+        }
+        return std::string("accepted");
+    };
+    assert(contains(jobError("AZSX" + bytes.substr(4)), "magic"));
+    assert(contains(jobError(bytes.substr(0, bytes.size() - 3)), "job"));
+    std::string flipped = bytes;
+    flipped[20] ^= 1;
+    assert(contains(jobError(flipped), "checksum"));
+    SelfPlayJob unresolved = job;
+    unresolved.sp.maxMoves = 0;
+    assert(contains(jobError(serializeJob(unresolved)), "max_moves"));
+}
+
+static bool sameRecords(const std::vector<GameRecord>& a, const std::vector<GameRecord>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const GameRecord& x = a[i];
+        const GameRecord& y = b[i];
+        if (!(x.boardSize == y.boardSize && std::memcmp(&x.komi, &y.komi, 4) == 0 && x.moves == y.moves &&
+              x.stones == y.stones && x.visits == y.visits &&
+              std::memcmp(&x.resultForBlack, &y.resultForBlack, 4) == 0 &&
+              x.finalOwnership == y.finalOwnership && x.resigned == y.resigned &&
+              x.resignDisabled == y.resignDisabled && x.resignLows[0] == y.resignLows[0] &&
+              x.resignLows[1] == y.resignLows[1]))
+            return false;
+    }
+    return true;
+}
+
+static void test_result_round_trip() {
+    const SelfPlayJob job = sliceJob();
+    const SliceResult result = sliceResult(job);
+    int resigned = 0, disabled = 0, playedOut = 0;
+    for (const GameRecord& r : result.records) {
+        resigned += r.resigned;
+        disabled += r.resignDisabled;
+        playedOut += !r.resigned && !r.resignDisabled;
+    }
+    assert(resigned > 0 && disabled > 0);   // the slice exercises resignation
+    (void)playedOut;
+    const std::string path = tempPath("result");
+    const std::string bytes = serializeSliceResult(result, job.first);
+    assert(bytes.compare(0, 4, "AZSR") == 0);
+    writeText(path, bytes);
+    const SliceResult back = readSliceResult(path, serializeJob(job), job.buildId);
+    assert(back.jobHash == result.jobHash && back.buildId == result.buildId &&
+           back.fingerprint == result.fingerprint);
+    assert(sameRecords(back.records, result.records));
+    assert(back.stats.positions == result.stats.positions &&
+           back.stats.evaluations == result.stats.evaluations &&
+           std::memcmp(&back.stats.seconds, &result.stats.seconds, 8) == 0);
+    std::filesystem::remove(path);
+}
+
+// FNV-1a 64 of the bytes in memory is fileHash of the same bytes on disk.
+static void test_fnv1a64_matches_fileHash() {
+    const std::string path = tempPath("fnv");
+    for (const std::string& bytes : {std::string(), std::string("a"), std::string(70000, '\x5a'),
+                                     serializeJob(sliceJob())}) {
+        writeText(path, bytes);
+        assert(fnv1a64(bytes) == fileHash(path));
+    }
+    assert(fnv1a64("") == 0xcbf29ce484222325ull);
+    std::filesystem::remove(path);
+}
+
+// Every way a result can be wrong, stale, truncated or foreign is refused
+// with a SliceError naming the defect.
+static void test_result_refusals() {
+    const SelfPlayJob job = sliceJob();
+    const std::string jobBytes = serializeJob(job);
+    const SliceResult good = sliceResult(job);
+    const std::string goodBytes = serializeSliceResult(good, job.first);
+    const std::string path = tempPath("refusal");
+    int refusals = 0;
+    auto errorOf = [&](const std::string& bytes, const std::string& jb = "",
+                       const std::string& build = "") {
+        writeText(path, bytes);
+        try {
+            readSliceResult(path, jb.empty() ? jobBytes : jb, build.empty() ? job.buildId : build);
+        } catch (const SliceError& e) {
+            ++refusals;
+            return std::string(e.what());
+        }
+        return std::string("accepted");
+    };
+    // The trailing checksum, recomputed after an edit, so a later check sees it.
+    auto rechecksum = [](std::string bytes) {
+        const std::string body = bytes.substr(0, bytes.size() - 8);
+        uint64_t h = fnv1a64(body);
+        for (int i = 0; i < 8; ++i) bytes[bytes.size() - 8 + i] = static_cast<char>((h >> (8 * i)) & 0xff);
+        return bytes;
+    };
+    auto edited = [&](const std::function<void(SliceResult&)>& edit) {
+        SliceResult r = good;
+        edit(r);
+        return serializeSliceResult(r, job.first);
+    };
+    assert(errorOf(goodBytes) == "accepted");
+
+    assert(contains(errorOf(rechecksum("AZSQ" + goodBytes.substr(4))), "magic"));
+    std::string v2 = goodBytes;
+    v2[4] = 2;
+    assert(contains(errorOf(rechecksum(v2)), "version 2"));
+    for (int k = 0; k < 20; ++k) {
+        std::string flipped = goodBytes;
+        const size_t at = static_cast<size_t>(k) * (goodBytes.size() - 1) / 19;
+        flipped[at] ^= 0x10;
+        const std::string msg = errorOf(flipped);
+        assert(msg != "accepted");
+        if (at >= 16) assert(contains(msg, "checksum"));
+    }
+    for (int k = 0; k < 10; ++k) {
+        const size_t keep = static_cast<size_t>(k) * (goodBytes.size() - 1) / 10;
+        assert(contains(errorOf(goodBytes.substr(0, keep)), "truncated"));
+    }
+    assert(contains(errorOf(rechecksum(goodBytes.substr(0, goodBytes.size() - 8) + "x" +
+                                       goodBytes.substr(goodBytes.size() - 8))),
+                    "length"));
+    SelfPlayJob other = job;
+    other.seed = 12;
+    assert(contains(errorOf(goodBytes, serializeJob(other)), "another job"));
+    assert(contains(errorOf(goodBytes, "", "fedcba9876543210fedcba9876543210fedcba98"), "build"));
+    assert(contains(errorOf(edited([](SliceResult& r) { r.records.pop_back(); })), "6 games"));
+    {
+        // The first record's index (just after the header) made first + 1.
+        std::string swapped = goodBytes;
+        const size_t at = 4 + 4 + 8 + 8 + (4 + good.buildId.size()) + (4 + good.fingerprint.size()) + 4;
+        assert(static_cast<int>(static_cast<unsigned char>(swapped[at])) == job.first);
+        swapped[at] = static_cast<char>(job.first + 1);
+        assert(contains(errorOf(rechecksum(swapped)), "index"));
+    }
+    // Records that do not replay or contradict the job.
+    auto firstWhere = [&](const std::function<bool(const GameRecord&)>& pred) {
+        for (size_t i = 0; i < good.records.size(); ++i)
+            if (pred(good.records[i])) return i;
+        assert(false && "no such record in the slice");
+        return size_t(0);
+    };
+    const size_t resignedGame = firstWhere([](const GameRecord& r) { return r.resigned; });
+    const size_t playedOut = firstWhere([](const GameRecord& r) { return !r.resigned && r.positions() > 2; });
+    const size_t disabledGame = firstWhere([](const GameRecord& r) { return r.resignDisabled; });
+    const size_t longGame = firstWhere([](const GameRecord& r) { return r.positions() > 2; });
+    assert(contains(errorOf(edited([&](SliceResult& r) {
+                        GameRecord& g = r.records[longGame];
+                        uint8_t& s = g.stones[static_cast<size_t>(2) * 25 + 12];
+                        s = s == 0 ? 1 : 0;
+                    })),
+                    "differs from the replayed one"));
+    const size_t stoneFirst =
+        firstWhere([](const GameRecord& r) { return r.positions() > 2 && r.moves[0] != 25; });
+    assert(contains(errorOf(edited([&](SliceResult& r) {
+                        GameRecord& g = r.records[stoneFirst];
+                        g.moves[1] = g.moves[0];   // White onto Black's first stone
+                    })),
+                    "is not among the visited moves"));
+    assert(contains(errorOf(edited([&](SliceResult& r) {
+                        GameRecord& g = r.records[stoneFirst];
+                        g.moves[1] = g.moves[0];
+                        g.visits[1] = {{static_cast<int16_t>(g.moves[0]), 8}};
+                    })),
+                    "is illegal"));
+    assert(contains(errorOf(edited([&](SliceResult& r) {
+                        r.records[playedOut].resultForBlack = -r.records[playedOut].resultForBlack;
+                        if (r.records[playedOut].resultForBlack == 0) r.records[playedOut].resultForBlack = 1;
+                    })),
+                    "result"));
+    assert(contains(errorOf(edited([&](SliceResult& r) {
+                        r.records[resignedGame].resultForBlack = -r.records[resignedGame].resultForBlack;
+                    })),
+                    "resign"));
+    assert(contains(errorOf(edited([&](SliceResult& r) { r.records[playedOut].komi = 6.5f; })), "komi"));
+    assert(contains(errorOf(edited([&](SliceResult& r) {
+                        GameRecord& g = r.records[longGame];
+                        g.visits[0] = {{static_cast<int16_t>(g.moves[0] == 3 ? 4 : 3), 8}};
+                    })),
+                    "visit"));
+    assert(contains(errorOf(edited([&](SliceResult& r) { r.stats.positions += 1; })), "positions"));
+    assert(contains(errorOf(edited([&](SliceResult& r) {
+                        GameRecord& g = r.records[disabledGame];
+                        auto& lows = g.resignLows[0].empty() ? g.resignLows[1] : g.resignLows[0];
+                        lows.push_back({lows.back().first + 2, lows.back().second + 0.5f});
+                    })),
+                    "lows"));
+    assert(contains(errorOf(edited([&](SliceResult& r) {
+                        GameRecord& g = r.records[disabledGame];
+                        auto& lows = g.resignLows[0].empty() ? g.resignLows[1] : g.resignLows[0];
+                        lows.insert(lows.begin(), {0, 1.0f});
+                    })),
+                    "lows"));
+    // Resignation off: no resigned or disabled game and no lows may appear.
+    SelfPlayJob off = job;
+    off.sp.resignation = false;
+    const std::string offBytes = serializeJob(off);
+    auto offResult = [&](const std::function<void(SliceResult&)>& edit) {
+        SliceResult r = good;
+        r.jobHash = fnv1a64(offBytes);
+        edit(r);
+        return serializeSliceResult(r, job.first);
+    };
+    assert(contains(errorOf(offResult([&](SliceResult& r) {
+                                for (GameRecord& g : r.records) {
+                                    g.resignDisabled = false;
+                                    g.resignLows[0].clear();
+                                    g.resignLows[1].clear();
+                                }
+                            }),
+                            offBytes),
+                    "resign"));
+    // A game that went below v_resign without resigning (not disabled).
+    assert(contains(errorOf(edited([&](SliceResult& r) {
+                        r.records[resignedGame].resignDisabled = true;
+                        r.records[resignedGame].resigned = false;
+                    })),
+                    "game"));
+    // Another board size than the job's.
+    SelfPlayJob nine = job;
+    nine.boardSize = 9;
+    const std::string nineBytes = serializeJob(nine);
+    SliceResult nineResult = good;
+    nineResult.jobHash = fnv1a64(nineBytes);
+    assert(contains(errorOf(serializeSliceResult(nineResult, job.first), nineBytes), "board size"));
+    std::filesystem::remove(path);
+    std::printf("result refusals: %d\n", refusals);
+    assert(refusals >= 30);
+}
+
 int main() {
     test_build_id_shape();
     test_build_options();
@@ -542,6 +866,10 @@ int main() {
     test_fingerprint();
     test_manifest_rows();
     test_failing_engine_stops_the_others();
+    test_job_round_trip();
+    test_result_round_trip();
+    test_fnv1a64_matches_fileHash();
+    test_result_refusals();
     std::printf("test_distributed: OK\n");
     return 0;
 }
