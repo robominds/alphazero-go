@@ -42,7 +42,8 @@ const char* const kUsage =
     "keys, e.g. --set bot_simulations= --set reference_networks=CKPT to measure the\n"
     "run against other fixed players.\n"
     "--version prints the build ID (the git commit, with +HASH when the tree had\n"
-    "uncommitted changes) and the strongest backend built, e.g. 'train 09e008b (metal)'.\n";
+    "uncommitted changes) and the strongest backend built, e.g. 'train 09e008b (metal)',\n"
+    "then the full ID on a line 'build <40 hex>[+HASH]'.\n";
 
 int usageError(const std::string& message) {
     std::fprintf(stderr, "error: %s\n\n%s", message.c_str(), kUsage);
@@ -65,7 +66,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (args->flag("version")) {
-        std::printf("train %s (%s)\n", azgo::shortBuildId().c_str(), azgo::buildOptions().c_str());
+        std::printf("train %s (%s)\nbuild %s\n", azgo::shortBuildId().c_str(),
+                    azgo::buildOptions().c_str(), azgo::buildId().c_str());
         return 0;
     }
     if (!args->has("run")) return usageError("--run DIR is required");

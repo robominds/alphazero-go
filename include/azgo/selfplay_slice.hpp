@@ -17,6 +17,7 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <ostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -134,6 +135,16 @@ std::string serializeSliceResult(const SliceResult& result, int first);
 // positions.
 SliceResult readSliceResult(const std::string& path, const std::string& jobBytes,
                             const std::string& expectedBuild);
+
+// What the selfplay app does with a job: reads and checks the job at
+// jobPath (its build ID must be this binary's), loads the network
+// job.networkFile from the job's directory after checking its fileHash, plays
+// the slice with `backend` on `workers` threads (<= 0: every game at once
+// with metal, resolveWorkers(0) otherwise) and inferenceBatch (<= 0: the
+// job's), and writes the result to outPath atomically. Returns the exit
+// status: 0, or 1 with the reason on `err` and no file at outPath.
+int runSliceJob(const std::string& jobPath, const std::string& outPath, const std::string& backend,
+                int workers, int inferenceBatch, std::ostream& err);
 
 std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConfig& sp,
                                           uint64_t seed, int generation, int first, int count,

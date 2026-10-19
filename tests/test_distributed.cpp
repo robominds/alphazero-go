@@ -18,10 +18,15 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <cerrno>
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 #include "azgo/backend.hpp"
 #include "azgo/build_info.hpp"
+#include "azgo/checkpoint.hpp"
 #include "azgo/config.hpp"
 #include "azgo/coordinator.hpp"
 #include "azgo/engines.hpp"
@@ -30,6 +35,8 @@
 #include "azgo/rng.hpp"
 #include "azgo/run_state.hpp"
 #include "azgo/selfplay_slice.hpp"
+
+extern char** environ;
 
 using namespace azgo;
 
@@ -852,6 +859,148 @@ static void test_result_refusals() {
     assert(refusals >= 30);
 }
 
+// ---- runSliceJob and the selfplay app ----------------------------------------------
+
+// A work directory holding a tiny network and a job for it, as a remote's
+// would after the uploads.
+struct SliceWork {
+    std::filesystem::path dir;
+    std::string jobPath, outPath;
+    SelfPlayJob job;
+    std::string jobBytes;
+    explicit SliceWork(const std::string& name)
+        : dir(std::filesystem::temp_directory_path() /
+              ("azgo_test_work_" + std::to_string(getpid()) + "_" + name)) {
+        std::filesystem::remove_all(dir);
+        std::filesystem::create_directories(dir);
+        Network net(sliceNet(), 33);
+        const std::string netPath = (dir / "net_test.azn").string();
+        saveNetwork(net, netPath);
+        job = sliceJob();
+        job.count = 3;
+        job.networkFile = "net_test.azn";
+        job.networkHash = fileHash(netPath);
+        job.buildId = buildId();
+        writeJob();
+        outPath = (dir / "g0002_3_a1.result").string();
+    }
+    void writeJob() {
+        jobBytes = serializeJob(job);
+        jobPath = (dir / "g0002_3_a1.job").string();
+        writeText(jobPath, jobBytes);
+    }
+    ~SliceWork() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
+
+static void test_run_slice_job_in_process() {
+    SliceWork work("inproc");
+    std::ostringstream err;
+    assert(runSliceJob(work.jobPath, work.outPath, "naive", 2, 0, err) == 0);
+    const SliceResult result = readSliceResult(work.outPath, work.jobBytes, buildId());
+    assert(result.fingerprint == engineFingerprint("naive"));
+    const Network net = loadNetwork((work.dir / "net_test.azn").string());
+    const std::vector<GameRecord> direct = playSelfPlayGames(
+        net, work.job.sp, work.job.seed, work.job.generation, work.job.first, work.job.count,
+        EngineRun{"naive", 1});
+    assert(sameRecords(result.records, direct));
+    assert(!std::filesystem::exists(work.outPath + ".tmp"));
+}
+
+static void test_run_slice_job_refusals() {
+    auto refusal = [](SliceWork& work, const std::string& backend) {
+        std::ostringstream err;
+        const int status = runSliceJob(work.jobPath, work.outPath, backend, 1, 0, err);
+        assert(status == 1 && !std::filesystem::exists(work.outPath));
+        return err.str();
+    };
+    {
+        SliceWork work("hash");
+        work.job.networkHash ^= 1;
+        work.writeJob();
+        assert(contains(refusal(work, "naive"), "hash"));
+    }
+    {
+        SliceWork work("build");
+        work.job.buildId = "0000000000000000000000000000000000000000";
+        work.writeJob();
+        const std::string msg = refusal(work, "naive");
+        assert(contains(msg, "build") && contains(msg, buildId()));
+    }
+    {
+        SliceWork work("missing");
+        std::filesystem::remove(work.dir / "net_test.azn");
+        assert(contains(refusal(work, "naive"), "net_test.azn"));
+    }
+    {
+        SliceWork work("badjob");
+        writeText(work.jobPath, work.jobBytes.substr(0, 20));
+        assert(contains(refusal(work, "naive"), "job"));
+    }
+    for (const char* backend : {"blas", "metal"}) {
+        try {
+            checkBackendAvailable(backend);
+            continue;   // available here: nothing to refuse
+        } catch (const std::invalid_argument&) {
+        }
+        SliceWork work(std::string("unavailable_") + backend);
+        assert(contains(refusal(work, backend), "not available"));
+    }
+}
+
+// Runs argv with stdout and stderr to `log`; returns the exit status, or -1.
+static int spawnAndWait(const std::vector<std::string>& args, const std::string& log) {
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_addopen(&actions, 1, log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    posix_spawn_file_actions_adddup2(&actions, 1, 2);
+    std::vector<char*> argv;
+    for (const std::string& a : args) argv.push_back(const_cast<char*>(a.c_str()));
+    argv.push_back(nullptr);
+    pid_t pid = 0;
+    const int rc = posix_spawn(&pid, argv[0], &actions, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&actions);
+    if (rc != 0) return -1;
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+// The real binary gives the in-process result, bit for bit (but the
+// wall time).
+static void test_selfplay_exe_end_to_end() {
+    const std::string exe = AZGO_SELFPLAY_EXE;
+    SliceWork work("exe");
+    const std::string log = (work.dir / "selfplay.log").string();
+    assert(spawnAndWait({exe, "--version"}, log) == 0);
+    const std::string version = readText(log);
+    assert(version == "selfplay " + shortBuildId() + " (" + buildOptions() + ")\nbuild " + buildId() + "\n");
+    assert(spawnAndWait({exe, "--fingerprint", "--backend", "naive"}, log) == 0);
+    assert(readText(log) == engineFingerprint("naive") + "\n");
+    assert(spawnAndWait({exe, "--job", work.jobPath, "--out", work.outPath, "--backend", "naive",
+                         "--workers", "3", "--inference-batch", "16"},
+                        log) == 0);
+    const SliceResult viaExe = readSliceResult(work.outPath, work.jobBytes, buildId());
+    const std::string inProcessOut = (work.dir / "inproc.result").string();
+    std::ostringstream err;
+    assert(runSliceJob(work.jobPath, inProcessOut, "naive", 1, 0, err) == 0);
+    const SliceResult inProcess = readSliceResult(inProcessOut, work.jobBytes, buildId());
+    assert(sameRecords(viaExe.records, inProcess.records));
+    assert(viaExe.fingerprint == inProcess.fingerprint && viaExe.jobHash == inProcess.jobHash);
+    assert(viaExe.stats.positions == inProcess.stats.positions &&
+           viaExe.stats.evaluations == inProcess.stats.evaluations);
+    // Usage errors exit 2, failures 1.
+    assert(spawnAndWait({exe, "--job", work.jobPath}, log) == 2);
+    assert(spawnAndWait({exe, "--bogus"}, log) == 2);
+    assert(spawnAndWait({exe, "--job", work.jobPath + ".missing", "--out", work.outPath, "--backend",
+                         "naive"},
+                        log) == 1);
+    assert(spawnAndWait({exe, "--fingerprint", "--backend", "gpu"}, log) == 1);
+}
+
 int main() {
     test_build_id_shape();
     test_build_options();
@@ -870,6 +1019,9 @@ int main() {
     test_result_round_trip();
     test_fnv1a64_matches_fileHash();
     test_result_refusals();
+    test_run_slice_job_in_process();
+    test_run_slice_job_refusals();
+    test_selfplay_exe_end_to_end();
     std::printf("test_distributed: OK\n");
     return 0;
 }

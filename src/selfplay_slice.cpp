@@ -2,11 +2,17 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
+#include "azgo/arena.hpp"
+#include "azgo/backend.hpp"
 #include "azgo/board.hpp"
+#include "azgo/build_info.hpp"
+#include "azgo/checkpoint.hpp"
+#include "azgo/engines.hpp"
 #include "azgo/game.hpp"
 #include "azgo/inference_hub.hpp"
 #include "azgo/parallel.hpp"
@@ -457,6 +463,47 @@ SliceResult readSliceResult(const std::string& path, const std::string& jobBytes
         throw SliceError(where + e.what());
     }
     return result;
+}
+
+int runSliceJob(const std::string& jobPath, const std::string& outPath, const std::string& backend,
+                int workers, int inferenceBatch, std::ostream& err) {
+    try {
+        std::ifstream in(jobPath, std::ios::binary);
+        if (!in) throw SliceError(jobPath + ": cannot read the job");
+        const std::string jobBytes((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+        const SelfPlayJob job = parseJob(jobBytes);
+        if (job.buildId != buildId())
+            throw SliceError("build ID mismatch: the job comes from " + job.buildId +
+                             ", this binary is " + buildId() + " (sync the machines)");
+        const std::string netPath =
+            (std::filesystem::path(jobPath).parent_path() / job.networkFile).string();
+        if (!std::filesystem::exists(netPath)) throw SliceError(netPath + ": network missing");
+        if (fileHash(netPath) != job.networkHash)
+            throw SliceError(netPath + ": its hash differs from the job's network hash");
+        checkBackendAvailable(backend);
+        const Network net = loadNetwork(netPath);
+        if (net.config().boardSize != job.boardSize)
+            throw SliceError(netPath + " is not a " + std::to_string(job.boardSize) + "x" +
+                             std::to_string(job.boardSize) + " network");
+        EngineRun run;
+        run.backend = backend;
+        run.workers = workers > 0 ? workers
+                                  : (backend == "metal" ? std::min(job.count, kMaxArenaWorkers)
+                                                        : resolveWorkers(0));
+        run.inferenceBatch = inferenceBatch > 0 ? inferenceBatch : job.inferenceBatch;
+        SliceResult result;
+        result.jobHash = fnv1a64(jobBytes);
+        result.buildId = buildId();
+        result.fingerprint = engineFingerprint(backend);
+        result.records = playSelfPlayGames(net, job.sp, job.seed, job.generation, job.first,
+                                           job.count, run, &result.stats);
+        writeFileAtomically(outPath, serializeSliceResult(result, job.first));
+        return 0;
+    } catch (const std::exception& e) {
+        err << "selfplay: " << e.what() << "\n";
+        return 1;
+    }
 }
 
 } // namespace azgo
