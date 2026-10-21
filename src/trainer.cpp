@@ -49,18 +49,6 @@ void printDeviceLine(const Config& cfg, std::ostream* log) {
         *log << "gpu: " << metalDescription() << " (inference: self-play, arena, validation)\n";
 }
 
-#ifdef AZ_USE_METAL
-// The most hubs an arena wave can hold at once with metal, one per network
-// (bots need none): the calibrations when a run starts (generation 0 and
-// every reference network), or a round (the new network, g-1, the strongest
-// reference, arena_opponents more and, with gating, the best network).
-int arenaHubs(const Config& cfg) {
-    const int calibration = 1 + static_cast<int>(cfg.referenceNetworks.size());
-    const int round = 3 + cfg.arenaOpponents + (cfg.gating ? 1 : 0);
-    return std::max(calibration, round);
-}
-#endif
-
 // The backend can run here, and with metal its hubs fit in GPU memory at
 // inference_batch: self-play's hub (two slots), or an arena wave's hubs (one
 // slot each when there are several; playMatches). Checked before a run
@@ -71,7 +59,7 @@ void checkBackend(const Config& cfg) {
 #ifdef AZ_USE_METAL
     if (cfg.backend == "metal") {
         checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, 1, kInferenceSlots);
-        checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, arenaHubs(cfg), 1);
+        checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, arenaWaveNetworks(cfg), 1);
     }
 #endif
 }
@@ -399,11 +387,11 @@ void checkReferenceHashes(const ReferenceNetworks& loaded, const std::vector<Ref
 // With selfplay_engines: the coordinator, its preflight done (it refuses
 // what cannot run and prints the engine lines). Null on the default path,
 // which reads no hosts file.
-std::unique_ptr<SelfPlayCoordinator> makeCoordinator(const Config& cfg, const std::string& runDir,
+std::unique_ptr<Coordinator> makeCoordinator(const Config& cfg, const std::string& runDir,
                                                      const TrainerOptions& opts,
                                                      std::ostream* log) {
     if (cfg.selfplayEngines.empty()) return nullptr;
-    auto coordinator = std::make_unique<SelfPlayCoordinator>(
+    auto coordinator = std::make_unique<Coordinator>(
         cfg, runDir, loadHostsFile(resolveHostsPath(opts.hostsFile)), log);
     coordinator->preflight();
     return coordinator;
@@ -488,7 +476,7 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
         }
     }
 
-    std::unique_ptr<SelfPlayCoordinator> coordinator = makeCoordinator(cfg, runDir, opts, log);
+    std::unique_ptr<Coordinator> coordinator = makeCoordinator(cfg, runDir, opts, log);
 
     // Every check passed: the run starts here.
     printDeviceLine(cfg, log);
@@ -600,7 +588,7 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     // a state.bin from before resignation has no window and gets
     // resign_threshold_initial.
     state.resignThreshold = calibrateResignThreshold(state.resignWindow, resignCalibration(cfg));
-    std::unique_ptr<SelfPlayCoordinator> coordinator = makeCoordinator(cfg, runDir, opts, log);
+    std::unique_ptr<Coordinator> coordinator = makeCoordinator(cfg, runDir, opts, log);
     printDeviceLine(cfg, log);
     if (log && saved.backend != cfg.backend)
         *log << "note: backend changed from " << saved.backend << " to " << cfg.backend

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -16,7 +17,9 @@
 #include "azgo/arena_slice.hpp"
 #include "azgo/backend.hpp"
 #include "azgo/build_info.hpp"
+#include "azgo/checkpoint.hpp"
 #include "azgo/cuda.hpp"
+#include "azgo/game.hpp"
 #include "azgo/inference_hub.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/parallel.hpp"
@@ -29,6 +32,8 @@ namespace {
 
 const char* const kManifestHeader =
     "generation,first,count,planned,engine,fingerprint,build,seconds,positions,evaluations,note\n";
+const char* const kArenaManifestHeader =
+    "generation,wave,first,count,planned,engine,fingerprint,build,seconds,positions,evaluations,note\n";
 
 // A CSV field: quoted (with quotes doubled) when `always` or when it holds
 // a comma, a quote or a line break.
@@ -151,11 +156,11 @@ std::string shortOf(const std::string& id) {
 }
 
 // The engine a failed remote slice falls back to: the first local engine
-// listed, or the run's own backend.
-std::string fallbackEngine(const Config& cfg) {
-    for (const EngineSpec& e : cfg.selfplayEngines)
+// of its list, or the run's own backend.
+std::string fallbackEngine(const std::vector<EngineSpec>& list, const std::string& backend) {
+    for (const EngineSpec& e : list)
         if (e.machine == "local") return e.name();
-    return "local/" + cfg.backend;
+    return "local/" + backend;
 }
 
 // A CSV row's fields; quoted fields may hold commas and doubled quotes.
@@ -178,17 +183,41 @@ std::vector<std::string> csvFields(const std::string& row) {
     return fields;
 }
 
-// Each engine's fingerprint in the manifest's last row where it played.
-std::map<std::string, std::string> lastFingerprints(const std::string& runDir) {
+// Each engine's fingerprint in a manifest's last row where it played: the
+// self-play manifest's (11 fields, engine and fingerprint at 4 and 5) or the
+// arena's (12 fields, at 5 and 6).
+std::map<std::string, std::string> lastFingerprints(const std::string& path, size_t fields,
+                                                    size_t engine) {
     std::map<std::string, std::string> out;
-    std::ifstream in(manifestPath(runDir), std::ios::binary);
+    std::ifstream in(path, std::ios::binary);
     std::string line;
     std::getline(in, line);   // the header
     while (std::getline(in, line)) {
         const std::vector<std::string> f = csvFields(line);
-        if (f.size() == 11) out[f[4]] = f[5];
+        if (f.size() == fields) out[f[engine]] = f[engine + 1];
     }
     return out;
+}
+
+// A network's file name in a remote work directory: by its hash, so a
+// machine that has the bytes already is not sent them again.
+std::string netFileName(uint64_t hash) {
+    char name[48];
+    std::snprintf(name, sizeof name, "net_%016llx.azn", static_cast<unsigned long long>(hash));
+    return name;
+}
+
+// A phase's local work directory once its slices are merged: gone, or with
+// failed attempts the logs they left (empty logs go).
+void finishWorkDir(const std::string& workDir, bool failed) {
+    std::error_code ec;
+    if (!failed) {
+        std::filesystem::remove_all(workDir, ec);
+        return;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(workDir, ec))
+        if (entry.is_regular_file() && entry.file_size() == 0) std::filesystem::remove(entry.path(), ec);
+    if (std::filesystem::is_empty(workDir, ec)) std::filesystem::remove(workDir, ec);
 }
 
 // ---- probes (tests only) ----
@@ -234,56 +263,74 @@ bool probeInProcess() {
 
 } // namespace
 
-SelfPlayCoordinator::SelfPlayCoordinator(const Config& cfg, const std::string& runDir,
-                                         HostsFile hosts, std::ostream* log)
+Coordinator::Coordinator(const Config& cfg, const std::string& runDir, HostsFile hosts,
+                         std::ostream* log)
     : cfg_(cfg), runDir_(runDir), runId_(runIdOf(runDir)), hosts_(std::move(hosts)), log_(log) {
-    if (cfg_.selfplayEngines.empty())
-        throw std::logic_error("SelfPlayCoordinator: selfplay_engines is empty (the default path)");
+    if (cfg_.selfplayEngines.empty() && cfg_.arenaEngines.empty())
+        throw std::logic_error("Coordinator: selfplay_engines and arena_engines are empty (the default path)");
 }
 
-SelfPlayCoordinator::~SelfPlayCoordinator() {
+Coordinator::~Coordinator() {
     for (const auto& [alias, state] : machines_) {
-        if (state->uploadedNet.empty()) continue;
+        if (state->uploaded.empty()) continue;
         try {
             const MachineSettings m = hosts_.settings(alias);
             const std::unique_ptr<Transport> t = transportFor(m, "");
             t->setCommandTimeout(kCleanupTimeout);
-            t->remove({state->uploadedNet});
+            t->remove(std::vector<std::string>(state->uploaded.begin(), state->uploaded.end()));
             t->removeDirIfEmpty(remoteDir(m));   // the run's directory, now empty
         } catch (const std::exception&) {
         }
     }
 }
 
-std::unique_ptr<Transport> SelfPlayCoordinator::transportFor(const MachineSettings& m,
-                                                             const std::string& log) const {
+std::unique_ptr<Transport> Coordinator::transportFor(const MachineSettings& m,
+                                                     const std::string& log) const {
     if (m.ssh.empty() && probeInProcess()) return std::make_unique<InProcessTransport>(m);
     return makeTransport(m, log);
 }
 
-SelfPlayCoordinator::MachineState& SelfPlayCoordinator::machine(const std::string& alias) {
+Coordinator::MachineState& Coordinator::machine(const std::string& alias) {
     return *machines_.at(alias);   // a lookup only: no slice thread inserts
 }
 
-std::string SelfPlayCoordinator::remoteDir(const MachineSettings& m) const {
+std::string Coordinator::remoteDir(const MachineSettings& m) const {
     return m.workdir + "/" + runId_;
 }
 
-void SelfPlayCoordinator::unreachable(const std::string& alias, const std::string& why) {
-    if (cfg_.selfplayFallback == "stop")
-        throw ConfigError("selfplay_engines: " + alias + " is unreachable (" + why +
-                          "); with selfplay_fallback = stop the run cannot start");
-    unreachable_.insert(alias);
-    if (log_)
-        *log_ << "warning: " << alias << " unreachable (" << why << "); its slices fall back to "
-              << fallbackEngine(cfg_) << "\n";
+std::string Coordinator::keyFor(const std::string& alias) const {
+    for (const EngineSpec& e : cfg_.selfplayEngines)
+        if (e.machine == alias) return "selfplay_engines";
+    return "arena_engines";
 }
 
-void SelfPlayCoordinator::preflight() {
+void Coordinator::unreachable(const std::string& alias, const std::string& why) {
+    if (cfg_.selfplayFallback == "stop")
+        throw ConfigError(keyFor(alias) + ": " + alias + " is unreachable (" + why +
+                          "); with selfplay_fallback = stop the run cannot start");
+    unreachable_.insert(alias);
+    if (log_) {
+        *log_ << "warning: " << alias << " unreachable (" << why << "); its slices fall back to ";
+        // The engine of each list that lists the machine.
+        std::string engines;
+        for (const std::vector<EngineSpec>* list : {&cfg_.selfplayEngines, &cfg_.arenaEngines}) {
+            bool listed = false;
+            for (const EngineSpec& e : *list) listed = listed || e.machine == alias;
+            const std::string fallback = fallbackEngine(*list, cfg_.backend);
+            if (listed && engines.find(fallback) == std::string::npos)
+                engines += (engines.empty() ? "" : " and ") + fallback;
+        }
+        *log_ << engines << "\n";
+    }
+}
+
+void Coordinator::preflight() {
+    // Every engine of both lists, self-play's first.
+    std::vector<EngineSpec> all = cfg_.selfplayEngines;
+    all.insert(all.end(), cfg_.arenaEngines.begin(), cfg_.arenaEngines.end());
     // Local engines: the backend runs here, and the GPU hubs fit.
-    int metalHubs = 0, cudaHubs = 0;
     std::vector<std::string> remotes;   // aliases, in list order
-    for (const EngineSpec& e : cfg_.selfplayEngines) {
+    for (const EngineSpec& e : all) {
         if (e.machine != "local") {
             hosts_.settings(e.machine);   // ConfigError for an alias the hosts file lacks
             if (std::find(remotes.begin(), remotes.end(), e.machine) == remotes.end())
@@ -291,27 +338,37 @@ void SelfPlayCoordinator::preflight() {
             continue;
         }
         checkBackendAvailable(e.backend);
-        if (e.backend == "metal") ++metalHubs;
-        if (e.backend == "cuda") ++cudaHubs;
         if (!fingerprints_.count(e.name())) fingerprints_[e.name()] = engineFingerprint(e.backend);
     }
+    // Self-play's engines run at once, each one hub with two slots; an
+    // arena wave's engines too, each one one-slot hub per network of the
+    // wave. The two phases never overlap.
+    auto hubs = [](const std::vector<EngineSpec>& list, const std::string& backend) {
+        int n = 0;
+        for (const EngineSpec& e : list) n += e.machine == "local" && e.backend == backend ? 1 : 0;
+        return n;
+    };
+    const int metalHubs = hubs(cfg_.selfplayEngines, "metal"), cudaHubs = hubs(cfg_.selfplayEngines, "cuda");
+    const int metalArena = hubs(cfg_.arenaEngines, "metal") * arenaWaveNetworks(cfg_);
+    const int cudaArena = hubs(cfg_.arenaEngines, "cuda") * arenaWaveNetworks(cfg_);
     const MachineSettings local = hosts_.settings("local");
     const int batch = local.inferenceBatch > 0 ? local.inferenceBatch : cfg_.inferenceBatch;
     if (batch < cfg_.mctsBatch)
         throw ConfigError("hosts file: local inference_batch (" + std::to_string(batch) +
                           ") is below mcts_batch (" + std::to_string(cfg_.mctsBatch) + ")");
 #ifdef AZ_USE_METAL
-    // Every metal item is its own hub with two slots, all at once.
-    if (metalHubs > 0)
-        checkMetalInferenceMemory(cfg_.netConfig(), batch, metalHubs, kInferenceSlots);
+    if (metalHubs > 0) checkMetalInferenceMemory(cfg_.netConfig(), batch, metalHubs, kInferenceSlots);
+    if (metalArena > 0) checkMetalInferenceMemory(cfg_.netConfig(), batch, metalArena, 1);
 #else
     (void)metalHubs;
+    (void)metalArena;
 #endif
 #ifdef AZ_USE_CUDA
-    // The same for every cuda item.
     if (cudaHubs > 0) checkCudaInferenceMemory(cfg_.netConfig(), batch, cudaHubs, kInferenceSlots);
+    if (cudaArena > 0) checkCudaInferenceMemory(cfg_.netConfig(), batch, cudaArena, 1);
 #else
     (void)cudaHubs;
+    (void)cudaArena;
 #endif
 
     // Remote machines: reachable, this build, and every engine's backend usable.
@@ -324,7 +381,7 @@ void SelfPlayCoordinator::preflight() {
         for (size_t b = a + 1; b < remotes.size(); ++b) {
             const MachineSettings x = hosts_.settings(remotes[a]), y = hosts_.settings(remotes[b]);
             if (x.ssh == y.ssh && x.workdir == y.workdir)
-                throw ConfigError("selfplay_engines: " + remotes[a] + " and " + remotes[b] +
+                throw ConfigError(keyFor(remotes[a]) + ": " + remotes[a] + " and " + remotes[b] +
                                   " are the same machine and work directory in the hosts file; "
                                   "give each alias its own workdir");
         }
@@ -346,18 +403,18 @@ void SelfPlayCoordinator::preflight() {
         }
         if (!probeRemoteBuild().empty()) id = probeRemoteBuild();
         if (id != buildId())
-            throw ConfigError("selfplay_engines: " + alias + " runs build " + id +
+            throw ConfigError(keyFor(alias) + ": " + alias + " runs build " + id +
                               " but this coordinator is build " + buildId() +
                               "; bring it to this commit with tools/cluster_sync.sh");
         remoteBuilds_[alias] = id;
-        for (const EngineSpec& e : cfg_.selfplayEngines) {
+        for (const EngineSpec& e : all) {
             if (e.machine != alias || fingerprints_.count(e.name())) continue;
             const ProcessResult r =
                 t->run({"--fingerprint", "--backend", e.backend}, log, kPreflightTimeout);
             const std::string line = lastLine(log);
             std::filesystem::remove(log);
             if (r.exitCode == 1)   // selfplay ran and refused: the backend cannot run there
-                throw ConfigError("selfplay_engines: " + e.name() + ": " + alias +
+                throw ConfigError(keyFor(alias) + ": " + e.name() + ": " + alias +
                                   " cannot run backend " + e.backend + " (" + line + ")");
             if (r.exitCode != 0 || line.empty()) {
                 unreachable(alias, describe(r));
@@ -374,10 +431,12 @@ void SelfPlayCoordinator::preflight() {
     }
 
     // The engine lines, and a note for an engine whose arithmetic changed
-    // since the manifest last recorded it.
-    const std::map<std::string, std::string> recorded = lastFingerprints(runDir_);
+    // since a manifest last recorded it.
+    const std::map<std::string, std::string> recorded[2] = {
+        lastFingerprints(manifestPath(runDir_), 11, 4),
+        lastFingerprints(arenaManifestPath(runDir_), 12, 5)};
     std::vector<std::string> printed;
-    for (const EngineSpec& e : cfg_.selfplayEngines) {
+    for (const EngineSpec& e : all) {
         auto f = fingerprints_.find(e.name());
         if (f == fingerprints_.end()) continue;   // unreachable
         if (std::find(printed.begin(), printed.end(), e.name()) != printed.end()) continue;
@@ -388,21 +447,20 @@ void SelfPlayCoordinator::preflight() {
         const bool prefixed = f->second.rfind(e.backend + "; ", 0) == 0;
         const std::string shown = prefixed ? f->second.substr(e.backend.size() + 2) : f->second;
         if (log_) *log_ << "engine " << e.name() << ": " << shown << " [" << build << "]\n";
-        auto was = recorded.find(e.name());
-        if (log_ && was != recorded.end() && was->second != f->second)
-            *log_ << "note: the fingerprint of " << e.name() << " changed from \"" << was->second
-                  << "\"; from here on its games differ in the last bits from before\n";
+        for (const std::map<std::string, std::string>& manifest : recorded) {
+            auto was = manifest.find(e.name());
+            if (log_ && was != manifest.end() && was->second != f->second) {
+                *log_ << "note: the fingerprint of " << e.name() << " changed from \"" << was->second
+                      << "\"; from here on its games differ in the last bits from before\n";
+                break;
+            }
+        }
     }
 }
 
-std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, const Slice& slice,
-                                                           const EngineSpec& e,
-                                                           const std::string& networkPath,
-                                                           uint64_t networkHash,
-                                                           const SelfPlayConfig& sp,
-                                                           const std::string& workDir,
-                                                           const std::atomic<bool>& stop,
-                                                           SliceReport& report) {
+void Coordinator::attemptRemote(int attempt, const EngineSpec& e, const RemoteWork& work,
+                                const std::string& workDir, const std::atomic<bool>& stop,
+                                SliceReport& report) {
     auto checkStop = [&] {
         if (stop) throw SliceCancelled();
     };
@@ -413,15 +471,13 @@ std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, c
     const std::unique_ptr<Transport> t = transportFor(m, log);
     const std::string dir = remoteDir(m);
 
-    // The network, uploaded by this coordinator once per machine and hash
+    // The networks, uploaded by this coordinator once per machine and hash
     // (a file already there may be a stranger's or cut short: it is
-    // replaced, atomically); the one it replaces goes. At the first contact
-    // with a machine, what an earlier coordinator of this run left there (a
-    // crash: networks, jobs, results, parts of uploads) goes first.
-    char netName[48];
-    std::snprintf(netName, sizeof netName, "net_%016llx.azn",
-                  static_cast<unsigned long long>(networkHash));
-    const std::string remoteNet = dir + "/" + netName;
+    // replaced, atomically); those the phase no longer needs go. At the
+    // first contact with a machine, what an earlier coordinator of this run
+    // left there (a crash: networks, jobs, results, parts of uploads) goes
+    // first.
+    std::vector<std::string> remoteNets;
     checkStop();
     {
         MachineState& state = machine(e.machine);
@@ -432,38 +488,34 @@ std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, c
             t->remove(stale);
             state.contacted = true;
         }
-        std::string& uploaded = state.uploadedNet;
-        if (uploaded != remoteNet) {
-            t->upload(networkPath, remoteNet);
-            if (!uploaded.empty()) t->remove({uploaded});
-            uploaded = remoteNet;
+        for (const auto& [localPath, hash] : work.networks) {
+            const std::string remoteNet = dir + "/" + netFileName(hash);
+            remoteNets.push_back(remoteNet);
+            if (!state.uploaded.count(remoteNet)) {
+                t->upload(localPath, remoteNet);
+                state.uploaded.insert(remoteNet);
+            }
+        }
+        std::vector<std::string> unused;
+        for (const std::string& net : state.uploaded)
+            if (!state.keep.count(net)) unused.push_back(net);
+        if (!unused.empty()) {
+            t->remove(unused);
+            for (const std::string& net : unused) state.uploaded.erase(net);
         }
     }
 
     // The job: exactly what determines the slice's games. The file names
     // carry the attempt, so a straggler of attempt 1 cannot be taken for
     // attempt 2.
-    SelfPlayJob job;
-    job.seed = cfg_.seed;
-    job.generation = g;
-    job.first = slice.first;
-    job.count = slice.count;
-    job.boardSize = cfg_.boardSize;
-    job.sp = sp;
-    job.networkFile = netName;
-    job.networkHash = networkHash;
-    job.buildId = buildId();
-    job.inferenceBatch = cfg_.inferenceBatch;
-    const std::string jobBytes = serializeJob(job);
-    char base[64];
-    std::snprintf(base, sizeof base, "g%04d_%d_a%d", g, slice.first, attempt);
+    const std::string base = work.base + "_a" + std::to_string(attempt);
     const std::string localJob = workDir + "/" + base + ".job";
     const std::string localResult = workDir + "/" + base + ".result";
     const std::string remoteJob = dir + "/" + base + ".job";
     const std::string remoteResult = dir + "/" + base + ".result";
     const std::string pattern = runId_ + "/" + base + ".job";
     try {
-        writeFileAtomically(localJob, jobBytes);
+        writeFileAtomically(localJob, work.jobBytes);
         checkStop();
         t->upload(localJob, remoteJob);
 
@@ -498,11 +550,12 @@ std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, c
         if (r.exitCode != 0) {
             const std::string line = lastLine(log);
             // A network the binary refused (damaged on the machine since the
-            // upload): forget it, so the next attempt uploads it again.
+            // upload): forget the slice's networks, so the next attempt
+            // uploads them again.
             if (line.find("network") != std::string::npos) {
                 MachineState& state = machine(e.machine);
                 std::lock_guard<std::mutex> lock(state.mutex);
-                if (state.uploadedNet == remoteNet) state.uploadedNet.clear();
+                for (const std::string& net : remoteNets) state.uploaded.erase(net);
             }
             // No log line in the message: selfplay's own words can hold the
             // machine's paths; the log keeps them.
@@ -514,14 +567,10 @@ std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, c
             f.seekp(40);
             f.put('\x7f');
         }
-        SliceResult result = readSliceResult(localResult, jobBytes, buildId());
+        work.accept(localResult, report);
         t->remove({remoteJob, remoteResult});
         std::filesystem::remove(localJob);
         std::filesystem::remove(localResult);
-        report.fingerprint = result.fingerprint;
-        report.build = shortOf(result.buildId);
-        report.stats = result.stats;
-        return std::move(result.records);
     } catch (...) {
         // This attempt is over: its process (if it outlived its connection)
         // and its files go, best effort; the log stays.
@@ -538,19 +587,15 @@ std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, c
     }
 }
 
-std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slice,
-                                                        const EngineSpec& e,
-                                                        const std::string& networkPath,
-                                                        uint64_t networkHash, const Network& net,
-                                                        const SelfPlayConfig& sp,
-                                                        const std::string& workDir,
-                                                        const std::atomic<bool>& stop,
-                                                        SliceReport& report) {
+void Coordinator::playRemote(int g, PhaseSlice& slice, const std::string& fallback,
+                             const std::string& workDir, const std::atomic<bool>& stop,
+                             const std::string& what, SliceReport& report) {
     // Two attempts on the planned engine: a transient failure costs time,
     // not reproducibility. A machine that does not answer at all costs
     // only a quick probe: one known to be down this generation, or found
     // down after a failure, goes straight to the fallback, and one that was
     // down earlier is probed before it is tried.
+    const EngineSpec& e = slice.engine;
     std::string engineFile = e.name();
     std::replace(engineFile.begin(), engineFile.end(), '/', '_');
     const std::string log = workDir + "/" + engineFile + ".log";
@@ -580,19 +625,19 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
     }
     if (isDown() || (suspect && !checkReachable())) {
         reason = e.machine + " unreachable";
-        logLine("slice " + std::to_string(slice.first) + ": " + reason + "; not tried");
+        logLine("slice " + std::to_string(slice.slice.first) + ": " + reason + "; not tried");
         failedSlices_ = true;
     } else {
         for (int attempt = 1; attempt <= 2; ++attempt) {
             try {
-                return attemptRemote(attempt, g, slice, e, networkPath, networkHash, sp, workDir,
-                                     stop, report);
+                attemptRemote(attempt, e, slice.remote, workDir, stop, report);
+                return;
             } catch (const SliceCancelled&) {
                 throw;
             } catch (const std::exception& ex) {
                 reason = ex.what();
                 failedSlices_ = true;
-                logLine("slice " + std::to_string(slice.first) + ", attempt " +
+                logLine("slice " + std::to_string(slice.slice.first) + ", attempt " +
                         std::to_string(attempt) + " failed: " + reason);
                 if (stop) throw SliceCancelled();
                 if (!checkReachable()) {
@@ -607,12 +652,11 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
 
     // selfplay_fallback = local: the coordinator plays the slice itself, on
     // the fallback engine, and says so in the manifest and the log.
-    const std::string fallback = fallbackEngine(cfg_);
     const std::string backend = fallback.substr(fallback.find('/') + 1);
     const MachineSettings local = hosts_.settings("local");
     EngineRun run;
     run.backend = backend;
-    run.workers = engineWorkers(local, backend, slice.count, resolveWorkers(0));
+    run.workers = engineWorkers(local, backend, slice.slice.count, resolveWorkers(0));
     run.inferenceBatch = local.inferenceBatch > 0 ? local.inferenceBatch : cfg_.inferenceBatch;
     run.qos = backend == "metal" || backend == "cuda" ? CpuQos::Default : local.cpuQos;
     run.cancel = &stop;
@@ -622,40 +666,41 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
     report.note = "fallback: " + reason;
     if (log_) {
         std::lock_guard<std::mutex> lock(logMutex_);
-        *log_ << "note: generation " << g << ": games " << slice.first << "-"
-              << slice.first + slice.count - 1 << " (" << e.name() << ") played by " << fallback
-              << ": " << reason
+        *log_ << "note: generation " << g << ": " << what << " " << slice.slice.first << "-"
+              << slice.slice.first + slice.slice.count - 1 << " (" << e.name() << ") played by "
+              << fallback << ": " << reason
               << "; from here on results differ in the last bits from a run without the failure\n";
     }
-    return playSelfPlayGames(net, sp, cfg_.seed, g, slice.first, slice.count, run, &report.stats);
+    slice.playLocal(run, &report.stats);
 }
 
-std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& networkPath,
-                                                  const Network& net, const SelfPlayConfig& sp,
-                                                  int games) {
-    const std::vector<Slice> slices = assignGames(cfg_.selfplayEngines, games);
+std::vector<SliceReport> Coordinator::runSlices(int g, std::vector<PhaseSlice>& slices,
+                                                const std::vector<EngineSpec>& list,
+                                                const std::string& workDir, const std::string& what) {
     const int cores = resolveWorkers(0);
     const size_t n = slices.size();
     std::vector<SliceReport> reports(n);
     std::vector<EngineRun> runs(n);
-    bool anyRemote = false;
+    std::map<std::string, std::set<std::string>> keep;   // alias -> the networks its slices need
     for (size_t k = 0; k < n; ++k) {
-        const EngineSpec& e = cfg_.selfplayEngines[static_cast<size_t>(slices[k].engine)];
+        const EngineSpec& e = slices[k].engine;
         const MachineSettings m = hosts_.settings(e.machine);
-        reports[k].slice = slices[k];
+        reports[k].slice = slices[k].slice;
         reports[k].planned = reports[k].engine = e.name();
         if (!m.local()) {
-            anyRemote = true;
             // Every remote machine's entry exists before the threads start.
             if (!machines_.count(e.machine)) {
                 machines_[e.machine] = std::make_unique<MachineState>();
                 machines_[e.machine]->suspect = unreachable_.count(e.machine) > 0;
             }
-            machines_[e.machine]->down = false;   // tried afresh every generation
+            machines_[e.machine]->down = false;   // tried afresh every phase
+            std::set<std::string>& nets = keep[e.machine];
+            for (const auto& net : slices[k].remote.networks)
+                nets.insert(remoteDir(m) + "/" + netFileName(net.second));
             continue;
         }
         runs[k].backend = e.backend;
-        runs[k].workers = engineWorkers(m, e.backend, slices[k].count, cores);
+        runs[k].workers = engineWorkers(m, e.backend, slices[k].slice.count, cores);
         runs[k].inferenceBatch = m.inferenceBatch > 0 ? m.inferenceBatch : cfg_.inferenceBatch;
         // The GPU, which sets the pace, waits on a GPU engine's workers
         // (metal, cuda): they keep the default class. CPU engines take the
@@ -665,35 +710,24 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
         reports[k].fingerprint = fingerprints_[e.name()];
         reports[k].build = shortBuildId();
     }
+    for (auto& [alias, nets] : keep) machines_.at(alias)->keep = nets;
 
     // The BLAS backend sets its environment once, with setenv, which is not
     // thread-safe: do that here, before any engine thread runs.
+    const std::string fallback = fallbackEngine(list, cfg_.backend);
     for (const EngineRun& run : runs)
-        if (run.backend == "blas") {
+        if (run.backend == "blas" || (!keep.empty() && fallback == "local/blas")) {
             makeBackend("blas", 1);
             break;
         }
-    // Remote slices' work files: this generation's directory, made afresh.
-    char genDir[32];
-    std::snprintf(genDir, sizeof genDir, "gen_%04d", g);
-    const std::string workDir =
-        (std::filesystem::path(runDir_) / "selfplay-work" / genDir).string();
-    uint64_t networkHash = 0;
     failedSlices_ = false;
-    if (anyRemote) {
-        std::filesystem::remove_all(workDir);
-        std::filesystem::create_directories(workDir);
-        networkHash = fileHash(networkPath);
-    }
 
     // One thread per slice, all at once. Each local engine has its own
-    // evaluators, so a slice's games are what playSelfPlayGames would give
-    // alone. The first slice to fail sets `stop`, and the local ones stop
-    // at their next network evaluation: the generation will not be
-    // committed anyway.
+    // evaluators, so a slice's games are what it would give alone. The
+    // first slice to fail sets `stop`, and the local ones stop at their
+    // next network evaluation: the generation will not be committed anyway.
     std::atomic<bool> stop{false};
     for (EngineRun& run : runs) run.cancel = &stop;
-    std::vector<std::vector<GameRecord>> results(n);
     std::vector<std::exception_ptr> errors(n);
     std::vector<std::thread> threads;
     std::exception_ptr launchError;
@@ -701,14 +735,10 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
         for (size_t k = 0; k < n; ++k)
             threads.emplace_back([&, k] {
                 try {
-                    const EngineSpec& e =
-                        cfg_.selfplayEngines[static_cast<size_t>(slices[k].engine)];
-                    if (e.machine == "local")
-                        results[k] = playSelfPlayGames(net, sp, cfg_.seed, g, slices[k].first,
-                                                       slices[k].count, runs[k], &reports[k].stats);
+                    if (slices[k].engine.machine == "local")
+                        slices[k].playLocal(runs[k], &reports[k].stats);
                     else
-                        results[k] = playRemote(g, slices[k], e, networkPath, networkHash, net,
-                                                sp, workDir, stop, reports[k]);
+                        playRemote(g, slices[k], fallback, workDir, stop, what, reports[k]);
                 } catch (...) {
                     errors[k] = std::current_exception();
                     stop = true;
@@ -734,17 +764,80 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
         std::rethrow_exception(e);
     }
     if (first) std::rethrow_exception(first);
+    return reports;
+}
+
+std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath, const Network& net,
+                                          const SelfPlayConfig& sp, int games) {
+    if (cfg_.selfplayEngines.empty())
+        throw std::logic_error("Coordinator::play: selfplay_engines is empty (the default path)");
+    const std::vector<Slice> assigned = assignGames(cfg_.selfplayEngines, games);
+    const size_t n = assigned.size();
+    // Remote slices' work files: this generation's directory, made afresh.
+    char genDir[32];
+    std::snprintf(genDir, sizeof genDir, "gen_%04d", g);
+    const std::string workDir =
+        (std::filesystem::path(runDir_) / "selfplay-work" / genDir).string();
+    bool anyRemote = false;
+    for (const Slice& s : assigned)
+        anyRemote = anyRemote ||
+                    !hosts_.settings(cfg_.selfplayEngines[static_cast<size_t>(s.engine)].machine).local();
+    uint64_t networkHash = 0;
+    if (anyRemote) {
+        std::filesystem::remove_all(workDir);
+        std::filesystem::create_directories(workDir);
+        networkHash = fileHash(networkPath);
+    }
+
+    std::vector<std::vector<GameRecord>> results(n);
+    std::vector<PhaseSlice> slices(n);
+    for (size_t k = 0; k < n; ++k) {
+        PhaseSlice& ps = slices[k];
+        ps.engine = cfg_.selfplayEngines[static_cast<size_t>(assigned[k].engine)];
+        ps.slice = assigned[k];
+        const int first = assigned[k].first, count = assigned[k].count;
+        ps.playLocal = [&, k, first, count](const EngineRun& run, SliceStats* stats) {
+            results[k] = playSelfPlayGames(net, sp, cfg_.seed, g, first, count, run, stats);
+        };
+        if (hosts_.settings(ps.engine.machine).local()) continue;
+        // The job: exactly what determines the slice's games.
+        SelfPlayJob job;
+        job.seed = cfg_.seed;
+        job.generation = g;
+        job.first = first;
+        job.count = count;
+        job.boardSize = cfg_.boardSize;
+        job.sp = sp;
+        job.networkFile = netFileName(networkHash);
+        job.networkHash = networkHash;
+        job.buildId = buildId();
+        job.inferenceBatch = cfg_.inferenceBatch;
+        char base[48];
+        std::snprintf(base, sizeof base, "g%04d_%d", g, first);
+        ps.remote.base = base;
+        ps.remote.jobBytes = serializeJob(job);
+        ps.remote.networks = {{networkPath, networkHash}};
+        const std::string jobBytes = ps.remote.jobBytes;
+        ps.remote.accept = [&results, k, jobBytes](const std::string& path, SliceReport& report) {
+            SliceResult result = readSliceResult(path, jobBytes, buildId());
+            report.fingerprint = result.fingerprint;
+            report.build = shortOf(result.buildId);
+            report.stats = result.stats;
+            results[k] = std::move(result.records);
+        };
+    }
+    std::vector<SliceReport> reports = runSlices(g, slices, cfg_.selfplayEngines, workDir, "games");
 
     // Merge by game index: records[first + k] = slice's k-th, each index
     // filled exactly once, whatever order the slices finished in.
     std::vector<GameRecord> records(static_cast<size_t>(games));
     std::vector<char> filled(static_cast<size_t>(games), 0);
     for (size_t k = 0; k < n; ++k) {
-        if (results[k].size() != static_cast<size_t>(slices[k].count))
+        if (results[k].size() != static_cast<size_t>(assigned[k].count))
             throw std::logic_error("slice of " + reports[k].engine +
                                    " returned the wrong number of games");
-        for (int j = 0; j < slices[k].count; ++j) {
-            const size_t i = static_cast<size_t>(slices[k].first + j);
+        for (int j = 0; j < assigned[k].count; ++j) {
+            const size_t i = static_cast<size_t>(assigned[k].first + j);
             if (i >= records.size() || filled[i])
                 throw std::logic_error("game " + std::to_string(i) +
                                        " assigned twice or out of range");
@@ -754,19 +847,179 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
     }
     for (size_t i = 0; i < filled.size(); ++i)
         if (!filled[i]) throw std::logic_error("game " + std::to_string(i) + " was not played");
-    // The remote files went slice by slice; the local ones too, but for the
-    // logs of failed attempts, which stay (empty logs go).
-    if (anyRemote && !failedSlices_) {
-        std::filesystem::remove_all(workDir);
-    } else if (anyRemote) {
-        std::error_code ec;
-        for (const auto& entry : std::filesystem::directory_iterator(workDir, ec))
-            if (entry.is_regular_file() && entry.file_size() == 0)
-                std::filesystem::remove(entry.path(), ec);
-        if (std::filesystem::is_empty(workDir, ec)) std::filesystem::remove(workDir, ec);
-    }
+    if (anyRemote) finishWorkDir(workDir, failedSlices_);
     reports_ = std::move(reports);
     return records;
+}
+
+void Coordinator::beginArena(int g) {
+    arenaGeneration_ = g;
+    arenaWave_ = 0;
+    arenaReports_.clear();
+}
+
+std::vector<MatchResult> Coordinator::playArena(const std::vector<ArenaMatchSpec>& wave,
+                                                const ArenaConfig& cfg) {
+    if (cfg_.arenaEngines.empty())
+        throw std::logic_error("Coordinator::playArena: arena_engines is empty (the default path)");
+    const int g = arenaGeneration_, w = ++arenaWave_;
+    int total = 0;
+    for (const ArenaMatchSpec& m : wave) {
+        if (m.games < 2 || m.games % 2 != 0)
+            throw std::invalid_argument("playMatch: games must be even and >= 2, got " +
+                                        std::to_string(m.games));
+        total += m.games;
+    }
+    if (wave.empty()) return {};
+    // Every match checked as playMatches checks it, before any slice starts
+    // (ranges of no games play nothing but are checked).
+    {
+        std::vector<ArenaGameRange> unplayed;
+        for (const ArenaMatchSpec& m : wave) unplayed.push_back({m.a, m.b, m.seed, 0, 0});
+        EngineRun check;
+        check.backend = cfg_.backend;
+        check.inferenceBatch = cfg_.inferenceBatch;
+        playArenaGames(unplayed, cfg, check);
+    }
+    const std::vector<Slice> assigned = assignGames(cfg_.arenaEngines, total);
+    const size_t n = assigned.size();
+    char waveDir[48];
+    std::snprintf(waveDir, sizeof waveDir, "gen_%04d_w%d", g, w);
+    const std::string workDir = (std::filesystem::path(runDir_) / "arena-work" / waveDir).string();
+    const std::string netDir = workDir + "/networks";
+    bool anyRemote = false;
+    for (const Slice& s : assigned)
+        anyRemote = anyRemote ||
+                    !hosts_.settings(cfg_.arenaEngines[static_cast<size_t>(s.engine)].machine).local();
+    // The wave's networks, in order of first appearance, each saved from
+    // memory (a reference network in play is fitted to the run's shape, so
+    // it is not its file) when a remote engine plays: path and fileHash.
+    std::vector<const Network*> nets;
+    for (const ArenaMatchSpec& m : wave)
+        for (const ArenaPlayer* p : {&m.a, &m.b})
+            if (p->net && std::find(nets.begin(), nets.end(), p->net) == nets.end()) nets.push_back(p->net);
+    std::vector<std::pair<std::string, uint64_t>> files;
+    if (anyRemote) {
+        std::filesystem::remove_all(workDir);
+        std::filesystem::create_directories(netDir);
+        for (size_t i = 0; i < nets.size(); ++i) {
+            const std::string path = netDir + "/wave_net_" + std::to_string(i) + ".azn";
+            Network copy = *nets[i];
+            saveNetwork(copy, path);
+            files.push_back({path, fileHash(path)});
+        }
+    }
+    // The saved networks go whatever happens; the logs stay as play()'s do.
+    struct RemoveNetworks {
+        std::string dir;
+        ~RemoveNetworks() {
+            std::error_code ec;
+            if (!dir.empty()) std::filesystem::remove_all(dir, ec);
+        }
+    } removeNetworks{anyRemote ? netDir : ""};
+
+    ArenaConfig resolved = cfg;
+    resolved.maxMoves = cfg.maxMoves > 0 ? cfg.maxMoves : defaultMaxMoves(cfg_.boardSize);
+    std::vector<std::vector<ArenaGameResult>> results(n);
+    std::vector<PhaseSlice> slices(n);
+    for (size_t k = 0; k < n; ++k) {
+        PhaseSlice& ps = slices[k];
+        ps.engine = cfg_.arenaEngines[static_cast<size_t>(assigned[k].engine)];
+        ps.slice = assigned[k];
+        const std::vector<ArenaGameRange> ranges = waveSlice(wave, assigned[k].first, assigned[k].count);
+        ps.playLocal = [&results, k, ranges, cfg](const EngineRun& run, SliceStats* stats) {
+            results[k] = playArenaGames(ranges, cfg, run, stats);
+        };
+        if (hosts_.settings(ps.engine.machine).local()) continue;
+        // The job: the slice's ranges, naming only the networks they use.
+        ArenaJob job;
+        job.boardSize = cfg_.boardSize;
+        job.cfg = resolved;
+        job.buildId = buildId();
+        job.inferenceBatch = cfg_.inferenceBatch;
+        std::vector<size_t> used;   // indices into nets, in the job's order
+        auto seat = [&](const ArenaPlayer& p) {
+            ArenaJobPlayer out;
+            out.simulations = p.simulations;
+            out.randomSymmetry = p.randomSymmetry;
+            out.cPuct = p.cPuct;
+            out.mctsBatch = p.mctsBatch;
+            if (p.net) {
+                const size_t i = static_cast<size_t>(std::find(nets.begin(), nets.end(), p.net) - nets.begin());
+                auto at = std::find(used.begin(), used.end(), i);
+                if (at == used.end()) {
+                    used.push_back(i);
+                    at = used.end() - 1;
+                }
+                out.network = static_cast<int>(at - used.begin());
+            }
+            return out;
+        };
+        for (const ArenaGameRange& r : ranges) job.ranges.push_back({seat(r.a), seat(r.b), r.seed, r.first, r.count});
+        for (size_t i : used) {
+            job.networks.push_back({netFileName(files[i].second), files[i].second});
+            ps.remote.networks.push_back(files[i]);
+        }
+        char base[64];
+        std::snprintf(base, sizeof base, "arena_g%04d_w%d_%d", g, w, assigned[k].first);
+        ps.remote.base = base;
+        ps.remote.jobBytes = serializeArenaJob(job);
+        const std::string jobBytes = ps.remote.jobBytes;
+        ps.remote.accept = [&results, k, jobBytes](const std::string& path, SliceReport& report) {
+            ArenaSliceResult result = readArenaResult(path, jobBytes, buildId());
+            report.fingerprint = result.fingerprint;
+            report.build = shortOf(result.buildId);
+            report.stats = result.stats;
+            results[k] = std::move(result.games);
+        };
+    }
+    std::vector<SliceReport> reports =
+        runSlices(g, slices, cfg_.arenaEngines, workDir, "arena wave " + std::to_string(w) + " games");
+
+    // Merge by wave index, each filled exactly once, then each match's
+    // result from its games in index order.
+    std::vector<ArenaGameResult> games(static_cast<size_t>(total));
+    std::vector<char> filled(static_cast<size_t>(total), 0);
+    for (size_t k = 0; k < n; ++k) {
+        if (results[k].size() != static_cast<size_t>(assigned[k].count))
+            throw std::logic_error("arena slice of " + reports[k].engine +
+                                   " returned the wrong number of games");
+        for (int j = 0; j < assigned[k].count; ++j) {
+            const size_t i = static_cast<size_t>(assigned[k].first + j);
+            if (i >= games.size() || filled[i])
+                throw std::logic_error("arena game " + std::to_string(i) + " assigned twice or out of range");
+            filled[i] = 1;
+            games[i] = std::move(results[k][static_cast<size_t>(j)]);
+        }
+    }
+    for (size_t i = 0; i < filled.size(); ++i)
+        if (!filled[i]) throw std::logic_error("arena game " + std::to_string(i) + " was not played");
+    std::vector<MatchResult> out;
+    size_t at = 0;
+    for (const ArenaMatchSpec& m : wave) {
+        const auto from = games.begin() + static_cast<std::ptrdiff_t>(at);
+        out.push_back(matchResult(std::vector<ArenaGameResult>(from, from + m.games)));
+        at += static_cast<size_t>(m.games);
+    }
+    if (anyRemote) {
+        std::error_code ec;
+        std::filesystem::remove_all(netDir, ec);
+        finishWorkDir(workDir, failedSlices_);
+        // arena-work itself, once its last wave directory is gone.
+        if (std::filesystem::is_empty(std::filesystem::path(workDir).parent_path(), ec))
+            std::filesystem::remove(std::filesystem::path(workDir).parent_path(), ec);
+    }
+    for (SliceReport& r : reports) {
+        r.wave = w;
+        arenaReports_.push_back(r);
+    }
+    return out;
+}
+
+int arenaWaveNetworks(const Config& cfg) {
+    const int calibration = 1 + static_cast<int>(cfg.referenceNetworks.size());
+    const int round = 3 + cfg.arenaOpponents + (cfg.gating ? 1 : 0);
+    return std::max(calibration, round);
 }
 
 std::string runIdOf(const std::string& runDir) {
@@ -1037,13 +1290,17 @@ std::string manifestPath(const std::string& runDir) {
     return (std::filesystem::path(runDir) / "selfplay-engines.csv").string();
 }
 
+std::string arenaManifestPath(const std::string& runDir) {
+    return (std::filesystem::path(runDir) / "arena-engines.csv").string();
+}
+
 namespace {
 
-// The manifest's header and its rows of generations before g; *dropped
+// A manifest's header and its rows of generations before g; *dropped
 // counts the others.
-std::string manifestBefore(const std::string& runDir, int g, int* dropped = nullptr) {
-    std::string out = kManifestHeader;
-    std::ifstream in(manifestPath(runDir), std::ios::binary);
+std::string manifestBefore(const std::string& path, const char* header, int g, int* dropped = nullptr) {
+    std::string out = header;
+    std::ifstream in(path, std::ios::binary);
     if (in) {
         std::string line;
         std::getline(in, line);   // the header
@@ -1058,31 +1315,51 @@ std::string manifestBefore(const std::string& runDir, int g, int* dropped = null
     return out;
 }
 
+void pruneManifestFile(const std::string& path, const char* header, int g) {
+    if (!std::filesystem::exists(path)) return;
+    int dropped = 0;
+    const std::string kept = manifestBefore(path, header, g, &dropped);
+    if (dropped > 0) writeFileAtomically(path, kept);
+}
+
+// A report's columns from planned on: planned, engine, fingerprint, build,
+// seconds, positions, evaluations, note.
+std::string reportColumns(const SliceReport& r) {
+    char numbers[96];
+    std::snprintf(numbers, sizeof numbers, "%.1f,%lld,%lld", r.stats.seconds, r.stats.positions,
+                  r.stats.evaluations);
+    return csvField(r.planned) + "," + csvField(r.engine) + "," + csvField(r.fingerprint, true) + "," +
+           csvField(r.build) + "," + numbers + "," + csvField(r.note);
+}
+
 } // namespace
 
 void pruneManifest(const std::string& runDir, int g) {
-    if (!std::filesystem::exists(manifestPath(runDir))) return;
-    int dropped = 0;
-    const std::string kept = manifestBefore(runDir, g, &dropped);
-    if (dropped > 0) writeFileAtomically(manifestPath(runDir), kept);
+    pruneManifestFile(manifestPath(runDir), kManifestHeader, g);
+}
+
+void pruneArenaManifest(const std::string& runDir, int g) {
+    pruneManifestFile(arenaManifestPath(runDir), kArenaManifestHeader, g);
 }
 
 void writeManifest(const std::string& runDir, int g, const std::vector<SliceReport>& reports) {
-    std::string out = manifestBefore(runDir, g);
-    for (const SliceReport& r : reports) {
-        char numbers[96];
-        std::snprintf(numbers, sizeof numbers, "%.1f,%lld,%lld", r.stats.seconds, r.stats.positions,
-                      r.stats.evaluations);
+    std::string out = manifestBefore(manifestPath(runDir), kManifestHeader, g);
+    for (const SliceReport& r : reports)
         out += std::to_string(g) + "," + std::to_string(r.slice.first) + "," +
-               std::to_string(r.slice.count) + "," + csvField(r.planned) + "," + csvField(r.engine) +
-               "," + csvField(r.fingerprint, true) + "," + csvField(r.build) + "," + numbers + "," +
-               csvField(r.note) + "\n";
-    }
+               std::to_string(r.slice.count) + "," + reportColumns(r) + "\n";
     writeFileAtomically(manifestPath(runDir), out);
 }
 
-std::string enginesLine(const std::vector<SliceReport>& reports) {
-    std::string out = "selfplay engines:";
+void writeArenaManifest(const std::string& runDir, int g, const std::vector<SliceReport>& reports) {
+    std::string out = manifestBefore(arenaManifestPath(runDir), kArenaManifestHeader, g);
+    for (const SliceReport& r : reports)
+        out += std::to_string(g) + "," + std::to_string(r.wave) + "," + std::to_string(r.slice.first) + "," +
+               std::to_string(r.slice.count) + "," + reportColumns(r) + "\n";
+    writeFileAtomically(arenaManifestPath(runDir), out);
+}
+
+std::string enginesLine(const std::vector<SliceReport>& reports, const std::string& label) {
+    std::string out = label + ":";
     for (size_t k = 0; k < reports.size(); ++k) {
         const SliceReport& r = reports[k];
         const double rate =

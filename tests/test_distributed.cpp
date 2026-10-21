@@ -596,7 +596,7 @@ static void test_failing_engine_stops_the_others() {
     cfg.valueHidden = 8;
     cfg.gamesPerGeneration = 2000;
     applyOverride(cfg, "selfplay_engines=local/naive=1999, local/metal:1");
-    SelfPlayCoordinator coordinator(cfg, "unused",
+    Coordinator coordinator(cfg, "unused",
                                     parseHostsText("local cpu_workers=1 inference_batch=4\n", "h"), nullptr);
     const Network net(cfg.netConfig(), 3);
     SelfPlayConfig sp;
@@ -1341,7 +1341,7 @@ static void test_failing_engine_stops_remote_slices() {
                                            "h");
     const std::string runDir = (work.dir / "run").string();
     std::filesystem::create_directories(runDir);
-    SelfPlayCoordinator coordinator(cfg, runDir, hosts, nullptr);
+    Coordinator coordinator(cfg, runDir, hosts, nullptr);
     const Network net = loadNetwork((work.dir / "net_test.azn").string());
     SelfPlayConfig sp;
     sp.mcts.simulations = 64;
@@ -1379,7 +1379,7 @@ static void test_remote_machines_at_once() {
     for (const char* alias : {"fa", "fb", "fc"})
         hostsText += std::string(alias) + " exe=" + AZGO_SELFPLAY_EXE + " workdir=" +
                      (work.dir / ("remote_" + std::string(alias))).string() + "\n";
-    SelfPlayCoordinator coordinator(cfg, (work.dir / "run").string(), parseHostsText(hostsText, "h"),
+    Coordinator coordinator(cfg, (work.dir / "run").string(), parseHostsText(hostsText, "h"),
                                     nullptr);
     coordinator.preflight();
     const std::string netA = (work.dir / "net_test.azn").string();
@@ -1573,7 +1573,7 @@ static void test_merge_order_independent() {
         distributed_probe::delaySlice("fa/naive", delays[order[0]]);
         distributed_probe::delaySlice("fb/naive", delays[order[1]]);
         distributed_probe::delaySlice("fc/naive", delays[order[2]]);
-        SelfPlayCoordinator coordinator(cfg, (work.dir / "run").string(), hosts, nullptr);
+        Coordinator coordinator(cfg, (work.dir / "run").string(), hosts, nullptr);
         coordinator.preflight();
         const std::vector<GameRecord> merged = coordinator.play(2, netPath, net, sp, 6);
         assert(sameRecords(merged, whole));

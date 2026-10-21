@@ -9,7 +9,7 @@
 // byte-identically to one that was never interrupted. With backend = metal,
 // self-play, the arena and the validation loss evaluate the network on the
 // GPU through batching hubs, under the same guarantees on one machine. With
-// selfplay_engines, a SelfPlayCoordinator plays each generation's games on
+// selfplay_engines, a Coordinator plays each generation's games on
 // several engines at once (azgo/coordinator.hpp); without it, self-play is
 // one engine, exactly as before.
 #include <iostream>
@@ -56,7 +56,7 @@ struct GenerationStats {
     float seenPolicyLoss = -1, seenValueLoss = -1, seenOwnershipLoss = -1;
 };
 
-class SelfPlayCoordinator;   // azgo/coordinator.hpp
+class Coordinator;   // azgo/coordinator.hpp
 
 // How a run reaches other machines; nothing here changes a result.
 // hostsFile: the machine-local hosts file (azgo/engines.hpp); empty means
@@ -98,7 +98,7 @@ public:
     //   gpu: Apple M5 Max, macOS 27.0.1, shaders 3f1c9a07 (inference: self-play, arena, validation)
     // With selfplay_engines, the coordinator's preflight runs first, before
     // anything is written: it reads the hosts file (opts.hostsFile), checks
-    // every engine and prints one line per engine (SelfPlayCoordinator::preflight).
+    // every engine and prints one line per engine (Coordinator::preflight).
     static std::unique_ptr<Trainer> startNew(const Config& cfg, const std::string& runDir,
                                              const RunInit& init = {},
                                              std::ostream* log = &std::cout,
@@ -143,7 +143,7 @@ private:
     // player -(bots + j + 1) is referenceNets_[j].
     std::vector<Network> referenceNets_;
     // Plays self-play when selfplay_engines is set; null on the default path.
-    std::unique_ptr<SelfPlayCoordinator> coordinator_;
+    std::unique_ptr<Coordinator> coordinator_;
 };
 
 // Re-rates the run in runDir without training it: replays the arena phase of

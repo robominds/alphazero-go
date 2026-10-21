@@ -1,25 +1,29 @@
-// The self-play coordinator: plays one generation's games on the engines
-// that selfplay_engines lists, and records who played what.
+// The coordinator: plays one generation's self-play games on the engines
+// that selfplay_engines lists, and its arena waves on the engines that
+// arena_engines lists, and records who played what.
 //
-// assignGames cuts the generation's game indices into one contiguous slice
-// per engine. Each local engine (local/metal, local/blas, ...) runs its
-// slice through playSelfPlayGames on its own thread, with its own pool of
-// workers and evaluators, at the same time as the others: a GPU engine's
-// hub and a CPU engine's per-worker BLAS backends share nothing but the
-// read-only network. The slices are then merged by game index, never by
-// the order they finished in, so the generation's records depend only on
-// the assignment and on what each engine computes. A remote engine's slice
-// (a machine of the hosts file) is a job file sent through a Transport to
-// that machine's selfplay binary, whose verified result file comes back.
+// assignGames cuts the games (a generation's self-play games, or one arena
+// wave's games, numbered match-major) into one contiguous slice per engine.
+// Each local engine (local/metal, local/blas, ...) plays its slice on its
+// own thread, with its own pool of workers and evaluators, at the same time
+// as the others: a GPU engine's hubs and a CPU engine's per-worker BLAS
+// backends share nothing but the read-only networks. The slices are then
+// merged by game index, never by the order they finished in, so the results
+// depend only on the assignment and on what each engine computes. A remote
+// engine's slice (a machine of the hosts file) is a job file sent through a
+// Transport to that machine's selfplay binary, whose verified result file
+// comes back.
 //
-// Every slice is written to the run's manifest, selfplay-engines.csv: the
-// engine planned for it, the engine that played it, that engine's
-// fingerprint and build, and what it cost. With the seed, the manifest is
-// the exact recipe for every game of the run.
+// Every slice is written to the run's manifests, selfplay-engines.csv and
+// arena-engines.csv: the engine planned for it, the engine that played it,
+// that engine's fingerprint and build, and what it cost. With the seed, the
+// manifests are the exact recipe for every game of the run.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #pragma once
 #include <atomic>
+#include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -27,6 +31,7 @@
 #include <ostream>
 #include <string>
 #include <vector>
+#include "azgo/arena.hpp"
 #include "azgo/config.hpp"
 #include "azgo/engines.hpp"
 #include "azgo/network.hpp"
@@ -39,11 +44,13 @@ namespace azgo {
 // One slice of one generation: the games, the engine the assignment
 // planned and the one that played it (equal unless a slice fell back),
 // that engine's fingerprint and build (shortBuildId), the statistics, and
-// a note ("" or why another engine played it).
+// a note ("" or why another engine played it). An arena slice also has its
+// wave (1, 2, ... in the generation); its games are wave indices.
 struct SliceReport {
     Slice slice;
     std::string planned, engine, fingerprint, build, note;
     SliceStats stats;
+    int wave = 0;   // arena slices only
 };
 
 // ---- transports ----------------------------------------------------------------
@@ -171,69 +178,117 @@ std::vector<std::string> scpArgv(const MachineSettings& machine, const std::stri
 
 // ---- the coordinator ---------------------------------------------------------------
 
-class SelfPlayCoordinator {
+class Coordinator {
 public:
-    // cfg.selfplayEngines must not be empty. `hosts` gives each machine's
-    // settings (local's defaults when it has no line). Progress and notes go
-    // to `log` (null: silent). runDir names the run on remotes (runIdOf).
-    SelfPlayCoordinator(const Config& cfg, const std::string& runDir, HostsFile hosts,
-                        std::ostream* log);
+    // cfg.selfplayEngines and cfg.arenaEngines must not both be empty.
+    // `hosts` gives each machine's settings (local's defaults when it has no
+    // line). Progress and notes go to `log` (null: silent). runDir names the
+    // run on remotes (runIdOf).
+    Coordinator(const Config& cfg, const std::string& runDir, HostsFile hosts, std::ostream* log);
     // Removes the networks it uploaded (best effort): a remote keeps no
     // file of a run between two coordinators.
-    ~SelfPlayCoordinator();
+    ~Coordinator();
 
-    // Before a run writes anything (and writing nothing):
-    //  - local engines: checkBackendAvailable, and for metal
-    //    checkMetalInferenceMemory for one two-slot hub per metal item;
+    // Before a run writes anything (and writing nothing), for the engines of
+    // both lists:
+    //  - local engines: checkBackendAvailable; for metal (cuda)
+    //    checkMetalInferenceMemory (checkCudaInferenceMemory) for one
+    //    two-slot hub per self-play item, and for arenaWaveNetworks(cfg)
+    //    one-slot hubs per arena item;
     //  - remote machines: every alias must be in the hosts file (else
     //    ConfigError); `selfplay --version` there must report this binary's
     //    build ID (else ConfigError naming the alias and both IDs), and
     //    `selfplay --fingerprint --backend B` must succeed for each of its
     //    engines (a backend it cannot run: ConfigError). A machine that
     //    cannot be reached at all is a ConfigError with selfplay_fallback =
-    //    stop, and a warning with local;
+    //    stop, and a warning with local. Messages name the key (selfplay_engines
+    //    or arena_engines) that lists the machine;
     //  - one line per engine, its fingerprint and build:
     //      engine mini1/metal: Apple M4; macOS 26.1 (25B78); Apple M4, ... [09e008b]
-    //    and a note for an engine whose fingerprint differs from the
+    //    and a note for an engine whose fingerprint differs from either
     //    manifest's last row for it (its games' last bits change from here).
     void preflight();
 
     // Generation g's `games` self-play games from `net` (the checkpoint at
-    // networkPath), merged in index order. Local slices run in this
-    // process, each on its own thread; each remote slice on a thread that
-    // uploads the network (unless that machine has it) and the job, runs
-    // selfplay there, downloads the result and verifies it
-    // (readSliceResult). Work files go to runDir/selfplay-work/gen_NNNN and
-    // workdir/<run-id>/ on the machine, and are removed after the merge
-    // (the network stays until the next one replaces it). Throws the first
-    // failure of any slice, by list order, after every slice has stopped.
+    // networkPath), merged in index order. cfg.selfplayEngines must not be
+    // empty. Local slices run in this process, each on its own thread; each
+    // remote slice on a thread that uploads the network (unless that
+    // machine has it) and the job, runs selfplay there, downloads the
+    // result and verifies it (readSliceResult). Work files go to
+    // runDir/selfplay-work/gen_NNNN and workdir/<run-id>/ on the machine,
+    // and are removed after the merge (the network stays until a later
+    // phase no longer needs it). Throws the first failure of any slice, by
+    // list order, after every slice has stopped.
     std::vector<GameRecord> play(int g, const std::string& networkPath, const Network& net,
                                  const SelfPlayConfig& sp, int games);
     // The last play()'s slices, in list order.
     const std::vector<SliceReport>& reports() const { return reports_; }
+
+    // Starts generation g's arena: its waves are numbered from 1 and its
+    // reports start empty.
+    void beginArena(int g);
+    // One wave of the arena begun last (cfg.arenaEngines must not be empty):
+    // assignGames(arena_engines, the wave's games) over its games numbered
+    // match-major (waveSlice), every slice at once as play()'s are, local
+    // ones with playArenaGames, remote ones as arena jobs (each network a
+    // slice needs is saved from memory and uploaded, readArenaResult
+    // verifies the answer). Work files go to runDir/arena-work/gen_NNNN_wW.
+    // Returns each match's result (matchResult of its games in index
+    // order), which is exactly what playMatches gives when every engine
+    // computes the same bits. Failures as play()'s; the fallback engine is
+    // the first local/... item of arena_engines, else local/<backend>.
+    std::vector<MatchResult> playArena(const std::vector<ArenaMatchSpec>& wave, const ArenaConfig& cfg);
+    // The slices of every wave since beginArena, wave by wave, in list order.
+    const std::vector<SliceReport>& arenaReports() const { return arenaReports_; }
+
     void setLog(std::ostream* log) { log_ = log; }
 
 private:
+    // What a remote attempt at a slice needs, whatever its kind: its file
+    // base name (base + "_a<attempt>.job"), the job file's bytes, the local
+    // files of the networks it names (each uploaded as net_<hash>.azn), and
+    // how to read and keep a downloaded result (it fills the report's
+    // fingerprint, build and stats, and throws SliceError if the result does
+    // not verify).
+    struct RemoteWork {
+        std::string base, jobBytes;
+        std::vector<std::pair<std::string, uint64_t>> networks;   // local path, fileHash
+        std::function<void(const std::string& localResult, SliceReport& report)> accept;
+    };
+    // One slice of a phase (self-play, or an arena wave): its engine, its
+    // games, the remote work when the engine is remote, and how to play it
+    // here (a local engine, or the fallback), keeping the results.
+    struct PhaseSlice {
+        EngineSpec engine;
+        Slice slice;
+        RemoteWork remote;
+        std::function<void(const EngineRun& run, SliceStats* stats)> playLocal;
+    };
     std::unique_ptr<Transport> transportFor(const MachineSettings& m, const std::string& log) const;
     std::string remoteDir(const MachineSettings& m) const;
+    // The key that lists a remote machine, for messages.
+    std::string keyFor(const std::string& alias) const;
     void unreachable(const std::string& alias, const std::string& why);
-    // One attempt at a remote slice, start to verified records; fills
+    // Runs a phase's slices at once, one thread each, and returns their
+    // reports in list order. `list` is the engine list they come from (its
+    // first local item is the fallback engine); workDir must exist when a
+    // slice is remote; `what` names the games in notes ("games", "arena wave
+    // 1 games"). Throws the first failure by list order after every slice
+    // stopped.
+    std::vector<SliceReport> runSlices(int g, std::vector<PhaseSlice>& slices,
+                                       const std::vector<EngineSpec>& list, const std::string& workDir,
+                                       const std::string& what);
+    // One attempt at a remote slice, start to verified result; fills
     // report. Throws SliceError on a failure, after removing the attempt's
     // files and process, and SliceCancelled once `stop` is set.
-    std::vector<GameRecord> attemptRemote(int attempt, int g, const Slice& slice,
-                                          const EngineSpec& e, const std::string& networkPath,
-                                          uint64_t networkHash,
-                                          const SelfPlayConfig& sp, const std::string& workDir,
-                                          const std::atomic<bool>& stop, SliceReport& report);
+    void attemptRemote(int attempt, const EngineSpec& e, const RemoteWork& work,
+                       const std::string& workDir, const std::atomic<bool>& stop, SliceReport& report);
     // A remote slice with the failure policy: two attempts, then with
     // selfplay_fallback = local the fallback engine plays it (report.engine,
     // fingerprint and note say so, and a note goes to the log), with stop a
     // SliceError.
-    std::vector<GameRecord> playRemote(int g, const Slice& slice, const EngineSpec& e,
-                                       const std::string& networkPath, uint64_t networkHash,
-                                       const Network& net, const SelfPlayConfig& sp,
-                                       const std::string& workDir, const std::atomic<bool>& stop,
-                                       SliceReport& report);
+    void playRemote(int g, PhaseSlice& slice, const std::string& fallback, const std::string& workDir,
+                    const std::atomic<bool>& stop, const std::string& what, SliceReport& report);
     Config cfg_;
     std::string runDir_, runId_;
     HostsFile hosts_;
@@ -242,21 +297,31 @@ private:
     std::map<std::string, std::string> remoteBuilds_;   // alias -> its full build ID
     std::set<std::string> unreachable_;                 // aliases preflight could not reach
     // What the coordinator knows of a remote machine. The map is filled by
-    // play() before any slice thread starts and never changes while they
+    // runSlices before any slice thread starts and never changes while they
     // run; each entry's fields are touched only under its own mutex.
     struct MachineState {
-        std::mutex mutex;          // its uploads and cleanup, one slice at a time
-        bool contacted = false;    // stale files of an earlier coordinator cleared
-        std::string uploadedNet;   // the network path uploaded there ("" = none)
-        bool suspect = false;      // unreachable at preflight or in an earlier generation
-        bool down = false;         // found unreachable this generation: slices fall back
+        std::mutex mutex;              // its uploads and cleanup, one slice at a time
+        bool contacted = false;        // stale files of an earlier coordinator cleared
+        std::set<std::string> uploaded;   // network paths uploaded there
+        std::set<std::string> keep;       // those the current phase's slices need
+        bool suspect = false;          // unreachable at preflight or in an earlier generation
+        bool down = false;             // found unreachable this generation: slices fall back
     };
-    MachineState& machine(const std::string& alias);   // must exist (play() made it)
+    MachineState& machine(const std::string& alias);   // must exist (runSlices made it)
     std::map<std::string, std::unique_ptr<MachineState>> machines_;   // by alias
     std::mutex logMutex_;                               // slices' notes, from their threads
-    std::atomic<bool> failedSlices_{false};             // this generation: keep the logs
+    std::atomic<bool> failedSlices_{false};             // this phase: keep the logs
     std::vector<SliceReport> reports_;
+    int arenaGeneration_ = 0, arenaWave_ = 0;
+    std::vector<SliceReport> arenaReports_;
 };
+
+// The most networks an arena wave can hold, so the most hubs it runs at once
+// on a GPU engine (bots need none): the calibrations when a run starts
+// (generation 0 and every reference network), or a round (the new network,
+// g-1, the strongest reference, arena_opponents more and, with gating, the
+// best network).
+int arenaWaveNetworks(const Config& cfg);
 
 // How a run is named on remotes: its directory's name (characters outside
 // [A-Za-z0-9_.-] become '_'), '-', and the 16 hex digits of the FNV-1a hash
@@ -297,8 +362,22 @@ void writeManifest(const std::string& runDir, int g, const std::vector<SliceRepo
 // g = the committed generation + 1, with engines on or off.
 void pruneManifest(const std::string& runDir, int g);
 
+// runDir/arena-engines.csv
+std::string arenaManifestPath(const std::string& runDir);
+
+// Rewrites the arena manifest atomically, as writeManifest the self-play
+// one: its rows of generations before g, then one row per report:
+//   generation,wave,first,count,planned,engine,fingerprint,build,seconds,positions,evaluations,note
+// first and count are wave indices (a wave's games numbered match-major).
+void writeArenaManifest(const std::string& runDir, int g, const std::vector<SliceReport>& reports);
+
+// Drops the arena manifest's rows of generations g and later, as pruneManifest.
+void pruneArenaManifest(const std::string& runDir, int g);
+
 // "selfplay engines: local/metal 52 1512s 3.5k ev/s | local/blas 12 1490s 0.9k": each
-// slice's engine, games, wall time and network evaluations per second.
-std::string enginesLine(const std::vector<SliceReport>& reports);
+// slice's engine, games, wall time and network evaluations per second, after
+// `label` ("arena engines" for an arena wave's slices).
+std::string enginesLine(const std::vector<SliceReport>& reports,
+                        const std::string& label = "selfplay engines");
 
 } // namespace azgo
