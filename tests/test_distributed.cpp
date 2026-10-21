@@ -1203,8 +1203,18 @@ static void test_run_process() {
     // No zombie, no descriptor left open.
     const int before = openDescriptors();
     for (int i = 0; i < 200; ++i) assert(runProcess({"true"}, log, 10).exitCode == 0);
+    // On macOS, posix_spawnp's failed exec of a PATH entry (the missing
+    // program above) leaves a child the kernel reaps itself, which waitpid
+    // can briefly still see as running (0). Give it up to 2 s to go; a
+    // zombie of ours (a pid) or a child that stays fails.
     errno = 0;
-    assert(waitpid(-1, nullptr, WNOHANG) == -1 && errno == ECHILD);
+    pid_t left = waitpid(-1, nullptr, WNOHANG);
+    for (int tries = 0; left == 0 && tries < 200; ++tries) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        errno = 0;
+        left = waitpid(-1, nullptr, WNOHANG);
+    }
+    assert(left == -1 && errno == ECHILD);
     assert(openDescriptors() == before);
     std::filesystem::remove(log);
     std::filesystem::remove(input);
