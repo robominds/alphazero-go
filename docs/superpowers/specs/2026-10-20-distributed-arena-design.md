@@ -21,18 +21,20 @@ out of questions) are marked **Call**.
 
 The 13×13 6×96 run (`runs/13x13-agz`, gating on, 800 arena simulations,
 40 games per opponent) spends its arena on the Studio's GPU alone, while
-the minis and the PC, which played 48% of its self-play, sit idle:
+the minis and the PC, which play 72% of its self-play, sit idle:
 
-| generation | wave | games | arena_s |
-|---|---|---|---|
-| 20 | g−1 (= best = strongest reference) | 40 | 573 |
-| 21 | g−1, best | 80 | 1,075 |
-| 22 | g−1, best | 80 | 1,021 |
+| generation | wave | games | selfplay_s | arena_s |
+|---|---|---|---|---|
+| 20 | g−1 (= best = strongest reference) | 40 | 2,972 | 573 |
+| 21 | g−1, best | 80 | 2,952 | 1,075 |
+| 22 | g−1, best | 80 | 2,944 | 1,021 |
+| 23 (the PC joined self-play) | g−1, best | 80 | 800 | 1,037 |
 
 That is ~10.4k evaluations per second (80 games × ~166 plies × ~800
 simulations in 1,020 s): the Studio is throughput-bound in the arena as in
-self-play. With self-play at ~49 min across four engines, the arena is a
-quarter of a generation. A promotion adds a second wave of 80 more games.
+self-play. Since the PC joined self-play, the arena takes longer than
+self-play: more than half of a generation. A promotion adds a second wave of
+80 more games.
 
 ## Goals
 
@@ -86,7 +88,7 @@ A tunable config key, the same syntax as `selfplay_engines`, printed
 after `arena_random_symmetry`:
 
 ```
-arena_engines = local/metal:133, mini1/metal:24, mini2/metal:24, pc/cuda:300
+arena_engines = local/metal:16, mini1/metal:3, mini2/metal:3, pc/cuda:46
 ```
 
 - **Empty (the default)**: today's arena, `playMatches` with the run's
@@ -285,8 +287,8 @@ One row per slice per wave per generation, in the run directory:
 
 ```
 generation,wave,first,count,planned,engine,fingerprint,build,seconds,positions,evaluations,note
-22,1,0,22,local/metal,local/metal,"metal; Apple M5 Max; ...",1a2b3c4,301.2,3652,2913024,
-22,1,30,50,pc/cuda,pc/cuda,"cuda; AMD Ryzen ...; NVIDIA ...",1a2b3c4,288.0,8301,6630112,
+22,1,0,19,local/metal,local/metal,"metal; Apple M5 Max; ...",1a2b3c4,241.2,2280,1821024,
+22,1,26,54,pc/cuda,pc/cuda,"cuda; AMD Ryzen ...; NVIDIA ...",1a2b3c4,236.0,6480,5184110,
 ```
 
 `first` and `count` are wave indices. With the seed and the run state,
@@ -301,7 +303,7 @@ then.
 The progress output gains one line per wave, before the generation line:
 
 ```
-arena engines: local/metal 22 301s 9.7k ev/s | mini1/metal 4 290s 1.8k | mini2/metal 4 295s 1.8k | pc/cuda 50 288s 23.0k
+arena engines: local/metal 19 241s 7.6k ev/s | mini1/metal 4 262s 1.5k | mini2/metal 3 205s 1.5k | pc/cuda 54 236s 22.0k
 ```
 
 ### Who uses it
@@ -372,14 +374,18 @@ with the new binary.
 - `test_arena`: `waveSlice` for every cut of a wave (ranges in order,
   counts, empty slices); `playArenaGames` over any slices of a wave equals
   `playMatches` game for game (scores, moves, `matchResult`), naive and
-  blas, workers 1, 3 and 0; refusals; cancellation; CUDA arena evaluators
-  in `test_cuda` (skipped without a GPU).
-- `test_distributed`: arena job and result round trip; every refusal
+  blas, workers 1, 3 and 0; refusals; cancellation; statistics.
+- `test_cuda` (skipped without a GPU): an arena wave on `cuda` is the same
+  for workers 1, 3 and 0, batches 8 and 256 and chaos batching, and a
+  wave cut in two slices plays the same games.
+- `test_distributed_arena` (new): arena job and result round trip; every refusal
   (magic, version, checksum, truncation, job hash, build, game count, an
   illegal move, a game that ends early or never ends, a wrong score,
   positions); `runJob` dispatch; the real `selfplay` binary answers an
   arena job end to end, bitwise as in process; `Coordinator::playArena`
-  with split local engines and a fake remote equals `playMatches`.
+  with split local engines and a fake remote (subprocess and in-process)
+  equals `playMatches`, sends a remote only its slices' networks, numbers
+  waves, falls back or stops; the arena manifest's rows and pruning.
 - `test_trainer`: `arena_engines = local/naive:1` and a split and a fake
   remote equal the default run byte for byte (gating, bots, reference
   networks, promotions); resume; switching on and off at resume; the
@@ -397,22 +403,33 @@ with the new binary.
 
 ## Sizing (recommendation for the live run)
 
-Arena rates are lower than self-play's: a wave has 40–80 games, so each
+Arena rates are lower than self-play's: a wave has 40–120 games, so each
 engine has fewer searches in flight than in self-play, split across two to
-four hubs. Measured on the Studio: 40 games ran at ~9.2k evaluations per
-second, 80 at ~10.4k. CUDA passes cost ~2.3 ms at batch 8 and ~8.3 ms at
-256 (`docs/results/cuda-bench.txt`), so a CUDA slice of 25–50 games
-(passes of ~100–200 positions) should run at roughly 15–25k. Weights
-proportional to the self-play rates are a sound start:
+four hubs. Measured (`docs/results/bench.txt`, "The distributed arena"):
+
+| engine | arena games in flight | evals/s | self-play |
+|---|---|---|---|
+| Studio GPU (from the live log) | 40 / 80 | ~9.3k / ~10.4k | ~13.3–14.3k |
+| PC GPU (`local/cuda`, 13×13 6×96) | 26 / 50 | 15.7–17.2k / 22.9–23.9k | ~29–30k |
+| each mini GPU | 3–4 | not measured; ~1.5k assumed | ~2.4k |
+
+So weights proportional to the self-play rates (133 : 24 : 24 : 300) would
+give the Studio too many games for its smaller arena share. Weights from the
+arena rates at the slice sizes they produce, about 8k, 1.5k, 1.5k and 23k:
 
 ```
-arena_engines = local/metal:133, mini1/metal:24, mini2/metal:24, pc/cuda:300
+arena_engines = local/metal:16, mini1/metal:3, mini2/metal:3, pc/cuda:46
 ```
 
-A wave of 80 games becomes 22 / 4 / 4 / 50, one of 40 games 11 / 2 / 2 /
-25. Expected: ~4–6 minutes per 80-game wave instead of 17. After a few
-generations `tools/engine_weights.py --arena` suggests weights from the
-measured arena rates.
+`assignGames` turns a wave of 80 games (g−1 and the best network) into
+19 / 4 / 3 / 54, one of 40 games into 9 / 2 / 2 / 27, and one of 120 (a
+third opponent) into 28 / 6 / 5 / 81. With ~100k evaluations per arena
+game (about 120 plies of 800 simulations), each slice of an 80-game wave
+should take 3.5–4.5 minutes, against 17 minutes on the Studio alone today.
+After two or three generations `tools/engine_weights.py RUN_DIR --arena`
+suggests weights from the measured arena rates in `arena-engines.csv`.
+Dropping the minis (`local/metal:16, pc/cuda:46`) costs ~10% and removes
+two slices that could be a wave's tail.
 
 ## Risks
 

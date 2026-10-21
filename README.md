@@ -437,7 +437,7 @@ way, with the same hosts file, transports, `selfplay` binary, retries and
 fallback (`selfplay_fallback` covers it too):
 
 ```
-arena_engines = local/metal:133, mini1/metal:24, mini2/metal:24, pc/cuda:300
+arena_engines = local/metal:16, mini1/metal:3, mini2/metal:3, pc/cuda:46
 ```
 
 It takes weights only: a wave holds 40, 80 or 160 games, so a fixed count

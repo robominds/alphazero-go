@@ -630,3 +630,51 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 # evals/s, the whole process under one CPU core. The PC's CPU as a blas
 # engine adds ~1,800 evals/s with 8 workers beside the GPU, which stays at
 # 99%.
+# =============================================================================
+# The distributed arena (arena_engines), checks and rates (2026-10-21)
+# =============================================================================
+# Branch distributed-arena (spec docs/superpowers/specs/2026-10-20-distributed-arena-design.md).
+# Studio builds niced (-j6) while the 13x13 run trained; tiny runs only.
+#
+# Old against new train, default path (arena_engines empty): main 781c16f
+# and the branch, on 5x5 (1x8, bots 8 and 16, gating, promote_threshold 0.5,
+# resignation) and 9x9 (1x16, bot 8, gating, promotions), naive, blas and
+# metal, 2 generations then a resume to 4. Every checkpoint, state.bin,
+# results.csv, elo.csv, references.csv, SGF and log.csv without timings is
+# byte-identical (6 of 6 runs); config.cfg differs only by
+# "arena_engines = "; the progress output only by that line, paths and
+# timings; neither binary writes a manifest. With selfplay_engines =
+# local/metal:2, local/blas=2, fake/naive:1 (fake: the subprocess transport)
+# the two binaries also write identical files and an identical
+# selfplay-engines.csv but for its seconds and build columns: the
+# coordinator's refactor did not change self-play.
+#
+# Split arena, resumed: 9x9 as above, backend metal, arena_engines =
+# local/metal:2, local/blas:1, fake/naive:1 (three arithmetics). Four
+# generations straight and two plus a resume to four: identical files and
+# identical arena-engines.csv without its seconds column. (Here the split
+# happened to give the metal-only run's files too: at 16 simulations the
+# last-bit differences flipped no move.)
+#
+# All arena games on one engine against the default metal run: arena_engines
+# = local/metal:1, = fake/metal:1 (every game in a separate selfplay process
+# on this GPU) and = local/metal:1, fake/metal:3: identical files, so the
+# same gating decisions ("best 0, 0, 3, 4") and the same promotion.
+#
+# CUDA build on the PC (scratch directory, -j6): ctest 35 of 35 (test_cuda
+# with the arena wave test, the smoke test's cuda arena section with a local
+# and a fake cuda engine, resumed).
+#
+# CUDA arena rate, measured while the PC's GPU was idle (the 13x13 run's
+# arena phase): 13x13 6x96 random networks, 100 arena simulations, max_moves
+# 120, arena_engines = local/cuda:1 (every game at once, one hub per
+# network):
+#   games per match   wave                          evals/s
+#   50                1 match, 2 networks             22.9k
+#   50                2 matches, 3 networks           23.9k
+#   26                1 match, 2 networks             15.7k
+#   26                2 matches, 3 networks           17.2k
+# The Studio's arena, from the 13x13 run's log (800 simulations, ~166 plies):
+# 40 games, 2 networks, 573 s ~ 9.3k evals/s; 80 games, 3 networks, 1,021 s
+# ~ 10.4k. Fewer games fill the GPU less on both, which is why arena weights
+# are not self-play's (see the spec's "Sizing").
