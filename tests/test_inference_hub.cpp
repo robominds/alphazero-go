@@ -35,6 +35,8 @@
 
 #ifdef __APPLE__
 #include <mach/mach.h>
+#elif defined(__linux__)
+#include <dirent.h>
 #endif
 
 using namespace azgo;
@@ -240,6 +242,16 @@ int threadCount() {
     for (mach_msg_type_number_t i = 0; i < count; ++i) mach_port_deallocate(mach_task_self(), list[i]);
     vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(list), count * sizeof(thread_act_t));
     return static_cast<int>(count);
+#elif defined(__linux__)
+    // Each thread is a directory under /proc/self/task.
+    int count = 0;
+    if (DIR* d = opendir("/proc/self/task")) {
+        while (const dirent* e = readdir(d))
+            if (e->d_name[0] != '.') ++count;
+        closedir(d);
+        return count;
+    }
+    return -1;
 #else
     return -1;   // not checked elsewhere
 #endif
