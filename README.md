@@ -386,7 +386,8 @@ mini2/metal:13, pc/cuda:150, pc/blas=4`: `pc` is a Linux machine whose
 one binary serves both its GPU (`pc/cuda`) and its CPU (`pc/blas`). Other
 keys are `metal_workers` and `cuda_workers` (0, the default: every game of
 the slice at once, which a GPU engine needs to fill its passes),
-`inference_batch`, `nice` and `timeout`. A CPU engine uses
+`inference_batch`, `nice` and `timeout`; they apply to a machine's arena
+slices as well as its self-play slices. A CPU engine uses
 `min(4, cores / 3)` workers on `local` and 2 on a remote by default,
 because BLAS saturates early and more workers only slow the machine's GPU
 engine (`bench --mixed`, `docs/results/bench.txt`). Values may hold only
