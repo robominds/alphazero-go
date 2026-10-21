@@ -28,6 +28,7 @@
 #include "azgo/param_layout.hpp"
 #include "cuda_context.cuh"
 #include "cuda_network.cuh"
+#include "kernels.cuh"
 
 namespace azgo {
 
@@ -39,6 +40,7 @@ std::atomic<uint64_t> gHubChaosSeed{0};
 std::atomic<int> gFailCountdown{0};          // 0: off; else passes left before one fails
 std::atomic<size_t> gMemoryLimit{0};         // 0: the GPU's free memory
 std::atomic<long long> gPassesCompleted{0};
+std::atomic<int> gCopyOutDelayUs{0};          // 0: none
 
 // The memory a check leaves free on the GPU for everything else.
 constexpr size_t kMemoryMargin = size_t(512) << 20;
@@ -85,10 +87,8 @@ public:
         // the hub turns it into a failed batch.
         network_.encodeForward(stream, s.workspace, weights_, B);
         keep(cudaGetLastError());
-        keep(cudaMemcpyAsync(s.logits.data(), s.workspace.logits.data(),
-                             static_cast<size_t>(B) * cfg.actions() * sizeof(float), cudaMemcpyDeviceToHost, stream));
-        keep(cudaMemcpyAsync(s.values.data(), s.workspace.values.data(), static_cast<size_t>(B) * sizeof(float),
-                             cudaMemcpyDeviceToHost, stream));
+        keep(copyOut(s, B));
+        // Recorded after the copies: done means the outputs are on the host.
         keep(cudaEventRecord(s.event, stream));
         if (e != cudaSuccess) error = std::string("cuda: ") + cudaGetErrorString(e);
         {
@@ -99,6 +99,23 @@ public:
     }
 
 private:
+    struct Slot;
+    // The outputs to the slot's page-locked staging, after the test hook's
+    // delay (cuda_probe::setCopyOutDelay) when one is set.
+    cudaError_t copyOut(Slot& s, int B) {
+        const NetConfig& cfg = network_.config();
+        const cudaStream_t stream = s.stream.get();
+        const int delayUs = gCopyOutDelayUs.load();
+        if (delayUs > 0) cuda::launchSpin(1000ull * delayUs, stream);
+        cudaError_t e = cudaMemcpyAsync(s.logits.data(), s.workspace.logits.data(),
+                                        static_cast<size_t>(B) * cfg.actions() * sizeof(float),
+                                        cudaMemcpyDeviceToHost, stream);
+        if (e == cudaSuccess)
+            e = cudaMemcpyAsync(s.values.data(), s.workspace.values.data(), static_cast<size_t>(B) * sizeof(float),
+                                cudaMemcpyDeviceToHost, stream);
+        return e;
+    }
+
     struct Slot {
         cuda::CudaWorkspace workspace;
         cuda::Stream stream;
@@ -211,6 +228,7 @@ uint64_t hubChaosSeed() { return gHubChaosSeed.load(); }
 void failPassesAfter(int n) { gFailCountdown = n > 0 ? n + 1 : 0; }
 void setMemoryLimit(size_t bytes) { gMemoryLimit = bytes; }
 long long passesCompleted() { return gPassesCompleted.load(); }
+void setCopyOutDelay(int microseconds) { gCopyOutDelayUs = microseconds > 0 ? microseconds : 0; }
 
 } // namespace cuda_probe
 

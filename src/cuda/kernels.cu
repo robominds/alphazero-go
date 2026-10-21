@@ -352,6 +352,20 @@ void launchTanh(float* x, size_t count, cudaStream_t s) {
     if (count) tanh_inplace<<<blocksFor(count), kElementwiseThreads, 0, s>>>(x, count);
 }
 
+// ---------------------------------------------------------------- spin (a test hook)
+
+__global__ void spin_kernel(unsigned long long nanoseconds) {
+    unsigned long long start, now;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(start));
+    do {
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
+    } while (now - start < nanoseconds);
+}
+
+void launchSpin(unsigned long long nanoseconds, cudaStream_t s) {
+    if (nanoseconds) spin_kernel<<<1, 1, 0, s>>>(nanoseconds);
+}
+
 // ---------------------------------------------------------------- fill
 
 // The first kernel, a smoke test of the whole path: data[i] = value.

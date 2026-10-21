@@ -141,6 +141,10 @@ void failPassesAfter(int n);
 void setMemoryLimit(size_t bytes);
 // Passes the runners of this process have reported so far. A test hook.
 long long passesCompleted();
+// Makes every runner's pass hold the GPU this many microseconds at the start
+// of its copy-out (0: never), so a test can tell a pass reported before its
+// outputs reached the host. A test hook.
+void setCopyOutDelay(int microseconds);
 
 } // namespace cuda_probe
 

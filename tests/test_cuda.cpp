@@ -891,6 +891,28 @@ void test_runner_slots() {
     }
 }
 
+// A pass is reported only once its outputs have reached the host. A test
+// hook holds the GPU ~2 ms at the start of the copy-out, so a runner that
+// recorded its completion event before the copies (or signalled from the
+// pass alone) would report early, and the host would read the previous
+// pass's outputs: each round uses other positions, so that shows.
+void test_runner_reports_after_copy_out() {
+    const NetConfig cfg = netConfig(9, 2, 16);
+    const Network net = randomNetwork(cfg, 710);
+    const GpuPool pool(net, 48, 711);
+    const size_t in = pool.in(), L = cfg.actions();
+    cuda_probe::setCopyOutDelay(2000);
+    auto runner = makeCudaRunner(net, 8, 2);
+    for (int round = 0; round < 6; ++round) {
+        const int slot = round % 2, first = 8 * round;
+        std::copy_n(pool.input.data() + first * in, 8 * in, runner->input(slot));
+        assert(runSlot(*runner, slot, 8).empty());
+        assert(bitwiseEqual(runner->logits(slot), pool.logits.data() + first * L, 8 * L));
+        assert(bitwiseEqual(runner->values(slot), pool.values.data() + first, 8));
+    }
+    cuda_probe::setCopyOutDelay(0);
+}
+
 // test_inference_hub's chaos test with the CUDA runner: every request's
 // outputs equal its positions evaluated alone on the GPU, bitwise, whatever
 // batches the hub made of them.
@@ -1098,6 +1120,7 @@ int main() {
     test_unread_tensor_refused();
     test_workspace_size_and_speed();
     test_runner_slots();
+    test_runner_reports_after_copy_out();
     test_hub_outputs_equal_alone_under_chaos();
     test_hub_failure_reaches_everyone();
     test_memory_check();

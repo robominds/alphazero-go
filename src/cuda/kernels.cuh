@@ -89,6 +89,10 @@ void launchBiasAddRows(float* y, const float* b, int rows, int cols, cudaStream_
 // The value head's tanh, in place (CUDA's tanhf, within 2 ulp).
 void launchTanh(float* x, size_t count, cudaStream_t stream);
 
+// A test hook's kernel: one thread that keeps the stream busy for about
+// `nanoseconds` (the GPU's global timer), then returns. Writes nothing.
+void launchSpin(unsigned long long nanoseconds, cudaStream_t stream);
+
 // data[0 .. n) = value.
 void launchFill(float* data, size_t n, float value, cudaStream_t stream);
 // The attributes of the fill kernel: its binaryVersion is the architecture of
