@@ -665,6 +665,13 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 # with the arena wave test, the smoke test's cuda arena section with a local
 # and a fake cuda engine, resumed).
 #
+# Over ssh, a real remote: a 5x5 run (backend metal, bot 8, gating) on the
+# Studio with arena_engines = local/metal:1, pc/cuda:2, the PC's selfplay
+# (CUDA build of the same commit, in a scratch directory) playing two thirds
+# of every wave. Four generations straight and two plus a resume to four:
+# identical state.bin, rating files and checkpoints; the preflight printed
+# both engines' fingerprints; afterwards the PC's work directory was empty.
+#
 # CUDA arena rate, measured while the PC's GPU was idle (the 13x13 run's
 # arena phase): 13x13 6x96 random networks, 100 arena simulations, max_moves
 # 120, arena_engines = local/cuda:1 (every game at once, one hub per
