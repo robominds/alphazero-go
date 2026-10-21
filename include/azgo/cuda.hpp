@@ -36,10 +36,13 @@ bool cudaBuilt();
 // -DAZ_CUDA_ARCHITECTURES=86-real".
 bool cudaAvailable(std::string* why = nullptr);
 
-// "NVIDIA GeForce RTX 4070 Ti SUPER sm_89, driver 13.3, runtime 12.8,
+// "NVIDIA GeForce RTX 4070 Ti SUPER sm_89, driver API 13.3, runtime 12.8,
 // kernels 5d0c2e91": the GPU and the architecture its machine code was built
-// for, the CUDA driver and runtime versions, and a hash of the kernel
-// sources, compiler and flags. Two runs whose descriptions match ran the
+// for; the CUDA API version the installed driver supports
+// (cudaDriverGetVersion: a driver update that raises it shows; the NVIDIA
+// driver's own build number, e.g. 581.57, would need NVML, which this
+// binary does not link); the CUDA runtime it was built with (static); and a
+// hash of the kernel sources, compiler and flags. Two runs whose descriptions match ran the
 // same GPU arithmetic. Without a usable GPU it is cudaAvailable's reason.
 std::string cudaDescription();
 

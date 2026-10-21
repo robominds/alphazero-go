@@ -623,7 +623,7 @@ fi
 
 if [ "$CUDA" = "cuda=ON" ]; then
     echo "== cuda: self-play on the GPU, in this process and as a remote slice =="
-    "$BUILD/selfplay" --fingerprint --backend cuda | grep -Eq '^cuda; .+ sm_[0-9]+, driver [0-9.]+, runtime [0-9.]+, kernels [0-9a-f]{8}$' \
+    "$BUILD/selfplay" --fingerprint --backend cuda | grep -Eq '^cuda; .+ sm_[0-9]+, driver API [0-9.]+, runtime [0-9.]+, kernels [0-9a-f]{8}$' \
         || fail "selfplay --fingerprint --backend cuda printed no cuda fingerprint"
     CHOSTS="$W/cuda-hosts"
     echo "fake exe=$BUILD/selfplay workdir=$W/cuda-remote" > "$CHOSTS"

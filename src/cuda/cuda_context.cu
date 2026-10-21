@@ -88,7 +88,10 @@ struct ContextSetup {
         int driver = 0, runtime = 0;
         check(cudaDriverGetVersion(&driver), "cudaDriverGetVersion");
         check(cudaRuntimeGetVersion(&runtime), "cudaRuntimeGetVersion");
-        c.description_ = c.name_ + " " + sm + ", driver " + versionText(driver) + ", runtime " +
+        // "driver API": the CUDA API version the installed driver supports
+        // (cudaDriverGetVersion), not the NVIDIA driver's build number, which
+        // only NVML reports; this binary links no NVML.
+        c.description_ = c.name_ + " " + sm + ", driver API " + versionText(driver) + ", runtime " +
                          versionText(runtime) + ", kernels " + AZGO_CUDA_KERNEL_HASH;
     }
 };

@@ -234,7 +234,7 @@ void test_available_and_description() {
     assert(why == "unchanged");   // only written when unusable
     const std::string d = cudaDescription();
     std::printf("test_cuda: %s\n", d.c_str());
-    static const std::regex shape("^.+ sm_[0-9]+, driver [0-9]+\\.[0-9]+, runtime [0-9]+\\.[0-9]+, kernels [0-9a-f]{8}$");
+    static const std::regex shape("^.+ sm_[0-9]+, driver API [0-9]+\\.[0-9]+, runtime [0-9]+\\.[0-9]+, kernels [0-9a-f]{8}$");
     assert(std::regex_match(d, shape));
     assert(d == cudaDescription());
     assert(d.rfind(cuda_probe::deviceName() + " sm_" + std::to_string(cuda_probe::deviceArchitecture()), 0) == 0);

@@ -332,15 +332,19 @@ Metal spec's tolerance table ("Tolerance against the CPU").
 `engineFingerprint("cuda")` = `cuda; <cpu>; <os>; <cudaDescription()>`:
 
 ```
-cuda; AMD Ryzen 7 7700X 8-Core Processor; Ubuntu 24.04.4 LTS (Linux 6.6.114.1-microsoft-standard-WSL2); NVIDIA GeForce RTX 4070 Ti SUPER sm_89, driver 13.3, runtime 12.8, kernels 5d0c2e91
+cuda; AMD Ryzen 7 7700X 8-Core Processor; Ubuntu 24.04.4 LTS (Linux 6.6.114.1-microsoft-standard-WSL2); NVIDIA GeForce RTX 4070 Ti SUPER sm_89, driver API 13.3, runtime 12.8, kernels 5d0c2e91
 ```
 
 - **GPU and architecture** (`cudaGetDeviceProperties`). The architecture
   is the SASS that runs, by the check above.
-- **Driver**, from `cudaDriverGetVersion`. With SASS-only binaries the
-  driver should not change the bits. It is recorded anyway, so a driver
-  update shows in the manifest's fingerprint-changed note. That is
-  conservative and costs nothing.
+- **Driver API** (`driver API 13.3`), from `cudaDriverGetVersion`: the
+  CUDA API version the installed driver supports. It is not the NVIDIA
+  driver's build number (e.g. 581.57), which only NVML reports; the binary
+  links no NVML, so a driver update within one CUDA version does not show.
+  With SASS-only binaries the driver should not change the bits. The field
+  is recorded anyway, so a driver update that raises the CUDA version shows
+  in the manifest's fingerprint-changed note. That is conservative and
+  costs nothing.
 - **Runtime** (`cudaRuntimeGetVersion`, static, i.e. the toolkit that
   built it).
 - **`kernels`**: the first 8 hex of a SHA-256, computed at configure time
