@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -1163,6 +1164,24 @@ static void test_run_process() {
     assert(readText(log) == "from a file\n");
     // Without one, stdin is /dev/null: cat ends at once.
     assert(runProcess({"cat"}, "", 10).exitCode == 0);
+
+    // No other descriptor of ours reaches the child, even one opened
+    // without close-on-exec (as fopen and std::ofstream open files). The
+    // shell's `: <&N` fails when N is not open (a single digit: dash reads
+    // no more); system(), which keeps every inherited descriptor, shows the
+    // probe works here.
+    int stray = 9;
+    while (stray > 2 && fcntl(stray, F_GETFD) != -1) --stray;   // a free one
+    assert(stray > 2);
+    const int devNull = open("/dev/null", O_RDONLY);
+    assert(devNull >= 0 && dup2(devNull, stray) == stray);   // dup2: not close-on-exec
+    if (devNull != stray) close(devNull);
+    assert((fcntl(stray, F_GETFD) & FD_CLOEXEC) == 0);
+    const std::string probe = ": <&" + std::to_string(stray);
+    assert(std::system(("exec 2>/dev/null; " + probe).c_str()) == 0);
+    assert(runProcess({"sh", "-c", "exec 2>/dev/null; " + probe}, "", 10).exitCode != 0);
+    assert(runProcess({"sh", "-c", "exec 2>/dev/null; : <&0"}, "", 10).exitCode == 0);
+    close(stray);
 
     // No zombie, no descriptor left open.
     const int before = openDescriptors();

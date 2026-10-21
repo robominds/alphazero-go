@@ -90,7 +90,8 @@ ProcessResult runProcess(const std::vector<std::string>& argv, const ProcessOpti
 #ifdef __APPLE__
     // Only the descriptors the file actions below set up reach the child;
     // nothing else of ours does (no other child's held stdin, above all).
-    // Elsewhere the coordinator's own files would have to be close-on-exec.
+    // glibc gets the same from a file action below; on other systems the
+    // coordinator's own files would have to be close-on-exec.
     flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;
 #endif
     int pipeFds[2] = {-1, -1};
@@ -126,6 +127,12 @@ ProcessResult runProcess(const std::vector<std::string>& argv, const ProcessOpti
         rc = posix_spawn_file_actions_addopen(actions, 1, out.c_str(),
                                               O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (rc == 0) rc = posix_spawn_file_actions_adddup2(&s.actions, 1, 2);
+#if !defined(__APPLE__) && defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
+    // What POSIX_SPAWN_CLOEXEC_DEFAULT does on macOS: every descriptor
+    // above stderr is closed in the child, so files this process opened
+    // without close-on-exec (fopen, std::ofstream) stay here.
+    if (rc == 0) rc = posix_spawn_file_actions_addclosefrom_np(&s.actions, 3);
+#endif
     if (rc != 0) {
         closePipe(0);
         closePipe(1);
