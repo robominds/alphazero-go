@@ -40,6 +40,7 @@
 #include <thread>
 #include <string>
 #include <vector>
+#include "azgo/arena.hpp"
 #include "azgo/backend.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/config.hpp"
@@ -1288,6 +1289,55 @@ void test_selfplay_slice_independent_of_workers_and_batching() {
     }
 }
 
+// An arena wave on a cuda engine (arena_engines = pc/cuda:...): one hub
+// per network, several networks sharing the GPU, every game at once. Its
+// games are the same, move for move, for any workers, any batch cap and
+// the hub's chaos mode, as on metal; a slice of the wave plays what the
+// whole wave plays in those games.
+void test_arena_wave_independent_of_workers_and_batching() {
+    const NetConfig cfg = netConfig(5, 1, 8);
+    const Network a = randomNetwork(cfg, 811), b = randomNetwork(cfg, 812), c = randomNetwork(cfg, 813);
+    ArenaConfig ac;
+    ac.simulations = 16;
+    ac.mctsBatch = 4;
+    ac.temperatureMoves = 2;
+    const std::vector<ArenaMatchSpec> wave = {
+        {ArenaPlayer::network(a), ArenaPlayer::network(b), 6, 901},
+        {ArenaPlayer::network(a), ArenaPlayer::bot(8), 4, 902},
+        {ArenaPlayer::network(a), ArenaPlayer::network(c), 4, 903},
+    };
+    auto bytes = [](const std::vector<ArenaGameResult>& games) {
+        std::string out;
+        for (const ArenaGameResult& g : games) {
+            out += std::to_string(g.scoreA) + ":";
+            for (int m : g.moves) out += std::to_string(m) + ",";
+            out += ";";
+        }
+        return out;
+    };
+    std::string reference;
+    for (int workers : {1, 3, 0})
+        for (int batch : {8, 256})
+            for (uint64_t chaos : {0ull, 23ull}) {
+                cuda_probe::setHubChaosSeed(chaos);
+                EngineRun run;
+                run.backend = "cuda";
+                run.workers = workers;
+                run.inferenceBatch = batch;
+                SliceStats stats;
+                const std::string played = bytes(playArenaGames(waveSlice(wave, 0, 14), ac, run, &stats));
+                cuda_probe::setHubChaosSeed(0);
+                assert(stats.evaluations > 0);
+                if (reference.empty()) reference = played;
+                assert(played == reference);
+            }
+    EngineRun run;
+    run.backend = "cuda";
+    std::string joined = bytes(playArenaGames(waveSlice(wave, 0, 5), ac, run));
+    joined += bytes(playArenaGames(waveSlice(wave, 5, 9), ac, run));
+    assert(joined == reference);
+}
+
 namespace fs = std::filesystem;
 
 struct RunDir {
@@ -1472,6 +1522,7 @@ int main() {
     test_runner_no_thread_leak();
     test_worker_evaluators_cuda();
     test_selfplay_slice_independent_of_workers_and_batching();
+    test_arena_wave_independent_of_workers_and_batching();
     test_cuda_engine_run_independent_of_settings();
     test_cuda_engine_memory_checked_up_front();
 #endif

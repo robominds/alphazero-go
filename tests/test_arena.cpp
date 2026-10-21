@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -14,6 +15,7 @@
 #include "azgo/metal.hpp"
 #include "azgo/parallel.hpp"
 #include "azgo/rng.hpp"
+#include "azgo/selfplay_slice.hpp"
 
 using namespace azgo;
 
@@ -677,6 +679,161 @@ static void test_play_matches_rejects_bad_matches() {
     }
 }
 
+// ---- arena games as ranges (distributed arena) ---------------------------------
+
+static bool sameGames(const std::vector<ArenaGameResult>& x, const std::vector<ArenaGameResult>& y) {
+    if (x.size() != y.size()) return false;
+    for (size_t k = 0; k < x.size(); ++k)
+        if (x[k].scoreA != y[k].scoreA || x[k].moves != y[k].moves) return false;
+    return true;
+}
+
+static int waveGames(const std::vector<ArenaMatchSpec>& wave) {
+    int total = 0;
+    for (const ArenaMatchSpec& m : wave) total += m.games;
+    return total;
+}
+
+// waveSlice numbers a wave's games match-major (match 0's games, then
+// match 1's, ...) and turns wave indices [first, first + count) into one
+// range per match it touches, in match order.
+static void test_wave_slice() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22);
+    const std::vector<ArenaMatchSpec> wave = {
+        {ArenaPlayer::network(a), ArenaPlayer::network(b), 4, 101},
+        {ArenaPlayer::network(a), ArenaPlayer::bot(12), 6, 102},
+        {ArenaPlayer::network(b), ArenaPlayer::network(a), 2, 103},
+    };
+    const int offsets[] = {0, 4, 10, 12};
+    for (int first = 0; first <= 12; ++first)
+        for (int count = 0; first + count <= 12; ++count) {
+            const std::vector<ArenaGameRange> ranges = waveSlice(wave, first, count);
+            int covered = 0, expected = first;
+            size_t lastMatch = 0;
+            for (const ArenaGameRange& r : ranges) {
+                // Which match: the one whose seed it carries.
+                size_t i = 0;
+                while (wave[i].seed != r.seed) ++i;
+                assert(r.a.net == wave[i].a.net && r.b.net == wave[i].b.net &&
+                       r.b.simulations == wave[i].b.simulations);
+                assert(r.count >= 1 && r.first >= 0 && r.first + r.count <= wave[i].games);
+                assert(offsets[i] + r.first == expected);   // contiguous, in wave order
+                assert(covered == 0 || i > lastMatch);
+                lastMatch = i;
+                expected += r.count;
+                covered += r.count;
+            }
+            assert(covered == count);
+        }
+    const std::vector<ArenaGameRange> middle = waveSlice(wave, 3, 8);
+    assert(middle.size() == 3 && middle[0].first == 3 && middle[0].count == 1 && middle[1].first == 0 &&
+           middle[1].count == 6 && middle[2].first == 0 && middle[2].count == 1);
+    for (const std::pair<int, int>& bad : std::vector<std::pair<int, int>>{{-1, 2}, {0, -1}, {11, 2}}) {
+        bool threw = false;
+        try {
+            waveSlice(wave, bad.first, bad.second);
+        } catch (const std::invalid_argument&) {
+            threw = true;
+        }
+        assert(threw);
+    }
+}
+
+// A wave cut into slices, each played on its own by playArenaGames, gives
+// game for game what the whole wave gives, and matchResult of each match's
+// games is what playMatches reports: the arena's games depend only on
+// their match and index, never on what else shares the pool.
+static void test_arena_games_slices_equal_whole() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22), c(tinyNet(), 33);
+    ArenaConfig cfg = tinyArena();
+    cfg.temperatureMoves = 2;
+    const std::vector<ArenaMatchSpec> wave = roundSpecs(a, b, c);
+    const int total = waveGames(wave);
+    std::vector<std::string> backends = {"naive"};
+    if (blasAvailable()) backends.push_back("blas");
+    for (const std::string& be : backends) {
+        EngineRun one{be, 1, 256};
+        const std::vector<ArenaGameResult> whole = playArenaGames(waveSlice(wave, 0, total), cfg, one);
+        assert(static_cast<int>(whole.size()) == total);
+        // matchResult per match equals playMatches.
+        const std::vector<MatchResult> results = playMatches(wave, cfg, 3, be);
+        int offset = 0;
+        for (size_t i = 0; i < wave.size(); ++i) {
+            const std::vector<ArenaGameResult> games(whole.begin() + offset,
+                                                     whole.begin() + offset + wave[i].games);
+            assert(sameResult(matchResult(games), results[i]));
+            offset += wave[i].games;
+        }
+        // Any cut into two or three slices, any workers.
+        for (int cut1 = 1; cut1 < total; cut1 += 3)
+            for (int cut2 = cut1; cut2 <= total; cut2 += 5) {
+                std::vector<ArenaGameResult> joined;
+                const int bounds[] = {0, cut1, cut2, total};
+                for (int k = 0; k < 3; ++k) {
+                    EngineRun run{be, k == 1 ? 3 : 0, 256};
+                    const std::vector<ArenaGameResult> part =
+                        playArenaGames(waveSlice(wave, bounds[k], bounds[k + 1] - bounds[k]), cfg, run);
+                    joined.insert(joined.end(), part.begin(), part.end());
+                }
+                assert(sameGames(joined, whole));
+            }
+    }
+    assert(playArenaGames({}, cfg, EngineRun{"naive", 1, 256}).empty());
+}
+
+// The statistics count the plies played and the positions the networks
+// evaluated; a set cancel flag stops the slice at its next evaluation.
+static void test_arena_games_stats_and_cancel() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22);
+    const ArenaConfig cfg = tinyArena();
+    const std::vector<ArenaGameRange> ranges = {
+        {ArenaPlayer::network(a), ArenaPlayer::network(b), 5, 1, 3},
+        {ArenaPlayer::network(a), ArenaPlayer::bot(6), 6, 0, 2},
+    };
+    SliceStats stats;
+    const std::vector<ArenaGameResult> games = playArenaGames(ranges, cfg, EngineRun{"naive", 2, 256}, &stats);
+    long long plies = 0;
+    for (const ArenaGameResult& g : games) plies += static_cast<long long>(g.moves.size());
+    assert(games.size() == 5 && stats.positions == plies && stats.evaluations > 0 && stats.seconds >= 0);
+
+    std::atomic<bool> cancel{true};
+    EngineRun cancelled{"naive", 2, 256};
+    cancelled.cancel = &cancel;
+    bool threw = false;
+    try {
+        playArenaGames(ranges, cfg, cancelled);
+    } catch (const SliceCancelled&) {
+        threw = true;
+    }
+    assert(threw);
+    // An unset flag changes nothing.
+    cancel = false;
+    assert(sameGames(playArenaGames(ranges, cfg, cancelled), games));
+}
+
+// Ranges are checked as playMatch checks a match, before any game, except
+// that a range may hold an odd number of games (colours alternate with the
+// game's index in its match, not in the range).
+static void test_arena_games_refusals() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22);
+    const ArenaConfig cfg = tinyArena();
+    auto refuses = [&](const ArenaGameRange& r, const std::string& expected) {
+        try {
+            playArenaGames({r}, cfg, EngineRun{"naive", 1, 256});
+        } catch (const std::invalid_argument& e) {
+            return std::string(e.what()).find(expected) != std::string::npos;
+        }
+        return false;
+    };
+    assert(refuses({ArenaPlayer::bot(4), ArenaPlayer::bot(4), 1, 0, 2}, "two bots"));
+    assert(refuses({ArenaPlayer::network(a), ArenaPlayer::bot(0), 1, 0, 2}, "at least 1 simulation"));
+    assert(refuses({ArenaPlayer::network(a), ArenaPlayer::network(b), 1, -1, 2}, "range"));
+    assert(refuses({ArenaPlayer::network(a), ArenaPlayer::network(b), 1, 0, -1}, "range"));
+    const std::vector<ArenaGameResult> odd =
+        playArenaGames({{ArenaPlayer::network(a), ArenaPlayer::network(b), 1, 3, 1}}, cfg, EngineRun{"naive", 1, 256});
+    assert(odd.size() == 1);
+}
+
 // The arena's worker count: an explicit one as given, never more than the
 // games; 0 means a thread per core on the CPU and every game at once with
 // metal (a worker waiting for the GPU costs nothing).
@@ -687,6 +844,9 @@ static void test_arena_workers() {
     assert(arenaWorkers(0, "metal", 80) == 80);
     assert(arenaWorkers(0, "metal", 1000) == kMaxArenaWorkers);
     assert(arenaWorkers(0, "metal", 2) == 2);
+    // cuda, the other GPU backend, as metal.
+    assert(arenaWorkers(0, "cuda", 80) == 80 && arenaWorkers(0, "cuda", 1000) == kMaxArenaWorkers);
+    assert(arenaWorkers(5, "cuda", 80) == 5);
 }
 
 int main() {
@@ -710,6 +870,10 @@ int main() {
     test_play_matches_equal_one_at_a_time();
     test_play_matches_rejects_bad_matches();
     test_arena_workers();
+    test_wave_slice();
+    test_arena_games_slices_equal_whole();
+    test_arena_games_stats_and_cancel();
+    test_arena_games_refusals();
     std::printf("test_arena: all tests passed\n");
     return 0;
 }

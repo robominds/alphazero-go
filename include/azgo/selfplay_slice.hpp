@@ -51,7 +51,27 @@ struct EngineRun {
 
 // What a slice throws when its EngineRun's cancel flag was set.
 struct SliceCancelled : std::runtime_error {
-    SliceCancelled() : std::runtime_error("self-play slice cancelled") {}
+    SliceCancelled() : std::runtime_error("slice cancelled") {}
+};
+
+// An evaluator that checks the cancel flag before every evaluation and
+// otherwise passes the call through unchanged, so the games are the same
+// bits with or without it. Self-play and arena slices wrap their workers'
+// evaluators in it when their EngineRun has a cancel flag.
+class CancellableEvaluator : public Evaluator {
+public:
+    CancellableEvaluator(Evaluator& inner, const std::atomic<bool>& cancel)
+        : inner_(inner), cancel_(cancel) {}
+    int boardSize() const override { return inner_.boardSize(); }
+    int history() const override { return inner_.history(); }
+    int maxBatch() const override { return inner_.maxBatch(); }
+    void evaluate(const float* input, int B, float* logits, float* values) override {
+        if (cancel_.load(std::memory_order_relaxed)) throw SliceCancelled();
+        inner_.evaluate(input, B, logits, values);
+    }
+private:
+    Evaluator& inner_;
+    const std::atomic<bool>& cancel_;
 };
 
 // What a slice cost: wall seconds, positions recorded, and network

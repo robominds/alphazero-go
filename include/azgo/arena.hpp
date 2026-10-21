@@ -14,6 +14,7 @@
 #include <vector>
 #include "azgo/mcts.hpp"
 #include "azgo/network.hpp"
+#include "azgo/selfplay_slice.hpp"
 
 namespace azgo {
 
@@ -117,10 +118,58 @@ std::vector<MatchResult> playMatches(const std::vector<ArenaMatchSpec>& matches,
                                      int workers, const std::string& backendName,
                                      int inferenceBatch = 256);
 
+// ---- arena games as ranges ---------------------------------------------------
+//
+// A wave's games can be played on several engines at once (arena_engines,
+// azgo/coordinator.hpp), each a slice of them. Game j of a match is
+// played with Rng(deriveSeed(seed, j)), with A as Black when j is even, so
+// it is the same game whichever engine plays it and whatever else that
+// engine plays beside it.
+
+// Games [first, first + count) of the match between a and b seeded `seed`.
+struct ArenaGameRange {
+    ArenaPlayer a, b;
+    uint64_t seed = 0;
+    int first = 0, count = 0;
+};
+
+// One finished arena game: A's score (1, 0.5 or 0) and its moves.
+struct ArenaGameResult {
+    double scoreA = 0;
+    std::vector<int> moves;
+};
+
+// Plays every game of every range in one pool of run.workers threads (<= 0:
+// arenaWorkers(0, run.backend, games)), with one set of evaluators per
+// distinct network as playMatches has (with metal or cuda one hub per
+// network), each worker thread in run.qos's class, and returns the results
+// in range order, game order within each range. With run.cancel set, a
+// network evaluation after the flag is raised throws SliceCancelled. Each
+// range is checked as playMatch checks a match, except that its count may
+// be odd (and 0); first >= 0, count >= 0. Results depend only on the
+// ranges, cfg and the backend's arithmetic, never on workers,
+// inferenceBatch, qos or which ranges share the call. stats, when given:
+// wall seconds, plies played and network evaluations.
+std::vector<ArenaGameResult> playArenaGames(const std::vector<ArenaGameRange>& ranges,
+                                            const ArenaConfig& cfg, const EngineRun& run,
+                                            SliceStats* stats = nullptr);
+
+// A match's result from its games: A's score summed in game order, wins,
+// losses, draws and distinct move sequences. playMatches reports exactly
+// this of the games playArenaGames plays.
+MatchResult matchResult(const std::vector<ArenaGameResult>& games);
+
+// The games of a wave are numbered match-major: match 0's games 0, 1, ...,
+// then match 1's, and so on. The wave indices [first, first + count) as
+// one range per match they touch, in match order, without empty ranges.
+// Throws std::invalid_argument for a negative first or count, or a range
+// past the wave's last game.
+std::vector<ArenaGameRange> waveSlice(const std::vector<ArenaMatchSpec>& wave, int first, int count);
+
 // The worker threads for `games` arena games, never more than games: an
 // explicit count (> 0) as given; otherwise, with metal, every game at once
 // (up to kMaxArenaWorkers), and with naive and blas resolveWorkers(0), one
-// per core. Results do not depend on it.
+// per core. cuda, the other GPU backend, as metal. Results do not depend on it.
 constexpr int kMaxArenaWorkers = 256;   // the most the workers key allows
 int arenaWorkers(int workers, const std::string& backendName, int games);
 

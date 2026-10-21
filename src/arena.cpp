@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <cstddef>
 #include <cmath>
 #include <memory>
 #include <set>
@@ -28,12 +30,7 @@ struct Seat {
     std::unique_ptr<Evaluator> own;
 };
 
-struct GameOutcome {
-    double scoreA = 0;
-    std::vector<int> moves;
-};
-
-GameOutcome playArenaGame(Seat& a, Seat& b, const ArenaConfig& cfg, int n, uint64_t seed, int index) {
+ArenaGameResult playArenaGame(Seat& a, Seat& b, const ArenaConfig& cfg, int n, uint64_t seed, int index) {
     Rng rng(deriveSeed(seed, static_cast<uint64_t>(index)));
     bool aIsBlack = index % 2 == 0;   // colors alternate, so A is Black in half the games
     Game game(n, cfg.komi, cfg.maxMoves > 0 ? cfg.maxMoves : defaultMaxMoves(n));
@@ -62,7 +59,7 @@ GameOutcome playArenaGame(Seat& a, Seat& b, const ArenaConfig& cfg, int n, uint6
 // several hubs share it, the others' passes keep it busy, and one pass in
 // flight per hub lets each pass take everything that waits: fewer, larger
 // passes (docs/results/bench.txt). Which positions share a pass changes no
-// result. With naive and blas, each
+// result. cuda, the other GPU backend, works the same way. With naive and blas, each
 // worker has one single-threaded backend and one workspace, sized for the
 // largest request, and a LocalEvaluator per network on that workspace: a
 // worker plays one game at a time and only the side to move searches, so it
@@ -74,7 +71,7 @@ public:
     RoundEvaluators(const std::vector<const Network*>& nets, const std::vector<int>& maxRequest,
                     const std::string& backend, int workers, int inferenceBatch) {
         if (nets.empty()) return;
-        if (backend == "metal") {
+        if (backend == "metal" || backend == "cuda") {
             const int slots = nets.size() > 1 ? 1 : kInferenceSlots;
             for (size_t k = 0; k < nets.size(); ++k)
                 hubs_.push_back(std::make_unique<WorkerEvaluators>(*nets[k], backend, workers, maxRequest[k],
@@ -97,12 +94,21 @@ public:
         if (!hubs_.empty()) return hubs_[network]->forWorker(worker);
         return *local_[network][static_cast<size_t>(worker)];
     }
+    // Positions evaluated so far, every network and worker together. Read
+    // it once the workers have stopped.
+    long long evaluations() const {
+        long long total = 0;
+        for (const auto& hub : hubs_) total += hub->evaluations();
+        for (const auto& perWorker : local_)
+            for (const auto& e : perWorker) total += e->evaluations();
+        return total;
+    }
 
 private:
-    std::vector<std::unique_ptr<WorkerEvaluators>> hubs_;   // metal: one per network
+    std::vector<std::unique_ptr<WorkerEvaluators>> hubs_;   // metal, cuda: one per network
     std::vector<std::unique_ptr<Backend>> backends_;        // naive, blas: one per worker
     std::vector<std::unique_ptr<Workspace>> workspaces_;    // one per worker
-    std::vector<std::vector<std::unique_ptr<Evaluator>>> local_;   // [network][worker]
+    std::vector<std::vector<std::unique_ptr<LocalEvaluator>>> local_;   // [network][worker]
 };
 
 std::atomic<bool> gOneMatchAtATime{false};   // arena_probe: tests only
@@ -156,9 +162,9 @@ MctsConfig arenaSearchConfig(const ArenaPlayer& player, const ArenaConfig& cfg) 
 
 namespace {
 
-// The checks playMatch makes of one match of `games` games.
-void checkMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& cfg, int games,
-                int inferenceBatch) {
+// The checks playMatch makes of one match's players, whatever its games.
+void checkPlayers(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& cfg,
+                  int inferenceBatch) {
     if (!a.net && !b.net) throw std::invalid_argument("playMatch: two bots (one player must be a network)");
     if (a.net && b.net && a.net->config() != b.net->config())
         throw std::invalid_argument("playMatch: networks have different architectures");
@@ -178,8 +184,6 @@ void checkMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& c
     }
     for (const std::string& reason : {checkCPuct(cfg.cPuct, false), checkMctsBatch(cfg.mctsBatch, false)})
         if (!reason.empty()) throw std::invalid_argument("playMatch: config " + reason);
-    if (games < 2 || games % 2 != 0)
-        throw std::invalid_argument("playMatch: games must be even and >= 2, got " + std::to_string(games));
     for (const ArenaPlayer* p : {&a, &b}) {
         const int batch = arenaSearchConfig(*p, cfg).batchSize;
         if (batch > inferenceBatch)
@@ -188,9 +192,17 @@ void checkMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& c
     }
 }
 
-// One game of one match: the pool's unit of work.
+// The checks playMatch makes of one match of `games` games.
+void checkMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& cfg, int games,
+                int inferenceBatch) {
+    checkPlayers(a, b, cfg, inferenceBatch);
+    if (games < 2 || games % 2 != 0)
+        throw std::invalid_argument("playMatch: games must be even and >= 2, got " + std::to_string(games));
+}
+
+// One game of one range: the pool's unit of work.
 struct GameTask {
-    int match, game;
+    int range, game;   // game: its index in its match
 };
 
 } // namespace
@@ -199,38 +211,41 @@ int arenaWorkers(int workers, const std::string& backendName, int games) {
     // With metal, every game of the wave at once: a worker waiting for the
     // GPU costs no CPU, and an arena game has only one search in flight, so
     // the games in flight are what fills the passes.
-    if (workers <= 0 && backendName == "metal") workers = kMaxArenaWorkers;
-    return std::max(1, std::min(resolveWorkers(workers, backendName == "metal"), games));
+    const bool gpu = backendName == "metal" || backendName == "cuda";
+    if (workers <= 0 && gpu) workers = kMaxArenaWorkers;
+    return std::max(1, std::min(resolveWorkers(workers, gpu), games));
 }
 
 void arena_probe::setOneMatchAtATime(bool on) { gOneMatchAtATime = on; }
 
-std::vector<MatchResult> playMatches(const std::vector<ArenaMatchSpec>& matches, const ArenaConfig& cfg,
-                                     int workers, const std::string& backendName, int inferenceBatch) {
-    for (const ArenaMatchSpec& m : matches) checkMatch(m.a, m.b, cfg, m.games, inferenceBatch);
-    if (matches.empty()) return {};
+std::vector<ArenaGameResult> playArenaGames(const std::vector<ArenaGameRange>& ranges,
+                                            const ArenaConfig& cfg, const EngineRun& run,
+                                            SliceStats* stats) {
+    const auto start = std::chrono::steady_clock::now();
+    for (const ArenaGameRange& r : ranges) {
+        checkPlayers(r.a, r.b, cfg, run.inferenceBatch);
+        if (r.first < 0 || r.count < 0)
+            throw std::invalid_argument("playArenaGames: bad game range [" + std::to_string(r.first) +
+                                        ", +" + std::to_string(r.count) + ")");
+    }
     // Every network of the set: one shape, since a worker's workspace serves them all.
-    const Network* first = matches[0].a.net ? matches[0].a.net : matches[0].b.net;
-    for (const ArenaMatchSpec& m : matches)
-        for (const ArenaPlayer* p : {&m.a, &m.b})
+    const Network* first = nullptr;
+    for (const ArenaGameRange& r : ranges)
+        for (const ArenaPlayer* p : {&r.a, &r.b})
+            if (p->net && !first) first = p->net;
+    for (const ArenaGameRange& r : ranges)
+        for (const ArenaPlayer* p : {&r.a, &r.b})
             if (p->net && p->net->config() != first->config())
                 throw std::invalid_argument("playMatch: networks have different architectures");
-
-    if (gOneMatchAtATime && matches.size() > 1) {
-        std::vector<MatchResult> out;
-        for (const ArenaMatchSpec& m : matches) out.push_back(playMatches({m}, cfg, workers, backendName,
-                                                                          inferenceBatch)[0]);
-        return out;
-    }
 
     // The distinct networks, in order of first appearance, and the largest
     // request each one's seats make.
     std::vector<const Network*> nets;
     std::vector<int> maxRequest;
-    std::vector<std::array<int, 2>> seatNet(matches.size(), {-1, -1});   // index into nets; -1 = bot
-    std::vector<std::array<MctsConfig, 2>> seatSearch(matches.size());
-    for (size_t i = 0; i < matches.size(); ++i) {
-        const ArenaPlayer* players[2] = {&matches[i].a, &matches[i].b};
+    std::vector<std::array<int, 2>> seatNet(ranges.size(), {-1, -1});   // index into nets; -1 = bot
+    std::vector<std::array<MctsConfig, 2>> seatSearch(ranges.size());
+    for (size_t i = 0; i < ranges.size(); ++i) {
+        const ArenaPlayer* players[2] = {&ranges[i].a, &ranges[i].b};
         for (int p = 0; p < 2; ++p) {
             seatSearch[i][p] = arenaSearchConfig(*players[p], cfg);
             if (!players[p]->net) continue;
@@ -246,61 +261,139 @@ std::vector<MatchResult> playMatches(const std::vector<ArenaMatchSpec>& matches,
         }
     }
 
-    // The games, round-robin across matches (game 0 of every match, then
-    // game 1, ...), so every match is under way from the start. The order
-    // only decides which games start first, never a result.
+    // The games, round-robin across ranges (the first game of every range,
+    // then the second, ...), so every match is under way from the start.
+    // The order only decides which games start first, never a result.
+    // Results go to the game's place in the output: range by range.
     std::vector<GameTask> tasks;
+    std::vector<size_t> offset(ranges.size(), 0);
     int longest = 0;
-    for (const ArenaMatchSpec& m : matches) longest = std::max(longest, m.games);
+    size_t total = 0;
+    for (size_t i = 0; i < ranges.size(); ++i) {
+        offset[i] = total;
+        total += static_cast<size_t>(ranges[i].count);
+        longest = std::max(longest, ranges[i].count);
+    }
     for (int j = 0; j < longest; ++j)
-        for (size_t i = 0; i < matches.size(); ++i)
-            if (j < matches[i].games) tasks.push_back({static_cast<int>(i), j});
+        for (size_t i = 0; i < ranges.size(); ++i)
+            if (j < ranges[i].count) tasks.push_back({static_cast<int>(i), ranges[i].first + j});
 
-    const int count = static_cast<int>(tasks.size());
-    const int threads = arenaWorkers(workers, backendName, count);
-    // Declared before the games that point into them.
-    RoundEvaluators evaluators(nets, maxRequest, backendName, threads, inferenceBatch);
-    const NetConfig shape = first->config();
+    std::vector<ArenaGameResult> results(total);
+    long long evaluations = 0;
+    if (!tasks.empty()) {
+        const int count = static_cast<int>(tasks.size());
+        const int threads = arenaWorkers(run.workers, run.backend, count);
+        // Declared before the games that point into them.
+        RoundEvaluators evaluators(nets, maxRequest, run.backend, threads, run.inferenceBatch);
+        const NetConfig shape = first->config();
+        // Each worker is one thread for the whole pool: it sets its QoS
+        // class once, before its first game.
+        std::vector<char> qosSet(static_cast<size_t>(threads), 0);
+        parallelFor(count, threads, [&](int t, int worker) {
+            if (!qosSet[static_cast<size_t>(worker)]) {
+                setThreadQos(run.qos);
+                qosSet[static_cast<size_t>(worker)] = 1;
+            }
+            const GameTask& task = tasks[static_cast<size_t>(t)];
+            const size_t i = static_cast<size_t>(task.range);
+            Seat seats[2];
+            for (int p = 0; p < 2; ++p) {
+                Seat& seat = seats[p];
+                seat.mcts = seatSearch[i][p];
+                if (seatNet[i][p] >= 0) {
+                    Evaluator& shared = evaluators.get(static_cast<size_t>(seatNet[i][p]), worker);
+                    if (run.cancel) {
+                        seat.own = std::make_unique<CancellableEvaluator>(shared, *run.cancel);
+                        seat.evaluator = seat.own.get();
+                    } else {
+                        seat.evaluator = &shared;
+                    }
+                } else {
+                    // A bot needs no network: the board size and history come
+                    // from the round's networks.
+                    seat.own = std::make_unique<UniformEvaluator>(shape.boardSize, shape.history, 0.0f,
+                                                                  seat.mcts.batchSize);
+                    seat.evaluator = seat.own.get();
+                }
+            }
+            const size_t at = offset[i] + static_cast<size_t>(task.game - ranges[i].first);
+            results[at] = playArenaGame(seats[0], seats[1], cfg, shape.boardSize, ranges[i].seed, task.game);
+        });
+        evaluations = evaluators.evaluations();
+    }
+    if (stats) {
+        stats->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        stats->positions = 0;
+        for (const ArenaGameResult& g : results) stats->positions += static_cast<long long>(g.moves.size());
+        stats->evaluations = evaluations;
+    }
+    return results;
+}
+
+MatchResult matchResult(const std::vector<ArenaGameResult>& games) {
+    MatchResult result;
+    result.games = static_cast<int>(games.size());
+    std::set<std::vector<int>> distinct;
+    for (const ArenaGameResult& g : games) {
+        result.scoreA += g.scoreA;
+        if (g.scoreA == 1.0) ++result.winsA;
+        else if (g.scoreA == 0.0) ++result.winsB;
+        else ++result.draws;
+        distinct.insert(g.moves);
+    }
+    result.distinctGames = static_cast<int>(distinct.size());
+    return result;
+}
+
+std::vector<ArenaGameRange> waveSlice(const std::vector<ArenaMatchSpec>& wave, int first, int count) {
+    long long total = 0;
+    for (const ArenaMatchSpec& m : wave) total += m.games;
+    if (first < 0 || count < 0 || first + static_cast<long long>(count) > total)
+        throw std::invalid_argument("waveSlice: games [" + std::to_string(first) + ", +" +
+                                    std::to_string(count) + ") are outside a wave of " +
+                                    std::to_string(total) + " games");
+    std::vector<ArenaGameRange> out;
+    long long matchStart = 0;
+    const long long end = first + static_cast<long long>(count);
+    for (const ArenaMatchSpec& m : wave) {
+        const long long matchEnd = matchStart + m.games;
+        const long long from = std::max<long long>(first, matchStart), to = std::min(end, matchEnd);
+        if (from < to)
+            out.push_back({m.a, m.b, m.seed, static_cast<int>(from - matchStart), static_cast<int>(to - from)});
+        matchStart = matchEnd;
+    }
+    return out;
+}
+
+std::vector<MatchResult> playMatches(const std::vector<ArenaMatchSpec>& matches, const ArenaConfig& cfg,
+                                     int workers, const std::string& backendName, int inferenceBatch) {
+    for (const ArenaMatchSpec& m : matches) checkMatch(m.a, m.b, cfg, m.games, inferenceBatch);
+    if (matches.empty()) return {};
+
+    if (gOneMatchAtATime && matches.size() > 1) {
+        std::vector<MatchResult> out;
+        for (const ArenaMatchSpec& m : matches) out.push_back(playMatches({m}, cfg, workers, backendName,
+                                                                          inferenceBatch)[0]);
+        return out;
+    }
+
+    // Every game of every match in one pool: each match is one whole range.
+    std::vector<ArenaGameRange> ranges;
+    for (const ArenaMatchSpec& m : matches) ranges.push_back({m.a, m.b, m.seed, 0, m.games});
+    EngineRun run;
+    run.backend = backendName;
+    run.workers = workers;
+    run.inferenceBatch = inferenceBatch;
+    const std::vector<ArenaGameResult> games = playArenaGames(ranges, cfg, run);
 
     // Results are stored by match and game index, never by completion order,
     // so every match is identical for any number of workers.
-    std::vector<std::vector<GameOutcome>> outcomes(matches.size());
-    for (size_t i = 0; i < matches.size(); ++i) outcomes[i].resize(static_cast<size_t>(matches[i].games));
-    parallelFor(count, threads, [&](int t, int worker) {
-        const GameTask& task = tasks[static_cast<size_t>(t)];
-        const size_t i = static_cast<size_t>(task.match);
-        Seat seats[2];
-        for (int p = 0; p < 2; ++p) {
-            Seat& seat = seats[p];
-            seat.mcts = seatSearch[i][p];
-            if (seatNet[i][p] >= 0) {
-                seat.evaluator = &evaluators.get(static_cast<size_t>(seatNet[i][p]), worker);
-            } else {
-                // A bot needs no network: the board size and history come
-                // from the round's networks.
-                seat.own = std::make_unique<UniformEvaluator>(shape.boardSize, shape.history, 0.0f,
-                                                              seat.mcts.batchSize);
-                seat.evaluator = seat.own.get();
-            }
-        }
-        outcomes[i][static_cast<size_t>(task.game)] =
-            playArenaGame(seats[0], seats[1], cfg, shape.boardSize, matches[i].seed, task.game);
-    });
-
     std::vector<MatchResult> results;
-    for (size_t i = 0; i < matches.size(); ++i) {
-        MatchResult result;
-        result.games = matches[i].games;
-        std::set<std::vector<int>> distinct;
-        for (const GameOutcome& g : outcomes[i]) {
-            result.scoreA += g.scoreA;
-            if (g.scoreA == 1.0) ++result.winsA;
-            else if (g.scoreA == 0.0) ++result.winsB;
-            else ++result.draws;
-            distinct.insert(g.moves);
-        }
-        result.distinctGames = static_cast<int>(distinct.size());
-        results.push_back(result);
+    size_t at = 0;
+    for (const ArenaMatchSpec& m : matches) {
+        const auto from = games.begin() + static_cast<std::ptrdiff_t>(at);
+        results.push_back(matchResult(std::vector<ArenaGameResult>(from, from + m.games)));
+        at += static_cast<size_t>(m.games);
     }
     return results;
 }
