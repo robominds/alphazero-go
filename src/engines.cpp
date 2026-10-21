@@ -399,7 +399,22 @@ std::string osVersion() {
         return tidy("macOS " + product + (build.empty() ? "" : " (" + build + ")"));
 #endif
     struct utsname u;
-    return uname(&u) == 0 ? tidy(std::string(u.sysname) + " " + u.release) : "unknown os";
+    const std::string kernel = uname(&u) == 0 ? tidy(std::string(u.sysname) + " " + u.release) : "";
+#ifdef __linux__
+    // The distribution pins the C library (libm's exp and tanh) and the
+    // packaged BLAS, which the kernel's version does not:
+    // "Ubuntu 24.04.4 LTS (Linux 6.6.114.1-microsoft-standard-WSL2)".
+    std::ifstream release("/etc/os-release");
+    for (std::string line; std::getline(release, line);) {
+        if (line.rfind("PRETTY_NAME=", 0) != 0) continue;
+        std::string name = line.substr(12);
+        if (name.size() >= 2 && (name.front() == '"' || name.front() == '\'') && name.back() == name.front())
+            name = name.substr(1, name.size() - 2);
+        name = tidy(name);
+        if (!name.empty()) return kernel.empty() ? name : name + " (" + kernel + ")";
+    }
+#endif
+    return kernel.empty() ? "unknown os" : kernel;
 }
 
 } // namespace
@@ -408,6 +423,7 @@ std::string engineFingerprint(const std::string& backend) {
     checkBackendAvailable(backend);
     std::string f = backend + "; " + cpuModel() + "; " + osVersion();
     if (backend == "metal") f += "; " + metalDescription();
+    if (backend == "blas" && !blasDescription().empty()) f += "; " + tidy(blasDescription());
     return f;
 }
 

@@ -433,7 +433,7 @@ static void test_fingerprint() {
         assert(f == engineFingerprint(backend));
         assert(f.rfind(backend + "; ", 0) == 0);
         assert(f.find('\n') == std::string::npos);
-        // backend; cpu; os[; metal description]
+        // backend; cpu; os[; metal description | ; BLAS library]
         const size_t cpu = backend.size() + 2, os = f.find("; ", cpu);
         assert(os != std::string::npos && os > cpu);
         const size_t osEnd = f.find("; ", os + 2);
@@ -442,14 +442,25 @@ static void test_fingerprint() {
         assert(!osPart.empty());
 #ifdef __APPLE__
         assert(osPart.rfind("macOS ", 0) == 0);
+        assert(blasDescription().empty());   // Accelerate: the OS version pins it
+#elif defined(__linux__)
+        // The distribution (its C library and packages) and the kernel.
+        assert(osPart.find("Linux ") != std::string::npos);
 #endif
         const std::string head = backend == "metal" ? f.substr(0, osEnd) : f;
         assert(head.find(',') == std::string::npos);
         if (backend == "metal") {
             assert(osEnd != std::string::npos && f.substr(osEnd + 2) == metalDescription());
+        } else if (backend == "blas" && !blasDescription().empty()) {
+            // A BLAS the OS version does not pin (OpenBLAS): its own build.
+            assert(osEnd != std::string::npos && f.substr(osEnd + 2) == blasDescription());
+            assert(f.find("; ", osEnd + 2) == std::string::npos);
         } else {
             assert(osEnd == std::string::npos);
         }
+#if defined(AZ_USE_BLAS) && !defined(__APPLE__)
+        assert(blasDescription().rfind("OpenBLAS ", 0) == 0);
+#endif
         if (hostName.size() >= 4) assert(f.find(hostName) == std::string::npos);
     }
     bool threw = false;

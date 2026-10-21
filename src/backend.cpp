@@ -275,6 +275,10 @@ bool blasAvailable() {
 #endif
 }
 
+#ifndef AZ_USE_BLAS
+std::string blasDescription() { return ""; }   // with BLAS: src/backend_blas.cpp
+#endif
+
 std::unique_ptr<Backend> makeBackend(const std::string& name, int threads) {
     if (name == "naive") return std::make_unique<NaiveBackend>(threads);
     if (name == "blas") {

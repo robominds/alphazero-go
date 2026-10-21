@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <memory>
+#include <string>
 
 #ifdef __APPLE__
 // Select Accelerate's current CBLAS headers (the legacy ones are deprecated
@@ -17,6 +18,7 @@
 #else
 #include <cblas.h>
 extern "C" void openblas_set_num_threads(int);
+extern "C" char* openblas_get_config(void);
 #endif
 
 namespace azgo {
@@ -68,6 +70,15 @@ bool configureSingleThreaded() {
 }
 
 } // namespace
+
+std::string blasDescription() {
+#ifdef __APPLE__
+    return "";   // Accelerate: part of macOS, so the OS version names it
+#else
+    const char* config = openblas_get_config();
+    return config ? std::string(config) : std::string("OpenBLAS (no configuration)");
+#endif
+}
 
 std::unique_ptr<Backend> makeBlasBackend() {
     static const bool configured = configureSingleThreaded();

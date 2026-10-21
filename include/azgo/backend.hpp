@@ -72,6 +72,13 @@ private:
 
 bool blasAvailable();  // true when built with -DAZ_USE_BLAS=ON
 
+// The BLAS library's own build, where the OS version does not already pin
+// its arithmetic: OpenBLAS's configuration line (version, kernel, flags),
+// e.g. "OpenBLAS 0.3.26 NO_LAPACKE DYNAMIC_ARCH NO_AFFINITY Cooperlake
+// MAX_THREADS=64", whose kernel name (Cooperlake) depends on the CPU. ""
+// for Accelerate (it ships with macOS) and without BLAS.
+std::string blasDescription();
+
 // "naive" or "blas". threads applies to naive only; BLAS is kept
 // single-threaded (our worker threads supply the parallelism).
 // Throws std::invalid_argument for an unknown name or unavailable BLAS, and

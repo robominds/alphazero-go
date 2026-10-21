@@ -126,6 +126,11 @@ int sliceWorkers(const std::string& backend, int requested, int sliceGames, int 
 // the backend, the CPU model, the OS version and build, and with metal the
 // GPU, OS and shader hash of metalDescription(), e.g.
 //   metal; Apple M5 Max; macOS 27.0.1 (27A123); Apple M5 Max, macOS 27.0.1, shaders b7b31a09
+// On Linux the OS part is the distribution with the kernel, and blas adds
+// the OpenBLAS build (blasDescription()), which no OS version pins:
+//   blas; AMD Ryzen 7 7700X 8-Core Processor; Ubuntu 24.04.4 LTS (Linux 6.6.114.1-microsoft-
+//   standard-WSL2); OpenBLAS 0.3.26 NO_LAPACKE DYNAMIC_ARCH NO_AFFINITY Cooperlake MAX_THREADS=64
+// (one line; Cooperlake is the kernel OpenBLAS picked for that CPU).
 // Two engines with equal fingerprints and equal build IDs compute the same
 // bits. It names no host. Throws std::invalid_argument (checkBackendAvailable's
 // message) for a backend that cannot run here.
