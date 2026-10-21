@@ -82,7 +82,7 @@ std::string blasDescription();
 // "naive" or "blas". threads applies to naive only; BLAS is kept
 // single-threaded (our worker threads supply the parallelism).
 // Throws std::invalid_argument for an unknown name or unavailable BLAS, and
-// for "metal", which runs whole forward passes on the GPU
+// for "metal" and "cuda", which run whole forward passes on the GPU
 // (WorkerEvaluators, azgo/inference_hub.hpp), not one operation at a time.
 std::unique_ptr<Backend> makeBackend(const std::string& name, int threads = 1);
 
@@ -93,9 +93,11 @@ std::string cpuBackendName(const std::string& name);
 // Throws std::invalid_argument unless `name` can run in this build on this
 // machine: "backend 'blas' not available: rebuild with -DAZ_USE_BLAS=ON",
 // "backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON (macOS
-// only)", or "backend 'metal': no usable Metal GPU (<reason>)". For metal it
-// creates the GPU context, compiling the shaders, so a run can refuse before
-// it writes anything.
+// only)", "backend 'metal': no usable Metal GPU (<reason>)", "backend 'cuda'
+// not available: rebuild with -DAZ_USE_CUDA=ON (Linux, NVIDIA GPU)" or
+// "backend 'cuda': no usable CUDA GPU (<reason>)". For metal and cuda it
+// creates the GPU context (Metal compiles its shaders), so a run can refuse
+// before it writes anything.
 void checkBackendAvailable(const std::string& name);
 
 // How a convolution's gemms are spread over a ThreadPool. The forward

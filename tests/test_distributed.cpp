@@ -32,6 +32,7 @@
 #include "azgo/checkpoint.hpp"
 #include "azgo/config.hpp"
 #include "azgo/coordinator.hpp"
+#include "azgo/cuda.hpp"
 #include "azgo/engines.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/network.hpp"
@@ -71,6 +72,7 @@ static void test_build_id_shape() {
 static void test_build_options() {
     const std::string options = buildOptions();
     if (metalBuilt()) assert(options == "metal");
+    else if (cudaBuilt()) assert(options == "cuda");
     else if (blasAvailable()) assert(options == "blas");
     else assert(options == "naive");
 }

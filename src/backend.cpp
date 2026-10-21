@@ -1,4 +1,5 @@
 #include "azgo/backend.hpp"
+#include "azgo/cuda.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/parallel.hpp"
 #include <algorithm>
@@ -288,14 +289,22 @@ std::unique_ptr<Backend> makeBackend(const std::string& name, int threads) {
         throw std::invalid_argument("backend 'blas' not available: rebuild with -DAZ_USE_BLAS=ON");
 #endif
     }
-    if (name == "metal")
-        throw std::invalid_argument("backend 'metal' is not a per-operation backend; use WorkerEvaluators");
-    throw std::invalid_argument("unknown backend '" + name + "' (expected naive, blas or metal)");
+    if (name == "metal" || name == "cuda")
+        throw std::invalid_argument("backend '" + name + "' is not a per-operation backend; use WorkerEvaluators");
+    throw std::invalid_argument("unknown backend '" + name + "' (expected naive, blas, metal or cuda)");
 }
 
 std::string cpuBackendName(const std::string& name) { return name == "metal" ? "blas" : name; }
 
 void checkBackendAvailable(const std::string& name) {
+    if (name == "cuda") {
+        std::string why;
+        if (!cudaBuilt())
+            throw std::invalid_argument(
+                "backend 'cuda' not available: rebuild with -DAZ_USE_CUDA=ON (Linux, NVIDIA GPU)");
+        if (!cudaAvailable(&why)) throw std::invalid_argument("backend 'cuda': no usable CUDA GPU (" + why + ")");
+        return;
+    }
     if (name != "metal") {
         makeBackend(name, 1);   // throws for an unknown or unavailable backend
         return;

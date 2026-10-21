@@ -1,0 +1,83 @@
+// The CUDA GPU backend, as the rest of the program sees it. backend = cuda
+// runs the network's inference pass on an NVIDIA GPU with hand-written fp32
+// kernels (src/cuda/kernels.cu), compiled ahead of time to machine code for
+// named architectures only, so no driver ever recompiles them. It is a
+// self-play engine (selfplay_engines = pc/cuda:60): a BatchRunner behind the
+// inference hub, exactly where the Metal runner sits on a Mac.
+//
+// It exists only in a build configured with -DAZ_USE_CUDA=ON (Linux); every
+// other build still compiles this header, answers "not built" and so can
+// refuse backend = cuda with a message that says how to get it. No CUDA type
+// appears here: the header is plain C++17.
+//
+// Design: docs/superpowers/specs/2026-10-20-cuda-inference-backend-design.md.
+//
+// Mark Castelluccio, with assistance from Claude (Anthropic).
+#pragma once
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include "azgo/network.hpp"
+
+namespace azgo {
+
+class BatchRunner;    // azgo/inference_hub.hpp
+
+// True when this binary was built with -DAZ_USE_CUDA=ON.
+bool cudaBuilt();
+
+// True when the GPU can run the kernels: built with CUDA, a device present,
+// the kernels' machine code built for exactly this GPU's architecture (no
+// PTX, no JIT), and a first kernel ran. The first call sets up the
+// process-wide CUDA context. When false and why is non-null, *why says what
+// is missing, e.g. "not built: rebuild with -DAZ_USE_CUDA=ON (Linux, NVIDIA
+// GPU)" or "kernels built for sm_89; this GPU is sm_86: reconfigure with
+// -DAZ_CUDA_ARCHITECTURES=86-real".
+bool cudaAvailable(std::string* why = nullptr);
+
+// "NVIDIA GeForce RTX 4070 Ti SUPER sm_89, driver 13.3, runtime 12.8,
+// kernels 5d0c2e91": the GPU and the architecture its machine code was built
+// for, the CUDA driver and runtime versions, and a hash of the kernel
+// sources, compiler and flags. Two runs whose descriptions match ran the
+// same GPU arithmetic. Without a usable GPU it is cudaAvailable's reason.
+std::string cudaDescription();
+
+#ifdef AZ_USE_CUDA
+
+// The GPU behind an InferenceHub: net's weights uploaded once, `slots`
+// (1..kInferenceSlots) passes of up to maxBatch positions each that may be in
+// flight at once, each on its own stream. Throws std::runtime_error ("cuda:
+// inference needs N MB ...; lower inference_batch") when the slots would not
+// fit the GPU's free memory, before allocating them.
+std::unique_ptr<BatchRunner> makeCudaRunner(const Network& net, int maxBatch, int slots = 2);
+
+// The same memory check up front, for a run before it writes anything:
+// throws that error unless `hubs` hubs of `slotsPerHub` slots each, for a
+// network shaped cfg at inferenceBatch positions per pass, fit.
+void checkCudaInferenceMemory(const NetConfig& cfg, int inferenceBatch, int hubs, int slotsPerHub = 2);
+
+// Test probes: each copies host arrays in, runs its kernels on one stream,
+// waits and copies the results out. They exist so tests (and bench) can
+// check a kernel against an exact CPU reference; the program itself never
+// calls them. Each throws std::runtime_error when the GPU is not usable or a
+// kernel fails.
+namespace cuda_probe {
+
+// The GPU's name as CUDA reports it, e.g. "NVIDIA GeForce RTX 4070 Ti SUPER".
+std::string deviceName();
+// The device's compute capability as 10 * major + minor (89 for sm_89).
+int deviceArchitecture();
+// The architecture of the machine code that runs the kernels, as
+// cudaFuncGetAttributes reports it; equal to deviceArchitecture() whenever
+// cudaAvailable() is true.
+int binaryVersion();
+// The first kernel: data[0..n) = value. data holds n + tail floats; all of
+// them are copied to the GPU and back, so a test can check the tail is untouched.
+void fill(float* data, size_t n, float value, size_t tail = 0);
+
+} // namespace cuda_probe
+
+#endif // AZ_USE_CUDA
+
+} // namespace azgo

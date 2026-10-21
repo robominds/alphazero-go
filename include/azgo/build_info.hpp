@@ -20,7 +20,7 @@ std::string buildId();
 // For printing: the first 7 hex digits and the same suffix (e.g.
 // "09e008b+3fa1c2d0"), or "unknown".
 std::string shortBuildId();
-// The strongest backend built in: "metal", "blas" or "naive".
+// The strongest backend built in: "metal", "cuda", "blas" or "naive".
 std::string buildOptions();
 
 } // namespace azgo

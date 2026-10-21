@@ -11,6 +11,7 @@ endif()
 
 option(AZ_USE_METAL "GPU inference and training with Metal (macOS; implies AZ_USE_BLAS)" OFF)
 option(AZ_USE_BLAS "Use BLAS for gemm (Accelerate on macOS, OpenBLAS elsewhere)" OFF)
+option(AZ_USE_CUDA "GPU inference with CUDA (Linux, NVIDIA; implies AZ_USE_BLAS)" OFF)
 
 # Metal runs the network on the Apple GPU. The network work that stays on the
 # CPU with backend = metal (training, in Phase A) uses BLAS, which on macOS is
@@ -30,6 +31,20 @@ if(AZ_USE_METAL)
   set(CMAKE_OBJCXX_STANDARD 17)
   set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
   set(CMAKE_OBJCXX_EXTENSIONS OFF)
+endif()
+
+# CUDA runs self-play's network on an NVIDIA GPU (a remote engine such as
+# pc/cuda). Like Metal it turns BLAS on for the CPU work, so one binary
+# serves both pc/cuda and pc/blas: a machine has one exe in the hosts file.
+if(AZ_USE_CUDA)
+  if(APPLE)
+    message(FATAL_ERROR "AZ_USE_CUDA=ON needs Linux with an NVIDIA GPU (use AZ_USE_METAL=ON on a Mac)")
+  endif()
+  if(NOT AZ_USE_BLAS)
+    message(STATUS "AZ_USE_CUDA=ON turns AZ_USE_BLAS on (CPU work uses OpenBLAS)")
+    set(AZ_USE_BLAS ON)
+  endif()
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/azgo_cuda.cmake)
 endif()
 
 find_package(Threads REQUIRED)
@@ -69,10 +84,19 @@ if(AZ_USE_METAL)
   file(GLOB AZGO_METAL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/*.mm)
   list(APPEND AZGO_SOURCES ${AZGO_METAL_SOURCES})
 endif()
+# The same for CUDA: src/cuda/*.cpp always (the not-built answers), the
+# CUDA sources src/cuda/*.cu only with AZ_USE_CUDA.
+file(GLOB AZGO_CUDA_PORTABLE CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/*.cpp)
+list(APPEND AZGO_SOURCES ${AZGO_CUDA_PORTABLE})
+if(AZ_USE_CUDA)
+  file(GLOB AZGO_CUDA_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/*.cu)
+  list(APPEND AZGO_SOURCES ${AZGO_CUDA_SOURCES})
+endif()
 
 add_library(azgo STATIC ${AZGO_SOURCES})
 target_include_directories(azgo PUBLIC include)
-target_compile_options(azgo PRIVATE -Wall -Wextra)
+# (nvcc takes host warnings through -Xcompiler: cmake/azgo_cuda.cmake.)
+target_compile_options(azgo PRIVATE $<$<NOT:$<COMPILE_LANGUAGE:CUDA>>:-Wall -Wextra>)
 target_link_libraries(azgo PUBLIC Threads::Threads)
 
 # The build ID (azgo/build_info.hpp): the git commit, plus a hash of any
@@ -110,6 +134,10 @@ if(AZ_USE_METAL)
   target_compile_options(azgo PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
   target_link_libraries(azgo PUBLIC "-framework Metal" "-framework Foundation")
   target_compile_definitions(azgo PUBLIC AZ_USE_METAL)
+endif()
+
+if(AZ_USE_CUDA)
+  azgo_cuda_configure_target()
 endif()
 
 if(AZ_USE_BLAS)
@@ -150,6 +178,11 @@ endforeach()
 # test_metal returns 77 where Metal is not built or not usable: CTest then
 # reports it as Skipped, not failed.
 set_tests_properties(test_metal PROPERTIES SKIP_RETURN_CODE 77)
+# The same for test_cuda where CUDA is not built or no usable GPU is present.
+# Its exact CPU references must not be contracted to fma by the compiler.
+set_tests_properties(test_cuda PROPERTIES SKIP_RETURN_CODE 77)
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda.cpp PROPERTIES
+                            COMPILE_OPTIONS -ffp-contract=off)
 
 # ---- Apps ------------------------------------------------------------------
 

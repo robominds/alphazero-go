@@ -55,11 +55,13 @@ It needs only the Command Line Tools, not Xcode. The GPU kernels
 macOS when a program first uses the GPU, so no `metal` shader compiler runs
 at build time.
 
-Each build has 31 component tests plus an integration smoke test and a
-check of the build ID script (33 in ctest; `ctest -N | tail -1` prints
-`Total Tests: 33`). The GPU tests,
+Each build has 32 component tests plus an integration smoke test and a
+check of the build ID script (34 in ctest; `ctest -N | tail -1` prints
+`Total Tests: 34`). The GPU tests,
 `test_metal`, run only in a build configured with `-DAZ_USE_METAL=ON` on a
-Mac with a usable GPU; elsewhere ctest reports them as Skipped. The smoke
+Mac with a usable GPU, and `test_cuda` only in one configured with
+`-DAZ_USE_CUDA=ON` on Linux with an NVIDIA GPU; elsewhere ctest reports
+them as Skipped. The smoke
 test checks `backend = metal` end to end in a Metal build and its refusal
 in the others. It also runs `tools/gtp_match.py`, so it needs `python3` on
 the path.
