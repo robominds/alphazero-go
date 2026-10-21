@@ -616,7 +616,7 @@ static void test_metal_backend_and_inference_batch() {
     assert(contains(configToString(c), "\nbackend = metal\n"));
     assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
     assert(contains(errorOf("backend = gpu"), "expected naive|blas|metal"));
-    // cuda is a self-play engine only (a remote's GPU): the run's own backend
+    // cuda is an engine only (a remote's GPU): the run's own backend
     // (training, arena, validation) cannot be it.
     assert(contains(errorOf("backend = cuda"), "selfplay_engines"));
     Config d;

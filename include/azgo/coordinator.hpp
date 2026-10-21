@@ -230,8 +230,8 @@ public:
     // One wave of the arena begun last (cfg.arenaEngines must not be empty):
     // assignGames(arena_engines, the wave's games) over its games numbered
     // match-major (waveSlice), every slice at once as play()'s are, local
-    // ones with playArenaGames, remote ones as arena jobs (each network a
-    // slice needs is saved from memory and uploaded, readArenaResult
+    // ones with playArenaGames, remote ones as arena jobs (the wave's
+    // networks are saved from memory, each slice's uploaded, readArenaResult
     // verifies the answer). Work files go to runDir/arena-work/gen_NNNN_wW.
     // Returns each match's result (matchResult of its games in index
     // order), which is exactly what playMatches gives when every engine
@@ -304,8 +304,8 @@ private:
         bool contacted = false;        // stale files of an earlier coordinator cleared
         std::set<std::string> uploaded;   // network paths uploaded there
         std::set<std::string> keep;       // those the current phase's slices need
-        bool suspect = false;          // unreachable at preflight or in an earlier generation
-        bool down = false;             // found unreachable this generation: slices fall back
+        bool suspect = false;          // unreachable at preflight or in an earlier phase
+        bool down = false;             // found unreachable this phase: its slices fall back
     };
     MachineState& machine(const std::string& alias);   // must exist (runSlices made it)
     std::map<std::string, std::unique_ptr<MachineState>> machines_;   // by alias

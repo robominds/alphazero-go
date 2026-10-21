@@ -182,8 +182,8 @@ const KeyEntry kKeys[] = {
     {"backend", false,
      [](Config& c, const std::string& v) -> std::string {
          if (v == "cuda")
-             return "cuda is a self-play engine only, not a run's backend: use selfplay_engines "
-                    "(e.g. selfplay_engines = local/metal:40, pc/cuda:60)";
+             return "cuda is an engine only, not a run's backend: use selfplay_engines or "
+                    "arena_engines (e.g. selfplay_engines = local/metal:40, pc/cuda:60)";
          if (v != "naive" && v != "blas" && v != "metal")
              return "expected naive|blas|metal, got " + quoted(v);
          c.backend = v;
@@ -472,8 +472,9 @@ void checkConsistency(const Config& cfg) {
     for (const EngineSpec& e : cfg.arenaEngines)
         if (e.games >= 0)
             throw ConfigError("arena_engines: " + e.name() + "=" + std::to_string(e.games) +
-                              " is a fixed count, but arena waves differ in size (40, 80 or 160 "
-                              "games), so arena_engines takes weights (:W) only");
+                              " is a fixed count, but arena waves differ in size (one opponent's games, "
+                              "several opponents', a promotion's or the calibrations'), so arena_engines "
+                              "takes weights (:W) only");
 }
 
 } // namespace azgo

@@ -439,4 +439,5 @@ two slices that could be a wave's tail.
 | a slow engine is the wave's tail | a smaller gain | static weights, as for self-play; arena waves are short, so a tail costs minutes |
 | a mini's or the PC's GPU fails mid-wave | the wave waits for two attempts | retry, then the local fallback, as for self-play |
 | remotes on another build | refused at resume | `cluster_sync.sh` before resuming |
+| several remote slices of one wave fall back at once | each runs its own one-slot hubs on the local GPU beside the local slice's; preflight does not count them | a 13×13 or 19×19 wave's few hubs fit the 128 GB Studio many times over; a smaller coordinator would want a lower local `inference_batch` |
 | `--rerate` of a run with `arena_engines` | re-rated games played locally can differ in the last bits | documented; the live `results.csv` stays the record |

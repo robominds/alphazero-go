@@ -550,11 +550,15 @@ void Coordinator::attemptRemote(int attempt, const EngineSpec& e, const RemoteWo
         if (r.exitCode != 0) {
             const std::string line = lastLine(log);
             // A network the binary refused (damaged on the machine since the
-            // upload): forget the slice's networks, so the next attempt
-            // uploads them again.
+            // upload): remove and forget the slice's networks, so the next
+            // attempt uploads them again and none is left behind.
             if (line.find("network") != std::string::npos) {
                 MachineState& state = machine(e.machine);
                 std::lock_guard<std::mutex> lock(state.mutex);
+                try {
+                    t->remove(remoteNets);
+                } catch (const std::exception&) {   // best effort: a dead machine
+                }
                 for (const std::string& net : remoteNets) state.uploaded.erase(net);
             }
             // No log line in the message: selfplay's own words can hold the
@@ -592,9 +596,10 @@ void Coordinator::playRemote(int g, PhaseSlice& slice, const std::string& fallba
                              const std::string& what, SliceReport& report) {
     // Two attempts on the planned engine: a transient failure costs time,
     // not reproducibility. A machine that does not answer at all costs
-    // only a quick probe: one known to be down this generation, or found
-    // down after a failure, goes straight to the fallback, and one that was
-    // down earlier is probed before it is tried.
+    // only a quick probe: one known to be down this phase (a generation's
+    // self-play, or an arena wave), or found down after a failure, goes
+    // straight to the fallback, and one that was down earlier is probed
+    // before it is tried.
     const EngineSpec& e = slice.engine;
     std::string engineFile = e.name();
     std::replace(engineFile.begin(), engineFile.end(), '/', '_');
@@ -898,6 +903,15 @@ std::vector<MatchResult> Coordinator::playArena(const std::vector<ArenaMatchSpec
     for (const ArenaMatchSpec& m : wave)
         for (const ArenaPlayer* p : {&m.a, &m.b})
             if (p->net && std::find(nets.begin(), nets.end(), p->net) == nets.end()) nets.push_back(p->net);
+    // The saved networks go whatever happens, a failed save included; the
+    // logs stay as play()'s do.
+    struct RemoveNetworks {
+        std::string dir;
+        ~RemoveNetworks() {
+            std::error_code ec;
+            if (!dir.empty()) std::filesystem::remove_all(dir, ec);
+        }
+    } removeNetworks{anyRemote ? netDir : ""};
     std::vector<std::pair<std::string, uint64_t>> files;
     if (anyRemote) {
         std::filesystem::remove_all(workDir);
@@ -909,14 +923,6 @@ std::vector<MatchResult> Coordinator::playArena(const std::vector<ArenaMatchSpec
             files.push_back({path, fileHash(path)});
         }
     }
-    // The saved networks go whatever happens; the logs stay as play()'s do.
-    struct RemoveNetworks {
-        std::string dir;
-        ~RemoveNetworks() {
-            std::error_code ec;
-            if (!dir.empty()) std::filesystem::remove_all(dir, ec);
-        }
-    } removeNetworks{anyRemote ? netDir : ""};
 
     ArenaConfig resolved = cfg;
     resolved.maxMoves = cfg.maxMoves > 0 ? cfg.maxMoves : defaultMaxMoves(cfg_.boardSize);

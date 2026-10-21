@@ -118,9 +118,9 @@ struct Config {
     int arenaTemperatureMoves = 4;
     bool arenaRandomSymmetry = false;  // arena search (networks): random symmetry per evaluation
     // Distributed arena: which engine plays which games of each arena wave,
-    // e.g. "local/metal:133, pc/cuda:300", weights only (a wave holds 40,
-    // 80 or 160 games, so a fixed count would mean a different share in
-    // each). Empty: the whole arena on local/<backend>, through today's code.
+    // e.g. "local/metal:16, pc/cuda:46", weights only (waves differ in size:
+    // one opponent's games, several opponents', a promotion's, the
+    // calibrations', so a fixed count would mean a different share in each). Empty: the whole arena on local/<backend>, through today's code.
     // selfplay_fallback governs its failed slices too.
     std::vector<EngineSpec> arenaEngines;
     bool gating = false;
