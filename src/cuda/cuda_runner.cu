@@ -52,8 +52,9 @@ constexpr size_t kMemoryMargin = size_t(512) << 20;
 
 class CudaBatchRunner : public BatchRunner {
 public:
-    CudaBatchRunner(const Network& net, int maxBatch, int slots)
-        : network_(net.config()), weights_(ParamLayout::of(const_cast<Network&>(net))), maxBatch_(maxBatch) {
+    // layout: ParamLayout::of(net), which makeCudaRunner has already built.
+    CudaBatchRunner(const Network& net, const ParamLayout& layout, int maxBatch, int slots)
+        : network_(net.config()), weights_(layout), maxBatch_(maxBatch) {
         weights_.upload(net);
         const NetConfig& cfg = net.config();
         for (int s = 0; s < slots; ++s) slots_.push_back(std::make_unique<Slot>(cfg, maxBatch));
@@ -229,7 +230,7 @@ std::unique_ptr<BatchRunner> makeCudaRunner(const Network& net, int maxBatch, in
         throw std::invalid_argument("makeCudaRunner: slots must be in [1, " + std::to_string(kInferenceSlots) + "]");
     const ParamLayout layout = ParamLayout::of(const_cast<Network&>(net));
     checkFits(hubBytes(net.config(), layout.paramFloats + layout.bufferFloats, maxBatch, slots), maxBatch, 1);
-    return std::make_unique<CudaBatchRunner>(net, maxBatch, slots);
+    return std::make_unique<CudaBatchRunner>(net, layout, maxBatch, slots);
 }
 
 void checkCudaInferenceMemory(const NetConfig& cfg, int inferenceBatch, int hubs, int slotsPerHub) {
