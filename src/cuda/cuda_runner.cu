@@ -6,14 +6,16 @@
 //
 // begin enqueues a pass (copy in, the forward pass, copy out, an event) and
 // returns at once. One completion thread of the runner's own waits for each
-// pass's event, in order, and calls done. It is not a cudaLaunchHostFunc
+// pass's event, in order, polling it with short sleeps, and calls done. It is not a cudaLaunchHostFunc
 // callback: those may not call CUDA, and they never run at all once the
 // context has a sticky error, which would leave the hub's callers waiting
 // forever. The destructor lets the thread finish every pass in flight, and
 // only then frees memory those passes use.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <memory>
@@ -41,6 +43,9 @@ std::atomic<int> gFailCountdown{0};          // 0: off; else passes left before 
 std::atomic<size_t> gMemoryLimit{0};         // 0: the GPU's free memory
 std::atomic<long long> gPassesCompleted{0};
 std::atomic<int> gCopyOutDelayUs{0};          // 0: none
+
+// The completion thread's polling interval: first and longest (waitFor).
+constexpr int kPollFirstUs = 50, kPollLastUs = 200;
 
 // The memory a check leaves free on the GPU for everything else.
 constexpr size_t kMemoryMargin = size_t(512) << 20;
@@ -138,6 +143,21 @@ private:
         std::string error;   // from enqueueing it
     };
 
+    // Waits for the event by polling it with short sleeps: 50 us, doubling
+    // to 200 us. cudaEventSynchronize spins a whole core while it waits (on
+    // WSL2 the blocking-sync flags change nothing), and that core is one the
+    // tree search needs. A pass of 256 positions takes ~8 ms, so the sleeps
+    // add at most 200 us to it.
+    static cudaError_t waitFor(cudaEvent_t event) {
+        int sleepUs = kPollFirstUs;
+        for (;;) {
+            const cudaError_t e = cudaEventQuery(event);
+            if (e != cudaErrorNotReady) return e;
+            std::this_thread::sleep_for(std::chrono::microseconds(sleepUs));
+            sleepUs = std::min(kPollLastUs, 2 * sleepUs);
+        }
+    }
+
     void completionLoop() {
         for (;;) {
             Pass pass;
@@ -149,7 +169,7 @@ private:
                 queue_.pop_front();
             }
             std::string error = pass.error;
-            const cudaError_t e = cudaEventSynchronize(slots_[pass.slot]->event);
+            const cudaError_t e = waitFor(slots_[pass.slot]->event);
             if (error.empty() && e != cudaSuccess) error = std::string("cuda: ") + cudaGetErrorString(e);
             // Failure injection: after n passes, the next one fails (once).
             int left = gFailCountdown.load();
