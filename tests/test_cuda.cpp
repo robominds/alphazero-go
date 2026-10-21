@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <chrono>
 #include <climits>
 #include <cstdint>
 #include <cstdio>
@@ -30,6 +31,7 @@
 #include "azgo/backend.hpp"
 #include "azgo/cuda.hpp"
 #include "azgo/layers.hpp"
+#include "azgo/network.hpp"
 #include "azgo/rng.hpp"
 
 using namespace azgo;
@@ -120,6 +122,88 @@ BatchNorm2d randomBn(Rng& rng, int C) {
     }
     bn.runVar[0] = 0.0f;   // a dead channel: the variance at its floor, eps alone
     return bn;
+}
+
+// The worst error a test saw against its ceiling: max|x - ref| / max|ref|
+// (the Metal spec's maxErr), gathered over every comparison and printed once.
+struct MaxErr {
+    const char* what;
+    double ceiling;
+    double worst = 0.0;
+    MaxErr(const char* w, double c) : what(w), ceiling(c) {}
+    void add(const float* x, const float* ref, size_t count) {
+        double num = 0.0, den = 0.0;
+        for (size_t i = 0; i < count; ++i) {
+            assert(std::isfinite(x[i]));
+            num = std::max(num, std::fabs(static_cast<double>(x[i]) - ref[i]));
+            den = std::max(den, std::fabs(static_cast<double>(ref[i])));
+        }
+        const double e = den > 0.0 ? num / den : num;
+        if (!(e <= ceiling)) {
+            std::printf("test_cuda: %s: maxErr %.3g above the ceiling %.0e\n", what, e, ceiling);
+            std::fflush(stdout);
+            assert(false);
+        }
+        worst = std::max(worst, e);
+    }
+    ~MaxErr() { std::printf("test_cuda: %-28s maxErr %.2e (ceiling %.0e)\n", what, worst, ceiling); }
+};
+
+// ---------------------------------------------------------------- networks
+
+NetConfig netConfig(int n, int blocks, int filters, bool ownership = false, int valueHidden = 16) {
+    NetConfig c;
+    c.boardSize = n;
+    c.history = 8;
+    c.blocks = blocks;
+    c.filters = filters;
+    c.valueHidden = valueHidden;
+    c.ownership = ownership;
+    return c;
+}
+
+// A network whose batch norms and biases are not the identity at
+// initialization, so the GPU must apply every one of them.
+Network randomNetwork(const NetConfig& cfg, uint64_t seed) {
+    Network net(cfg, seed);
+    Rng rng(seed + 17);
+    for (ParamView& p : net.params()) {
+        const std::string& n = p.name;
+        if (n.size() > 6 && n.compare(n.size() - 6, 6, ".gamma") == 0)
+            for (size_t i = 0; i < p.size; ++i) p.value[i] = static_cast<float>(0.5 + rng.uniform());
+        else if (!p.decay)   // beta and Linear biases
+            for (size_t i = 0; i < p.size; ++i) p.value[i] = static_cast<float>(0.4 * rng.uniform() - 0.2);
+    }
+    for (BufferView& b : net.buffers()) {
+        const bool var = b.name.find("runVar") != std::string::npos;
+        for (size_t i = 0; i < b.size; ++i)
+            b.value[i] = static_cast<float>(var ? 0.5 + rng.uniform() : 0.4 * rng.uniform() - 0.2);
+    }
+    return net;
+}
+
+// Encoded positions: random 0/1 planes, [B][planes][area].
+std::vector<float> randomPositions(Rng& rng, const NetConfig& cfg, int B) {
+    std::vector<float> x(static_cast<size_t>(B) * cfg.planes() * cfg.area());
+    for (float& v : x) v = static_cast<float>(rng.below(2));
+    return x;
+}
+
+struct Outputs {
+    std::vector<float> logits, values, ownership;
+};
+
+Outputs gpuInfer(cuda_probe::InferNet& net, const NetConfig& cfg, const std::vector<float>& x, int B) {
+    Outputs o;
+    o.logits.resize(static_cast<size_t>(B) * cfg.actions());
+    o.values.resize(B);
+    if (cfg.ownership) o.ownership.resize(static_cast<size_t>(B) * cfg.area());
+    net.infer(x.data(), B, o.logits.data(), o.values.data(), cfg.ownership ? o.ownership.data() : nullptr);
+    return o;
+}
+
+bool same(const std::vector<float>& a, const std::vector<float>& b) {
+    return a.size() == b.size() && bitwiseEqual(a.data(), b.data(), a.size());
 }
 
 // ---------------------------------------------------------------- the context
@@ -493,6 +577,214 @@ void test_conv_fused_batch_independent() {
     }
 }
 
+// ---------------------------------------------------------------- the whole network
+
+// The worst of max|x - ref| / max|ref| over logits, values and ownership.
+double outputsErr(const Outputs& x, const Outputs& ref) {
+    double worst = 0.0;
+    auto one = [&](const std::vector<float>& a, const std::vector<float>& r) {
+        double num = 0.0, den = 0.0;
+        for (size_t i = 0; i < a.size(); ++i) {
+            assert(std::isfinite(a[i]));
+            num = std::max(num, std::fabs(static_cast<double>(a[i]) - r[i]));
+            den = std::max(den, std::fabs(static_cast<double>(r[i])));
+        }
+        worst = std::max(worst, den > 0.0 ? num / den : num);
+    };
+    one(x.logits, ref.logits);
+    one(x.values, ref.values);
+    one(x.ownership, ref.ownership);
+    return worst;
+}
+
+Outputs cpuInfer(const Network& net, const Backend& backend, const std::vector<float>& x, int B) {
+    const NetConfig& cfg = net.config();
+    Workspace ws(cfg, B, backend);
+    Outputs o;
+    o.logits.resize(static_cast<size_t>(B) * cfg.actions());
+    o.values.resize(B);
+    if (cfg.ownership) o.ownership.resize(static_cast<size_t>(B) * cfg.area());
+    net.infer(ws, x.data(), B, o.logits.data(), o.values.data(), cfg.ownership ? o.ownership.data() : nullptr);
+    return o;
+}
+
+// The whole inference pass against Network::infer with BLAS (OpenBLAS here).
+// The Metal spec's networks are held to its ceiling of 1e-5 maxErr. The
+// preset-sized ones (6x64 to 10-ish blocks of 96 and 128, random weights)
+// accumulate more float noise than that through their depth: there the
+// CPU's own two backends, naive and BLAS, already differ by up to 1.7e-5
+// (9x9 6x64, the values near 0.1). For those the ceiling is the larger of
+// 1e-5 and twice the naive-BLAS spread of the same positions: the GPU must
+// agree with BLAS about as well as the CPU agrees with itself.
+// Measured on an RTX 4070 Ti SUPER: Metal's networks 4.5e-6; preset sizes
+// up to 1.3e-5 (9x9 6x64's values at batch 64), where the same case's
+// naive-BLAS spread was 1.7e-5 at batch 7.
+void test_network_matches_cpu() {
+    auto blas = makeBackend("blas");
+    auto naive = makeBackend("naive");
+    MaxErr err("network forward vs CPU", 1e-5);
+    const NetConfig small[] = {
+        netConfig(5, 1, 8), netConfig(9, 2, 16), netConfig(9, 6, 32), netConfig(9, 0, 16),
+        netConfig(9, 2, 16, true), netConfig(19, 2, 16),
+    };
+    Rng rng(601);
+    for (const NetConfig& cfg : small) {
+        const Network net = randomNetwork(cfg, 40);
+        cuda_probe::InferNet gpu(net, 64);
+        for (int B : {1, 7, 64}) {
+            const std::vector<float> x = randomPositions(rng, cfg, B);
+            const Outputs ref = cpuInfer(net, *blas, x, B);
+            const Outputs got = gpuInfer(gpu, cfg, x, B);
+            err.add(got.logits.data(), ref.logits.data(), got.logits.size());
+            err.add(got.values.data(), ref.values.data(), got.values.size());
+            if (cfg.ownership) err.add(got.ownership.data(), ref.ownership.data(), got.ownership.size());
+        }
+    }
+    const NetConfig presets[] = {netConfig(5, 3, 32, false, 64), netConfig(9, 6, 64, false, 64),
+                                 netConfig(13, 6, 96, false, 64), netConfig(19, 2, 128, true, 256)};
+    double worst = 0.0, worstSpread = 0.0;
+    for (const NetConfig& cfg : presets) {
+        const Network net = randomNetwork(cfg, 40);
+        cuda_probe::InferNet gpu(net, 64);
+        for (int B : {1, 7, 64}) {
+            const std::vector<float> x = randomPositions(rng, cfg, B);
+            const Outputs ref = cpuInfer(net, *blas, x, B);
+            const double spread = outputsErr(cpuInfer(net, *naive, x, B), ref);
+            const double e = outputsErr(gpuInfer(gpu, cfg, x, B), ref);
+            if (!(e <= std::max(1e-5, 2.0 * spread))) {
+                std::printf("test_cuda: %dx%d %dx%d batch %d: maxErr %.3g vs BLAS, naive-BLAS spread %.3g\n",
+                            cfg.boardSize, cfg.boardSize, cfg.blocks, cfg.filters, B, e, spread);
+                std::fflush(stdout);
+                assert(false);
+            }
+            worst = std::max(worst, e);
+            worstSpread = std::max(worstSpread, spread);
+        }
+    }
+    std::printf("test_cuda: preset-sized networks vs CPU   maxErr %.2e (naive-BLAS spread up to %.2e)\n", worst,
+                worstSpread);
+}
+
+// What the inference hub rests on, for the whole network: a position's
+// logits, value and ownership are the same bits alone, in batches of 8, 144
+// and 256, at the first or the last slot, among random companions and with
+// the batch permuted.
+void test_network_batch_independent() {
+    const NetConfig cfg = netConfig(13, 6, 96, true, 64);
+    const Network net = randomNetwork(cfg, 602);
+    cuda_probe::InferNet gpu(net, 256);
+    Rng rng(603);
+    const int full = 256;
+    const size_t planeFloats = static_cast<size_t>(cfg.planes()) * cfg.area();
+    const std::vector<float> pool = randomPositions(rng, cfg, full);
+    auto batchOf = [&](const std::vector<int>& picks) {
+        std::vector<float> x(picks.size() * planeFloats);
+        for (size_t i = 0; i < picks.size(); ++i)
+            std::copy_n(pool.data() + picks[i] * planeFloats, planeFloats, x.data() + i * planeFloats);
+        return x;
+    };
+    auto run = [&](const std::vector<int>& picks) {
+        return gpuInfer(gpu, cfg, batchOf(picks), static_cast<int>(picks.size()));
+    };
+    auto sameAt = [&](const Outputs& o, int slot, const Outputs& a) {
+        const size_t L = cfg.actions(), Ar = cfg.area();
+        return bitwiseEqual(o.logits.data() + slot * L, a.logits.data(), L) &&
+               bitwiseEqual(o.values.data() + slot, a.values.data(), 1) &&
+               bitwiseEqual(o.ownership.data() + slot * Ar, a.ownership.data(), Ar);
+    };
+    std::vector<int> all(full);
+    for (int i = 0; i < full; ++i) all[i] = i;
+    const Outputs whole = run(all);
+    std::vector<int> permuted = all;
+    for (int i = full - 1; i > 0; --i) std::swap(permuted[i], permuted[rng.below(i + 1)]);
+    const Outputs shuffled = run(permuted);
+    for (int s : {0, 1, 7, 100, 255}) {
+        const Outputs alone = run({s});
+        assert(sameAt(whole, s, alone));
+        const int where = static_cast<int>(std::find(permuted.begin(), permuted.end(), s) - permuted.begin());
+        assert(sameAt(shuffled, where, alone));
+        for (int size : {8, 144, 256}) {
+            for (int slot : {0, size - 1}) {
+                std::vector<int> picks(size);
+                for (int& p : picks) p = rng.below(full);
+                picks[slot] = s;
+                assert(sameAt(run(picks), slot, alone));
+            }
+        }
+    }
+}
+
+void test_network_repeatable() {
+    const NetConfig cfg = netConfig(9, 2, 16, true);
+    const Network net = randomNetwork(cfg, 604);
+    cuda_probe::InferNet gpu(net, 32);
+    Rng rng(605);
+    const std::vector<float> x = randomPositions(rng, cfg, 32);
+    const Outputs first = gpuInfer(gpu, cfg, x, 32);
+    for (int r = 0; r < 20; ++r) {
+        const Outputs again = gpuInfer(gpu, cfg, x, 32);
+        assert(same(again.logits, first.logits) && same(again.values, first.values) &&
+               same(again.ownership, first.ownership));
+    }
+    // A second copy of the network gives the same bits as the first.
+    cuda_probe::InferNet other(net, 32);
+    const Outputs second = gpuInfer(other, cfg, x, 32);
+    assert(same(second.logits, first.logits) && same(second.values, first.values));
+}
+
+// A tensor the GPU layout does not know (a layer added on the CPU without a
+// GPU port) is refused at upload, by name.
+void test_unknown_tensor_refused() {
+    const Network plain(netConfig(9, 1, 8), 1), withHead(netConfig(9, 1, 8, true), 1);
+    cuda_probe::checkUpload(plain, plain);
+    bool threw = false;
+    try {
+        cuda_probe::checkUpload(plain, withHead);
+    } catch (const std::logic_error& e) {
+        threw = std::string(e.what()).find("ownership.conv.w") != std::string::npos;
+    }
+    assert(threw);
+}
+
+// And one the layout knows but the GPU pass never reads (a GPU port that
+// lags behind the CPU network) is refused when the pass is first encoded.
+void test_unread_tensor_refused() {
+    const NetConfig withHead = netConfig(9, 1, 8, true), plain = netConfig(9, 1, 8);
+    const Network net(withHead, 1);
+    cuda_probe::checkForwardReadsEveryTensor(net, withHead);
+    bool threw = false;
+    try {
+        cuda_probe::checkForwardReadsEveryTensor(net, plain);
+    } catch (const std::logic_error& e) {
+        const std::string what = e.what();
+        threw = what.find("ownership.conv.w") != std::string::npos &&
+                what.find("ownership.bn.runVar") != std::string::npos;
+    }
+    assert(threw);
+}
+
+// The inference workspace holds no column matrix: 13x13 6x96 at batch 256 is
+// the input twice, three trunk buffers and the heads, ~60 MB.
+void test_workspace_size_and_speed() {
+    const NetConfig cfg = netConfig(13, 6, 96, false, 64);
+    const Network net = randomNetwork(cfg, 606);
+    cuda_probe::InferNet gpu(net, 256);
+    const double mb = static_cast<double>(gpu.bytes()) / 1e6;
+    std::printf("test_cuda: 13x13 6x96 inference workspace at batch 256: %.1f MB\n", mb);
+    assert(mb > 40.0 && mb < 90.0);
+    Rng rng(607);
+    const std::vector<float> x = randomPositions(rng, cfg, 256);
+    gpuInfer(gpu, cfg, x, 256);
+    const auto start = std::chrono::steady_clock::now();
+    int passes = 0;
+    while (std::chrono::steady_clock::now() - start < std::chrono::milliseconds(500)) {
+        gpuInfer(gpu, cfg, x, 256);
+        ++passes;
+    }
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    std::printf("test_cuda: 13x13 6x96 synchronous passes of 256: %.0f evals/s (not asserted)\n", passes * 256 / s);
+}
+
 } // namespace
 
 #endif // AZ_USE_CUDA
@@ -534,6 +826,12 @@ int main() {
     test_elementwise_batch_independent();
     test_conv_fused_equals_explicit();
     test_conv_fused_batch_independent();
+    test_network_matches_cpu();
+    test_network_batch_independent();
+    test_network_repeatable();
+    test_unknown_tensor_refused();
+    test_unread_tensor_refused();
+    test_workspace_size_and_speed();
 #endif
     std::printf("test_cuda: all tests passed\n");
     return 0;

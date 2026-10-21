@@ -82,10 +82,11 @@ cluster, cutting 13×13 self-play from ~2,970 s to ~1,130 s per generation.
 - **PTX or JIT.** Only machine code for named architectures is shipped
   (see "Architectures").
 - **Native Windows, several GPUs per process, AMD GPUs.**
-- **The ownership output.** Inference returns logits and values, as
-  `Evaluator` does. A network with an ownership head is accepted: its
-  tensors upload, and the head is not computed (as in the Metal hub's
-  passes).
+- **Returning the ownership output to search.** The hub returns logits
+  and values, as `Evaluator` does. The pass computes the ownership head
+  when the network has one, as the Metal pass does (a 1×1 convolution, its
+  batch norm and tanh: under 1% of a pass), so every uploaded tensor is
+  read and `CudaInference` can return it to tests.
 
 ## Overview
 
@@ -247,9 +248,7 @@ Metal spec's tolerance table ("Tolerance against the CPU").
   and size against the layout and throws `std::logic_error` naming an
   unknown tensor, as `GpuWeights::upload` does. The probe
   `checkForwardReadsEveryTensor` ensures a layer added to the CPU network
-  is not silently skipped. Ownership-head tensors are uploaded and
-  ignored: they are listed as read only when the head is computed, which
-  inference never does, so the check exempts them by name.
+  is not silently skipped.
 - **Per slot.**
   - A `cudaStream_t`.
   - Pinned host staging: `input`, `logits`, `values`, via
@@ -413,8 +412,12 @@ randomness comes from `azgo::Rng`.
      144 and 256, at different offsets, with random companions and in
      permuted order, are bitwise identical.
    - The tile shapes give equal bits.
-5. **Whole network against the CPU** `Network` (naive and, when built,
-   blas), within the Metal spec's tolerances. The upload refusals:
+5. **Whole network against the CPU** `Network` with BLAS, within the
+   Metal spec's 1e-5 for its networks. The preset-sized random networks
+   (6×64 to 6×96, 2×128) gather more float noise through their depth: the
+   CPU's naive and BLAS backends already differ by up to 1.7e-5 there. For
+   them the ceiling is the larger of 1e-5 and twice the naive-BLAS spread
+   of the same positions. The upload refusals:
    `checkUpload`, `checkForwardReadsEveryTensor`.
 6. **Runner and hub.**
    - One and two slots, many threads, chaos seeds: every request's rows

@@ -57,6 +57,24 @@ std::unique_ptr<BatchRunner> makeCudaRunner(const Network& net, int maxBatch, in
 // network shaped cfg at inferenceBatch positions per pass, fit.
 void checkCudaInferenceMemory(const NetConfig& cfg, int inferenceBatch, int hubs, int slotsPerHub = 2);
 
+// The whole network's inference forward on the GPU, synchronously: weights
+// uploaded once, one workspace for up to maxBatch positions. For tests and
+// bench; search goes through the hub (makeCudaRunner). Errors throw
+// std::runtime_error("GPU inference failed: ...").
+class CudaInference {
+public:
+    CudaInference(const Network& net, int maxBatch);
+    ~CudaInference();
+    CudaInference(const CudaInference&) = delete;
+    CudaInference& operator=(const CudaInference&) = delete;
+    // Network::infer's arguments; ownership needs a network with the head.
+    void infer(const float* input, int B, float* logits, float* values, float* ownership = nullptr);
+    size_t bytes() const;   // the GPU memory of the activations
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 // Test probes: each copies host arrays in, runs its kernels on one stream,
 // waits and copies the results out. They exist so tests (and bench) can
 // check a kernel against an exact CPU reference; the program itself never
@@ -98,6 +116,16 @@ void tanhInPlace(float* x, size_t count);                                       
 // none) and ReLU: x [cin][B][n][n] -> y [cout][B * n * n]. tile as gemm's.
 void convBnRelu(const Conv2d& conv, const BatchNorm2d& bn, const float* x, const float* skip, int B, int n,
                 float* y, int tile = -1);
+
+// CudaInference under its test name.
+using InferNet = CudaInference;
+// Uploads net into weights laid out for layoutNet (ParamLayout::of): throws
+// std::logic_error naming the first tensor the layout does not know.
+void checkUpload(const Network& layoutNet, const Network& net);
+// Uploads net, then enqueues one forward pass of a GPU network built for
+// encodeAs (a stand-in for a GPU port that lags behind the CPU network):
+// throws std::logic_error naming every uploaded tensor the pass never reads.
+void checkForwardReadsEveryTensor(const Network& net, const NetConfig& encodeAs);
 
 } // namespace cuda_probe
 

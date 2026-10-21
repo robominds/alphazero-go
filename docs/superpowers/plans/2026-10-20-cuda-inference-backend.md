@@ -186,7 +186,7 @@ namespace cuda_probe { std::string deviceName(); int binaryVersion(); void fill(
 
 **Files:** Create `src/cuda/cuda_network.cu/.cuh`. Modify `include/azgo/cuda.hpp`, `src/cuda/cuda_probes.cu`, `tests/test_cuda.cpp`.
 
-**Produces:** `CudaWeights(ParamLayout)` with `upload(const Network&)` (name/size checks; `bn_fold` per BN after upload), `CudaWorkspace(cfg, maxBatch)` (stage, input, three trunk buffers, head buffers, outputs; no `col`), `CudaNetwork::encodeForward(cudaStream_t, CudaWorkspace&, const CudaWeights&, int B)` in `Network::forward`'s order (spec "Overview"); probes `InferNet` (synchronous `infer(input, B, logits, values)`), `checkUpload`, `checkForwardReadsEveryTensor` (ownership tensors exempt, by name).
+**Produces:** `CudaWeights(ParamLayout)` with `upload(const Network&)` (name/size checks; `bn_fold` per BN after upload), `CudaWorkspace(cfg, maxBatch)` (stage, input, three trunk buffers, head buffers, outputs; no `col`), `CudaNetwork::encodeForward(cudaStream_t, CudaWorkspace&, const CudaWeights&, int B)` in `Network::forward`'s order (spec "Overview"); probes `InferNet` (synchronous `infer(input, B, logits, values)`), `checkUpload`, `checkForwardReadsEveryTensor` (the ownership head is computed, as in the Metal pass, so no tensor is exempt).
 
 - [ ] **Step 1: Failing tests** (mirroring `test_metal`'s network tests).
   - `test_network_matches_cpu`: every preset shape (5×5 3×32, 9×9 6×64, 9×9 6×96, 13×13 6×96, 19×19 10×128, and one with `ownership = true`), random weights with trained-like BN statistics, logits and values against `Network::infer` on naive (and blas when built) within the Metal spec's tolerances.
