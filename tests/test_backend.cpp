@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -11,6 +12,10 @@
 #include "azgo/backend.hpp"
 #include "azgo/parallel.hpp"
 #include "azgo/rng.hpp"
+
+#if defined(AZ_USE_BLAS) && !defined(__APPLE__)
+extern "C" int openblas_get_num_threads(void);
+#endif
 
 using namespace azgo;
 
@@ -191,6 +196,22 @@ static void test_make_backend() {
         }
         assert(threw);
     }
+}
+
+// Every self-play and arena worker calls BLAS from its own thread, so BLAS
+// must not start threads of its own: makeBackend("blas") limits it to one
+// (Accelerate through VECLIB_MAXIMUM_THREADS, OpenBLAS through
+// openblas_set_num_threads, which also covers a pool it started at load).
+static void test_blas_is_single_threaded() {
+#ifdef AZ_USE_BLAS
+    makeBackend("blas");
+#ifdef __APPLE__
+    const char* veclib = std::getenv("VECLIB_MAXIMUM_THREADS");
+    assert(veclib != nullptr && std::string(veclib) == "1");
+#else
+    assert(openblas_get_num_threads() == 1);
+#endif
+#endif
 }
 
 static void test_blas_matches_naive() {
@@ -417,6 +438,7 @@ int main() {
     test_col2im_is_adjoint_of_im2col();
     test_col2im_overwrites_and_counts_overlaps();
     test_make_backend();
+    test_blas_is_single_threaded();
     test_blas_matches_naive();
     test_strided_gemm();
     test_column_blocks_match_unsplit_gemm();
