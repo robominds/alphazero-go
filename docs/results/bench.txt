@@ -616,3 +616,17 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 # The two minis' fingerprints are equal (same chip, macOS build and
 # shaders; their memory differs, which the arithmetic does not see), so
 # their engines may split a share without changing a bit.
+# =============================================================================
+# The CUDA engine (backend = cuda), an NVIDIA GPU as a self-play engine (2026-10-20)
+# =============================================================================
+# Measured on another machine: a PC with an RTX 4070 Ti SUPER (sm_89, 16
+# GB) and a Ryzen 7 7700X under WSL2 Ubuntu 24.04. Full tables, conditions
+# and analysis: docs/results/cuda-bench.txt. Branch cuda-backend, build-cuda.
+#   size   blocks x filters   2-slot pass, batch 256   hub (128-256 threads x 8)   Metal hub (M5 Max, above)
+#   9x9    6 x 96                   59,225                    60,607                      29,392
+#   13x13  6 x 96                   32,207                    30,982                     ~14,200 (real self-play)
+#   19x19  10 x 128                  6,724                     6,942                       2,782
+# A real 13x13 6x96 slice (256 games at once, 400 simulations) ran at 30.0k
+# evals/s, the whole process under one CPU core. The PC's CPU as a blas
+# engine adds ~1,800 evals/s with 8 workers beside the GPU, which stays at
+# 99%.

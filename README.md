@@ -55,15 +55,35 @@ It needs only the Command Line Tools, not Xcode. The GPU kernels
 macOS when a program first uses the GPU, so no `metal` shader compiler runs
 at build time.
 
+On Linux with an NVIDIA GPU, the network can run on it as a self-play
+engine (`pc/cuda`, under **Distributed self-play**). That build needs the
+CUDA toolkit (`nvcc`, CMake 3.18 or later) and turns BLAS on too:
+
+```bash
+cmake -S . -B build-cuda -DCMAKE_BUILD_TYPE=Release -DAZ_USE_CUDA=ON \
+      -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc   # if nvcc is not on the PATH
+cmake --build build-cuda -j
+ctest --test-dir build-cuda --output-on-failure
+```
+
+It builds machine code for one GPU architecture only, `AZ_CUDA_ARCHITECTURES`
+(default `89-real`, the RTX 40 series), and no PTX, so a driver never
+recompiles the kernels (`src/cuda/kernels.cu`) and changes their bits. A
+build for another architecture refuses to run, with the setting to use
+(e.g. `-DAZ_CUDA_ARCHITECTURES=86-real` for an RTX 30). `cuda` is never a
+run's own `backend`: training, the arena and the tools stay on the CPU or
+Metal.
+
 Each build has 32 component tests plus an integration smoke test and a
 check of the build ID script (34 in ctest; `ctest -N | tail -1` prints
 `Total Tests: 34`). The GPU tests,
 `test_metal`, run only in a build configured with `-DAZ_USE_METAL=ON` on a
 Mac with a usable GPU, and `test_cuda` only in one configured with
 `-DAZ_USE_CUDA=ON` on Linux with an NVIDIA GPU; elsewhere ctest reports
-them as Skipped. The smoke
-test checks `backend = metal` end to end in a Metal build and its refusal
-in the others. It also runs `tools/gtp_match.py`, so it needs `python3` on
+them as Skipped (`test_cuda` fails instead when a GPU is present but the
+build's architecture is not its). The smoke test checks `backend = metal`
+end to end in a Metal build and its refusal in the others, and a cuda
+engine likewise in a CUDA build. It also runs `tools/gtp_match.py`, so it needs `python3` on
 the path.
 
 **The presets in `configs/` say `backend = blas`**, because BLAS is 2.9×
@@ -324,8 +344,8 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 ### Distributed self-play
 
 Self-play can use several machines at once: the coordinator's GPU and
-CPU, and the GPUs and CPUs of other Macs (or the CPUs of Linux machines)
-reached over ssh
+CPU, and the GPUs and CPUs of other Macs, or of Linux machines with an
+NVIDIA GPU (a `cuda` engine, built with `-DAZ_USE_CUDA=ON`), reached over ssh
 ([design](docs/superpowers/specs/2026-10-18-distributed-selfplay-design.md),
 [plan](docs/superpowers/plans/2026-10-18-distributed-selfplay.md)). An
 *engine* is a machine and a backend, written `machine/backend`; `local` is
@@ -358,9 +378,14 @@ or `train --hosts FILE`). Never commit it:
 local  cpu_workers=4 cpu_qos=utility
 mini1  ssh=<user>@<address> exe=<repo>/build-metal/selfplay workdir=<repo>/runs/remote
 mini2  ssh=<user>@<address> exe=<repo>/build-metal/selfplay workdir=<repo>/runs/remote
+pc     ssh=<user>@<address> exe=<repo>/build-cuda/selfplay workdir=<repo-work> cpu_workers=8
 ```
 
-Other keys are `metal_workers` (0: every game of the slice at once),
+with, for example, `selfplay_engines = local/metal:74, mini1/metal:13,
+mini2/metal:13, pc/cuda:150, pc/blas=4`: `pc` is a Linux machine whose
+one binary serves both its GPU (`pc/cuda`) and its CPU (`pc/blas`). Other
+keys are `metal_workers` and `cuda_workers` (0, the default: every game of
+the slice at once, which a GPU engine needs to fill its passes),
 `inference_batch`, `nice` and `timeout`. A CPU engine uses
 `min(4, cores / 3)` workers on `local` and 2 on a remote by default,
 because BLAS saturates early and more workers only slow the machine's GPU
@@ -368,7 +393,8 @@ engine (`bench --mixed`, `docs/results/bench.txt`). Values may hold only
 `[A-Za-z0-9_./~@:+-]`, so they go into an ssh command line unquoted.
 `tools/cluster_sync.sh` sends `HEAD` to every machine with `ssh=` and builds
 `selfplay` there, in `exe`'s directory, with the options its name asks for
-(the word `metal` in it, as in `build-metal`: Metal; `blas`: BLAS, so
+(the word `metal` in it, as in `build-metal`: Metal; `cuda`: CUDA, with
+nvcc from the remote's PATH or `/usr/local/cuda/bin`; `blas`: BLAS, so
 OpenBLAS on Linux); at the start of a run, `train` checks that each
 machine's `selfplay --version` reports its own build ID. The repository on
 a machine (`exe`'s grandparent) is replaced wholesale at every sync, so
@@ -1448,11 +1474,26 @@ backward pass, the losses and SGD as kernels, opt-in with
 `gpu_training = true`. The CPU's other cores came first. The training
 step runs on all of them (`train_threads`), 4.6× faster for 6×96 on 9×9.
 
-An NVIDIA GPU may follow as a remote self-play engine. A CUDA spike
-(`tools/cuda_bench`, `docs/results/cuda-bench.txt`) on an RTX 4070 Ti
-SUPER ran the 13×13 6×96 inference pass at 30,800 positions per second
-(batch 256). That is 2.1× the M5 Max's GPU. Its hand-written fp32 kernels
-are batch-independent like the Metal ones, and cuBLAS is not.
+An NVIDIA GPU is the second GPU backend, `cuda`, for self-play engines
+only ([design](docs/superpowers/specs/2026-10-20-cuda-inference-backend-design.md),
+[plan](docs/superpowers/plans/2026-10-20-cuda-inference-backend.md)). It
+is the Metal design on another vendor's GPU: a `BatchRunner` behind the
+same hub, one hand-written fp32 kernel per CPU layer, and the same
+contract, each position's outputs independent of its batch. A spike
+(`tools/cuda_bench`) decided two things. cuBLAS is out: a position's
+results change with the batch (75–95% of its elements). Each 3×3
+convolution is one fused kernel, an implicit GEMM that reads the input
+where im2col would have and applies batch norm, the skip and ReLU at the
+end. That saves writing and re-reading a 150 MB column matrix per 13×13
+layer, and gives the same bits as the separate kernels. Each gemm output
+is one `fmaf` chain in k order, which the tests hold bitwise against the
+same chain on the CPU.
+
+On an RTX 4070 Ti SUPER (`docs/results/cuda-bench.txt`), the hub runs
+at 31,000 positions per second on 13×13 6×96, 60,600 on 9×9 6×96 and
+6,900 on 19×19 10×128. That is 2.1–2.5× the M5 Max's Metal hub. A real
+13×13 slice of 256 games ran at 30,000 per second with the whole process
+under one CPU core.
 
 ## Authorship
 
