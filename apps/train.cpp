@@ -4,7 +4,7 @@
 //   train --config configs/9x9.cfg --run runs/ten --init-from CKPT [--buffer-from RUNDIR]
 //   train --run runs/nine --resume [--set key=value]... [--generations N]
 //   train --run runs/nine --rerate [--set key=value]...
-//   train ... [--hosts FILE]   (distributed self-play: the machine-local hosts file)
+//   train ... [--hosts FILE]   (distributed self-play and arena: the machine-local hosts file)
 //   train --version
 #include <cstdio>
 #include <exception>
@@ -44,8 +44,8 @@ const char* const kUsage =
     "keys, e.g. --set bot_simulations= --set reference_networks=CKPT to measure the\n"
     "run against other fixed players.\n"
     "--hosts FILE: the machine-local hosts file that defines the machines named in\n"
-    "selfplay_engines (default: $AZGO_HOSTS, else ~/.config/azgo/hosts); read only when\n"
-    "selfplay_engines is set. Never commit it.\n"
+    "selfplay_engines and arena_engines (default: $AZGO_HOSTS, else ~/.config/azgo/hosts);\n"
+    "read only when either is set. Never commit it.\n"
     "--version prints the build ID (the git commit, with +HASH when the tree had\n"
     "uncommitted changes) and the strongest backend built, e.g. 'train 09e008b (metal)',\n"
     "then the full ID on a line 'build <40 hex>[+HASH]'.\n";
