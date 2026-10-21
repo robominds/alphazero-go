@@ -10,6 +10,7 @@
 #include <sys/utsname.h>
 #include "azgo/arena.hpp"
 #include "azgo/backend.hpp"
+#include "azgo/cuda.hpp"
 #include "azgo/metal.hpp"
 #ifdef __APPLE__
 #include <sys/sysctl.h>
@@ -56,9 +57,9 @@ EngineSpec parseItem(const std::string& item) {
     if (!validAlias(e.machine))
         throw std::invalid_argument("bad machine alias '" + e.machine +
                                     "' (expected [a-z][a-z0-9_-]{0,31})");
-    if (e.backend != "naive" && e.backend != "blas" && e.backend != "metal")
+    if (e.backend != "naive" && e.backend != "blas" && e.backend != "metal" && e.backend != "cuda")
         throw std::invalid_argument("unknown backend '" + e.backend +
-                                    "' (expected naive|blas|metal)");
+                                    "' (expected naive|blas|metal|cuda)");
     if (item[sep] == ':') {
         const std::string reason = parseShare(number, 1, kMaxShare, e.weight);
         if (!reason.empty()) throw std::invalid_argument("weight: " + reason);
@@ -203,6 +204,7 @@ std::string applyHostsKey(MachineSettings& m, const std::string& key, const std:
         return "";
     }
     if (key == "metal_workers") return hostsInt(value, 0, kMaxArenaWorkers, m.metalWorkers);
+    if (key == "cuda_workers") return hostsInt(value, 0, kMaxArenaWorkers, m.cudaWorkers);
     if (key == "cpu_workers") return hostsInt(value, 0, 256, m.cpuWorkers);
     if (key == "inference_batch") return hostsInt(value, 0, 1024, m.inferenceBatch);
     if (key == "nice") return hostsInt(value, 0, 19, m.nice);
@@ -226,8 +228,9 @@ std::string applyHostsKey(MachineSettings& m, const std::string& key, const std:
     return "?";   // unknown keys are refused before this is called
 }
 
-const char* const kHostsKeys[] = {"ssh",     "exe",  "workdir", "metal_workers", "cpu_workers",
-                                  "inference_batch", "cpu_qos", "nice", "timeout"};
+const char* const kHostsKeys[] = {"ssh",          "exe",         "workdir",         "metal_workers",
+                                  "cuda_workers", "cpu_workers", "inference_batch", "cpu_qos",
+                                  "nice",         "timeout"};
 
 } // namespace
 
@@ -331,6 +334,8 @@ int engineWorkers(const MachineSettings& machine, const std::string& backend, in
     int workers;
     if (backend == "metal") {
         workers = machine.metalWorkers > 0 ? machine.metalWorkers : kMaxArenaWorkers;
+    } else if (backend == "cuda") {
+        workers = machine.cudaWorkers > 0 ? machine.cudaWorkers : kMaxArenaWorkers;
     } else if (machine.cpuWorkers > 0) {
         workers = machine.cpuWorkers;
     } else {
@@ -448,6 +453,7 @@ std::string engineFingerprint(const std::string& backend) {
     checkBackendAvailable(backend);
     std::string f = backend + "; " + cpuModel() + "; " + osVersion();
     if (backend == "metal") f += "; " + metalDescription();
+    if (backend == "cuda") f += "; " + cudaDescription();
     if (backend == "blas" && !blasDescription().empty()) f += "; " + tidy(blasDescription());
     return f;
 }

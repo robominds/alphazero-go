@@ -294,7 +294,9 @@ std::unique_ptr<Backend> makeBackend(const std::string& name, int threads) {
     throw std::invalid_argument("unknown backend '" + name + "' (expected naive, blas, metal or cuda)");
 }
 
-std::string cpuBackendName(const std::string& name) { return name == "metal" ? "blas" : name; }
+std::string cpuBackendName(const std::string& name) {
+    return name == "metal" || name == "cuda" ? "blas" : name;
+}
 
 void checkBackendAvailable(const std::string& name) {
     if (name == "cuda") {

@@ -464,7 +464,9 @@ std::vector<GameRecord> SelfPlayCoordinator::attemptRemote(int attempt, int g, c
                                          remoteResult, "--backend", e.backend,
                                          "--exit-on-stdin-eof"};
         // Worker counts the hosts file sets; otherwise the remote's own rule.
-        const int workers = e.backend == "metal" ? m.metalWorkers : m.cpuWorkers;
+        const int workers = e.backend == "metal"  ? m.metalWorkers
+                            : e.backend == "cuda" ? m.cudaWorkers
+                                                  : m.cpuWorkers;
         if (workers > 0) args.insert(args.end(), {"--workers", std::to_string(workers)});
         if (m.inferenceBatch > 0)
             args.insert(args.end(), {"--inference-batch", std::to_string(m.inferenceBatch)});
@@ -603,7 +605,7 @@ std::vector<GameRecord> SelfPlayCoordinator::playRemote(int g, const Slice& slic
     run.backend = backend;
     run.workers = engineWorkers(local, backend, slice.count, resolveWorkers(0));
     run.inferenceBatch = local.inferenceBatch > 0 ? local.inferenceBatch : cfg_.inferenceBatch;
-    run.qos = backend == "metal" ? CpuQos::Default : local.cpuQos;
+    run.qos = backend == "metal" || backend == "cuda" ? CpuQos::Default : local.cpuQos;
     run.cancel = &stop;
     report.engine = fallback;
     report.fingerprint = engineFingerprint(backend);
@@ -646,9 +648,10 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
         runs[k].backend = e.backend;
         runs[k].workers = engineWorkers(m, e.backend, slices[k].count, cores);
         runs[k].inferenceBatch = m.inferenceBatch > 0 ? m.inferenceBatch : cfg_.inferenceBatch;
-        // The GPU, which sets the pace, waits on the metal engine's workers:
-        // they keep the default class. CPU engines take the machine's.
-        runs[k].qos = e.backend == "metal" ? CpuQos::Default : m.cpuQos;
+        // The GPU, which sets the pace, waits on a GPU engine's workers
+        // (metal, cuda): they keep the default class. CPU engines take the
+        // machine's.
+        runs[k].qos = e.backend == "metal" || e.backend == "cuda" ? CpuQos::Default : m.cpuQos;
         if (!fingerprints_.count(e.name())) fingerprints_[e.name()] = engineFingerprint(e.backend);
         reports[k].fingerprint = fingerprints_[e.name()];
         reports[k].build = shortBuildId();

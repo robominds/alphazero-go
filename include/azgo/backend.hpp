@@ -86,8 +86,8 @@ std::string blasDescription();
 // (WorkerEvaluators, azgo/inference_hub.hpp), not one operation at a time.
 std::unique_ptr<Backend> makeBackend(const std::string& name, int threads = 1);
 
-// The backend for the work that stays on the CPU: "blas" for "metal"
-// (training, the bots, grow), any other name unchanged.
+// The backend for the work that stays on the CPU: "blas" for "metal" and
+// "cuda" (training, the bots, grow), any other name unchanged.
 std::string cpuBackendName(const std::string& name);
 
 // Throws std::invalid_argument unless `name` can run in this build on this

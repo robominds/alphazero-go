@@ -181,6 +181,9 @@ const KeyEntry kKeys[] = {
     {"train_threads", false, intKey<&Config::trainThreads, 0, 256>, printInt<&Config::trainThreads>},
     {"backend", false,
      [](Config& c, const std::string& v) -> std::string {
+         if (v == "cuda")
+             return "cuda is a self-play engine only, not a run's backend: use selfplay_engines "
+                    "(e.g. selfplay_engines = local/metal:40, pc/cuda:60)";
          if (v != "naive" && v != "blas" && v != "metal")
              return "expected naive|blas|metal, got " + quoted(v);
          c.backend = v;

@@ -69,6 +69,12 @@ static void test_build_id_shape() {
 }
 
 // The strongest backend the binary was built with.
+// The CPU work of a run (training, bots) never runs on a GPU backend.
+static void test_cpu_backend_name() {
+    assert(cpuBackendName("metal") == "blas" && cpuBackendName("cuda") == "blas");
+    assert(cpuBackendName("naive") == "naive" && cpuBackendName("blas") == "blas");
+}
+
 static void test_build_options() {
     const std::string options = buildOptions();
     if (metalBuilt()) assert(options == "metal");
@@ -111,6 +117,12 @@ static void test_engine_list_parse_print() {
     assert(printEngineList(parseEngineList(spaced)) ==
            "local/metal:50, local/blas=12, mini1/metal:10");
     assert(parseEngineList("").empty() && parseEngineList("   ").empty());
+    // An NVIDIA GPU engine (a CUDA build on the remote): a name like any other.
+    const std::vector<EngineSpec> withCuda = parseEngineList("local/metal:40, pc/cuda:60, pc/blas=2");
+    assert(withCuda.size() == 3 && withCuda[1].machine == "pc" && withCuda[1].backend == "cuda" &&
+           withCuda[1].weight == 60 && withCuda[1].name() == "pc/cuda");
+    assert(printEngineList(withCuda) == "local/metal:40, pc/cuda:60, pc/blas=2");
+    assert(contains(parseError("pc/gpu:1"), "naive|blas|metal|cuda"));
     assert(printEngineList({}).empty());
     // A repeated engine is two items, each with its own slice.
     const std::vector<EngineSpec> twice = parseEngineList("local/naive:1,local/naive:1");
@@ -332,6 +344,9 @@ static void test_hosts_refusals() {
     assert(contains(hostsError("mini1 exe=/a workdir=/w timeout=.5\n"), "timeout"));
     assert(contains(hostsError("mini1 exe=/a workdir=/w timeout=-1\n"), "timeout"));
     assert(contains(hostsError("mini1 exe=/a workdir=/w cpu_qos=low\n"), "cpu_qos"));
+    assert(contains(hostsError("pc exe=/a workdir=/w cuda_workers=-1\n"), "cuda_workers"));
+    assert(contains(hostsError("pc exe=/a workdir=/w cuda_workers=257\n"), "cuda_workers"));
+    assert(parseHostsText("pc exe=/a workdir=/w cuda_workers=0\n", "h").settings("pc").cudaWorkers == 0);
     assert(contains(hostsError("mini1 exe=/a workdir=/w cpu_workers=2 cpu_workers=3\n"),
                     "repeated"));
     assert(contains(hostsError("mini1 exe=/a b workdir=/w\n"), "h:1: "));   // a value with a space
@@ -393,6 +408,19 @@ static void test_engine_workers() {
     assert(engineWorkers(hosts.settings("local"), "blas", 12, 18) == 6);
     assert(engineWorkers(hosts.settings("mini1"), "naive", 20, 10) == 8);
     assert(engineWorkers(hosts.settings("mini1"), "naive", 3, 10) == 3);
+    // cuda, as metal: cuda_workers, or every game of the slice at once (at
+    // most 256); metal_workers and cpu_workers do not apply to it.
+    const MachineSettings pc = parseHostsText("pc exe=/a workdir=/w cuda_workers=48 metal_workers=7 cpu_workers=3\n", "h")
+                                   .settings("pc");
+    assert(pc.cudaWorkers == 48);
+    assert(engineWorkers(pc, "cuda", 100, 16) == 48);
+    assert(engineWorkers(pc, "cuda", 20, 16) == 20);
+    assert(engineWorkers(pc, "metal", 100, 16) == 7 && engineWorkers(pc, "blas", 100, 16) == 3);
+    assert(engineWorkers(remote, "cuda", 300, 16) == 256);
+    assert(engineWorkers(local, "cuda", 52, 16) == 52);
+    assert(sliceWorkers("cuda", 0, 296, 16) == 256);
+    assert(sliceWorkers("cuda", 0, 52, 16) == 52);
+    assert(sliceWorkers("cuda", 9, 52, 16) == 9);
     // What selfplay uses on a remote: --workers, else the remote rule.
     assert(sliceWorkers("blas", 0, 12, 10) == 2);
     assert(sliceWorkers("naive", 0, 12, 3) == 1);
@@ -425,7 +453,7 @@ static void test_fingerprint() {
     char host[256] = "";
     gethostname(host, sizeof host - 1);
     const std::string hostName = host;
-    for (const std::string backend : {"naive", "blas", "metal"}) {
+    for (const std::string backend : {"naive", "blas", "metal", "cuda"}) {
         bool available = true;
         std::string why;
         try {
@@ -449,7 +477,7 @@ static void test_fingerprint() {
         assert(f == engineFingerprint(backend));
         assert(f.rfind(backend + "; ", 0) == 0);
         assert(f.find('\n') == std::string::npos);
-        // backend; cpu; os[; metal description | ; BLAS library]
+        // backend; cpu; os[; metal description | ; cuda description | ; BLAS library]
         const size_t cpu = backend.size() + 2, os = f.find("; ", cpu);
         assert(os != std::string::npos && os > cpu);
         const size_t osEnd = f.find("; ", os + 2);
@@ -463,10 +491,13 @@ static void test_fingerprint() {
         // The distribution (its C library and packages) and the kernel.
         assert(osPart.find("Linux ") != std::string::npos);
 #endif
-        const std::string head = backend == "metal" ? f.substr(0, osEnd) : f;
+        const bool gpu = backend == "metal" || backend == "cuda";
+        const std::string head = gpu ? f.substr(0, osEnd) : f;
         assert(head.find(',') == std::string::npos);
         if (backend == "metal") {
             assert(osEnd != std::string::npos && f.substr(osEnd + 2) == metalDescription());
+        } else if (backend == "cuda") {
+            assert(osEnd != std::string::npos && f.substr(osEnd + 2) == cudaDescription());
         } else if (backend == "blas" && !blasDescription().empty()) {
             // A BLAS the OS version does not pin (OpenBLAS): its own build,
             // tidied as every part is (no separators, no outer blanks).
@@ -1556,6 +1587,7 @@ static void test_merge_order_independent() {
 int main() {
     test_build_id_shape();
     test_build_options();
+    test_cpu_backend_name();
     test_engine_list_parse_print();
     test_assign_largest_remainder();
     test_assign_fixed_only();

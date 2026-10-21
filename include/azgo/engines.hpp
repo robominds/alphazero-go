@@ -65,12 +65,12 @@ std::vector<Slice> assignGames(const std::vector<EngineSpec>& engines, int games
 // One machine's line of the hosts file. Remotes need exe and workdir; one
 // without ssh is run on this machine as a separate process (the subprocess
 // transport: tests, or a niced CPU engine). The numbers are 0 for "the
-// default": every game of the slice at once for metal_workers, the rule of
-// engineWorkers for cpu_workers, the run's inference_batch, nice 0, no
-// timeout. cpu_qos defaults to utility on local and default elsewhere.
+// default": every game of the slice at once for metal_workers and
+// cuda_workers, the rule of engineWorkers for cpu_workers, the run's
+// inference_batch, nice 0, no timeout. cpu_qos defaults to utility on local and default elsewhere.
 struct MachineSettings {
     std::string alias, ssh, exe, workdir;
-    int metalWorkers = 0, cpuWorkers = 0, inferenceBatch = 0, nice = 0;
+    int metalWorkers = 0, cudaWorkers = 0, cpuWorkers = 0, inferenceBatch = 0, nice = 0;
     CpuQos cpuQos = CpuQos::Default;
     double timeout = 0;   // seconds; 0 = none
     bool local() const { return alias == "local"; }
@@ -86,7 +86,7 @@ struct HostsFile {
 
 // Parses the hosts file's text: per line an alias, then key=value pairs
 // separated by whitespace; '#' starts a comment; blank lines are ignored.
-// Keys: ssh, exe, workdir, metal_workers, cpu_workers, inference_batch,
+// Keys: ssh, exe, workdir, metal_workers, cuda_workers, cpu_workers, inference_batch,
 // cpu_qos (default|utility), nice, timeout. Refuses, with ConfigError
 // "<source>:<line>: <reason>", a bad alias, an alias or key repeated, an
 // unknown key, a pair without '=', an empty value, one starting with '-'
@@ -103,7 +103,8 @@ HostsFile loadHostsFile(const std::string& path);
 std::string resolveHostsPath(const std::string& cli);
 
 // Worker threads for an engine on `machine` with a slice of sliceGames
-// games, on a machine with `cores` cores. metal: metal_workers, or with 0
+// games, on a machine with `cores` cores. cuda: cuda_workers, else as metal.
+// metal: metal_workers, or with 0
 // every game of the slice at once (at most kMaxArenaWorkers, 256): a waiting
 // worker costs only a stack, and a GPU engine with fewer workers than games
 // plays in waves whose last under-fills the GPU. naive, blas: cpu_workers,
