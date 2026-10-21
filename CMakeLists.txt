@@ -37,8 +37,9 @@ endif()
 # pc/cuda). Like Metal it turns BLAS on for the CPU work, so one binary
 # serves both pc/cuda and pc/blas: a machine has one exe in the hosts file.
 if(AZ_USE_CUDA)
-  if(APPLE)
-    message(FATAL_ERROR "AZ_USE_CUDA=ON needs Linux with an NVIDIA GPU (use AZ_USE_METAL=ON on a Mac)")
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "AZ_USE_CUDA=ON needs Linux with an NVIDIA GPU, not ${CMAKE_SYSTEM_NAME} "
+                        "(on a Mac, use AZ_USE_METAL=ON)")
   endif()
   if(NOT AZ_USE_BLAS)
     message(STATUS "AZ_USE_CUDA=ON turns AZ_USE_BLAS on (CPU work uses OpenBLAS)")

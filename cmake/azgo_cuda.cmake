@@ -28,12 +28,16 @@ foreach(arch IN LISTS AZ_CUDA_ARCHITECTURES)
                         "PTX would let a driver change results): got '${arch}'")
   endif()
 endforeach()
-if(CMAKE_CUDA_FLAGS MATCHES "use_fast_math")
-  message(FATAL_ERROR "AZ_USE_CUDA=ON refuses --use_fast_math in CMAKE_CUDA_FLAGS: it changes results")
-endif()
-
 set(CMAKE_CUDA_ARCHITECTURES ${AZ_CUDA_ARCHITECTURES})
 enable_language(CUDA)
+# Fast math (and the flags it implies) changes results: refused in the
+# general flags and in every build type's.
+foreach(suffix "" _DEBUG _RELEASE _RELWITHDEBINFO _MINSIZEREL)
+  if(CMAKE_CUDA_FLAGS${suffix} MATCHES "use_fast_math|ftz=true|prec-div=false|prec-sqrt=false|fmad=true")
+    message(FATAL_ERROR "AZ_USE_CUDA=ON refuses '${CMAKE_CUDA_FLAGS${suffix}}' in CMAKE_CUDA_FLAGS${suffix}: "
+                        "fast math and its parts change results")
+  endif()
+endforeach()
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_EXTENSIONS OFF)
@@ -52,8 +56,10 @@ function(azgo_cuda_configure_target)
   file(GLOB AZGO_CUDA_HASHED CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/*.cu
        ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/*.cuh)
   list(SORT AZGO_CUDA_HASHED)
+  # The flags of the build type this tree is configured for.
+  string(TOUPPER "${CMAKE_BUILD_TYPE}" build_type)
   set(AZGO_CUDA_HASH_INPUT "nvcc ${CMAKE_CUDA_COMPILER_VERSION}\narch ${AZ_CUDA_ARCHITECTURES}\n"
-                           "flags ${AZGO_CUDA_FLAGS} ${CMAKE_CUDA_FLAGS} ${CMAKE_CUDA_FLAGS_RELEASE}\n")
+                           "flags ${AZGO_CUDA_FLAGS} ${CMAKE_CUDA_FLAGS} ${CMAKE_CUDA_FLAGS_${build_type}}\n")
   foreach(f IN LISTS AZGO_CUDA_HASHED)
     file(SHA256 ${f} h)
     get_filename_component(name ${f} NAME)
