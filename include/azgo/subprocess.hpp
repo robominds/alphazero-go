@@ -10,10 +10,25 @@
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #pragma once
 #include <atomic>
+#include <cstddef>   // on glibc, also its version macros
 #include <string>
 #include <vector>
 
+// Whether a child really gets no other descriptor of ours. macOS has
+// POSIX_SPAWN_CLOEXEC_DEFAULT; glibc 2.34 and later have
+// posix_spawn_file_actions_addclosefrom_np (close_range on Linux 5.9 and
+// later, else a walk of /proc/self/fd). Elsewhere a descriptor this process
+// opened without close-on-exec reaches the child (CMake warns at configure).
+#if defined(__APPLE__) || \
+    (defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34)))
+#define AZGO_SPAWN_CLOSES_INHERITED_FDS 1
+#else
+#define AZGO_SPAWN_CLOSES_INHERITED_FDS 0
+#endif
+
 namespace azgo {
+
+inline constexpr bool kSpawnClosesInheritedFds = AZGO_SPAWN_CLOSES_INHERITED_FDS != 0;
 
 // exitCode: the child's exit status, or -1 when it did not exit normally
 // (killed by a signal, timed out, cancelled, or never started). signal:

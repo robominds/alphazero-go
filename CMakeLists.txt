@@ -34,6 +34,22 @@ endif()
 
 find_package(Threads REQUIRED)
 
+# Children of runProcess (ssh, scp, selfplay) must get no descriptor of the
+# coordinator's: macOS has POSIX_SPAWN_CLOEXEC_DEFAULT, glibc 2.34+ has
+# posix_spawn_file_actions_addclosefrom_np (azgo/subprocess.hpp). Without
+# either the build still works, but files opened without close-on-exec
+# leak into children, and test_distributed skips that check.
+if(NOT APPLE)
+  include(CheckCXXSymbolExists)
+  set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+  check_cxx_symbol_exists(posix_spawn_file_actions_addclosefrom_np spawn.h AZGO_HAVE_ADDCLOSEFROM)
+  unset(CMAKE_REQUIRED_DEFINITIONS)
+  if(NOT AZGO_HAVE_ADDCLOSEFROM)
+    message(WARNING "posix_spawn_file_actions_addclosefrom_np not found (needs glibc 2.34 or later): "
+                    "child processes will inherit descriptors opened without close-on-exec")
+  endif()
+endif()
+
 # ---- Library ---------------------------------------------------------------
 # Every src/*.cpp belongs to the library, so a task that adds a component adds
 # no CMake lines. CONFIGURE_DEPENDS makes `cmake --build` re-glob when files

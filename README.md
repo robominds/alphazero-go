@@ -35,7 +35,11 @@ On Linux both builds work the same way; the BLAS one needs the OpenBLAS
 headers (`apt install libopenblas-dev` on Ubuntu). They pass every test on
 Ubuntu 24.04 (x86-64, g++ 13, OpenBLAS 0.3.26). OpenBLAS rounds a few last
 bits differently from Accelerate, so a `blas` run on Linux is reproducible
-on its own machine but not bit for bit equal to one on a Mac.
+on its own machine but not bit for bit equal to one on a Mac. Distributed
+self-play's child processes get none of the coordinator's open files
+through glibc 2.34's `posix_spawn_file_actions_addclosefrom_np` (CMake warns
+when it is missing). On kernels before 5.9 glibc does this by listing
+`/proc/self/fd`, so `/proc` must be mounted there.
 
 On an Apple-silicon Mac (M1 or later), the network can also run on the GPU
 (`backend = metal`, below). That build turns BLAS on too:
