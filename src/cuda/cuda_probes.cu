@@ -4,6 +4,7 @@
 // itself never calls them.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
+#include <stdexcept>
 #include <vector>
 #include "azgo/cuda.hpp"
 #include "cuda_context.cuh"
@@ -48,6 +49,21 @@ void fill(float* data, size_t n, float value, size_t tail) {
     upload(d, data, n + tail, s);
     cuda::launchFill(d.data(), n, value, s.get());
     download(data, d, n + tail, s);
+    finish(s);
+}
+
+void gemm(bool transB, int M, int N, int K, const float* A, const float* B, float* C, int tile) {
+    Context::instance();
+    if (tile < -1 || tile > 2) throw std::invalid_argument("cuda_probe::gemm: tile must be -1, 0, 1 or 2");
+    const size_t a = static_cast<size_t>(M) * K, b = static_cast<size_t>(K) * N, c = static_cast<size_t>(M) * N;
+    Stream s;
+    DeviceBuffer dA(a), dB(b), dC(c);
+    upload(dA, A, a, s);
+    upload(dB, B, b, s);
+    upload(dC, C, c, s);   // what C held: a test can check it is never read
+    const cuda::GemmTile t = tile < 0 ? cuda::gemmTileFor(M) : static_cast<cuda::GemmTile>(tile);
+    cuda::launchGemm(transB, M, N, K, dA.data(), dB.data(), dC.data(), t, s.get());
+    download(C, dC, c, s);
     finish(s);
 }
 

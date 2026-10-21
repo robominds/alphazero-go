@@ -76,6 +76,13 @@ int binaryVersion();
 // them are copied to the GPU and back, so a test can check the tail is untouched.
 void fill(float* data, size_t n, float value, size_t tail = 0);
 
+// The gemm: row-major C[M][N] = A[M][K] . op(B), op(B) = B [K][N], or B
+// [N][K] transposed with transB; C's old contents go to the GPU too, and are
+// never read there (only written). Each element is an fmaf
+// chain over k = 0 .. K-1. tile: -1 for the rule the network uses for a
+// convolution (by M), or 0, 1, 2 to force 32x256, 64x128, 128x128.
+void gemm(bool transB, int M, int N, int K, const float* A, const float* B, float* C, int tile = -1);
+
 } // namespace cuda_probe
 
 #endif // AZ_USE_CUDA
