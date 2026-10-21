@@ -1200,25 +1200,25 @@ static void test_run_process() {
 
     // No other descriptor of ours reaches the child, even one opened
     // without close-on-exec (as fopen and std::ofstream open files). The
-    // shell's `: <&N` fails when N is not open (a single digit: dash reads
-    // no more); system(), which keeps every inherited descriptor, shows the
-    // probe works here. Where spawning cannot close them (not macOS, not
-    // glibc 2.34+: kSpawnClosesInheritedFds) the check is skipped.
+    // probe is `test -e /dev/fd/N`, true only where N is open (macOS and
+    // Linux alike), at a high N: the low ones may all be taken (the CUDA
+    // runtime holds several). system(), which keeps every inherited
+    // descriptor, shows the probe works here. Where spawning cannot close
+    // them (not macOS, not glibc 2.34+: kSpawnClosesInheritedFds) the check
+    // is skipped.
     if (!kSpawnClosesInheritedFds) {
         std::printf("test_run_process: SKIPPED the inherited-descriptor check "
                     "(posix_spawn cannot close inherited descriptors on this system)\n");
     } else {
-        int stray = 9;
-        while (stray > 2 && fcntl(stray, F_GETFD) != -1) --stray;   // a free one
-        assert(stray > 2);
         const int devNull = open("/dev/null", O_RDONLY);
-        assert(devNull >= 0 && dup2(devNull, stray) == stray);   // dup2: not close-on-exec
-        if (devNull != stray) close(devNull);
-        assert((fcntl(stray, F_GETFD) & FD_CLOEXEC) == 0);
-        const std::string probe = ": <&" + std::to_string(stray);
-        assert(std::system(("exec 2>/dev/null; " + probe).c_str()) == 0);
-        assert(runProcess({"sh", "-c", "exec 2>/dev/null; " + probe}, "", 10).exitCode != 0);
-        assert(runProcess({"sh", "-c", "exec 2>/dev/null; : <&0"}, "", 10).exitCode == 0);
+        assert(devNull >= 0);
+        const int stray = fcntl(devNull, F_DUPFD, 50);   // F_DUPFD: not close-on-exec
+        close(devNull);
+        assert(stray >= 50 && (fcntl(stray, F_GETFD) & FD_CLOEXEC) == 0);
+        const std::string probe = "test -e /dev/fd/" + std::to_string(stray);
+        assert(std::system(probe.c_str()) == 0);
+        assert(runProcess({"sh", "-c", probe}, "", 10).exitCode == 1);
+        assert(runProcess({"sh", "-c", "test -e /dev/fd/0"}, "", 10).exitCode == 0);
         close(stray);
     }
 
