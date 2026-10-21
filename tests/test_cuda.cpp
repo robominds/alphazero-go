@@ -358,6 +358,30 @@ void test_gemm_batch_independent() {
     }
 }
 
+// A chain that ends at -0 (a product too small even for a denormal rounds
+// to -0) stays -0 through the zero padding past K: K = 1 and K = 17 are not
+// multiples of the 16-wide k step, so the padding runs after the last term.
+void test_gemm_keeps_negative_zero() {
+    for (int K : {1, 17}) {
+        for (bool transB : {false, true}) {
+            const int M = 3, N = 5;
+            std::vector<float> A(static_cast<size_t>(M) * K, 0.0f), B(static_cast<size_t>(K) * N, -1.0f);
+            for (int m = 0; m < M; ++m) A[static_cast<size_t>(m) * K] = -1e-30f;
+            for (int n = 0; n < N; ++n) (transB ? B[static_cast<size_t>(n) * K] : B[n]) = 1e-30f;
+            std::vector<float> C(static_cast<size_t>(M) * N);
+            for (int tile : {0, 1, 2}) {
+                cuda_probe::gemm(transB, M, N, K, A.data(), B.data(), C.data(), tile);
+                for (int m = 0; m < M; ++m)
+                    for (int n = 0; n < N; ++n) {
+                        const float ref = fmaChain(A.data(), B.data(), transB, N, K, m, n);
+                        assert(ref == 0.0f && std::signbit(ref));
+                        assert(bitwiseEqual(&C[static_cast<size_t>(m) * N + n], &ref, 1));
+                    }
+            }
+        }
+    }
+}
+
 // C is only written: NaN in it beforehand leaves no trace.
 void test_gemm_ignores_c() {
     Rng rng(304);
@@ -1106,6 +1130,7 @@ int main() {
     test_gemm_tiles_agree();
     test_gemm_batch_independent();
     test_gemm_ignores_c();
+    test_gemm_keeps_negative_zero();
     test_copy_kernels_bitwise();
     test_bn_infer_bitwise();
     test_relu_add_bias_bitwise();

@@ -60,9 +60,11 @@ enum class Op { NN, NT, Conv };
 //
 //   acc = 0;  for k in 0 .. K-1:  acc = fmaf(A[m][k], op(B)[k][n], acc)
 //
-// Rows and columns beyond M, N or K load as 0. A zero past K adds
-// fmaf(0, 0, acc) = acc exactly (acc, starting at +0, never becomes -0), so
-// the padding changes no bit. An element's bits therefore depend only on its
+// Rows and columns beyond M or N load as 0 (they are never stored). Past K,
+// A loads +0 and op(B) loads -0: the padding's product is -0, and
+// fmaf(+0, -0, acc) is acc for every acc, -0 included (-0 + -0 = -0, while
+// a +0 product would turn a chain that underflowed to -0 into +0). So the
+// padding changes no bit, and C equals the chain over k = 0 .. K-1 exactly. An element's bits therefore depend only on its
 // row of A and its column of op(B): not on M, N, the tile shape, its block,
 // its neighbours or the run. In a convolution a column of op(B) is one pixel
 // of one sample; in a Linear layer a row of A is one sample: either way a
@@ -117,7 +119,7 @@ gemm_tiled(const float* __restrict__ A, const float* __restrict__ B, float* __re
         if (op == Op::Conv) {
             for (int k = tid / BN; k < BK; k += kGemmThreads / BN) {
                 const int gk = k0 + k;
-                float v = 0.0f;
+                float v = gk >= K ? -0.0f : 0.0f;   // past K: -0 (see above); off the board: +0, as im2col
                 if (myGn < N && gk < K) {
                     const int c = gk / 9, r = gk % 9, y = myY + r / 3 - 1, x = myX + r % 3 - 1;
                     if (y >= 0 && y < cv.n && x >= 0 && x < cv.n)
@@ -128,10 +130,10 @@ gemm_tiled(const float* __restrict__ A, const float* __restrict__ B, float* __re
         } else for (int e = tid; e < BK * BN; e += kGemmThreads) {
             if (op == Op::NN) {   // B [K][N]: read along its rows
                 const int k = e / BN, n = e % BN, gn = col0 + n, gk = k0 + k;
-                Bs[k][n] = (gn < N && gk < K) ? B[static_cast<size_t>(gk) * N + gn] : 0.0f;
+                Bs[k][n] = gk >= K ? -0.0f : gn < N ? B[static_cast<size_t>(gk) * N + gn] : 0.0f;
             } else {              // B [N][K]: read along its rows, store transposed
                 const int n = e / BK, k = e % BK, gn = col0 + n, gk = k0 + k;
-                Bs[k][n] = (gn < N && gk < K) ? B[static_cast<size_t>(gn) * K + gk] : 0.0f;
+                Bs[k][n] = gk >= K ? -0.0f : gn < N ? B[static_cast<size_t>(gn) * K + gk] : 0.0f;
             }
         }
         __syncthreads();
