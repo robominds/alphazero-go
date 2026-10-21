@@ -19,6 +19,7 @@
 #include "azgo/rng.hpp"
 #include "azgo/run_state.hpp"
 #include "azgo/serialize.hpp"
+#include "slice_files.hpp"
 #ifdef __APPLE__
 #include <pthread.h>
 #include <sys/qos.h>
@@ -92,39 +93,19 @@ namespace azgo {
 
 namespace {
 
+using slice_files::plainFileName;
+using slice_files::putChecksum;
+using slice_files::storedChecksum;
+using slice_files::storedUint;
+
 constexpr uint32_t kJobVersion = 1, kResultVersion = 1;
 const char kJobMagic[4] = {'A', 'Z', 'S', 'J'};
 const char kResultMagic[4] = {'A', 'Z', 'S', 'R'};
-
-void putChecksum(std::string& bytes) {
-    const uint64_t h = fnv1a64(bytes);
-    for (int i = 0; i < 8; ++i) bytes += static_cast<char>((h >> (8 * i)) & 0xff);
-}
-
-// A little-endian unsigned integer of `size` bytes at `at`.
-uint64_t storedUint(const std::string& bytes, size_t at, int size) {
-    uint64_t v = 0;
-    for (int i = 0; i < size; ++i)
-        v |= static_cast<uint64_t>(static_cast<unsigned char>(bytes[at + i])) << (8 * i);
-    return v;
-}
-
-uint64_t storedChecksum(const std::string& bytes) { return storedUint(bytes, bytes.size() - 8, 8); }
 
 bool readFlag(BinaryReader& r, const char* what) {
     const uint8_t v = r.u8();
     if (v > 1) throw SliceError(std::string("job: bad ") + what + " flag");
     return v == 1;
-}
-
-// A network file name in the work directory: no path, nothing to quote.
-bool plainFileName(const std::string& name) {
-    if (name.empty() || name.size() > 128 || name[0] == '.') return false;
-    for (char c : name)
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-              c == '_' || c == '.' || c == '-'))
-            return false;
-    return true;
 }
 
 std::string ownerName(int side) { return side == 0 ? "Black" : "White"; }
@@ -418,10 +399,7 @@ SliceResult readSliceResult(const std::string& path, const std::string& jobBytes
             throw SliceError("built from another commit (build ID " + result.buildId +
                              ", expected " + expectedBuild + ")");
         result.fingerprint = r.str();
-        bool printable = !result.fingerprint.empty() && result.fingerprint.size() <= 1024;
-        for (char c : result.fingerprint)
-            printable = printable && static_cast<unsigned char>(c) >= 0x20;
-        if (!printable)
+        if (!slice_files::printableFingerprint(result.fingerprint))
             throw SliceError("bad engine fingerprint (empty, too long or not printable)");
         const SelfPlayJob job = parseJob(jobBytes);
         const uint32_t count = r.u32();

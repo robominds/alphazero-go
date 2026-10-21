@@ -1,8 +1,9 @@
-// selfplay: plays one slice of a generation's self-play games from a job
-// file and writes the verified-format result file. It is the whole remote
-// interface of distributed self-play: the coordinator (train) uploads the
-// network and the job to a machine, runs this there, and downloads and
-// verifies the result. It needs no run directory.
+// selfplay: plays one slice of a generation's self-play games, or of an
+// arena wave's games, from a job file and writes the verified-format result
+// file. It is the whole remote interface of distributed self-play and the
+// distributed arena: the coordinator (train) uploads the networks and the
+// job to a machine, runs this there, and downloads and verifies the result.
+// The job's first bytes say which kind it is. It needs no run directory.
 //
 //   selfplay --job JOB --out OUT --backend naive|blas|metal|cuda [--workers N] [--inference-batch N]
 //            [--exit-on-stdin-eof]
@@ -25,6 +26,7 @@
 #include <unistd.h>
 #include <vector>
 
+#include "azgo/arena_slice.hpp"
 #include "azgo/build_info.hpp"
 #include "azgo/engines.hpp"
 #include "azgo/selfplay_slice.hpp"
@@ -39,9 +41,10 @@ const char* const kUsage =
     "  selfplay --version\n"
     "  selfplay --fingerprint --backend B\n"
     "\n"
-    "--job JOB plays the games of a self-play slice that JOB (a job file written by\n"
-    "train) describes, with the network named in it, which must lie in JOB's directory\n"
-    "and match the job's hash, and writes the result to OUT (replaced atomically).\n"
+    "--job JOB plays the games of a self-play slice or of an arena slice that JOB (a\n"
+    "job file written by train) describes, with the networks named in it, which must\n"
+    "lie in JOB's directory and match the job's hashes, and writes the result to OUT\n"
+    "(replaced atomically).\n"
     "The job's build ID must be this binary's. --workers: threads (default: every game\n"
     "at once with metal and cuda, max(1, min(2, cores - 2)) with naive and blas, the remote\n"
     "rule of the hosts file); --inference-batch: most positions per GPU pass (default:\n"
@@ -116,6 +119,5 @@ int main(int argc, char** argv) {
     if (workers < 0 || workers > 256) return usageError("--workers must be in 0..256");
     if (inferenceBatch < 0 || inferenceBatch > 1024)
         return usageError("--inference-batch must be in 0..1024");
-    return azgo::runSliceJob(args->get("job"), args->get("out"), backend, workers, inferenceBatch,
-                             std::cerr);
+    return azgo::runJob(args->get("job"), args->get("out"), backend, workers, inferenceBatch, std::cerr);
 }

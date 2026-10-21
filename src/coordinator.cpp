@@ -13,6 +13,7 @@
 #include <thread>
 #include <unistd.h>
 #include <utility>
+#include "azgo/arena_slice.hpp"
 #include "azgo/backend.hpp"
 #include "azgo/build_info.hpp"
 #include "azgo/cuda.hpp"
@@ -1018,8 +1019,8 @@ ProcessResult InProcessTransport::run(const std::vector<std::string>& given, con
     auto number = [&](const char* key) {
         return options.count(key) ? std::atoi(options[key].c_str()) : 0;
     };
-    result.exitCode = runSliceJob(options["--job"], options["--out"], options["--backend"],
-                                  number("--workers"), number("--inference-batch"), err);
+    result.exitCode = runJob(options["--job"], options["--out"], options["--backend"],
+                             number("--workers"), number("--inference-batch"), err);
     if (!log.empty()) {
         std::ofstream out(log, std::ios::app | std::ios::binary);
         out << err.str();

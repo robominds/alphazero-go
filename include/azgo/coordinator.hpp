@@ -138,7 +138,7 @@ protected:
     MachineSettings m_;
 };
 
-// For tests: SubprocessTransport's files, but run() calls runSliceJob on
+// For tests: SubprocessTransport's files, but run() calls runJob on
 // the calling thread (the selfplay app's arguments, parsed here), and
 // answers --version and --fingerprint as the app does.
 class InProcessTransport : public SubprocessTransport {
