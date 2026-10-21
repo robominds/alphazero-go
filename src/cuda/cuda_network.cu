@@ -73,11 +73,18 @@ void CudaWeights::upload(const Network& net) {
     std::vector<float> params(layout_.paramFloats, 0.0f), buffers(layout_.bufferFloats, 0.0f);
     copyChecked(n.params(), layout_.params, layout_, params.data());
     copyChecked(n.buffers(), layout_.buffers, layout_, buffers.data());
-    check(cudaMemcpy(params_.data(), params.data(), params.size() * sizeof(float), cudaMemcpyHostToDevice),
-          "upload parameters");
-    check(cudaMemcpy(buffers_.data(), buffers.data(), buffers.size() * sizeof(float), cudaMemcpyHostToDevice),
-          "upload statistics");
+    // The copies go on the same stream as the folds that read them. A plain
+    // cudaMemcpy from pageable memory may return before its DMA has reached
+    // the device, and it runs on the legacy stream, which a non-blocking
+    // stream does not wait for. The host images stay alive until the
+    // synchronize below.
     Stream s;
+    check(cudaMemcpyAsync(params_.data(), params.data(), params.size() * sizeof(float), cudaMemcpyHostToDevice,
+                          s.get()),
+          "upload parameters");
+    check(cudaMemcpyAsync(buffers_.data(), buffers.data(), buffers.size() * sizeof(float), cudaMemcpyHostToDevice,
+                          s.get()),
+          "upload statistics");
     for (const auto& entry : foldedAt_) {
         const std::string& bn = entry.first;
         const int C = foldedChannels_.at(bn);
