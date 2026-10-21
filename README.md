@@ -31,6 +31,12 @@ cmake --build build-blas -j
 ctest --test-dir build-blas --output-on-failure
 ```
 
+On Linux both builds work the same way; the BLAS one needs the OpenBLAS
+headers (`apt install libopenblas-dev` on Ubuntu). They pass every test on
+Ubuntu 24.04 (x86-64, g++ 13, OpenBLAS 0.3.26). OpenBLAS rounds a few last
+bits differently from Accelerate, so a `blas` run on Linux is reproducible
+on its own machine but not bit for bit equal to one on a Mac.
+
 On an Apple-silicon Mac (M1 or later), the network can also run on the GPU
 (`backend = metal`, below). That build turns BLAS on too:
 
@@ -312,7 +318,8 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 ### Distributed self-play
 
 Self-play can use several machines at once: the coordinator's GPU and
-CPU, and the GPUs and CPUs of other Macs reached over ssh
+CPU, and the GPUs and CPUs of other Macs (or the CPUs of Linux machines)
+reached over ssh
 ([design](docs/superpowers/specs/2026-10-18-distributed-selfplay-design.md),
 [plan](docs/superpowers/plans/2026-10-18-distributed-selfplay.md)). An
 *engine* is a machine and a backend, written `machine/backend`; `local` is
@@ -354,7 +361,8 @@ because BLAS saturates early and more workers only slow the machine's GPU
 engine (`bench --mixed`, `docs/results/bench.txt`). Values may hold only
 `[A-Za-z0-9_./~@:+-]`, so they go into an ssh command line unquoted.
 `tools/cluster_sync.sh` sends `HEAD` to every machine with `ssh=` and builds
-`selfplay` there; at the start of a run, `train` checks that each
+`selfplay` there, in `exe`'s directory, with the options its name asks for
+(`build-metal`: Metal, `build-blas`: BLAS, so OpenBLAS on Linux); at the start of a run, `train` checks that each
 machine's `selfplay --version` reports its own build ID. The repository on
 a machine (`exe`'s grandparent) is replaced wholesale at every sync, so
 it must be a dedicated copy such as `~/azgo-cluster`, never a checkout:

@@ -3,12 +3,18 @@
 # repository's commit, so distributed self-play's build-ID check passes.
 #
 # For each machine with ssh= in the hosts file, the repository on it is
-# exe's grandparent directory (exe=<repo>/build-metal/selfplay). The commit
-# is sent with `git archive HEAD | ssh ... tar -x` into <repo>.new, the old
-# tree is swapped out while its build directory moves along (incremental
-# rebuilds), and selfplay is built with -DAZ_USE_METAL=ON and
-# -DAZGO_BUILD_ID=<commit> (the copy has no .git). Its --version must then
-# equal this repository's commit.
+# exe's grandparent directory and the build directory exe's parent
+# (exe=<repo>/build-metal/selfplay). The commit is sent with
+# `git archive HEAD | ssh ... tar -x` into <repo>.new, the old tree is
+# swapped out while its build directory moves along (incremental
+# rebuilds), and selfplay is built with -DAZGO_BUILD_ID=<commit> (the copy
+# has no .git) and the options the build directory's name asks for:
+# -DAZ_USE_METAL=ON for a name with "metal" (a Mac's GPU), -DAZ_USE_BLAS=ON
+# for one with "blas" (Accelerate, or OpenBLAS on Linux), neither otherwise
+# (set explicitly, so a kept CMake cache cannot hold an old choice). The
+# name must start with "build", so it can never be one of the tree's own
+# directories. Its --version must then equal this repository's commit. The
+# remote may run macOS or Linux.
 #
 # A dirty tree is refused: a remote cannot rebuild uncommitted changes, and
 # their build ID would differ anyway. <repo> is replaced wholesale, so it
@@ -21,11 +27,15 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: tools/cluster_sync.sh [--hosts FILE] [--build build-metal] [--dry-run]
+usage: tools/cluster_sync.sh [--hosts FILE] [--build DIR] [--dry-run]
 
 Syncs every machine with ssh= in the hosts file (default: $AZGO_HOSTS, else
 ~/.config/azgo/hosts) to this repository's HEAD and builds selfplay there in
-<repo>/<build> (default build-metal), <repo> being exe's grandparent. Checks
+<repo>/<build>, <repo> being exe's grandparent and <build> exe's parent
+(--build names it for every machine instead); its name starts with
+"build". One whose name holds "metal" is configured with -DAZ_USE_METAL=ON,
+one with "blas" with -DAZ_USE_BLAS=ON (OpenBLAS on Linux), others with
+neither. Checks
 that each machine's selfplay --version reports HEAD. --dry-run prints the
 commands instead of running them. Refuses a tree with uncommitted changes.
 <repo> is replaced wholesale: it must be a dedicated copy (e.g.
@@ -34,7 +44,7 @@ this script leaves in its copies, or with .git or runs/, is refused.
 EOF
 }
 
-HOSTS="" BUILD_DIR="build-metal" DRY=0
+HOSTS="" BUILD_DIR="" DRY=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --hosts) HOSTS="${2:?--hosts needs a file}"; shift 2 ;;
@@ -47,7 +57,8 @@ done
 [ -n "$HOSTS" ] || HOSTS="${AZGO_HOSTS:-$HOME/.config/azgo/hosts}"
 [ -f "$HOSTS" ] || { echo "error: no hosts file at $HOSTS" >&2; exit 1; }
 SAFE='^[A-Za-z0-9_./~@:+-]+$'
-[[ "$BUILD_DIR" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "error: bad --build '$BUILD_DIR'" >&2; exit 2; }
+BUILD_NAME='^build[A-Za-z0-9_.-]*$'
+[ -z "$BUILD_DIR" ] || [[ "$BUILD_DIR" =~ $BUILD_NAME ]] || { echo "error: bad --build '$BUILD_DIR'" >&2; exit 2; }
 
 # alias ssh exe, one machine per line, for the machines with ssh=.
 machines=()
@@ -89,17 +100,25 @@ run() {   # run CMD...: print it with --dry-run, else run it
 # step failed and returns 1 (the other machines are still synced).
 sync_machine() {
     local alias=$1 target=$2 exe=$3
-    local repo
+    local repo build options
     repo="$(dirname "$(dirname "$exe")")"
     case "$repo" in ''|.|/|'~'|'~/')
         echo "error: $alias: exe=$exe gives no usable repository directory" >&2; return 1 ;;
     esac
-    echo "== $alias: $COMMIT -> $repo ($BUILD_DIR)"
+    build="${BUILD_DIR:-$(basename "$(dirname "$exe")")}"
+    [[ "$build" =~ $BUILD_NAME ]] ||
+        { echo "error: $alias: exe=$exe is not in a build directory (build, build-blas, build-metal, ...)" >&2; return 1; }
+    case "$build" in
+        *metal*) options="-DAZ_USE_METAL=ON" ;;
+        *blas*) options="-DAZ_USE_METAL=OFF -DAZ_USE_BLAS=ON" ;;
+        *) options="-DAZ_USE_METAL=OFF -DAZ_USE_BLAS=OFF" ;;
+    esac
+    echo "== $alias: $COMMIT -> $repo ($build)"
     local ssh_=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$target")
     # The repository is replaced wholesale, so it must be a copy this script
     # made (it carries .azgo-sync), never a checkout or a directory with runs.
     run "${ssh_[@]}" "if [ -e $repo ] && [ ! -f $repo/.azgo-sync ]; then
-            echo '$repo exists but was not made by cluster_sync.sh (no .azgo-sync); refusing to replace it: point exe at a dedicated copy such as ~/azgo-cluster/$BUILD_DIR/selfplay' >&2; exit 3; fi
+            echo '$repo exists but was not made by cluster_sync.sh (no .azgo-sync); refusing to replace it: point exe at a dedicated copy such as ~/azgo-cluster/$build/selfplay' >&2; exit 3; fi
         if [ -e $repo/.git ] || [ -e $repo/runs ]; then
             echo '$repo holds .git or runs/; refusing to replace it' >&2; exit 3; fi" ||
         { echo "error: $alias: $repo is not a copy cluster_sync.sh may replace" >&2; return 1; }
@@ -115,11 +134,12 @@ sync_machine() {
             { echo "error: $alias: copying the tree failed" >&2; return 1; }
     fi
     # Swap the trees; the build directory (CMake cache and objects) moves along.
-    run "${ssh_[@]}" "if [ -d $repo/$BUILD_DIR ]; then mv $repo/$BUILD_DIR $repo.new/; fi &&
+    run "${ssh_[@]}" "if [ -d $repo/$build ]; then mv $repo/$build $repo.new/; fi &&
         rm -rf $repo.old && if [ -d $repo ]; then mv $repo $repo.old; fi && mv $repo.new $repo && rm -rf $repo.old" ||
         { echo "error: $alias: swapping in the new tree failed" >&2; return 1; }
-    run "${ssh_[@]}" "cmake -S $repo -B $repo/$BUILD_DIR -DCMAKE_BUILD_TYPE=Release -DAZ_USE_METAL=ON \
-        -DAZGO_BUILD_ID=$COMMIT > /dev/null && cmake --build $repo/$BUILD_DIR -j \$(sysctl -n hw.ncpu) --target selfplay" ||
+    # getconf: the core count on macOS and Linux alike.
+    run "${ssh_[@]}" "cmake -S $repo -B $repo/$build -DCMAKE_BUILD_TYPE=Release $options \
+        -DAZGO_BUILD_ID=$COMMIT > /dev/null && cmake --build $repo/$build -j \$(getconf _NPROCESSORS_ONLN) --target selfplay" ||
         { echo "error: $alias: building selfplay failed" >&2; return 1; }
     if [ "$DRY" = 1 ]; then
         run "${ssh_[@]}" "$exe --version"
