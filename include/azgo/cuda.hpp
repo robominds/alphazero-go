@@ -127,6 +127,21 @@ void checkUpload(const Network& layoutNet, const Network& net);
 // throws std::logic_error naming every uploaded tensor the pass never reads.
 void checkForwardReadsEveryTensor(const Network& net, const NetConfig& encodeAs);
 
+// Chaos mode for the hubs that WorkerEvaluators creates from now on (0: off;
+// see InferenceHubOptions::chaosSeed). A test hook: a run's own settings
+// never turn it on, and it touches none of the run's random streams.
+void setHubChaosSeed(uint64_t seed);
+uint64_t hubChaosSeed();
+// Failure injection: after n more passes of any runner complete normally,
+// the next one reports a failure through the normal error path (as a GPU
+// fault would); later ones run normally again. n = 0 disables it.
+void failPassesAfter(int n);
+// The GPU memory the memory checks allow, in place of the device's free
+// memory less a margin (0: the device's again). A test hook.
+void setMemoryLimit(size_t bytes);
+// Passes the runners of this process have reported so far. A test hook.
+long long passesCompleted();
+
 } // namespace cuda_probe
 
 #endif // AZ_USE_CUDA

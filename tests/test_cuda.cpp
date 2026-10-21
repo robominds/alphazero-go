@@ -25,11 +25,17 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <condition_variable>
+#include <dirent.h>
+#include <mutex>
 #include <regex>
+#include <thread>
 #include <string>
 #include <vector>
 #include "azgo/backend.hpp"
 #include "azgo/cuda.hpp"
+#include "azgo/inference_hub.hpp"
 #include "azgo/layers.hpp"
 #include "azgo/network.hpp"
 #include "azgo/rng.hpp"
@@ -785,6 +791,265 @@ void test_workspace_size_and_speed() {
     std::printf("test_cuda: 13x13 6x96 synchronous passes of 256: %.0f evals/s (not asserted)\n", passes * 256 / s);
 }
 
+// ---------------------------------------------------------------- the runner and the hub
+
+// Positions evaluated one at a time on the GPU: the reference for the runner
+// and the hub, which must give each position exactly these bits.
+struct GpuPool {
+    NetConfig cfg;
+    int count;
+    std::vector<float> input, logits, values;
+    size_t in() const { return static_cast<size_t>(cfg.planes()) * cfg.area(); }
+    GpuPool(const Network& net, int count_, uint64_t seed) : cfg(net.config()), count(count_) {
+        Rng rng(seed);
+        input = randomPositions(rng, cfg, count);
+        logits.resize(static_cast<size_t>(count) * cfg.actions());
+        values.resize(count);
+        cuda_probe::InferNet alone(net, 1);
+        for (int i = 0; i < count; ++i)
+            alone.infer(input.data() + i * in(), 1, logits.data() + i * cfg.actions(), values.data() + i);
+    }
+};
+
+// One pass through a runner's slot, waited for.
+std::string runSlot(BatchRunner& runner, int slot, int B) {
+    std::mutex m;
+    std::condition_variable cv;
+    bool done = false;
+    std::string error;
+    runner.begin(slot, B, [&](int s, std::string e) {
+        assert(s == slot);
+        std::lock_guard<std::mutex> lock(m);
+        error = e;
+        done = true;
+        cv.notify_one();
+    });
+    std::unique_lock<std::mutex> lock(m);
+    cv.wait(lock, [&] { return done; });
+    return error;
+}
+
+// Threads of this process (the /proc/self/task entries).
+int threadCount() {
+    int count = 0;
+    if (DIR* d = opendir("/proc/self/task")) {
+        while (const dirent* e = readdir(d))
+            if (e->d_name[0] != '.') ++count;
+        closedir(d);
+    }
+    return count;
+}
+
+// The runner's slots, one or two, at every batch size up to its maximum:
+// the outputs equal each position alone, bitwise; both slots in flight at once.
+void test_runner_slots() {
+    const NetConfig cfg = netConfig(9, 2, 16, true);
+    const Network net = randomNetwork(cfg, 701);
+    const GpuPool pool(net, 40, 702);
+    const size_t in = pool.in(), L = cfg.actions();
+    for (int slots : {1, 2}) {
+        auto runner = makeCudaRunner(net, 40, slots);
+        assert(runner->slots() == slots && runner->maxBatch() == 40);
+        for (int B : {1, 7, 40}) {
+            for (int slot = 0; slot < slots; ++slot) {
+                std::copy_n(pool.input.data(), B * in, runner->input(slot));
+                assert(runSlot(*runner, slot, B).empty());
+                assert(bitwiseEqual(runner->logits(slot), pool.logits.data(), B * L));
+                assert(bitwiseEqual(runner->values(slot), pool.values.data(), B));
+            }
+        }
+    }
+    // Both slots at once, different positions in each.
+    auto runner = makeCudaRunner(net, 20, 2);
+    std::copy_n(pool.input.data(), 20 * in, runner->input(0));
+    std::copy_n(pool.input.data() + 20 * in, 20 * in, runner->input(1));
+    std::mutex m;
+    std::condition_variable cv;
+    int finished = 0;
+    for (int slot = 0; slot < 2; ++slot)
+        runner->begin(slot, 20, [&](int, std::string e) {
+            assert(e.empty());
+            std::lock_guard<std::mutex> lock(m);
+            ++finished;
+            cv.notify_one();
+        });
+    {
+        std::unique_lock<std::mutex> lock(m);
+        cv.wait(lock, [&] { return finished == 2; });
+    }
+    assert(bitwiseEqual(runner->logits(0), pool.logits.data(), 20 * L));
+    assert(bitwiseEqual(runner->logits(1), pool.logits.data() + 20 * L, 20 * L));
+    assert(bitwiseEqual(runner->values(1), pool.values.data() + 20, 20));
+    for (int bad : {0, kInferenceSlots + 1}) {
+        bool refused = false;
+        try {
+            makeCudaRunner(net, 8, bad);
+        } catch (const std::invalid_argument&) {
+            refused = true;
+        }
+        assert(refused);
+    }
+}
+
+// test_inference_hub's chaos test with the CUDA runner: every request's
+// outputs equal its positions evaluated alone on the GPU, bitwise, whatever
+// batches the hub made of them.
+void test_hub_outputs_equal_alone_under_chaos() {
+    const NetConfig cfg = netConfig(9, 2, 16);
+    const Network net = randomNetwork(cfg, 703);
+    const GpuPool pool(net, 300, 704);
+    const size_t in = pool.in(), L = static_cast<size_t>(cfg.actions());
+    for (int clients : {1, 4, 64}) {
+        for (int maxBatch : {8, 64, 512}) {
+            for (uint64_t chaos : {0ull, 11ull, 12ull}) {
+                for (int slots : {1, 2}) {
+                    InferenceHubOptions o;
+                    o.maxBatch = maxBatch;
+                    o.chaosSeed = chaos;
+                    InferenceHub hub(makeCudaRunner(net, maxBatch, slots), cfg, o);
+                    std::atomic<long long> positions{0};
+                    std::vector<std::thread> threads;
+                    for (int t = 0; t < clients; ++t) {
+                        threads.emplace_back([&, t] {
+                            auto ev = hub.makeEvaluator(8);
+                            Rng rng(deriveSeed(705, static_cast<uint64_t>(t), chaos, static_cast<uint64_t>(maxBatch)));
+                            std::vector<float> x(8 * in), logits(8 * L), values(8);
+                            for (int r = 0; r < 50; ++r) {
+                                const int B = 1 + rng.below(8);
+                                int picks[8];
+                                for (int b = 0; b < B; ++b) {
+                                    picks[b] = rng.below(pool.count);
+                                    std::copy_n(pool.input.data() + picks[b] * in, in, x.data() + b * in);
+                                }
+                                ev->evaluate(x.data(), B, logits.data(), values.data());
+                                for (int b = 0; b < B; ++b) {
+                                    assert(bitwiseEqual(logits.data() + b * L, pool.logits.data() + picks[b] * L, L));
+                                    assert(bitwiseEqual(&values[b], &pool.values[picks[b]], 1));
+                                }
+                                positions += B;
+                            }
+                        });
+                    }
+                    for (auto& th : threads) th.join();
+                    assert(hub.stats().positions == positions.load());
+                }
+            }
+        }
+    }
+}
+
+// A failed pass (as a GPU fault would report it) reaches its own requests
+// and every later one as "GPU inference failed: cuda: ...", and the hub
+// still shuts down cleanly.
+void test_hub_failure_reaches_everyone() {
+    const NetConfig cfg = netConfig(9, 1, 8);
+    const Network net = randomNetwork(cfg, 706);
+    const size_t in = static_cast<size_t>(cfg.planes()) * cfg.area(), L = cfg.actions();
+    const long long before = cuda_probe::passesCompleted();
+    cuda_probe::failPassesAfter(3);
+    std::atomic<int> failures{0}, successes{0};
+    {
+        InferenceHubOptions o;
+        o.maxBatch = 8;
+        InferenceHub hub(makeCudaRunner(net, 8), cfg, o);
+        std::vector<std::thread> threads;
+        for (int t = 0; t < 8; ++t)
+            threads.emplace_back([&] {
+                auto ev = hub.makeEvaluator(1);
+                std::vector<float> x(in, 1.0f), logits(L), values(1);
+                for (int r = 0; r < 20; ++r) {
+                    try {
+                        ev->evaluate(x.data(), 1, logits.data(), values.data());
+                        ++successes;
+                    } catch (const std::runtime_error& e) {
+                        assert(std::string(e.what()).rfind("GPU inference failed: cuda: ", 0) == 0);
+                        ++failures;
+                        return;   // the hub has failed for good
+                    }
+                }
+            });
+        for (auto& th : threads) th.join();
+    }
+    cuda_probe::failPassesAfter(0);
+    assert(failures.load() == 8);   // every thread saw the failure
+    assert(successes.load() >= 3 && cuda_probe::passesCompleted() > before);
+    // The next runner is healthy again.
+    auto runner = makeCudaRunner(net, 1);
+    std::fill_n(runner->input(0), in, 1.0f);
+    assert(runSlot(*runner, 0, 1).empty());
+}
+
+// A runner whose slots would not fit the GPU's free memory is refused before
+// anything is allocated, with the size and the remedy; so is the same check
+// made up front.
+void test_memory_check() {
+    const NetConfig cfg = netConfig(19, 10, 128, false, 256);
+    const Network net(cfg, 1);
+    bool threw = false;
+    try {
+        makeCudaRunner(net, 1 << 20);
+    } catch (const std::runtime_error& e) {
+        const std::string what = e.what();
+        std::printf("test_cuda: %s\n", what.c_str());
+        threw = what.find("lower inference_batch") != std::string::npos && what.find("MB") != std::string::npos;
+    }
+    assert(threw);
+    cuda_probe::setMemoryLimit(size_t(10) << 20);   // 10 MB
+    threw = false;
+    try {
+        checkCudaInferenceMemory(cfg, 64, 1);
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find("lower inference_batch") != std::string::npos;
+    }
+    assert(threw);
+    cuda_probe::setMemoryLimit(0);
+    checkCudaInferenceMemory(cfg, 64, 1);   // fits the real GPU
+    auto ok = makeCudaRunner(net, 8);
+    assert(ok->slots() == kInferenceSlots && ok->maxBatch() == 8);
+}
+
+// No thread outlives a runner, including runners destroyed with passes in flight.
+void test_runner_no_thread_leak() {
+    const NetConfig cfg = netConfig(9, 1, 8);
+    const Network net = randomNetwork(cfg, 707);
+    { auto warm = makeCudaRunner(net, 8); }   // the CUDA runtime's own threads start once
+    const int before = threadCount();
+    for (int i = 0; i < 50; ++i) {
+        auto runner = makeCudaRunner(net, 8);
+        std::fill_n(runner->input(0), 8 * cfg.planes() * cfg.area(), 0.5f);
+        if (i % 2) runner->begin(0, 8, [](int, std::string) {});   // destroyed in flight
+    }
+    int after = threadCount();
+    for (int tries = 0; after > before && tries < 100; ++tries) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        after = threadCount();
+    }
+    if (after > before) std::printf("test_cuda: %d threads before, %d after\n", before, after);
+    assert(after <= before);
+}
+
+// WorkerEvaluators with backend cuda: one hub on the GPU for all workers,
+// each worker's rows its positions alone; evaluations() counts positions.
+void test_worker_evaluators_cuda() {
+    const NetConfig cfg = netConfig(9, 2, 16);
+    const Network net = randomNetwork(cfg, 708);
+    const GpuPool pool(net, 64, 709);
+    const size_t in = pool.in(), L = cfg.actions();
+    WorkerEvaluators evaluators(net, "cuda", 8, 8, 256);
+    assert(evaluators.hub() != nullptr && evaluators.workers() == 8);
+    std::vector<std::thread> threads;
+    for (int w = 0; w < 8; ++w)
+        threads.emplace_back([&, w] {
+            Evaluator& ev = evaluators.forWorker(w);
+            std::vector<float> logits(8 * L), values(8);
+            ev.evaluate(pool.input.data() + w * 8 * in, 8, logits.data(), values.data());
+            assert(bitwiseEqual(logits.data(), pool.logits.data() + w * 8 * L, 8 * L));
+            assert(bitwiseEqual(values.data(), pool.values.data() + w * 8, 8));
+        });
+    for (auto& th : threads) th.join();
+    assert(evaluators.evaluations() == 64);
+}
+
 } // namespace
 
 #endif // AZ_USE_CUDA
@@ -832,6 +1097,12 @@ int main() {
     test_unknown_tensor_refused();
     test_unread_tensor_refused();
     test_workspace_size_and_speed();
+    test_runner_slots();
+    test_hub_outputs_equal_alone_under_chaos();
+    test_hub_failure_reaches_everyone();
+    test_memory_check();
+    test_runner_no_thread_leak();
+    test_worker_evaluators_cuda();
 #endif
     std::printf("test_cuda: all tests passed\n");
     return 0;

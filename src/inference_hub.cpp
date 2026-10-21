@@ -14,6 +14,7 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "azgo/cuda.hpp"
 #include "azgo/metal.hpp"
 
 namespace azgo {
@@ -266,6 +267,21 @@ WorkerEvaluators::WorkerEvaluators(const Network& net, const std::string& backen
         (void)slots;
         throw std::invalid_argument(
             "backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON (macOS only)");
+#endif
+        return;
+    }
+    if (backend == "cuda") {
+#ifdef AZ_USE_CUDA
+        InferenceHubOptions options;
+        options.maxBatch = inferenceBatch;
+        options.chaosSeed = cuda_probe::hubChaosSeed();   // a test hook; 0 in every run
+        hub_ = std::make_unique<InferenceHub>(makeCudaRunner(net, inferenceBatch, slots), net.config(), options);
+        for (int w = 0; w < workers; ++w) evaluators_.push_back(hub_->makeEvaluator(maxRequest));
+#else
+        (void)inferenceBatch;
+        (void)slots;
+        throw std::invalid_argument(
+            "backend 'cuda' not available: rebuild with -DAZ_USE_CUDA=ON (Linux, NVIDIA GPU)");
 #endif
         return;
     }

@@ -157,10 +157,11 @@ private:
 // and workspace (each worker evaluates its own batches, as always). For
 // metal: one InferenceHub with the Metal runner, batches of up to
 // inferenceBatch positions, `slots` passes in flight (1..kInferenceSlots;
-// see makeMetalRunner), and a BatchingEvaluator per worker. Self-play and
-// the arena only see Evaluators. Throws std::invalid_argument for an unknown
-// or unavailable backend (metal in a build without Metal: "backend 'metal'
-// not available: rebuild with -DAZ_USE_METAL=ON (macOS only)").
+// see makeMetalRunner), and a BatchingEvaluator per worker. For cuda: the
+// same with the CUDA runner (makeCudaRunner). Self-play and the arena only
+// see Evaluators. Throws std::invalid_argument for an unknown or unavailable
+// backend (metal in a build without Metal: "backend 'metal' not available:
+// rebuild with -DAZ_USE_METAL=ON (macOS only)"; cuda likewise).
 class WorkerEvaluators {
 public:
     WorkerEvaluators(const Network& net, const std::string& backend, int workers, int maxRequest,
