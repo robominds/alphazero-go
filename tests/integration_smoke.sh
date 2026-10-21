@@ -616,7 +616,7 @@ else
     [ "$status" -eq 1 ] || fail "bench --backend metal without Metal exited $status, expected 1"
     grep -qF "$NOT_BUILT" <<<"$out" || fail "bench did not say metal is not built: $out"
     status=0
-    out="$("$BUILD/bench" --mixed --sizes 5 --seconds 0.1 --configs "$SRC/configs" 2>&1)" || status=$?
+    out="$("$BUILD/bench" --mixed --sizes 5 --seconds 0.1 --hub-backend metal --configs "$SRC/configs" 2>&1)" || status=$?
     [ "$status" -eq 1 ] || fail "bench --mixed without Metal exited $status, expected 1"
     grep -qF "$NOT_BUILT" <<<"$out" || fail "bench --mixed did not say metal is not built: $out"
 fi
@@ -641,6 +641,18 @@ if [ "$CUDA" = "cuda=ON" ]; then
     done
     grep -q '^3,2,2,local/cuda,local/cuda,"cuda; ' "$CRUN/selfplay-engines.csv" || fail "no local/cuda row for generation 3"
     grep -q '^3,4,2,fake/cuda,fake/cuda,"cuda; ' "$CRUN/selfplay-engines.csv" || fail "no fake/cuda row for generation 3"
+
+    echo "== cuda: bench =="
+    out="$("$BUILD/bench" --sizes 5 --backend cuda --seconds 0.1 --hub-workers 2,4 --configs "$SRC/configs")"
+    grep -Eq '^gpu: .+ sm_[0-9]+, driver' <<<"$out" || fail "bench --backend cuda printed no gpu line"
+    grep -Eq '^5x5 +3 x 32 +cuda +[1-9][0-9]* +-$' <<<"$out" || fail "bench --backend cuda printed no cuda row"
+    grep -Eq 'ms/pass +\(cuda\)$' <<<"$out" || fail "bench --backend cuda printed no raw-pass table"
+    grep -Eq '^5x5 +3 x 32 +256 +[1-9]' <<<"$out" || fail "bench --backend cuda printed no batch-256 pass row"
+    grep -Eq '^5x5 +3 x 32 +cuda hub +4 +[1-9]' <<<"$out" || fail "bench --backend cuda printed no hub row"
+    out="$("$BUILD/bench" --mixed --sizes 5 --seconds 0.1 --hub-backend cuda --hub-workers 2 --cpu-workers 0,1 \
+           --configs "$SRC/configs")"
+    grep -q 'cuda hub 2 threads' <<<"$out" || fail "bench --mixed --hub-backend cuda printed no mixed table"
+    grep -Eq '^ +1 +[1-9][0-9]* +[1-9][0-9]*$' <<<"$out" || fail "bench --mixed --hub-backend cuda printed no CPU-alone row"
 else
     echo "== cuda: refused in a build without it =="
     CUDA_NOT_BUILT="backend 'cuda' not available: rebuild with -DAZ_USE_CUDA=ON (Linux, NVIDIA GPU)"
@@ -654,6 +666,13 @@ else
     [ "$status" -eq 1 ] || fail "a run with a local cuda engine without CUDA exited $status, expected 1"
     grep -qF "$CUDA_NOT_BUILT" <<<"$out" || fail "train did not say cuda is not built: $out"
     test ! -e "$W/nocuda/state.bin" && test ! -e "$W/nocuda/config.cfg" || fail "a refused cuda run wrote files"
+    for args in "--sizes 5 --seconds 0.1 --backend cuda" "--mixed --sizes 5 --seconds 0.1 --hub-backend cuda"; do
+        status=0
+        # shellcheck disable=SC2086
+        out="$("$BUILD/bench" $args --configs "$SRC/configs" 2>&1)" || status=$?
+        [ "$status" -eq 1 ] || fail "bench $args without CUDA exited $status, expected 1"
+        grep -qF "$CUDA_NOT_BUILT" <<<"$out" || fail "bench $args did not say cuda is not built: $out"
+    done
 fi
 # Never a run's own backend, in any build.
 status=0

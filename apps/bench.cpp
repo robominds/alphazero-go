@@ -4,8 +4,9 @@
 // self-play worker sees) and the time of one training step at batch 128 on
 // all cores (what the training phase sees with train_threads = 0). With
 // --train-threads, a second table times the training step at each of the
-// given thread counts (batch --train-batch). With the metal backend (a
-// build with -DAZ_USE_METAL=ON), three more tables: the GPU's raw forward
+// given thread counts (batch --train-batch). With a GPU backend (metal in a
+// build with -DAZ_USE_METAL=ON, cuda with -DAZ_USE_CUDA=ON), three more
+// tables: the GPU's raw forward
 // pass at batches 8, 144 and 256, one at a time and with two passes in
 // flight; the batching hub under N threads sending batch-8 requests, as
 // self-play does; and, for reference, every core running its own CPU worker.
@@ -17,9 +18,9 @@
 // workers alone. That is the number engine weights need, since a CPU engine
 // beside a busy hub is not the CPU engine alone.
 //
-//   bench [--sizes 5,9,19] [--backend naive|blas|metal|all] [--seconds 2] [--configs configs]
+//   bench [--sizes 5,9,19] [--backend naive|blas|metal|cuda|all] [--seconds 2] [--configs configs]
 //         [--train-threads 1,2,4,8] [--train-batch 256] [--hub-workers 18,36,72]
-//   bench --mixed [--sizes 19] [--hub-workers N] [--cpu-workers 0,2,4,6,8,12]
+//   bench --mixed [--sizes 19] [--hub-backend metal|cuda] [--hub-workers N] [--cpu-workers 0,2,4,6,8,12]
 //         [--qos default|utility] [--seconds 10] [--net CKPT]
 #include <atomic>
 #include <chrono>
@@ -40,6 +41,7 @@
 #include "azgo/backend.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/config.hpp"
+#include "azgo/cuda.hpp"
 #include "azgo/game.hpp"
 #include "azgo/inference_hub.hpp"
 #include "azgo/metal.hpp"
@@ -53,23 +55,25 @@
 namespace {
 
 const char* const kUsage =
-    "usage: bench [--sizes 5,9,19] [--backend naive|blas|metal|all] [--seconds 2] [--configs DIR]\n"
+    "usage: bench [--sizes 5,9,19] [--backend naive|blas|metal|cuda|all] [--seconds 2] [--configs DIR]\n"
     "             [--train-threads 1,2,4,8] [--train-batch 256] [--hub-workers 18,36,72]\n"
     "\n"
     "Network shapes come from DIR/<n>x<n>.cfg (default DIR: configs). --seconds is\n"
     "the minimum duration of each measurement. --train-threads adds a table of the\n"
     "training step's time at each thread count (0 = all cores), at batch\n"
-    "--train-batch (default 256). all includes metal in a build with it.\n"
-    "With metal, the main table's train-step column is '-' (training stays on the\n"
+    "--train-batch (default 256). all includes metal or cuda in a build with it.\n"
+    "With metal or cuda, the main table's train-step column is '-' (training stays on the\n"
     "CPU), and three tables follow: raw GPU forward passes (one at a time, and two\n"
     "in flight), the batching hub under each --hub-workers thread count (each\n"
     "thread sending batch-8 requests: evals/s, mean pass size, slot occupancy),\n"
     "and every core running its own BLAS worker at batch 8 (the CPU reference).\n"
     "\n"
-    "       bench --mixed [--sizes 19] [--hub-workers N] [--cpu-workers 0,2,4,6,8,12]\n"
+    "       bench --mixed [--sizes 19] [--hub-backend metal|cuda] [--hub-workers N]\n"
+    "                     [--cpu-workers 0,2,4,6,8,12]\n"
     "                     [--qos default|utility] [--seconds 10] [--net CKPT]\n"
     "\n"
-    "--mixed (a build with Metal): for each k of --cpu-workers, the metal hub with N\n"
+    "--mixed (a build with Metal or CUDA): for each k of --cpu-workers, the GPU hub\n"
+    "(--hub-backend, default the one built: metal on a Mac, cuda on Linux) with N\n"
     "threads (default 0: twice the cores, the workers key's rule for backend = metal;\n"
     "a metal engine of selfplay_engines plays every game of its slice at once\n"
     "instead, so pass its slice's games to measure that) and k BLAS workers run\n"
@@ -175,22 +179,54 @@ double runWorkers(int workers, double seconds, std::atomic<bool>& stop, Body bod
     return secondsSince(start);
 }
 
+#if defined(AZ_USE_METAL) || defined(AZ_USE_CUDA)
+#define AZGO_BENCH_GPU 1
+
+// The GPU backends this binary has: metal (macOS) or cuda (Linux).
+bool gpuBackend(const std::string& b) { return b == "metal" || b == "cuda"; }
+
+std::string gpuDescription(const std::string& gpu) {
+    return gpu == "cuda" ? azgo::cudaDescription() : azgo::metalDescription();
+}
+
+// The hub's runner for `gpu`.
+std::unique_ptr<azgo::BatchRunner> makeGpuRunner(const std::string& gpu, const azgo::Network& net, int maxBatch) {
+#ifdef AZ_USE_CUDA
+    if (gpu == "cuda") return azgo::makeCudaRunner(net, maxBatch);
+#endif
 #ifdef AZ_USE_METAL
+    if (gpu == "metal") return azgo::makeMetalRunner(net, maxBatch);
+#endif
+    throw std::invalid_argument("backend '" + gpu + "' is not built in");
+}
+
 // Positions per second through the GPU network, one synchronous pass of
-// `batch` at a time (copy in, one command buffer, wait, copy out).
-double measureGpuSync(const azgo::NetConfig& nc, int batch, double seconds) {
+// `batch` at a time (copy in, the pass, wait, copy out).
+double measureGpuSync(const std::string& gpu, const azgo::NetConfig& nc, int batch, double seconds) {
     const azgo::Network net(nc, 1);
-    azgo::MetalInference gpu(net, batch);
     azgo::Rng rng(7);
     const std::vector<float> input = randomInput(nc, batch, rng);
     std::vector<float> logits(static_cast<size_t>(batch) * nc.actions()), values(static_cast<size_t>(batch));
-    return batch * callsPerSecond([&] { gpu.infer(input.data(), batch, logits.data(), values.data()); },
-                                  seconds);
+#ifdef AZ_USE_CUDA
+    if (gpu == "cuda") {
+        azgo::CudaInference cuda(net, batch);
+        return batch * callsPerSecond([&] { cuda.infer(input.data(), batch, logits.data(), values.data()); },
+                                      seconds);
+    }
+#endif
+#ifdef AZ_USE_METAL
+    if (gpu == "metal") {
+        azgo::MetalInference metal(net, batch);
+        return batch * callsPerSecond([&] { metal.infer(input.data(), batch, logits.data(), values.data()); },
+                                      seconds);
+    }
+#endif
+    throw std::invalid_argument("backend '" + gpu + "' is not built in");
 }
 
 // Positions per second with the hub's runner kept full: both slots always
 // have a pass of `batch` in flight, each resubmitted as soon as it is done.
-double measureGpuPipelined(const azgo::NetConfig& nc, int batch, double seconds) {
+double measureGpuPipelined(const std::string& gpu, const azgo::NetConfig& nc, int batch, double seconds) {
     const azgo::Network net(nc, 1);
     // The completion handler's state is declared before the runner, so it
     // outlives it: the runner's destructor waits for passes in flight, whose
@@ -205,7 +241,7 @@ double measureGpuPipelined(const azgo::NetConfig& nc, int batch, double seconds)
         ready.push_back(slot);
         cv.notify_one();
     };
-    std::unique_ptr<azgo::BatchRunner> runner = azgo::makeMetalRunner(net, batch);
+    std::unique_ptr<azgo::BatchRunner> runner = makeGpuRunner(gpu, net, batch);
     azgo::Rng rng(7);
     const std::vector<float> input = randomInput(nc, batch, rng);
     for (int s = 0; s < runner->slots(); ++s)
@@ -246,11 +282,11 @@ struct HubLoad {
 
 // `workers` threads each sending batch-8 requests of random positions in a
 // loop through one hub (inference_batch 256), as self-play's workers do.
-HubLoad measureHub(const azgo::NetConfig& nc, int workers, double seconds) {
+HubLoad measureHub(const std::string& gpu, const azgo::NetConfig& nc, int workers, double seconds) {
     const azgo::Network net(nc, 1);
     azgo::InferenceHubOptions options;
     options.maxBatch = 256;
-    azgo::InferenceHub hub(azgo::makeMetalRunner(net, options.maxBatch), nc, options);
+    azgo::InferenceHub hub(makeGpuRunner(gpu, net, options.maxBatch), nc, options);
     std::atomic<bool> stop{false};
     std::atomic<long long> evals{0};
     const double elapsed = runWorkers(workers, seconds, stop, [&](int w) {
@@ -270,9 +306,6 @@ HubLoad measureHub(const azgo::NetConfig& nc, int workers, double seconds) {
             st.batches > 0 ? static_cast<double>(st.positions) / static_cast<double>(st.batches) : 0.0,
             st.gpuSeconds / (elapsed * azgo::kInferenceSlots)};
 }
-#endif
-
-#ifdef AZ_USE_METAL
 struct MixedLoad {
     double hubEvals, cpuEvals, meanBatch, occupancy;
 };
@@ -281,12 +314,12 @@ struct MixedLoad {
 // (inference_batch 256) and cpuWorkers BLAS workers, each evaluating its own
 // batches of 8, all at the same time: a GPU engine and a CPU engine of
 // distributed self-play on one machine. The CPU workers take QoS class `qos`.
-MixedLoad measureMixed(const azgo::Network& net, int hubWorkers, int cpuWorkers, azgo::CpuQos qos,
-                       double seconds) {
+MixedLoad measureMixed(const std::string& gpu, const azgo::Network& net, int hubWorkers, int cpuWorkers,
+                       azgo::CpuQos qos, double seconds) {
     const azgo::NetConfig& nc = net.config();
     azgo::InferenceHubOptions options;
     options.maxBatch = 256;
-    azgo::InferenceHub hub(azgo::makeMetalRunner(net, options.maxBatch), nc, options);
+    azgo::InferenceHub hub(makeGpuRunner(gpu, net, options.maxBatch), nc, options);
     std::atomic<bool> stop{false};
     std::atomic<long long> hubEvals{0}, cpuEvals{0};
     const double elapsed = runWorkers(hubWorkers + cpuWorkers, seconds, stop, [&](int w) {
@@ -344,8 +377,14 @@ double measureCpuWorkersAlone(const azgo::Network& net, int workers, azgo::CpuQo
 
 // bench --mixed: the two tables for each board size (see the usage text).
 int runMixed(const ArgParser& args) {
-    azgo::checkBackendAvailable("metal");   // the not-built message without Metal
-#ifdef AZ_USE_METAL
+    // The GPU engine's backend: --hub-backend, else the one this binary has
+    // (metal on a Mac, cuda on Linux; metal in a build with neither, which
+    // the check below refuses with the not-built message).
+    const std::string gpu = args.get("hub-backend", azgo::cudaBuilt() ? "cuda" : "metal");
+    if (gpu != "metal" && gpu != "cuda")
+        throw std::invalid_argument("--hub-backend: expected metal|cuda, got '" + gpu + "'");
+    azgo::checkBackendAvailable(gpu);   // the not-built message without it
+#ifdef AZGO_BENCH_GPU
     const std::vector<int> sizes = parseSizes(args.get("sizes", "19"));
     const double seconds = args.getDouble("seconds", 10.0);
     if (seconds <= 0) throw std::invalid_argument("--seconds must be positive");
@@ -364,7 +403,7 @@ int runMixed(const ArgParser& args) {
     // The BLAS backend sets its environment once, with setenv, which is not
     // thread-safe: do that here, before any worker thread starts.
     azgo::makeBackend("blas", 1);
-    std::printf("gpu: %s\n", azgo::metalDescription().c_str());
+    std::printf("gpu: %s\n", gpuDescription(gpu).c_str());
     for (int n : sizes) {
         std::unique_ptr<azgo::Network> net;
         if (args.has("net")) {
@@ -380,14 +419,14 @@ int runMixed(const ArgParser& args) {
             net = std::make_unique<azgo::Network>(azgo::loadConfigFile(preset).netConfig(), 1);
         }
         const azgo::NetConfig& nc = net->config();
-        std::printf("\nmixed: %dx%d %d x %d, metal hub %d threads (inference_batch 256) + k blas "
+        std::printf("\nmixed: %dx%d %d x %d, %s hub %d threads (inference_batch 256) + k blas "
                     "workers, batch 8, qos %s, %g s each\n",
-                    n, n, nc.blocks, nc.filters, hubWorkers, qosName.c_str(), seconds);
+                    n, n, nc.blocks, nc.filters, gpu.c_str(), hubWorkers, qosName.c_str(), seconds);
         std::printf("%-11s %12s %12s %14s %13s %10s %10s\n", "cpu workers", "hub evals/s", "cpu evals/s",
                     "total evals/s", "hub vs alone", "mean pass", "slots busy");
         double alone = 0;
         for (int k : cpuList) {
-            const MixedLoad m = measureMixed(*net, hubWorkers, k, qos, seconds);
+            const MixedLoad m = measureMixed(gpu, *net, hubWorkers, k, qos, seconds);
             if (k == 0) alone = m.hubEvals;   // the hub alone: the baseline
             char versus[16] = "-";
             if (alone > 0) std::snprintf(versus, sizeof versus, "%.1f%%", 100.0 * m.hubEvals / alone);
@@ -438,8 +477,8 @@ double measureCpuWorkers(const azgo::NetConfig& nc, double seconds) {
 
 // Positions evaluated per second, batch kInferBatch, one thread.
 double measureInference(const azgo::NetConfig& nc, const std::string& backendName, double seconds) {
-#ifdef AZ_USE_METAL
-    if (backendName == "metal") return measureGpuSync(nc, kInferBatch, seconds);
+#ifdef AZGO_BENCH_GPU
+    if (gpuBackend(backendName)) return measureGpuSync(backendName, nc, kInferBatch, seconds);
 #endif
     std::unique_ptr<azgo::Backend> backend = azgo::makeBackend(backendName, 1);
     const azgo::Network net(nc, 1);
@@ -525,7 +564,7 @@ int main(int argc, char** argv) {
                                            std::vector<std::string>{"sizes", "backend", "seconds", "configs",
                                                                     "train-threads", "train-batch",
                                                                     "hub-workers", "cpu-workers", "qos",
-                                                                    "net"},
+                                                                    "net", "hub-backend"},
                                            std::vector<std::string>{"help", "mixed"});
     } catch (const std::invalid_argument& e) {
         return usageError(e.what());
@@ -537,8 +576,8 @@ int main(int argc, char** argv) {
 
     try {
         if (args->flag("mixed")) return runMixed(*args);
-        if (args->has("cpu-workers") || args->has("qos") || args->has("net"))
-            throw std::invalid_argument("--cpu-workers, --qos and --net belong to --mixed");
+        if (args->has("cpu-workers") || args->has("qos") || args->has("net") || args->has("hub-backend"))
+            throw std::invalid_argument("--cpu-workers, --qos, --net and --hub-backend belong to --mixed");
         const std::vector<int> sizes = parseSizes(args->get("sizes", "5,9,19"));
         const double seconds = args->getDouble("seconds", 2.0);
         if (seconds <= 0) throw std::invalid_argument("--seconds must be positive");
@@ -555,13 +594,16 @@ int main(int argc, char** argv) {
             backends.push_back("naive");
             if (azgo::blasAvailable()) backends.push_back("blas");
             if (azgo::metalBuilt() && azgo::metalAvailable()) backends.push_back("metal");
+            if (azgo::cudaBuilt() && azgo::cudaAvailable()) backends.push_back("cuda");
         } else {
             azgo::checkBackendAvailable(which);   // throws for an unknown or unavailable backend
             backends.push_back(which);
         }
-        bool metal = false;
-        for (const std::string& b : backends) metal = metal || b == "metal";
-        if (metal) std::printf("gpu: %s\n\n", azgo::metalDescription().c_str());
+        std::vector<std::string> gpus;   // the GPU backends measured: their extra tables follow
+        for (const std::string& b : backends)
+            if (b == "metal" || b == "cuda") gpus.push_back(b);
+        for (const std::string& g : gpus)
+            std::printf("gpu: %s\n\n", g == "cuda" ? azgo::cudaDescription().c_str() : azgo::metalDescription().c_str());
 
         std::printf("%-6s %-17s %-8s %12s %14s\n", "size", "blocks x filters", "backend", "evals/s",
                     "train-step ms");
@@ -580,22 +622,22 @@ int main(int argc, char** argv) {
                 char shape[32], size[16], step[32];
                 std::snprintf(shape, sizeof shape, "%d x %d", nc.blocks, nc.filters);
                 std::snprintf(size, sizeof size, "%dx%d", n, n);
-                // Training stays on the CPU with metal (BLAS): no GPU step to time.
-                if (b == "metal") std::snprintf(step, sizeof step, "-");
+                // Training stays on the CPU with metal and cuda: no GPU step to time.
+                if (b == "metal" || b == "cuda") std::snprintf(step, sizeof step, "-");
                 else std::snprintf(step, sizeof step, "%.1f", measureTrainStep(nc, b, kTrainBatch, 0, seconds));
                 std::printf("%-6s %-17s %-8s %12.0f %14s\n", size, shape, b.c_str(), evals, step);
                 std::fflush(stdout);
             }
         }
 
-#ifdef AZ_USE_METAL
-        if (metal) {
-            std::printf("\n%-6s %-17s %6s %14s %16s %10s\n", "size", "blocks x filters", "batch",
-                        "sync evals/s", "2-slot evals/s", "ms/pass");
+#ifdef AZGO_BENCH_GPU
+        for (const std::string& gpu : gpus) {
+            std::printf("\n%-6s %-17s %6s %14s %16s %10s   (%s)\n", "size", "blocks x filters", "batch",
+                        "sync evals/s", "2-slot evals/s", "ms/pass", gpu.c_str());
             for (const azgo::NetConfig& nc : shapes) {
                 for (int batch : {8, 144, 256}) {
-                    const double sync = measureGpuSync(nc, batch, seconds);
-                    const double piped = measureGpuPipelined(nc, batch, seconds);
+                    const double sync = measureGpuSync(gpu, nc, batch, seconds);
+                    const double piped = measureGpuPipelined(gpu, nc, batch, seconds);
                     char shape[32], size[16];
                     std::snprintf(shape, sizeof shape, "%d x %d", nc.blocks, nc.filters);
                     std::snprintf(size, sizeof size, "%dx%d", nc.boardSize, nc.boardSize);
@@ -615,9 +657,10 @@ int main(int argc, char** argv) {
                             azgo::blasAvailable() ? "cpu (blas)" : "cpu (naive)", azgo::resolveWorkers(0), cpu,
                             "8", "-");
                 std::fflush(stdout);
+                const std::string label = gpu + " hub";
                 for (int w : hubWorkers) {
-                    const HubLoad h = measureHub(nc, azgo::resolveWorkers(w, true), seconds);
-                    std::printf("%-6s %-17s %-14s %8d %12.0f %10.1f %9.0f%%\n", size, shape, "metal hub",
+                    const HubLoad h = measureHub(gpu, nc, azgo::resolveWorkers(w, true), seconds);
+                    std::printf("%-6s %-17s %-14s %8d %12.0f %10.1f %9.0f%%\n", size, shape, label.c_str(),
                                 azgo::resolveWorkers(w, true), h.evalsPerSecond, h.meanBatch, 100.0 * h.occupancy);
                     std::fflush(stdout);
                 }
@@ -631,7 +674,7 @@ int main(int argc, char** argv) {
                         "threads", "train-step ms", "speedup");
             for (const azgo::NetConfig& nc : shapes) {
                 for (const std::string& b : backends) {
-                    if (b == "metal") continue;   // training stays on the CPU
+                    if (b == "metal" || b == "cuda") continue;   // training stays on the CPU
                     double first = 0;
                     for (int t : threadCounts) {
                         const double stepMs = measureTrainStep(nc, b, trainBatch, t, seconds);
