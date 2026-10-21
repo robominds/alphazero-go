@@ -7,14 +7,17 @@
 # and resignation: a run with it, and its refusal alongside the ownership head,
 # and the GTP engine: a scripted session and a two-game match through tools/gtp_match.py,
 # and distributed self-play: selfplay's version and fingerprint, a run with a fake remote
-# (the subprocess transport) resumed and compared with the default run, AZGO_HOSTS, a refused alias.
+# (the subprocess transport) resumed and compared with the default run, AZGO_HOSTS, a refused alias,
+# and the distributed arena: a run whose arena games a fake remote shares, resumed and compared with
+# the default run, its manifest and summary lines.
 #
 # and backend = metal: with metal=ON a run on the GPU (start, resume, re-rate) and arena
 # matches on it; with metal=OFF the refusals, which write nothing.
 #
 # and backend = cuda as a self-play engine: with cuda=ON a run whose games go to the GPU, in
 # this process and as a remote slice (a selfplay process), resumed and compared with a run
-# done straight; with cuda=OFF the refusals, which write nothing.
+# done straight, and a run whose arena games go to the GPU the same ways; with cuda=OFF the
+# refusals, which write nothing.
 #
 # usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR [metal=ON|metal=OFF] [cuda=ON|cuda=OFF]
 set -euo pipefail
@@ -450,6 +453,31 @@ out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/unknown" "${TINY
 grep -q "machine 'nowhere' is not defined in the hosts file" <<<"$out" || fail "unexpected refusal: $out"
 test ! -e "$W/unknown/config.cfg" || fail "a refused run wrote config.cfg"
 
+echo "== distributed arena: a fake remote plays arena slices, resumed =="
+ARUN="$W/arena-engines"
+AENGINES="arena_engines=local/naive:1,fake/naive:1"
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$ARUN" "${TINY[@]}" --hosts "$HOSTS" --set "$AENGINES" \
+    --generations 2 > "$W/arena-engines.out"
+grep -q '^engine fake/naive: ' "$W/arena-engines.out" || fail "no engine line for the arena's fake/naive"
+grep -Eq '^arena engines: local/naive [0-9]+ .* \| fake/naive [0-9]+ ' "$W/arena-engines.out" \
+    || fail "no arena engines line"
+grep -q '^selfplay engines:' "$W/arena-engines.out" && fail "a selfplay engines line without selfplay_engines"
+"$BUILD/train" --run "$ARUN" --resume --hosts "$HOSTS" --generations 3 > /dev/null
+AMANIFEST="$ARUN/arena-engines.csv"
+[ "$(head -1 "$AMANIFEST")" = "generation,wave,first,count,planned,engine,fingerprint,build,seconds,positions,evaluations,note" ] \
+    || fail "arena-engines.csv has the wrong header"
+for g in 1 2 3; do
+    [ "$(grep -c "^$g,1," "$AMANIFEST")" = 2 ] || fail "arena-engines.csv should have 2 wave-1 rows for generation $g"
+done
+grep -q '^3,1,[0-9]*,[0-9]*,fake/naive,fake/naive,"naive; ' "$AMANIFEST" || fail "no fake/naive arena row for generation 3"
+test ! -e "$ARUN/selfplay-engines.csv" || fail "an arena-only run wrote selfplay-engines.csv"
+test ! -e "$ARUN/arena-work" || fail "arena-work was left behind"
+grep -q '^arena_engines = local/naive:1, fake/naive:1$' "$ARUN/config.cfg" || fail "config.cfg lacks arena_engines"
+# The same arithmetic on both engines: the default run's files.
+for f in state.bin results.csv elo.csv checkpoints/gen_0003.azn; do
+    cmp -s "$W/plain/$f" "$ARUN/$f" || fail "the run with arena engines differs from the default run in $f"
+done
+
 # nohup: a train started with SIGHUP ignored keeps ignoring it.
 ( trap '' HUP; exec "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/nohup" "${TINY[@]}" --generations 3 \
       > "$W/nohup.out" 2>&1 ) &
@@ -650,6 +678,23 @@ if [ "$CUDA" = "cuda=ON" ]; then
     done
     grep -q '^3,2,2,local/cuda,local/cuda,"cuda; ' "$CRUN/selfplay-engines.csv" || fail "no local/cuda row for generation 3"
     grep -q '^3,4,2,fake/cuda,fake/cuda,"cuda; ' "$CRUN/selfplay-engines.csv" || fail "no fake/cuda row for generation 3"
+
+    echo "== cuda: arena slices on the GPU, in this process and as a remote slice =="
+    CAENGINES="arena_engines=local/naive:1,local/cuda:1,fake/cuda:1"
+    "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/cuda-arena" "${TINY[@]}" --hosts "$CHOSTS" \
+        --set "$CAENGINES" --generations 2 > "$W/cuda-arena.out"
+    grep -Eq '^arena engines: local/naive .* \| local/cuda .* \| fake/cuda ' "$W/cuda-arena.out" \
+        || fail "no arena engines line with the cuda engines"
+    "$BUILD/train" --run "$W/cuda-arena" --resume --hosts "$CHOSTS" --generations 3 > /dev/null
+    "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/cuda-arena-straight" "${TINY[@]}" --hosts "$CHOSTS" \
+        --set "$CAENGINES" --generations 3 > /dev/null
+    for f in state.bin results.csv elo.csv checkpoints/gen_0003.azn; do
+        cmp -s "$W/cuda-arena/$f" "$W/cuda-arena-straight/$f" || fail "the resumed cuda arena run's $f differs"
+    done
+    grep -q '^3,1,[0-9]*,[0-9]*,local/cuda,local/cuda,"cuda; ' "$W/cuda-arena/arena-engines.csv" \
+        || fail "no local/cuda arena row for generation 3"
+    grep -q '^3,1,[0-9]*,[0-9]*,fake/cuda,fake/cuda,"cuda; ' "$W/cuda-arena/arena-engines.csv" \
+        || fail "no fake/cuda arena row for generation 3"
 
     echo "== cuda: bench =="
     out="$("$BUILD/bench" --sizes 5 --backend cuda --seconds 0.1 --hub-workers 2,4 --configs "$SRC/configs")"

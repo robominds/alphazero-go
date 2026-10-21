@@ -1434,10 +1434,12 @@ void test_metal_play_matches_equal_one_at_a_time() {
 // equals the run that plays its matches one after another, for workers 1,
 // 3, 8 and 0, inference_batch 8 and 256, chaos on, on resume and on
 // re-rating.
-void test_metal_rounds_at_once_equal_one_at_a_time() {
-    RunDir refs("rounds_refs");
+// A run whose arena rounds have every kind of match: two bots, two
+// reference networks, gating and promotions (a second wave).
+Config metalRoundsConfig(const RunDir& refs) {
     fs::create_directories(refs.path);
     for (int k = 0; k < 2; ++k) {
+        if (fs::exists(refs.file("ref" + std::to_string(k) + ".azn"))) continue;
         RunDir donor("rounds_donor" + std::to_string(k));
         Config d = metalRunConfig();
         d.seed = 31 + k;
@@ -1458,6 +1460,12 @@ void test_metal_rounds_at_once_equal_one_at_a_time() {
     // calibrated generation 0 plays differently (here: no promotion by
     // generation 4), so the test keeps the uncalibrated one it was built on.
     base.bnCalibrate = false;
+    return base;
+}
+
+void test_metal_rounds_at_once_equal_one_at_a_time() {
+    RunDir refs("rounds_refs");
+    const Config base = metalRoundsConfig(refs);
 
     RunDir sequential("rounds_seq");
     Config c = base;
@@ -1585,6 +1593,67 @@ void test_metal_mixed_engines_independent_of_hosts_settings() {
     }
 }
 
+
+// The arena on its engines (arena_engines), all of them this GPU: the same
+// files as the default metal run, gating decisions and promotions included,
+// whatever the engines' workers and however the waves are split; with the
+// hub's chaos mode on. A wave split between the GPU and a CPU engine plays
+// other bits, but the same ones for any hosts settings.
+void test_metal_arena_engines() {
+    RunDir refs("arena_refs"), plain("arena_default");
+    const Config base = metalRoundsConfig(refs);
+    startRun(base, plain)->runUntil(4);
+    const std::string reference = runFingerprint(plain, 4);
+    struct Variant { const char* engines; const char* hosts; uint64_t chaos; };
+    for (const Variant& v : {Variant{"local/metal:1", "metal_workers=0", 0},
+                             Variant{"local/metal:1", "metal_workers=8 inference_batch=8", 5},
+                             Variant{"local/metal:1, local/metal:2", "metal_workers=0", 0}}) {
+        RunDir dir("arena_engines");
+        fs::create_directories(dir.path);
+        {
+            std::ofstream out(dir.file("hosts"));
+            out << "local " << v.hosts << "\n";
+        }
+        Config c = base;
+        applyOverride(c, std::string("arena_engines=") + v.engines);
+        TrainerOptions opts;
+        opts.hostsFile = dir.file("hosts");
+        std::ostringstream startup;
+        metal_probe::setHubChaosSeed(v.chaos);
+        std::unique_ptr<Trainer> t = Trainer::startNew(c, dir.str(), {}, &startup, opts);
+        t->setLog(nullptr);
+        t->runUntil(4);
+        metal_probe::setHubChaosSeed(0);
+        assert(startup.str().find("engine local/metal: ") != std::string::npos);
+        assert(runFingerprint(dir, 4) == reference);
+        assert(loadTrainingState(statePath(dir.str())).bestGeneration ==
+               loadTrainingState(statePath(plain.str())).bestGeneration);
+        const std::string manifest = readBytes(dir.file("arena-engines.csv"));
+        assert(manifest.find(metalDescription()) != std::string::npos);
+        assert(manifest.find("\n4,") != std::string::npos);
+    }
+    std::string mixed;
+    for (const char* hosts : {"metal_workers=0 cpu_workers=1", "metal_workers=4 cpu_workers=3 cpu_qos=default"}) {
+        RunDir dir("arena_mixed");
+        fs::create_directories(dir.path);
+        {
+            std::ofstream out(dir.file("hosts"));
+            out << "local " << hosts << "\n";
+        }
+        Config c = base;
+        applyOverride(c, "arena_engines=local/metal:2, local/blas:1");
+        TrainerOptions opts;
+        opts.hostsFile = dir.file("hosts");
+        std::ostringstream startup;
+        std::unique_ptr<Trainer> t = Trainer::startNew(c, dir.str(), {}, &startup, opts);
+        t->setLog(nullptr);
+        t->runUntil(3);
+        const std::string fp = runFingerprint(dir, 3);
+        if (mixed.empty()) mixed = fp;
+        assert(fp == mixed);
+    }
+}
+
 #endif // AZ_USE_METAL
 
 
@@ -1641,6 +1710,7 @@ int main() {
     test_metal_rounds_at_once_equal_one_at_a_time();
     test_metal_engine_workers_change_nothing();
     test_metal_mixed_engines_independent_of_hosts_settings();
+    test_metal_arena_engines();
 #endif
     std::printf("test_metal: all tests passed\n");
     return 0;
