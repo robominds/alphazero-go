@@ -475,14 +475,20 @@ if command -v git > /dev/null; then
     git -C "$SYNC" -c user.name=t -c user.email=t@t commit -q -m one
     printf '%s\n' "gpu  ssh=u@h1 exe=~/c/build-metal/selfplay workdir=~/w" \
                   "cpu  ssh=u@h2 exe=~/c/build-blas/selfplay workdir=~/w" \
-                  "pure ssh=u@h3 exe=~/c/build/selfplay workdir=~/w" > "$W/sync-hosts"
+                  "pure ssh=u@h3 exe=~/c/build/selfplay workdir=~/w" \
+                  "word ssh=u@h5 exe=~/c/build_metal_2/selfplay workdir=~/w" \
+                  "sub  ssh=u@h6 exe=~/c/build-nometal/selfplay workdir=~/w" > "$W/sync-hosts"
     out="$(cd "$SYNC" && "$SRC/tools/cluster_sync.sh" --hosts "$W/sync-hosts" --dry-run)"
     cmake_line() { grep "u@h$1 cmake" <<<"$out"; }
     cmake_line 1 | grep -q 'c/build-metal.*-DAZ_USE_METAL=ON' || fail "cluster_sync.sh: metal build: $out"
     ! cmake_line 1 | grep -q 'AZ_USE_BLAS' || fail "cluster_sync.sh: metal build names BLAS: $out"
     cmake_line 2 | grep -q 'c/build-blas.*-DAZ_USE_METAL=OFF.*-DAZ_USE_BLAS=ON' || fail "cluster_sync.sh: blas build: $out"
     cmake_line 3 | grep -Eq 'c/build[^-].*-DAZ_USE_METAL=OFF.*-DAZ_USE_BLAS=OFF' || fail "cluster_sync.sh: plain build: $out"
-    [ "$(grep -c '_NPROCESSORS_ONLN' <<<"$out")" = 3 ] || fail "cluster_sync.sh: no portable core count: $out"
+    # Words of the name, not substrings: build_metal_2 is Metal, build-nometal is not.
+    cmake_line 5 | grep -q 'c/build_metal_2.*-DAZ_USE_METAL=ON' || fail "cluster_sync.sh: build_metal_2: $out"
+    cmake_line 6 | grep -Eq 'c/build-nometal[^-].*-DAZ_USE_METAL=OFF.*-DAZ_USE_BLAS=OFF' \
+        || fail "cluster_sync.sh: build-nometal took a flavour: $out"
+    [ "$(grep -c '_NPROCESSORS_ONLN' <<<"$out")" = 5 ] || fail "cluster_sync.sh: no portable core count: $out"
     printf '%s\n' "odd ssh=u@h4 exe=~/c/src/selfplay workdir=~/w" > "$W/sync-hosts"
     status=0
     out="$(cd "$SYNC" && "$SRC/tools/cluster_sync.sh" --hosts "$W/sync-hosts" --dry-run 2>&1)" || status=$?

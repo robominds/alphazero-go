@@ -561,9 +561,10 @@ brings every remote in the hosts file to the coordinator's commit:
    configure step;
 3. configures `<repo>/<build>` (`<build>` is `exe`'s parent directory, or
    `--build`, and must start with `build`) with `-DAZGO_BUILD_ID=<sha>` and
-   the options the name asks for: `-DAZ_USE_METAL=ON` for a name with
-   `metal`, `-DAZ_USE_BLAS=ON` for one with `blas` (OpenBLAS on a Linux
-   remote), neither otherwise; then builds `selfplay` with `-j <cores>`
+   the options the name asks for: `-DAZ_USE_METAL=ON` when one of its
+   words (split at `-`, `_`, `.`) is `metal`, `-DAZ_USE_BLAS=ON` when one
+   is `blas` (OpenBLAS on a Linux remote), neither otherwise, so
+   `build-nometal` gets neither; then builds `selfplay` with `-j <cores>`
    (`getconf _NPROCESSORS_ONLN`, on macOS and Linux alike);
 4. checks that `selfplay --version` there reports `HEAD`'s full commit,
    the build ID the coordinator's own binary carries when built from a

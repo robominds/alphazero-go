@@ -366,7 +366,8 @@ engine (`bench --mixed`, `docs/results/bench.txt`). Values may hold only
 `[A-Za-z0-9_./~@:+-]`, so they go into an ssh command line unquoted.
 `tools/cluster_sync.sh` sends `HEAD` to every machine with `ssh=` and builds
 `selfplay` there, in `exe`'s directory, with the options its name asks for
-(`build-metal`: Metal, `build-blas`: BLAS, so OpenBLAS on Linux); at the start of a run, `train` checks that each
+(the word `metal` in it, as in `build-metal`: Metal; `blas`: BLAS, so
+OpenBLAS on Linux); at the start of a run, `train` checks that each
 machine's `selfplay --version` reports its own build ID. The repository on
 a machine (`exe`'s grandparent) is replaced wholesale at every sync, so
 it must be a dedicated copy such as `~/azgo-cluster`, never a checkout:
