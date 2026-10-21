@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <atomic>
 #include <condition_variable>
 #include <dirent.h>
@@ -639,20 +640,108 @@ Outputs cpuInfer(const Network& net, const Backend& backend, const std::vector<f
     return o;
 }
 
-// The whole inference pass against Network::infer with BLAS (OpenBLAS here).
-// The Metal spec's networks are held to its ceiling of 1e-5 maxErr. The
-// preset-sized ones (6x64 to 10-ish blocks of 96 and 128, random weights)
-// accumulate more float noise than that through their depth: there the
-// CPU's own two backends, naive and BLAS, already differ by up to 1.7e-5
-// (9x9 6x64, the values near 0.1). For those the ceiling is the larger of
-// 1e-5 and twice the naive-BLAS spread of the same positions: the GPU must
-// agree with BLAS about as well as the CPU agrees with itself.
-// Measured on an RTX 4070 Ti SUPER: Metal's networks 4.5e-6; preset sizes
-// up to 1.3e-5 (9x9 6x64's values at batch 64), where the same case's
-// naive-BLAS spread was 1.7e-5 at batch 7.
+// The whole network in double precision, straight from its definition
+// (Network::forward in inference mode): the reference both the GPU and the
+// CPU backends are measured against when float noise is the question.
+Outputs doubleInfer(const Network& network, const std::vector<float>& input, int B) {
+    Network& net = const_cast<Network&>(network);   // params() hands out views; nothing is written
+    const NetConfig& cfg = net.config();
+    std::map<std::string, std::vector<double>> t;
+    for (const ParamView& p : net.params()) t[p.name].assign(p.value, p.value + p.size);
+    for (const BufferView& v : net.buffers()) t[v.name].assign(v.value, v.value + v.size);
+    const int n = cfg.boardSize, A = cfg.area(), P = cfg.planes(), F = cfg.filters;
+    const size_t M = static_cast<size_t>(B) * A;
+    // x [C][B][A] -> y [cout][B][A], 'same' padding.
+    auto conv = [&](const std::vector<double>& x, int cin, int cout, int k, const std::string& name) {
+        const std::vector<double>& w = t.at(name + ".w");
+        std::vector<double> y(static_cast<size_t>(cout) * M, 0.0);
+        for (int o = 0; o < cout; ++o)
+            for (int b = 0; b < B; ++b)
+                for (int p = 0; p < A; ++p) {
+                    double sum = 0.0;
+                    for (int c = 0; c < cin; ++c)
+                        for (int dy = 0; dy < k; ++dy)
+                            for (int dx = 0; dx < k; ++dx) {
+                                const int yy = p / n + dy - k / 2, xx = p % n + dx - k / 2;
+                                if (yy < 0 || yy >= n || xx < 0 || xx >= n) continue;
+                                sum += w[((static_cast<size_t>(o) * cin + c) * k + dy) * k + dx] *
+                                       x[(static_cast<size_t>(c) * B + b) * A + yy * n + xx];
+                            }
+                    y[(static_cast<size_t>(o) * B + b) * A + p] = sum;
+                }
+        return y;
+    };
+    auto norm = [&](std::vector<double>& x, int C, const std::string& name) {
+        for (int c = 0; c < C; ++c) {
+            const double scale = t.at(name + ".gamma")[c] / std::sqrt(t.at(name + ".runVar")[c] + BatchNorm2d::kEps);
+            for (size_t i = 0; i < M; ++i) {
+                double& v = x[static_cast<size_t>(c) * M + i];
+                v = (v - t.at(name + ".runMean")[c]) * scale + t.at(name + ".beta")[c];
+            }
+        }
+    };
+    auto relu = [](std::vector<double>& x) {
+        for (double& v : x) v = v > 0.0 ? v : 0.0;
+    };
+    // y [B][out] = x [B][in] . w^T + b
+    auto linear = [&](const std::vector<double>& x, int in, int out, const std::string& name) {
+        const std::vector<double>&w = t.at(name + ".w"), &bias = t.at(name + ".b");
+        std::vector<double> y(static_cast<size_t>(B) * out);
+        for (int s = 0; s < B; ++s)
+            for (int o = 0; o < out; ++o) {
+                double sum = bias[o];
+                for (int i = 0; i < in; ++i) sum += x[static_cast<size_t>(s) * in + i] * w[static_cast<size_t>(o) * in + i];
+                y[static_cast<size_t>(s) * out + o] = sum;
+            }
+        return y;
+    };
+    std::vector<double> x(static_cast<size_t>(P) * M);
+    for (int b = 0; b < B; ++b)
+        for (int p = 0; p < P; ++p)
+            for (int a = 0; a < A; ++a)
+                x[(static_cast<size_t>(p) * B + b) * A + a] = input[(static_cast<size_t>(b) * P + p) * A + a];
+    std::vector<double> h = conv(x, P, F, 3, "stem.conv");
+    norm(h, F, "stem.bn");
+    relu(h);
+    for (int i = 0; i < cfg.blocks; ++i) {
+        const std::string pre = "block" + std::to_string(i);
+        std::vector<double> mid = conv(h, F, F, 3, pre + ".conv1");
+        norm(mid, F, pre + ".bn1");
+        relu(mid);
+        std::vector<double> out = conv(mid, F, F, 3, pre + ".conv2");
+        norm(out, F, pre + ".bn2");
+        for (size_t j = 0; j < out.size(); ++j) out[j] += h[j];
+        relu(out);
+        h = out;
+    }
+    Outputs o;
+    std::vector<double> pol = conv(h, F, 2, 1, "policy.conv");
+    norm(pol, 2, "policy.bn");
+    relu(pol);
+    std::vector<double> flat(2 * M);
+    for (int c = 0; c < 2; ++c)
+        for (int b = 0; b < B; ++b)
+            for (int a = 0; a < A; ++a)
+                flat[static_cast<size_t>(b) * 2 * A + c * A + a] = pol[(static_cast<size_t>(c) * B + b) * A + a];
+    for (double v : linear(flat, 2 * A, cfg.actions(), "policy.fc")) o.logits.push_back(static_cast<float>(v));
+    std::vector<double> val = conv(h, F, 1, 1, "value.conv");
+    norm(val, 1, "value.bn");
+    relu(val);
+    std::vector<double> hidden = linear(val, A, cfg.valueHidden, "value.fc1");
+    relu(hidden);
+    for (double v : linear(hidden, cfg.valueHidden, 1, "value.fc2")) o.values.push_back(static_cast<float>(std::tanh(v)));
+    if (cfg.ownership) {
+        std::vector<double> own = conv(h, F, 1, 1, "ownership.conv");
+        norm(own, 1, "ownership.bn");
+        for (double v : own) o.ownership.push_back(static_cast<float>(std::tanh(v)));
+    }
+    return o;
+}
+
+// The whole inference pass against Network::infer with BLAS (OpenBLAS here),
+// within the Metal spec's ceiling of 1e-5 maxErr, on the Metal spec's networks.
 void test_network_matches_cpu() {
     auto blas = makeBackend("blas");
-    auto naive = makeBackend("naive");
     MaxErr err("network forward vs CPU", 1e-5);
     const NetConfig small[] = {
         netConfig(5, 1, 8), netConfig(9, 2, 16), netConfig(9, 6, 32), netConfig(9, 0, 16),
@@ -671,29 +760,79 @@ void test_network_matches_cpu() {
             if (cfg.ownership) err.add(got.ownership.data(), ref.ownership.data(), got.ownership.size());
         }
     }
-    const NetConfig presets[] = {netConfig(5, 3, 32, false, 64), netConfig(9, 6, 64, false, 64),
-                                 netConfig(13, 6, 96, false, 64), netConfig(19, 2, 128, true, 256)};
-    double worst = 0.0, worstSpread = 0.0;
+}
+
+// How far one network's outputs are from a reference: the logits as
+// maxErr (max|x - ref| / max|ref|), the value and ownership, which are tanh
+// outputs in [-1, 1], as the largest absolute difference. (A value near 0,
+// where fc2's bias nearly cancels its product, would make a relative
+// measure meaningless.)
+struct OutputsGap {
+    double logits = 0.0, values = 0.0, ownership = 0.0;
+    double worst() const { return std::max(logits, std::max(values, ownership)); }
+};
+
+OutputsGap outputsGap(const Outputs& x, const Outputs& ref) {
+    OutputsGap g;
+    double num = 0.0, den = 0.0;
+    for (size_t i = 0; i < x.logits.size(); ++i) {
+        assert(std::isfinite(x.logits[i]));
+        num = std::max(num, std::fabs(static_cast<double>(x.logits[i]) - ref.logits[i]));
+        den = std::max(den, std::fabs(static_cast<double>(ref.logits[i])));
+    }
+    g.logits = den > 0.0 ? num / den : num;
+    for (size_t i = 0; i < x.values.size(); ++i)
+        g.values = std::max(g.values, std::fabs(static_cast<double>(x.values[i]) - ref.values[i]));
+    for (size_t i = 0; i < x.ownership.size(); ++i)
+        g.ownership = std::max(g.ownership, std::fabs(static_cast<double>(x.ownership[i]) - ref.ownership[i]));
+    return g;
+}
+
+// The presets' shapes (5x5 3x32, 9x9 6x64 and 6x96, 13x13 6x96, 19x19 10x128
+// with value_hidden 256) and one with the ownership head, with random
+// weights. Through their depth these gather more float noise than the
+// Metal spec's 1e-5 allows even between the CPU's own backends, so they are
+// measured against the network in double precision (OutputsGap): for each
+// output the GPU must be nearly as close to it as the CPU's backends are
+// (within twice their worst gap, or 1e-5), and never further than 5e-5.
+void test_network_presets_vs_double() {
+    auto blas = makeBackend("blas");
+    auto naive = makeBackend("naive");
+    const NetConfig presets[] = {netConfig(5, 3, 32, false, 64),    netConfig(9, 6, 64, false, 64),
+                                 netConfig(9, 6, 96, false, 64),    netConfig(13, 6, 96, false, 64),
+                                 netConfig(19, 10, 128, false, 256), netConfig(19, 2, 128, true, 256)};
+    Rng rng(611);
     for (const NetConfig& cfg : presets) {
         const Network net = randomNetwork(cfg, 40);
-        cuda_probe::InferNet gpu(net, 64);
-        for (int B : {1, 7, 64}) {
+        cuda_probe::InferNet gpu(net, 16);
+        OutputsGap gpuWorst, cpuWorst;
+        for (int B : cfg.boardSize == 19 ? std::vector<int>{1, 4} : std::vector<int>{1, 7, 16}) {
             const std::vector<float> x = randomPositions(rng, cfg, B);
-            const Outputs ref = cpuInfer(net, *blas, x, B);
-            const double spread = outputsErr(cpuInfer(net, *naive, x, B), ref);
-            const double e = outputsErr(gpuInfer(gpu, cfg, x, B), ref);
-            if (!(e <= std::max(1e-5, 2.0 * spread))) {
-                std::printf("test_cuda: %dx%d %dx%d batch %d: maxErr %.3g vs BLAS, naive-BLAS spread %.3g\n",
-                            cfg.boardSize, cfg.boardSize, cfg.blocks, cfg.filters, B, e, spread);
-                std::fflush(stdout);
-                assert(false);
-            }
-            worst = std::max(worst, e);
-            worstSpread = std::max(worstSpread, spread);
+            const Outputs ref = doubleInfer(net, x, B);
+            const OutputsGap a = outputsGap(cpuInfer(net, *blas, x, B), ref);
+            const OutputsGap b = outputsGap(cpuInfer(net, *naive, x, B), ref);
+            const OutputsGap g = outputsGap(gpuInfer(gpu, cfg, x, B), ref);
+            const double pairs[3][2] = {{g.logits, std::max(a.logits, b.logits)},
+                                        {g.values, std::max(a.values, b.values)},
+                                        {g.ownership, std::max(a.ownership, b.ownership)}};
+            for (const auto& p : pairs)
+                if (!(p[0] <= std::min(5e-5, std::max(1e-5, 2.0 * p[1])))) {
+                    std::printf("test_cuda: %dx%d %dx%d batch %d: GPU gap %.3g from double, the CPU's %.3g\n",
+                                cfg.boardSize, cfg.boardSize, cfg.blocks, cfg.filters, B, p[0], p[1]);
+                    std::fflush(stdout);
+                    assert(false);
+                }
+            gpuWorst.logits = std::max(gpuWorst.logits, g.logits);
+            gpuWorst.values = std::max(gpuWorst.values, g.values);
+            gpuWorst.ownership = std::max(gpuWorst.ownership, g.ownership);
+            cpuWorst.logits = std::max(cpuWorst.logits, std::max(a.logits, b.logits));
+            cpuWorst.values = std::max(cpuWorst.values, std::max(a.values, b.values));
+            cpuWorst.ownership = std::max(cpuWorst.ownership, std::max(a.ownership, b.ownership));
         }
+        std::printf("test_cuda:   %2dx%-2d %2dx%-3d vs double: logits %.1e (CPU %.1e), values %.1e (CPU %.1e)%s\n",
+                    cfg.boardSize, cfg.boardSize, cfg.blocks, cfg.filters, gpuWorst.logits, cpuWorst.logits,
+                    gpuWorst.values, cpuWorst.values, cfg.ownership ? ", ownership checked" : "");
     }
-    std::printf("test_cuda: preset-sized networks vs CPU   maxErr %.2e (naive-BLAS spread up to %.2e)\n", worst,
-                worstSpread);
 }
 
 // What the inference hub rests on, for the whole network: a position's
@@ -1147,6 +1286,7 @@ int main() {
     test_conv_fused_equals_explicit();
     test_conv_fused_batch_independent();
     test_network_matches_cpu();
+    test_network_presets_vs_double();
     test_network_batch_independent();
     test_network_repeatable();
     test_unknown_tensor_refused();

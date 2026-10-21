@@ -414,10 +414,13 @@ randomness comes from `azgo::Rng`.
    - The tile shapes give equal bits.
 5. **Whole network against the CPU** `Network` with BLAS, within the
    Metal spec's 1e-5 for its networks. The preset-sized random networks
-   (6×64 to 6×96, 2×128) gather more float noise through their depth: the
-   CPU's naive and BLAS backends already differ by up to 1.7e-5 there. For
-   them the ceiling is the larger of 1e-5 and twice the naive-BLAS spread
-   of the same positions. The upload refusals:
+   (5×5 3×32 to 19×19 10×128) gather more float noise through their
+   depth: the CPU's naive and BLAS backends already differ by up to 1.7e-5
+   there. So they are measured against the network in double precision.
+   The logits use maxErr; the value and ownership, which are tanh outputs
+   in [−1, 1], use absolute difference. Per output, the GPU must be within
+   the larger of 1e-5 and twice the CPU backends' worst gap, and never
+   above 5e-5. The upload refusals:
    `checkUpload`, `checkForwardReadsEveryTensor`.
 6. **Runner and hub.**
    - One and two slots, many threads, chaos seeds: every request's rows
