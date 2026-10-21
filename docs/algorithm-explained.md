@@ -1849,10 +1849,9 @@ slices are then merged by game index, never by the order they finished
 in:
 
 ```cpp
-std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& networkPath,
-                                                  const Network& net, const SelfPlayConfig& sp,
-                                                  int games) {
-    const std::vector<Slice> slices = assignGames(cfg_.selfplayEngines, games);
+std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath, const Network& net,
+                                          const SelfPlayConfig& sp, int games) {
+    const std::vector<Slice> assigned = assignGames(cfg_.selfplayEngines, games);
     /* ... one thread per slice: a local engine runs playSelfPlayGames,
            a remote one sends a job, runs selfplay there and verifies the
            result (retried once, then played here or stopped) ... */
@@ -1862,8 +1861,8 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
     std::vector<char> filled(static_cast<size_t>(games), 0);
     for (size_t k = 0; k < n; ++k) {
         /* ... a slice returned its count of games ... */
-        for (int j = 0; j < slices[k].count; ++j) {
-            const size_t i = static_cast<size_t>(slices[k].first + j);
+        for (int j = 0; j < assigned[k].count; ++j) {
+            const size_t i = static_cast<size_t>(assigned[k].first + j);
             if (i >= records.size() || filled[i])
                 throw std::logic_error("game " + std::to_string(i) +
                                        " assigned twice or out of range");
@@ -1875,7 +1874,7 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
     return records;
 }
 ```
-*src/coordinator.cpp:632 — `SelfPlayCoordinator::play` (abridged)*
+*src/coordinator.cpp:770 — `Coordinator::play` (abridged)*
 
 A run with several engines is therefore reproducible given which engine
 played each game, and it resumes byte for byte. The run's manifest,
@@ -1888,6 +1887,14 @@ the same way, computed in more places. How much that gains depends on
 the machines. On the Studio, four BLAS workers beside the GPU add about
 11% to its 2,930 evaluations per second (19×19, 10×128); each M4 mini
 adds about 676 more (`docs/results/bench.txt`).
+
+The arena's waves can be spread the same way (`arena_engines`). A wave's
+games are numbered match by match, each engine plays a contiguous slice,
+and game j of a match keeps its seed and its colours wherever it is
+played. A remote slice returns each game's moves and score, and the
+coordinator replays every game before it counts: each move legal, the
+game over at its last move, the score the board's. The gating decision
+and the ratings are then taken from the merged results, as before.
 
 ---
 
@@ -2396,7 +2403,7 @@ alternating) against a few earlier generations and the fixed players (bots
 and reference networks, below), with search but without Dirichlet noise:
 
 ```cpp
-GameOutcome playArenaGame(Seat& a, Seat& b, const ArenaConfig& cfg, int n, uint64_t seed, int index) {
+ArenaGameResult playArenaGame(Seat& a, Seat& b, const ArenaConfig& cfg, int n, uint64_t seed, int index) {
     Rng rng(deriveSeed(seed, static_cast<uint64_t>(index)));
     bool aIsBlack = index % 2 == 0;   // colors alternate, so A is Black in half the games
     /* ... game; searchA, searchB from each Seat's MctsConfig, addNoise = false ... */
@@ -2413,7 +2420,7 @@ GameOutcome playArenaGame(Seat& a, Seat& b, const ArenaConfig& cfg, int n, uint6
     return {matchScore(game.resultForBlack(), aIsBlack), game.moves()};
 }
 ```
-*src/arena.cpp:36 — `playArenaGame` (abridged)*
+*src/arena.cpp:33 — `playArenaGame` (abridged)*
 
 **Opening diversity.** Without noise, search is deterministic up to
 random tie-breaks, and two fixed networks would replay nearly the same
@@ -2472,7 +2479,7 @@ std::vector<int> selectOpponents(int generation, const std::map<int, double>& ra
     return out;
 }
 ```
-*src/arena.cpp:336 — `selectOpponents` (abridged)*
+*src/arena.cpp:429 — `selectOpponents` (abridged)*
 
 The candidates are the **references**: a frozen set of players that
 starts as generation 0 plus the fixed players, and only grows.
@@ -2873,7 +2880,7 @@ std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConf
     /* ... statistics: seconds, positions, evaluations ... */
 }
 ```
-*src/selfplay_slice.cpp:60 — `playSelfPlayGames` (abridged)*
+*src/selfplay_slice.cpp:38 — `playSelfPlayGames` (abridged)*
 
 `parallelFor` hands out indices from an atomic counter; which worker
 plays game 17 varies from run to run, but game 17 itself does not.
@@ -3160,19 +3167,19 @@ see again in place.
 | Ownership, an auxiliary target | `replayFinalOwnership` — `src/selfplay.cpp:112`; `addOwnershipHead` — `src/grow.cpp:219`; `printOwnershipMap` — `apps/analyze.cpp:104` |
 | SGD with momentum, weight decay | `SgdMomentum::step` — `src/optimizer.cpp:21` |
 | Learning-rate schedule | `LrSchedule::at` — `src/optimizer.cpp:111` |
-| Arena and opening diversity | `playArenaGame`, `playMatches` — `src/arena.cpp:36, 208` |
-| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:336, 364` |
+| Arena and opening diversity | `playArenaGame`, `playMatches` — `src/arena.cpp:33, 368` |
+| Choosing opponents, gating | `selectOpponents`, `passesGate` — `src/arena.cpp:429, 457` |
 | Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:31, 54` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:156, 129` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:627` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:144, 117` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:641` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
 | Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:226` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:540` |
-| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:116`; `SelfPlayCoordinator::play` — `src/coordinator.cpp:632` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:549` |
+| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:116`; `Coordinator::play` — `src/coordinator.cpp:770` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |
 
 ---

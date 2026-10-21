@@ -542,6 +542,14 @@ suggested="$(sed -n 's/^selfplay_engines = //p' <<<"$out")"
 cp -R "$DRUN" "$W/weights_copy"
 "$BUILD/train" --run "$W/weights_copy" --resume --hosts "$HOSTS" --set "selfplay_engines=$suggested" \
     --generations 4 > /dev/null || fail "train refused the suggested selfplay_engines '$suggested'"
+# And an arena_engines value, weights only, from the arena manifest.
+out="$(python3 -I "$SRC/tools/engine_weights.py" "$ARUN" --arena --last 3 --hosts "$HOSTS")"
+echo "$out"
+suggested="$(sed -n 's/^arena_engines = //p' <<<"$out")"
+[ -n "$suggested" ] && ! grep -q '=' <<<"$suggested" || fail "engine_weights.py --arena printed no weights-only line: $out"
+cp -R "$ARUN" "$W/arena_weights_copy"
+"$BUILD/train" --run "$W/arena_weights_copy" --resume --hosts "$HOSTS" --set "arena_engines=$suggested" \
+    --generations 4 > /dev/null || fail "train refused the suggested arena_engines '$suggested'"
 # stop_after_generation.sh: SIGTERM once log.csv gains a row, then waits for
 # the process to end. The victim is a background job of this script, so it
 # ignores SIGINT, as a train started by a wrapper with & does.

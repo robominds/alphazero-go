@@ -98,8 +98,8 @@ with the `build-blas` binaries. On the default build, add
 Seven programs are built next to the tests. Each prints its options with
 `--help`. `gtp` plays other Go programs and is described in Playing other
 programs via GTP below; `selfplay` plays one slice of a generation's
-self-play for distributed self-play, described in Distributed self-play
-below.
+self-play, or of an arena wave, for distributed self-play and the
+distributed arena, described in Distributed self-play below.
 
 **`train`** runs the generation loop (self-play, training, checkpoint,
 arena, commit). A new run copies the config into the run directory:
@@ -427,6 +427,33 @@ the wrapper first; the tool warns when `train`'s parent looks like one.
 `tools/engine_weights.py RUN_DIR` suggests weights from a run's manifest.
 On the Studio with two M4 minis, the measured rates (19×19, 10×128) add up
 to about 1.5 times the Studio GPU alone, before tails and transfers.
+
+**The arena on the same engines**
+([design](docs/superpowers/specs/2026-10-20-distributed-arena-design.md),
+[plan](docs/superpowers/plans/2026-10-20-distributed-arena.md)). The
+`arena_engines` key spreads each arena wave (the calibrations when a run
+starts, a generation's opponents, a promotion's games) over engines the same
+way, with the same hosts file, transports, `selfplay` binary, retries and
+fallback (`selfplay_fallback` covers it too):
+
+```
+arena_engines = local/metal:133, mini1/metal:24, mini2/metal:24, pc/cuda:300
+```
+
+It takes weights only: a wave holds 40, 80 or 160 games, so a fixed count
+would mean a different share in each. A wave's games are numbered match by
+match, and each engine plays a contiguous slice of them. Game j of a match
+keeps its seed and its colours whoever plays it, and the coordinator
+replays every remote game to check its moves and score before it counts.
+The gating decision, promotions and ratings are taken on the coordinator
+from the merged results, so they do not depend on which slice finished
+first. `arena-engines.csv` records each slice (generation, wave, games,
+planned and actual engine, fingerprint), and each wave prints an `arena
+engines: ...` line. Empty (the default), the arena runs as before. Like
+`selfplay_engines` it is tunable on resume (`--set arena_engines=...`, with
+a note), and `tools/engine_weights.py RUN_DIR --arena` suggests weights from
+the measured arena rates. `train --rerate` ignores it and plays every game
+locally, so a re-rated run can differ from the live one in the last bits.
 
 ### Batch norm calibration of generation 0
 
@@ -1420,6 +1447,9 @@ python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-mai
 - [`docs/superpowers/specs/2026-10-18-distributed-selfplay-design.md`](docs/superpowers/specs/2026-10-18-distributed-selfplay-design.md)
   and [`docs/superpowers/plans/2026-10-18-distributed-selfplay.md`](docs/superpowers/plans/2026-10-18-distributed-selfplay.md)
   — distributed self-play: games assigned to engines by index, remote slices, and what stays exact.
+- [`docs/superpowers/specs/2026-10-20-distributed-arena-design.md`](docs/superpowers/specs/2026-10-20-distributed-arena-design.md)
+  and [`docs/superpowers/plans/2026-10-20-distributed-arena.md`](docs/superpowers/plans/2026-10-20-distributed-arena.md)
+  — the distributed arena: each arena wave's games split across the same engines, verified by replay.
 
 `python3 tools/check_citations.py` checks that every `file:line` citation
 in both explainers still points at the quoted definition.

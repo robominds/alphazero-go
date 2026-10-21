@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Suggest a selfplay_engines value from a run's measured engine rates.
+"""Suggest a selfplay_engines or arena_engines value from a run's measured engine rates.
 
-    python3 -I tools/engine_weights.py RUN_DIR [--last N] [--games G] [--hosts FILE]
+    python3 -I tools/engine_weights.py RUN_DIR [--last N] [--games G] [--hosts FILE] [--arena]
 
 Reads RUN_DIR/selfplay-engines.csv (the manifest distributed self-play
 writes) and, over its last N generations (default 3), each planned engine's
@@ -11,8 +11,8 @@ left out). Games cost about the same everywhere, so an engine's fair share
 of G games (default: the run's games_per_generation) is proportional to
 its rate.
 
-The suggestion follows the spec's sizing rules. GPU engines (metal) play
-every game of their slice at once and get weights proportional to their
+The suggestion follows the spec's sizing rules. GPU engines (metal, cuda)
+play every game of their slice at once and get weights proportional to their
 rates; CPU engines (naive, blas) play in waves of their worker count and
 get fixed counts rounded to a multiple of it (the workers come from the
 hosts file's cpu_workers, else the default rule: min(4, cores / 3) on
@@ -21,6 +21,12 @@ weight. It prints each engine's predicted finish time (its games times
 the run's evaluations per game, over its rate), warns when an engine gets
 fewer games than its workers, and ends with the line to apply with
 `train --run RUN_DIR --resume --set selfplay_engines=...`.
+
+With --arena it reads RUN_DIR/arena-engines.csv (the distributed arena's
+manifest) instead and suggests an arena_engines value: weights only, every
+engine's proportional to its arena rate (arena waves differ in size, so
+the key takes no fixed counts). G is then the games of one wave (default:
+the average wave of the window), for the predicted times only.
 
 Choosing weights is a person's decision: the run never rebalances itself,
 because an assignment that depends on timings would make its games depend
@@ -80,11 +86,14 @@ def main():
     parser.add_argument("--last", type=int, default=3, help="generations to measure (default 3)")
     parser.add_argument("--games", type=int, default=0, help="games per generation (default: the run's)")
     parser.add_argument("--hosts", default="", help="the hosts file (for cpu_workers)")
+    parser.add_argument("--arena", action="store_true",
+                        help="suggest arena_engines from arena-engines.csv")
     args = parser.parse_args()
     run_dir = pathlib.Path(args.run_dir)
-    manifest = run_dir / "selfplay-engines.csv"
+    key = "arena_engines" if args.arena else "selfplay_engines"
+    manifest = run_dir / ("arena-engines.csv" if args.arena else "selfplay-engines.csv")
     if not manifest.exists():
-        sys.exit(f"error: {manifest} does not exist (a run with selfplay_engines writes it)")
+        sys.exit(f"error: {manifest} does not exist (a run with {key} writes it)")
     with manifest.open(newline="") as f:
         rows = list(csv.DictReader(f))
     if not rows:
@@ -92,7 +101,15 @@ def main():
     last = max(int(r["generation"]) for r in rows)
     window = [r for r in rows if int(r["generation"]) > last - args.last]
     first = min(int(r["generation"]) for r in window)
-    games = args.games or int(read_config(run_dir).get("games_per_generation", "0") or 0)
+    if args.arena:
+        # One wave's games: the average over the window's waves.
+        waves = {}
+        for r in window:
+            wave = (r["generation"], r["wave"])
+            waves[wave] = waves.get(wave, 0) + int(r["count"])
+        games = args.games or int(round(sum(waves.values()) / len(waves)))
+    else:
+        games = args.games or int(read_config(run_dir).get("games_per_generation", "0") or 0)
     if games <= 0:
         sys.exit("error: give --games (the run's config.cfg has no games_per_generation)")
     hosts = args.hosts or os.environ.get("AZGO_HOSTS") or str(pathlib.Path.home() / ".config/azgo/hosts")
@@ -132,8 +149,10 @@ def main():
     per_game = total_evals / max(1, total_games)
     total_rate = sum(rate.values())
 
-    gpu = [e for e in order if e.endswith("/metal")]
+    gpu = [e for e in order if e.endswith(("/metal", "/cuda"))]
     weighted = gpu if gpu else [max(order, key=lambda e: rate[e])]
+    if args.arena:
+        weighted = list(order)   # arena_engines takes weights only
     count = {}
     for e in order:
         if e in weighted:
@@ -150,7 +169,8 @@ def main():
     for e in weighted:
         count[e] = rest * rate[e] / weight_total   # an estimate: assignGames apportions it
 
-    print(f"generations {first}-{last}: {per_game:.0f} evaluations per game, {games} games")
+    unit = "games per wave" if args.arena else "games"
+    print(f"generations {first}-{last}: {per_game:.0f} evaluations per game, {games} {unit}")
     print(f"{'engine':<20} {'evals/s':>10} {'games':>8} {'predicted s':>12}")
     items = []
     for e in order:
@@ -165,7 +185,7 @@ def main():
             items.append(f"{e}={count[e]:.0f}")
         else:
             items.append(f"{e}:{max(1, min(1000000, int(round(rate[e]))))}")
-    print("selfplay_engines = " + ", ".join(items))
+    print(f"{key} = " + ", ".join(items))
 
 
 if __name__ == "__main__":

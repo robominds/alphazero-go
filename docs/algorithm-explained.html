@@ -1731,10 +1731,9 @@ public:
 }</code></pre>
 <span class="src">src/engines.cpp:116 — <code>assignGames</code> (abridged)</span>
 <p>For 100 games and <code>local/metal:50, local/blas=12, mini1/metal:10, mini1/blas=8, mini2/metal:10, mini2/blas=8</code>, the fixed counts take 28 games and the weights share the other 72 as 51.4, 10.3 and 10.3. The leftover game goes to the largest remainder, so the slices are 52, 12, 10, 8, 10 and 8 games. A remote slice comes back as a result file that is checked before any of it is used: its checksum, the job it answers, the build that played it, and a replay of every game, move by move. The slices are then merged by game index, never by the order they finished in:</p>
-<pre><code>std::vector&lt;GameRecord&gt; SelfPlayCoordinator::play(int g, const std::string&amp; networkPath,
-                                                  const Network&amp; net, const SelfPlayConfig&amp; sp,
-                                                  int games) {
-    const std::vector&lt;Slice&gt; slices = assignGames(cfg_.selfplayEngines, games);
+<pre><code>std::vector&lt;GameRecord&gt; Coordinator::play(int g, const std::string&amp; networkPath, const Network&amp; net,
+                                          const SelfPlayConfig&amp; sp, int games) {
+    const std::vector&lt;Slice&gt; assigned = assignGames(cfg_.selfplayEngines, games);
     /* ... one thread per slice: a local engine runs playSelfPlayGames,
            a remote one sends a job, runs selfplay there and verifies the
            result (retried once, then played here or stopped) ... */
@@ -1744,8 +1743,8 @@ public:
     std::vector&lt;char&gt; filled(static_cast&lt;size_t&gt;(games), 0);
     for (size_t k = 0; k &lt; n; ++k) {
         /* ... a slice returned its count of games ... */
-        for (int j = 0; j &lt; slices[k].count; ++j) {
-            const size_t i = static_cast&lt;size_t&gt;(slices[k].first + j);
+        for (int j = 0; j &lt; assigned[k].count; ++j) {
+            const size_t i = static_cast&lt;size_t&gt;(assigned[k].first + j);
             if (i &gt;= records.size() || filled[i])
                 throw std::logic_error("game " + std::to_string(i) +
                                        " assigned twice or out of range");
@@ -1756,8 +1755,9 @@ public:
     /* ... every index filled; the work files removed ... */
     return records;
 }</code></pre>
-<span class="src">src/coordinator.cpp:632 — <code>SelfPlayCoordinator::play</code> (abridged)</span>
+<span class="src">src/coordinator.cpp:770 — <code>Coordinator::play</code> (abridged)</span>
 <p>A run with several engines is therefore reproducible given which engine played each game, and it resumes byte for byte. The run's manifest, <code>selfplay-engines.csv</code>, records exactly that: the engine and its fingerprint (chip, OS, shaders) for every slice. Engines with equal fingerprints can split a share without changing a bit. When a remote fails twice, the coordinator plays the slice itself and says so in the manifest. AlphaGo Zero's self-play is unchanged: the same games, seeded the same way, computed in more places. How much that gains depends on the machines. On the Studio, four BLAS workers beside the GPU add about 11% to its 2,930 evaluations per second (19×19, 10×128); each M4 mini adds about 676 more (<code>docs/results/bench.txt</code>).</p>
+<p>The arena's waves can be spread the same way (<code>arena_engines</code>). A wave's games are numbered match by match, each engine plays a contiguous slice, and game j of a match keeps its seed and its colours wherever it is played. A remote slice returns each game's moves and score, and the coordinator replays every game before it counts: each move legal, the game over at its last move, the score the board's. The gating decision and the ratings are then taken from the merged results, as before.</p>
 </section>
 
 <section id="credit">
@@ -1967,7 +1967,7 @@ Ownership, Black + / White - (9 = certain, "." below 0.1):
 <span class="concept">concept — relative evaluation — arenas, Bradley-Terry Elo and confidence intervals</span>
 <p>Tic-tac-toe could be scored against a perfect minimax player. Go cannot (5×5 is solved, but no solver ships with this project, and 9×9 and 19×19 are not). The only yardstick left is the network's own past: each new generation plays earlier ones, and ratings are fitted to the results. This chapter is about how much that can and cannot tell you.</p>
 <p><strong>The arena.</strong> Every generation (<code>arena_every = 1</code>), the new network plays <code>arena_games</code> games (20 in the 5×5 and 9×9 presets, colors alternating) against a few earlier generations and the fixed players (bots and reference networks, below), with search but without Dirichlet noise:</p>
-<pre><code>GameOutcome playArenaGame(Seat&amp; a, Seat&amp; b, const ArenaConfig&amp; cfg, int n, uint64_t seed, int index) {
+<pre><code>ArenaGameResult playArenaGame(Seat&amp; a, Seat&amp; b, const ArenaConfig&amp; cfg, int n, uint64_t seed, int index) {
     Rng rng(deriveSeed(seed, static_cast&lt;uint64_t&gt;(index)));
     bool aIsBlack = index % 2 == 0;   // colors alternate, so A is Black in half the games
     /* ... game; searchA, searchB from each Seat's MctsConfig, addNoise = false ... */
@@ -1983,7 +1983,7 @@ Ownership, Black + / White - (9 = certain, "." below 0.1):
     }
     return {matchScore(game.resultForBlack(), aIsBlack), game.moves()};
 }</code></pre>
-<span class="src">src/arena.cpp:36 — <code>playArenaGame</code> (abridged)</span>
+<span class="src">src/arena.cpp:33 — <code>playArenaGame</code> (abridged)</span>
 <p><strong>Opening diversity.</strong> Without noise, search is deterministic up to random tie-breaks, and two fixed networks would replay nearly the same game twenty times — twenty games of evidence that are really one. Tic-tac-toe's arena once did exactly that: 2 distinct games out of 40. So the first <code>arena_temperature_moves</code> plies (2 on 5×5, 4 on the larger boards) are sampled from the visit counts, and the arena counts the distinct move sequences it produced; <code>log.csv</code>'s last column, <code>distinct_vs_prev</code>, records that count for the match against g − 1. On 5×5 seed 1 it ranged from 9 to 20 out of 20 (<code>docs/results/5x5/log.csv</code>) — fewer once the network found the perfect line, which is evidence in its own right: the policy was collapsing onto one opening. On 9×9 it ranged from 19 to 20 out of 20 (<code>docs/results/9x9/log.csv</code>): with 81 points and 4 sampled plies, the openings almost never repeat.</p>
 <p><strong>Choosing informative opponents.</strong> Playing only g − 1 measures one step at a time, and small errors add up. Playing everyone is too expensive. So which earlier players are worth twenty games? A game the new network wins with probability p has a result with variance p(1 − p), and that is how much it can tell you: 0.25 at p = 0.5, 0.21 at 0.7, 0.09 at 0.9, 0.01 at 0.99. A game against an opponent it beats 99% of the time is worth a twenty-fifth of an even game. The rating fit adds a second limit (next section): a 20–0 sweep can never say more than 400·log₁₀(41) ≈ 645 Elo. The reference runs in <code>docs/results/</code> were made with a fixed ladder: g − 1, g − 2, g − 4, g − 8, and always generation 0. On 9×9, generation 0 scored at most 2 of 20 in every one of its 137 matches from generation 14 on, and 0 of 20 in 110 of all 150 matches (<code>docs/results/9x9/results.csv</code>). The end of this chapter shows what that did to the curve. The arena now picks its opponents from the current ratings instead:</p>
 <pre><code>std::vector&lt;int&gt; selectOpponents(int generation, const std::map&lt;int, double&gt;&amp; ratings,
@@ -2011,7 +2011,7 @@ Ownership, Black + / White - (9 = certain, "." below 0.1):
     if (bestNetwork &amp;&amp; !chosen(*bestNetwork)) out.push_back(*bestNetwork);   // gating
     return out;
 }</code></pre>
-<span class="src">src/arena.cpp:336 — <code>selectOpponents</code> (abridged)</span>
+<span class="src">src/arena.cpp:429 — <code>selectOpponents</code> (abridged)</span>
 <p>The candidates are the <strong>references</strong>: a frozen set of players that starts as generation 0 plus the fixed players, and only grows.</p>
 <ul>
 <li><strong>g − 1</strong> is always played. It is the progress signal, and its match is the one <code>log.csv</code> reports.</li>
@@ -2306,7 +2306,7 @@ A wins 4, B wins 0, draws 0</code></pre>
         });
     /* ... statistics: seconds, positions, evaluations ... */
 }</code></pre>
-<span class="src">src/selfplay_slice.cpp:60 — <code>playSelfPlayGames</code> (abridged)</span>
+<span class="src">src/selfplay_slice.cpp:38 — <code>playSelfPlayGames</code> (abridged)</span>
 <p><code>parallelFor</code> hands out indices from an atomic counter; which worker plays game 17 varies from run to run, but game 17 itself does not.</p>
 <p>Training has threads of its own. With BLAS, every training step used to run on one core: the BLAS backend is single-threaded, which suits self-play, where every worker already has a core to itself. Now <code>runGeneration</code> makes one <code>ThreadPool trainPool(cfg_.effectiveTrainThreads())</code> — <code>train_threads</code> threads, 0 (the default) meaning every core — and hands it to the <code>Workspace</code> of the validation loss and of the training steps, to <code>ReplayBuffer::sample</code> and to <code>SgdMomentum::step</code>. The pool (<code>include/azgo/parallel.hpp</code>) starts its threads once, because a step is about a hundred short parallel loops, and lets them spin briefly, then sleep, between loops. <code>ThreadPool::run(chunks, fn)</code> (<code>src/parallel.cpp</code>) calls <code>fn</code> once per chunk, handing chunk indices out from an atomic counter as <code>parallelFor</code> hands out games, with the calling thread taking chunks too, and returns when every chunk is done. On an Apple M5 Max with 18 cores, a 9×9 step at batch 256 with BLAS went from 427 ms to 93 ms on a 6 × 96 network, and from 266 to 52 ms on the 6 × 64 preset (<code>docs/results/bench.txt</code>). Part of that is the rewritten loops alone, 323 and 201 ms on one thread: ReLU's backward lost a mispredicted branch per element, and <code>im2col</code> and <code>col2im</code> their per-pixel bounds checks.</p>
 <p>Every layer cuts its loops into chunks fixed by the shapes, never by the thread count: a channel for batch norm and for <code>im2col</code> and <code>col2im</code>, a block of 512 gemm columns — 512 pixels — for a convolution's forward product and its input gradient, a run of 32,768 elements for ReLU, the residual sums and the SGD update, and 16 samples for per-sample work such as encoding the batch and the loss's softmax. The weight gradient, a sum over every pixel, is not cut into columns; it runs as one call beside the input gradient's blocks (the naive backend cuts it into bands of 16 output rows instead). The pool hands chunks to whichever thread is free, but each output value belongs to exactly one chunk and is computed with the same operations in the same order as on one thread. Sums over the whole batch keep their old order: batch norm sums each channel inside that channel's chunk, and the loss adds up its per-sample terms serially afterwards. A block of gemm columns is one plain gemm call on its own columns of C:</p>
@@ -2471,9 +2471,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Learning-rate schedule</dt>
   <dd><code>LrSchedule::at</code> <span class="loc">— src/optimizer.cpp:111</span></dd>
   <dt>Arena and opening diversity</dt>
-  <dd><code>playArenaGame</code>, <code>playMatches</code> <span class="loc">— src/arena.cpp:36, 208</span></dd>
+  <dd><code>playArenaGame</code>, <code>playMatches</code> <span class="loc">— src/arena.cpp:33, 368</span></dd>
   <dt>Choosing opponents, gating</dt>
-  <dd><code>selectOpponents</code>, <code>passesGate</code> <span class="loc">— src/arena.cpp:336, 364</span></dd>
+  <dd><code>selectOpponents</code>, <code>passesGate</code> <span class="loc">— src/arena.cpp:429, 457</span></dd>
   <dt>Arena rounds: calibration, promotion</dt>
   <dd><code>calibrateFixedPlayers</code>, <code>runArenaRound</code> <span class="loc">— src/arena_round.cpp:31, 54</span></dd>
   <dt>Bradley-Terry Elo with a virtual draw</dt>
@@ -2481,9 +2481,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Wilson intervals</dt>
   <dd><code>wilsonInterval</code> <span class="loc">— src/elo.cpp:184</span></dd>
   <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
-  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:156, 129</span></dd>
+  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:144, 117</span></dd>
   <dt>One generation</dt>
-  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:627</span></dd>
+  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:641</span></dd>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
@@ -2493,9 +2493,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
-  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:45</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:540</span></dd>
+  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:45</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:549</span></dd>
   <dt>Self-play on several engines and machines</dt>
-  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:116</span>; <code>SelfPlayCoordinator::play</code> <span class="loc">— src/coordinator.cpp:632</span></dd>
+  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:116</span>; <code>Coordinator::play</code> <span class="loc">— src/coordinator.cpp:770</span></dd>
   <dt>Inspecting a position</dt>
   <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:81, 121</span></dd>
 </dl>
