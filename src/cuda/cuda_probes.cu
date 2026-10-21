@@ -159,5 +159,37 @@ void tanhInPlace(float* x, size_t count) {
     finish(s);
 }
 
+void convBnRelu(const Conv2d& conv, const BatchNorm2d& bn, const float* x, const float* skip, int B, int n,
+                float* y, int tile) {
+    Context::instance();
+    if (conv.k != 3 || bn.c != conv.cout) throw std::invalid_argument("cuda_probe::convBnRelu: a 3x3 conv and its BN");
+    if (tile < -1 || tile > 2) throw std::invalid_argument("cuda_probe::convBnRelu: tile must be -1, 0, 1 or 2");
+    const size_t A = static_cast<size_t>(n) * n, in = static_cast<size_t>(conv.cin) * B * A,
+                 out = static_cast<size_t>(conv.cout) * B * A, C = static_cast<size_t>(bn.c);
+    Stream s;
+    DeviceBuffer dx(in), dw(conv.w.size()), dy(out), dskip(skip ? out : 0), gamma(C), beta(C), mean(C), var(C),
+        scale(C), shift(C);
+    upload(dx, x, in, s);
+    upload(dw, conv.w.data(), conv.w.size(), s);
+    upload(dy, y, out, s);   // what y held: it is only written
+    if (skip) upload(dskip, skip, out, s);
+    upload(gamma, bn.gamma.data(), C, s);
+    upload(beta, bn.beta.data(), C, s);
+    upload(mean, bn.runMean.data(), C, s);
+    upload(var, bn.runVar.data(), C, s);
+    cuda::launchBnFold(gamma.data(), beta.data(), mean.data(), var.data(), bn.c, scale.data(), shift.data(), s.get());
+    cuda::ConvArgs cv;
+    cv.in = dx.data();
+    cv.batch = B;
+    cv.n = n;
+    cv.scale = scale.data();
+    cv.shift = shift.data();
+    cv.skip = skip ? dskip.data() : nullptr;
+    const cuda::GemmTile t = tile < 0 ? cuda::gemmTileFor(conv.cout) : static_cast<cuda::GemmTile>(tile);
+    cuda::launchConvBnRelu(dw.data(), conv.cin, conv.cout, cv, dy.data(), t, s.get());
+    download(y, dy, out, s);
+    finish(s);
+}
+
 } // namespace cuda_probe
 } // namespace azgo

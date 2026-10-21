@@ -411,6 +411,88 @@ void test_elementwise_batch_independent() {
     }
 }
 
+// ---------------------------------------------------------------- the fused convolution
+
+Conv2d randomConv(Rng& rng, int cin, int cout) {
+    Conv2d conv(cin, cout, 3);
+    for (float& w : conv.w) w = static_cast<float>((rng.uniform() * 2.0 - 1.0) * std::sqrt(2.0 / (cin * 9)));
+    return conv;
+}
+
+// The explicit sequence on the GPU, kernel by kernel: im2col, the gemm, batch
+// norm, the skip connection (if any) and ReLU, as the Metal backend runs a
+// residual block's convolution.
+std::vector<float> explicitConv(const Conv2d& conv, const BatchNorm2d& bn, const std::vector<float>& x,
+                                const std::vector<float>* skip, int B, int n) {
+    const int N = B * n * n, K = conv.cin * 9;
+    std::vector<float> col(static_cast<size_t>(K) * N), y(static_cast<size_t>(conv.cout) * N);
+    cuda_probe::im2col3(x.data(), conv.cin, B, n, col.data());
+    cuda_probe::gemm(false, conv.cout, N, K, conv.w.data(), col.data(), y.data());
+    cuda_probe::bnInfer(bn, y.data(), N, y.data());
+    if (skip) cuda_probe::addInto(y.data(), skip->data(), y.size());
+    cuda_probe::relu(y.data(), y.size());
+    return y;
+}
+
+// The fused convolution (the column matrix read straight from the input,
+// batch norm, the skip and ReLU in the gemm's last step) gives exactly the
+// explicit sequence's bits, for the stem's and the blocks' shapes on every
+// board, with and without the skip, for every tile shape.
+void test_conv_fused_equals_explicit() {
+    Rng rng(501);
+    struct Case { int cin, cout, n, B; };
+    for (const Case& c : {Case{18, 32, 5, 1}, Case{18, 64, 9, 8}, Case{64, 64, 9, 144}, Case{96, 96, 13, 8},
+                          Case{96, 96, 13, 256}, Case{18, 96, 13, 144}, Case{128, 128, 19, 1},
+                          Case{128, 128, 19, 8}, Case{7, 3, 4, 3}}) {
+        const Conv2d conv = randomConv(rng, c.cin, c.cout);
+        const BatchNorm2d bn = randomBn(rng, c.cout);
+        const size_t A = static_cast<size_t>(c.n) * c.n;
+        const std::vector<float> x = randomVector(rng, static_cast<size_t>(c.cin) * c.B * A);
+        const std::vector<float> skip = randomVector(rng, static_cast<size_t>(c.cout) * c.B * A);
+        for (bool withSkip : {false, true}) {
+            const std::vector<float> ref = explicitConv(conv, bn, x, withSkip ? &skip : nullptr, c.B, c.n);
+            for (int tile : {-1, 0, 1, 2}) {
+                std::vector<float> y(ref.size(), std::nanf(""));
+                cuda_probe::convBnRelu(conv, bn, x.data(), withSkip ? skip.data() : nullptr, c.B, c.n, y.data(),
+                                       tile);
+                if (!bitwiseEqual(y.data(), ref.data(), y.size())) {
+                    std::printf("test_cuda: fused conv %d->%d on %dx%d, batch %d, skip %d, tile %d differs\n",
+                                c.cin, c.cout, c.n, c.n, c.B, withSkip, tile);
+                    std::fflush(stdout);
+                    assert(false);
+                }
+            }
+        }
+    }
+}
+
+// A sample's outputs from the fused convolution are the same bits alone and
+// at the first, a middle and the last position of batches of 8, 144 and 256.
+void test_conv_fused_batch_independent() {
+    Rng rng(502);
+    const int cin = 96, cout = 96, n = 13, A = n * n;
+    const Conv2d conv = randomConv(rng, cin, cout);
+    const BatchNorm2d bn = randomBn(rng, cout);
+    const std::vector<float> one = randomVector(rng, static_cast<size_t>(cin) * A);
+    const std::vector<float> oneSkip = randomVector(rng, static_cast<size_t>(cout) * A);
+    std::vector<float> alone(static_cast<size_t>(cout) * A);
+    cuda_probe::convBnRelu(conv, bn, one.data(), oneSkip.data(), 1, n, alone.data());
+    for (int B : {8, 144, 256}) {
+        for (int at : {0, B / 2 + 1, B - 1}) {
+            std::vector<float> x = randomVector(rng, static_cast<size_t>(cin) * B * A);
+            std::vector<float> skip = randomVector(rng, static_cast<size_t>(cout) * B * A);
+            for (int c = 0; c < cin; ++c)
+                std::copy_n(&one[static_cast<size_t>(c) * A], A, &x[(static_cast<size_t>(c) * B + at) * A]);
+            for (int c = 0; c < cout; ++c)
+                std::copy_n(&oneSkip[static_cast<size_t>(c) * A], A, &skip[(static_cast<size_t>(c) * B + at) * A]);
+            std::vector<float> y(static_cast<size_t>(cout) * B * A);
+            cuda_probe::convBnRelu(conv, bn, x.data(), skip.data(), B, n, y.data());
+            for (int c = 0; c < cout; ++c)
+                assert(bitwiseEqual(&y[(static_cast<size_t>(c) * B + at) * A], &alone[static_cast<size_t>(c) * A], A));
+        }
+    }
+}
+
 } // namespace
 
 #endif // AZ_USE_CUDA
@@ -450,6 +532,8 @@ int main() {
     test_relu_add_bias_bitwise();
     test_tanh_within_two_ulp();
     test_elementwise_batch_independent();
+    test_conv_fused_equals_explicit();
+    test_conv_fused_batch_independent();
 #endif
     std::printf("test_cuda: all tests passed\n");
     return 0;

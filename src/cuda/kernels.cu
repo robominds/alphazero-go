@@ -25,10 +25,32 @@ unsigned blocksFor(size_t count) {
 
 } // namespace
 
+// ---------------------------------------------------------------- batch norm
+
+// BatchNorm2d::kEps, for device code.
+constexpr float kBnEps = 1e-5f;
+static_assert(kBnEps == BatchNorm2d::kEps, "the GPU's batch norm epsilon is the CPU's");
+
+// The running statistics folded into one scale and shift per channel, as
+// BatchNorm2d::forwardInfer folds them: IEEE division and square root,
+// each operation rounded on its own.
+__device__ __forceinline__ void bnScaleShift(float gamma, float beta, float mean, float var, float& scale,
+                                             float& shift) {
+    scale = __fdiv_rn(gamma, __fsqrt_rn(__fadd_rn(var, kBnEps)));
+    shift = __fsub_rn(beta, __fmul_rn(scale, mean));
+}
+
+// y = scale * x + shift, the multiply and the add rounded separately.
+__device__ __forceinline__ float bnApply(float x, float scale, float shift) {
+    return __fadd_rn(__fmul_rn(scale, x), shift);
+}
+
 // ---------------------------------------------------------------- the gemm
 
-// How a gemm reads op(B).
-enum class Op { NN, NT };
+// How a gemm reads op(B): B [K][N], B [N][K] transposed, or (Conv) the
+// column matrix of a 3x3 convolution read straight from its input, with
+// batch norm, the skip and ReLU applied to the result.
+enum class Op { NN, NT, Conv };
 
 // C[M][N] = A[M][K] . op(B): the CUDA counterpart of the Metal gemm_simd's
 // contract. A block of 256 threads computes one BM x BN tile of C, each
@@ -45,9 +67,20 @@ enum class Op { NN, NT };
 // its neighbours or the run. In a convolution a column of op(B) is one pixel
 // of one sample; in a Linear layer a row of A is one sample: either way a
 // sample's outputs are the same bits alone or in any batch.
+//
+// Op::Conv is the fused convolution (an implicit GEMM). op(B) is the column
+// matrix im2col would write, [C_in * 9][batch * n * n], but each element is
+// read from the input where im2col3 would have read it (0 off the board), so
+// the 150 MB matrix of a 13x13 6x96 layer at batch 256 is never written. As
+// kGemmThreads is a multiple of BN, each thread stages one fixed column, and
+// finds its sample and pixel once. The last step then does, per element,
+// exactly what bn_infer, add_into and relu_forward do after a plain gemm:
+// scale * acc + shift (two roundings), + skip, then x > 0 ? x : 0. The bits
+// equal the explicit sequence's (the tests hold them to it).
 template <int BM, int BN, int TM, int TN, Op op>
 __global__ void __launch_bounds__(kGemmThreads)
-gemm_tiled(const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C, int M, int N, int K) {
+gemm_tiled(const float* __restrict__ A, const float* __restrict__ B, float* __restrict__ C, int M, int N, int K,
+           ConvArgs cv) {
     constexpr int BK = kGemmStepK;
     constexpr int kGroups = TN / 4;            // a thread's columns: kGroups runs of 4
     constexpr int kGroupStride = BN / kGroups;
@@ -63,6 +96,17 @@ gemm_tiled(const float* __restrict__ A, const float* __restrict__ B, float* __re
     for (int i = 0; i < TM; ++i)
 #pragma unroll
         for (int j = 0; j < TN; ++j) acc[i][j] = 0.0f;
+    // Op::Conv: the one column of op(B) this thread stages, found once.
+    static_assert(op != Op::Conv || kGemmThreads % BN == 0, "a thread stages one fixed column");
+    const int myN = tid % BN, myGn = col0 + myN;
+    const int area = cv.n * cv.n;
+    int mySample = 0, myY = 0, myX = 0;
+    if (op == Op::Conv && myGn < N) {
+        mySample = myGn / area;
+        const int p = myGn % area;
+        myY = p / cv.n;
+        myX = p % cv.n;
+    }
 
     for (int k0 = 0; k0 < K; k0 += BK) {
         // Stage A[row0 .. +BM][k0 .. +BK] and op(B)[k0 .. +BK][col0 .. +BN].
@@ -70,7 +114,18 @@ gemm_tiled(const float* __restrict__ A, const float* __restrict__ B, float* __re
             const int m = e / BK, k = e % BK, gm = row0 + m, gk = k0 + k;
             As[k][m] = (gm < M && gk < K) ? A[static_cast<size_t>(gm) * K + gk] : 0.0f;
         }
-        for (int e = tid; e < BK * BN; e += kGemmThreads) {
+        if (op == Op::Conv) {
+            for (int k = tid / BN; k < BK; k += kGemmThreads / BN) {
+                const int gk = k0 + k;
+                float v = 0.0f;
+                if (myGn < N && gk < K) {
+                    const int c = gk / 9, r = gk % 9, y = myY + r / 3 - 1, x = myX + r % 3 - 1;
+                    if (y >= 0 && y < cv.n && x >= 0 && x < cv.n)
+                        v = cv.in[(static_cast<size_t>(c) * cv.batch + mySample) * area + y * cv.n + x];
+                }
+                Bs[k][myN] = v;
+            }
+        } else for (int e = tid; e < BK * BN; e += kGemmThreads) {
             if (op == Op::NN) {   // B [K][N]: read along its rows
                 const int k = e / BN, n = e % BN, gn = col0 + n, gk = k0 + k;
                 Bs[k][n] = (gn < N && gk < K) ? B[static_cast<size_t>(gk) * N + gn] : 0.0f;
@@ -109,7 +164,15 @@ gemm_tiled(const float* __restrict__ A, const float* __restrict__ B, float* __re
 #pragma unroll
             for (int q = 0; q < 4; ++q) {
                 const int gn = col0 + g * kGroupStride + tx * 4 + q;
-                if (gn < N) C[static_cast<size_t>(gm) * N + gn] = acc[i][4 * g + q];
+                if (gn >= N) continue;
+                const size_t at = static_cast<size_t>(gm) * N + gn;
+                float v = acc[i][4 * g + q];
+                if (op == Op::Conv) {   // bn_infer, add_into, relu_forward, in that order
+                    v = bnApply(v, cv.scale[gm], cv.shift[gm]);
+                    if (cv.skip) v = __fadd_rn(v, cv.skip[at]);
+                    v = v > 0.0f ? v : 0.0f;
+                }
+                C[at] = v;
             }
     }
 }
@@ -125,8 +188,14 @@ namespace {
 template <int BM, int BN, int TM, int TN>
 void launchTile(bool transB, int M, int N, int K, const float* A, const float* B, float* C, cudaStream_t s) {
     const dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
-    if (transB) gemm_tiled<BM, BN, TM, TN, Op::NT><<<grid, kGemmThreads, 0, s>>>(A, B, C, M, N, K);
-    else gemm_tiled<BM, BN, TM, TN, Op::NN><<<grid, kGemmThreads, 0, s>>>(A, B, C, M, N, K);
+    if (transB) gemm_tiled<BM, BN, TM, TN, Op::NT><<<grid, kGemmThreads, 0, s>>>(A, B, C, M, N, K, ConvArgs());
+    else gemm_tiled<BM, BN, TM, TN, Op::NN><<<grid, kGemmThreads, 0, s>>>(A, B, C, M, N, K, ConvArgs());
+}
+
+template <int BM, int BN, int TM, int TN>
+void launchConvTile(const float* W, int M, int N, int K, const ConvArgs& cv, float* out, cudaStream_t s) {
+    const dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);
+    gemm_tiled<BM, BN, TM, TN, Op::Conv><<<grid, kGemmThreads, 0, s>>>(W, nullptr, out, M, N, K, cv);
 }
 
 } // namespace
@@ -138,6 +207,17 @@ void launchGemm(bool transB, int M, int N, int K, const float* A, const float* B
         case GemmTile::Rows32Cols256: launchTile<32, 256, 4, 8>(transB, M, N, K, A, B, C, stream); break;
         case GemmTile::Rows64Cols128: launchTile<64, 128, 8, 4>(transB, M, N, K, A, B, C, stream); break;
         case GemmTile::Rows128Cols128: launchTile<128, 128, 8, 8>(transB, M, N, K, A, B, C, stream); break;
+    }
+}
+
+void launchConvBnRelu(const float* w, int cin, int cout, const ConvArgs& cv, float* out, GemmTile tile,
+                      cudaStream_t stream) {
+    const int N = cv.batch * cv.n * cv.n, K = cin * 9;
+    if (cout <= 0 || N <= 0) return;
+    switch (tile) {
+        case GemmTile::Rows32Cols256: launchConvTile<32, 256, 4, 8>(w, cout, N, K, cv, out, stream); break;
+        case GemmTile::Rows64Cols128: launchConvTile<64, 128, 8, 4>(w, cout, N, K, cv, out, stream); break;
+        case GemmTile::Rows128Cols128: launchConvTile<128, 128, 8, 8>(w, cout, N, K, cv, out, stream); break;
     }
 }
 
@@ -176,24 +256,6 @@ __global__ void im2col3(const float* __restrict__ in, float* __restrict__ col, i
     }
 }
 
-// BatchNorm2d::kEps, for device code.
-constexpr float kBnEps = 1e-5f;
-static_assert(kBnEps == BatchNorm2d::kEps, "the GPU's batch norm epsilon is the CPU's");
-
-// The running statistics folded into one scale and shift per channel, as
-// BatchNorm2d::forwardInfer folds them: IEEE division and square root,
-// each operation rounded on its own.
-__device__ __forceinline__ void bnScaleShift(float gamma, float beta, float mean, float var, float& scale,
-                                             float& shift) {
-    scale = __fdiv_rn(gamma, __fsqrt_rn(__fadd_rn(var, kBnEps)));
-    shift = __fsub_rn(beta, __fmul_rn(scale, mean));
-}
-
-// y = scale * x + shift, the multiply and the add rounded separately.
-__device__ __forceinline__ float bnApply(float x, float scale, float shift) {
-    return __fadd_rn(__fmul_rn(scale, x), shift);
-}
-
 __global__ void bn_infer(const float* x, float* y, int C, size_t M, const float* __restrict__ gamma,
                          const float* __restrict__ beta, const float* __restrict__ mean,
                          const float* __restrict__ var) {
@@ -203,6 +265,14 @@ __global__ void bn_infer(const float* x, float* y, int C, size_t M, const float*
         bnScaleShift(gamma[c], beta[c], mean[c], var[c], scale, shift);
         y[i] = bnApply(x[i], scale, shift);
     }
+}
+
+// The per-channel scale and shift the fused convolution applies, folded once
+// per upload with bn_infer's own arithmetic (bnScaleShift).
+__global__ void bn_fold(const float* __restrict__ gamma, const float* __restrict__ beta,
+                        const float* __restrict__ mean, const float* __restrict__ var, int C,
+                        float* __restrict__ scale, float* __restrict__ shift) {
+    AZGO_FOR_EACH(i, size_t(C)) bnScaleShift(gamma[i], beta[i], mean[i], var[i], scale[i], shift[i]);
 }
 
 // reluForward. x > 0 ? x : 0 maps -0 and NaN to +0, as on the CPU.
@@ -253,6 +323,11 @@ void launchBnInfer(const float* x, float* y, int C, size_t M, const float* gamma
                    const float* mean, const float* var, cudaStream_t s) {
     const size_t count = size_t(C) * M;
     if (count) bn_infer<<<blocksFor(count), kElementwiseThreads, 0, s>>>(x, y, C, M, gamma, beta, mean, var);
+}
+
+void launchBnFold(const float* gamma, const float* beta, const float* mean, const float* var, int C,
+                  float* scale, float* shift, cudaStream_t s) {
+    if (C > 0) bn_fold<<<blocksFor(size_t(C)), kElementwiseThreads, 0, s>>>(gamma, beta, mean, var, C, scale, shift);
 }
 
 void launchRelu(float* x, size_t count, cudaStream_t s) {

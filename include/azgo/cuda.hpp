@@ -94,6 +94,10 @@ void addInto(float* dst, const float* src, size_t count);                       
 void policyFlatten(const float* act, int B, int A, float* flat);                   // [2][B][A] -> [B][2A]
 void biasAddRows(float* y, const float* b, int rows, int cols);                    // y [rows][cols] += b
 void tanhInPlace(float* x, size_t count);                                          // x = tanh(x)
+// The fused 3x3 convolution with its batch norm, an optional skip (null for
+// none) and ReLU: x [cin][B][n][n] -> y [cout][B * n * n]. tile as gemm's.
+void convBnRelu(const Conv2d& conv, const BatchNorm2d& bn, const float* x, const float* skip, int B, int n,
+                float* y, int tile = -1);
 
 } // namespace cuda_probe
 

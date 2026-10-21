@@ -46,6 +46,27 @@ constexpr GemmTile kLinearTile = GemmTile::Rows32Cols256;
 void launchGemm(bool transB, int M, int N, int K, const float* A, const float* B, float* C, GemmTile tile,
                 cudaStream_t stream);
 
+// A 3x3 convolution's input and what follows it, for the fused kernel.
+struct ConvArgs {
+    const float* in = nullptr;      // [cin][batch][n][n]
+    int batch = 0, n = 0;
+    const float* scale = nullptr;   // per output channel (launchBnFold)
+    const float* shift = nullptr;
+    const float* skip = nullptr;    // [cout][batch * n * n], or null
+};
+
+// The fused convolution: out [cout][batch * n * n] = ReLU(scale * (w . col)
+// + shift (+ skip)), w [cout][cin * 9], col the im2col of cv.in that is never
+// written. Bitwise equal to launchIm2col3, launchGemm (same tile), launchBnInfer,
+// launchAddInto and launchRelu in sequence, with scale and shift from
+// launchBnFold.
+void launchConvBnRelu(const float* w, int cin, int cout, const ConvArgs& cv, float* out, GemmTile tile,
+                      cudaStream_t stream);
+// Batch norm's statistics folded per channel: scale = gamma / sqrt(var + eps),
+// shift = beta - scale * mean, exactly as launchBnInfer computes them.
+void launchBnFold(const float* gamma, const float* beta, const float* mean, const float* var, int C,
+                  float* scale, float* shift, cudaStream_t stream);
+
 // ---- the forward layers' other kernels (one thread per output element) ----
 // Network::forward's first step: in [B][P][A] -> out [P][B][A].
 void launchTransposeInput(const float* in, int B, int P, int A, float* out, cudaStream_t stream);
