@@ -26,6 +26,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <sstream>
+#include <unistd.h>
 #include <map>
 #include <atomic>
 #include <condition_variable>
@@ -36,11 +41,18 @@
 #include <string>
 #include <vector>
 #include "azgo/backend.hpp"
+#include "azgo/checkpoint.hpp"
+#include "azgo/config.hpp"
 #include "azgo/cuda.hpp"
 #include "azgo/inference_hub.hpp"
 #include "azgo/layers.hpp"
 #include "azgo/network.hpp"
+#include "azgo/replay_buffer.hpp"
 #include "azgo/rng.hpp"
+#include "azgo/run_state.hpp"
+#include "azgo/selfplay_slice.hpp"
+#include "azgo/serialize.hpp"
+#include "azgo/trainer.hpp"
 
 using namespace azgo;
 
@@ -1236,6 +1248,166 @@ void test_worker_evaluators_cuda() {
     assert(evaluators.evaluations() == 64);
 }
 
+// ---------------------------------------------------------------- self-play with backend = cuda
+
+// A slice's games, serialized: what a slice's result file carries.
+std::string recordBytes(const std::vector<GameRecord>& games) {
+    std::ostringstream out;
+    BinaryWriter w(out);
+    for (const GameRecord& g : games) writeGameRecord(w, g);
+    return out.str();
+}
+
+// The determinism contract for a cuda engine's slice: the same games, byte
+// for byte, for 1, 3 and 8 workers, batches capped at 8 or 256, and the
+// hub's chaos mode on.
+void test_selfplay_slice_independent_of_workers_and_batching() {
+    for (const NetConfig& cfg : {netConfig(5, 1, 8), netConfig(9, 2, 16)}) {
+        const Network net = randomNetwork(cfg, 801);
+        SelfPlayConfig sp;
+        sp.mcts.simulations = 32;
+        sp.mcts.batchSize = 8;
+        sp.temperatureMoves = 6;
+        std::string reference;
+        for (int workers : {1, 3, 8})
+            for (int batch : {8, 256})
+                for (uint64_t chaos : {0ull, 21ull}) {
+                    cuda_probe::setHubChaosSeed(chaos);
+                    EngineRun run;
+                    run.backend = "cuda";
+                    run.workers = workers;
+                    run.inferenceBatch = batch;
+                    SliceStats stats;
+                    const std::string bytes =
+                        recordBytes(playSelfPlayGames(net, sp, 802, 3, 10, 6, run, &stats));
+                    cuda_probe::setHubChaosSeed(0);
+                    assert(stats.evaluations > 0);
+                    if (reference.empty()) reference = bytes;
+                    assert(bytes == reference);
+                }
+    }
+}
+
+namespace fs = std::filesystem;
+
+struct RunDir {
+    fs::path path;
+    explicit RunDir(const std::string& name)
+        : path(fs::temp_directory_path() / ("azgo_test_cuda_" + std::to_string(getpid()) + "_" + name)) {
+        fs::remove_all(path);
+        fs::create_directories(path);
+    }
+    ~RunDir() {
+        std::error_code ec;
+        fs::remove_all(path, ec);
+    }
+    std::string str() const { return path.string(); }
+    std::string file(const std::string& rel) const { return (path / rel).string(); }
+};
+
+std::string readBytes(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    assert(in && "file should exist");
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+// A 5x5 run small enough that a generation takes a fraction of a second.
+// Its own backend is naive (a run's backend cannot be cuda); self-play goes
+// to the cuda engine.
+Config cudaRunConfig() {
+    Config c;
+    c.backend = "naive";
+    c.boardSize = 5;
+    c.history = 2;
+    c.blocks = 1;
+    c.filters = 8;
+    c.valueHidden = 8;
+    c.gamesPerGeneration = 6;
+    c.simulations = 8;
+    c.mctsBatch = 4;
+    c.temperatureMoves = 4;
+    c.bufferPositions = 1000;
+    c.trainSteps = 4;
+    c.batchSize = 16;
+    c.arenaGames = 2;
+    c.arenaSimulations = 4;
+    c.workers = 2;
+    c.sgfPerGeneration = 1;
+    applyOverride(c, "selfplay_engines=local/cuda:1");
+    return c;
+}
+
+// What a run produced that must not depend on workers, batching or timing:
+// every checkpoint, state.bin and the rating files.
+std::string runFiles(const fs::path& run, int generations) {
+    std::string out;
+    for (int g = 0; g <= generations; ++g) out += readBytes(checkpointPath(run.string(), g));
+    for (const char* f : {"state.bin", "results.csv", "elo.csv"}) out += readBytes((run / f).string());
+    return out;
+}
+
+// A run whose self-play goes to the local cuda engine: the same files for
+// any cuda_workers and inference_batch in the hosts file, whether it ran
+// two generations straight or one and a resume. The manifest names the
+// engine's GPU.
+void test_cuda_engine_run_independent_of_settings() {
+    std::string reference;
+    {
+        RunDir dir("straight");
+        const fs::path run = dir.path / "run";
+        std::unique_ptr<Trainer> t = Trainer::startNew(cudaRunConfig(), run.string(), {}, nullptr);
+        t->runUntil(2);
+        reference = runFiles(run, 2);
+    }
+    for (const char* settings : {"cuda_workers=0", "cuda_workers=3 inference_batch=8",
+                                 "cuda_workers=64 inference_batch=256"}) {
+        RunDir dir("engine");
+        const std::string hosts = dir.file("hosts");
+        {
+            std::ofstream out(hosts);
+            out << "local " << settings << "\n";
+        }
+        TrainerOptions opts;
+        opts.hostsFile = hosts;
+        const fs::path run = dir.path / "run";
+        std::ostringstream startup;
+        {
+            std::unique_ptr<Trainer> t = Trainer::startNew(cudaRunConfig(), run.string(), {}, &startup, opts);
+            t->setLog(nullptr);
+            t->runUntil(1);
+        }
+        assert(startup.str().find("engine local/cuda: ") != std::string::npos);
+        {
+            std::unique_ptr<Trainer> t = Trainer::resume(run.string(), {}, nullptr, opts);
+            t->runUntil(2);
+        }
+        const std::string manifest = readBytes((run / "selfplay-engines.csv").string());
+        assert(manifest.find(",local/cuda,local/cuda,\"cuda; ") != std::string::npos);
+        assert(manifest.find(cudaDescription()) != std::string::npos);
+        assert(runFiles(run, 2) == reference);
+    }
+}
+
+// A run is refused before it writes anything when its cuda engine's hub
+// would not fit the GPU's memory.
+void test_cuda_engine_memory_checked_up_front() {
+    RunDir dir("memory");
+    const fs::path run = dir.path / "run";
+    cuda_probe::setMemoryLimit(size_t(1) << 20);   // 1 MB
+    bool refused = false;
+    std::ostringstream out;
+    try {
+        Trainer::startNew(cudaRunConfig(), run.string(), {}, &out);
+    } catch (const std::runtime_error& e) {
+        refused = std::string(e.what()).find("lower inference_batch") != std::string::npos;
+    }
+    cuda_probe::setMemoryLimit(0);
+    assert(refused);
+    assert(!fs::exists(configPath(run.string())) && !fs::exists(statePath(run.string())));
+}
+
 } // namespace
 
 #endif // AZ_USE_CUDA
@@ -1299,6 +1471,9 @@ int main() {
     test_memory_check();
     test_runner_no_thread_leak();
     test_worker_evaluators_cuda();
+    test_selfplay_slice_independent_of_workers_and_batching();
+    test_cuda_engine_run_independent_of_settings();
+    test_cuda_engine_memory_checked_up_front();
 #endif
     std::printf("test_cuda: all tests passed\n");
     return 0;

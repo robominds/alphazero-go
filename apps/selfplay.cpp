@@ -4,7 +4,7 @@
 // network and the job to a machine, runs this there, and downloads and
 // verifies the result. It needs no run directory.
 //
-//   selfplay --job JOB --out OUT --backend naive|blas|metal [--workers N] [--inference-batch N]
+//   selfplay --job JOB --out OUT --backend naive|blas|metal|cuda [--workers N] [--inference-batch N]
 //            [--exit-on-stdin-eof]
 //   selfplay --version
 //   selfplay --fingerprint --backend B
@@ -34,7 +34,7 @@ namespace {
 
 const char* const kUsage =
     "usage:\n"
-    "  selfplay --job JOB --out OUT --backend naive|blas|metal [--workers N] [--inference-batch N]\n"
+    "  selfplay --job JOB --out OUT --backend naive|blas|metal|cuda [--workers N] [--inference-batch N]\n"
     "           [--exit-on-stdin-eof]\n"
     "  selfplay --version\n"
     "  selfplay --fingerprint --backend B\n"
@@ -43,13 +43,13 @@ const char* const kUsage =
     "train) describes, with the network named in it, which must lie in JOB's directory\n"
     "and match the job's hash, and writes the result to OUT (replaced atomically).\n"
     "The job's build ID must be this binary's. --workers: threads (default: every game\n"
-    "at once with metal, max(1, min(2, cores - 2)) with naive and blas, the remote\n"
+    "at once with metal and cuda, max(1, min(2, cores - 2)) with naive and blas, the remote\n"
     "rule of the hosts file); --inference-batch: most positions per GPU pass (default:\n"
     "the job's). Neither changes a result. --exit-on-stdin-eof stops at once when\n"
     "stdin reaches its end: the coordinator holds it open while it waits.\n"
     "--version prints the build ID, short and full, and the strongest backend built.\n"
     "--fingerprint checks that backend B can run here and prints what determines its\n"
-    "arithmetic (backend, CPU, OS, and with metal the GPU and shaders).\n"
+    "arithmetic (backend, CPU, OS, and with metal or cuda the GPU and kernels).\n"
     "Exit status: 0 success, 1 error, 2 usage error.\n";
 
 int usageError(const std::string& message) {

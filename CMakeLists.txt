@@ -204,9 +204,14 @@ if(AZ_USE_METAL)
 else()
   set(AZGO_SMOKE_METAL metal=OFF)
 endif()
+if(AZ_USE_CUDA)
+  set(AZGO_SMOKE_CUDA cuda=ON)
+else()
+  set(AZGO_SMOKE_CUDA cuda=OFF)
+endif()
 add_test(NAME integration_smoke
          COMMAND bash ${CMAKE_SOURCE_DIR}/tests/integration_smoke.sh ${CMAKE_BINARY_DIR} ${CMAKE_SOURCE_DIR}
-                 ${AZGO_SMOKE_METAL})
+                 ${AZGO_SMOKE_METAL} ${AZGO_SMOKE_CUDA})
 
 # The build ID script in a scratch git repository (77 = skipped without git).
 add_test(NAME build_id COMMAND bash ${CMAKE_SOURCE_DIR}/tests/build_id.sh ${CMAKE_SOURCE_DIR})

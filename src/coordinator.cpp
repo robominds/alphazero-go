@@ -15,6 +15,7 @@
 #include <utility>
 #include "azgo/backend.hpp"
 #include "azgo/build_info.hpp"
+#include "azgo/cuda.hpp"
 #include "azgo/inference_hub.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/parallel.hpp"
@@ -278,8 +279,8 @@ void SelfPlayCoordinator::unreachable(const std::string& alias, const std::strin
 }
 
 void SelfPlayCoordinator::preflight() {
-    // Local engines: the backend runs here, and the metal hubs fit.
-    int metalHubs = 0;
+    // Local engines: the backend runs here, and the GPU hubs fit.
+    int metalHubs = 0, cudaHubs = 0;
     std::vector<std::string> remotes;   // aliases, in list order
     for (const EngineSpec& e : cfg_.selfplayEngines) {
         if (e.machine != "local") {
@@ -290,6 +291,7 @@ void SelfPlayCoordinator::preflight() {
         }
         checkBackendAvailable(e.backend);
         if (e.backend == "metal") ++metalHubs;
+        if (e.backend == "cuda") ++cudaHubs;
         if (!fingerprints_.count(e.name())) fingerprints_[e.name()] = engineFingerprint(e.backend);
     }
     const MachineSettings local = hosts_.settings("local");
@@ -303,6 +305,12 @@ void SelfPlayCoordinator::preflight() {
         checkMetalInferenceMemory(cfg_.netConfig(), batch, metalHubs, kInferenceSlots);
 #else
     (void)metalHubs;
+#endif
+#ifdef AZ_USE_CUDA
+    // The same for every cuda item.
+    if (cudaHubs > 0) checkCudaInferenceMemory(cfg_.netConfig(), batch, cudaHubs, kInferenceSlots);
+#else
+    (void)cudaHubs;
 #endif
 
     // Remote machines: reachable, this build, and every engine's backend usable.

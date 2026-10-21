@@ -12,12 +12,17 @@
 # and backend = metal: with metal=ON a run on the GPU (start, resume, re-rate) and arena
 # matches on it; with metal=OFF the refusals, which write nothing.
 #
-# usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR [metal=ON|metal=OFF]
+# and backend = cuda as a self-play engine: with cuda=ON a run whose games go to the GPU, in
+# this process and as a remote slice (a selfplay process), resumed and compared with a run
+# done straight; with cuda=OFF the refusals, which write nothing.
+#
+# usage: tests/integration_smoke.sh BUILD_DIR SOURCE_DIR [metal=ON|metal=OFF] [cuda=ON|cuda=OFF]
 set -euo pipefail
 
 BUILD="$(cd "${1:?usage: integration_smoke.sh BUILD_DIR SOURCE_DIR}" && pwd)"
 SRC="$(cd "${2:?usage: integration_smoke.sh BUILD_DIR SOURCE_DIR}" && pwd)"
 METAL="${3:-metal=OFF}"
+CUDA="${4:-cuda=OFF}"
 W="$(mktemp -d "${TMPDIR:-/tmp}/azgo_smoke.XXXXXX")"
 trap 'rm -rf "$W"' EXIT
 
@@ -615,5 +620,45 @@ else
     [ "$status" -eq 1 ] || fail "bench --mixed without Metal exited $status, expected 1"
     grep -qF "$NOT_BUILT" <<<"$out" || fail "bench --mixed did not say metal is not built: $out"
 fi
+
+if [ "$CUDA" = "cuda=ON" ]; then
+    echo "== cuda: self-play on the GPU, in this process and as a remote slice =="
+    "$BUILD/selfplay" --fingerprint --backend cuda | grep -Eq '^cuda; .+ sm_[0-9]+, driver [0-9.]+, runtime [0-9.]+, kernels [0-9a-f]{8}$' \
+        || fail "selfplay --fingerprint --backend cuda printed no cuda fingerprint"
+    CHOSTS="$W/cuda-hosts"
+    echo "fake exe=$BUILD/selfplay workdir=$W/cuda-remote" > "$CHOSTS"
+    CENGINES="selfplay_engines=local/naive:1,local/cuda=2,fake/cuda=2"
+    CRUN="$W/cuda"
+    "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$CRUN" "${TINY[@]}" --set games_per_generation=6 \
+        --hosts "$CHOSTS" --set "$CENGINES" --generations 2 > "$W/cuda.out"
+    grep -q '^engine local/cuda: ' "$W/cuda.out" || fail "no engine line for local/cuda"
+    grep -q '^engine fake/cuda: ' "$W/cuda.out" || fail "no engine line for fake/cuda"
+    "$BUILD/train" --run "$CRUN" --resume --hosts "$CHOSTS" --generations 3 > /dev/null
+    "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/cuda-straight" "${TINY[@]}" --set games_per_generation=6 \
+        --hosts "$CHOSTS" --set "$CENGINES" --generations 3 > /dev/null
+    for f in state.bin results.csv checkpoints/gen_0003.azn; do
+        cmp -s "$CRUN/$f" "$W/cuda-straight/$f" || fail "the resumed cuda run's $f differs from the straight run's"
+    done
+    grep -q '^3,2,2,local/cuda,local/cuda,"cuda; ' "$CRUN/selfplay-engines.csv" || fail "no local/cuda row for generation 3"
+    grep -q '^3,4,2,fake/cuda,fake/cuda,"cuda; ' "$CRUN/selfplay-engines.csv" || fail "no fake/cuda row for generation 3"
+else
+    echo "== cuda: refused in a build without it =="
+    CUDA_NOT_BUILT="backend 'cuda' not available: rebuild with -DAZ_USE_CUDA=ON (Linux, NVIDIA GPU)"
+    status=0
+    out="$("$BUILD/selfplay" --fingerprint --backend cuda 2>&1)" || status=$?
+    [ "$status" -eq 1 ] || fail "selfplay --fingerprint --backend cuda without CUDA exited $status, expected 1"
+    grep -qF "$CUDA_NOT_BUILT" <<<"$out" || fail "selfplay did not say cuda is not built: $out"
+    status=0
+    out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/nocuda" "${TINY[@]}" \
+           --set "selfplay_engines=local/naive:1,local/cuda:1" --generations 1 2>&1)" || status=$?
+    [ "$status" -eq 1 ] || fail "a run with a local cuda engine without CUDA exited $status, expected 1"
+    grep -qF "$CUDA_NOT_BUILT" <<<"$out" || fail "train did not say cuda is not built: $out"
+    test ! -e "$W/nocuda/state.bin" && test ! -e "$W/nocuda/config.cfg" || fail "a refused cuda run wrote files"
+fi
+# Never a run's own backend, in any build.
+status=0
+out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/cudabackend" "${TINY[@]}" --set backend=cuda \
+       --generations 1 2>&1)" || status=$?
+[ "$status" -eq 1 ] && grep -q 'selfplay_engines' <<<"$out" || fail "train --set backend=cuda was not refused: $out"
 
 echo "integration_smoke: all checks passed"
