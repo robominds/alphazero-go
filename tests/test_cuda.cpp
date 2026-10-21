@@ -3,9 +3,10 @@
 // properties the inference hub relies on.
 //
 // They run only in a build configured with -DAZ_USE_CUDA=ON on a machine with
-// a usable NVIDIA GPU. Anywhere else main() returns 77, which CMake declares
-// as this test's SKIP_RETURN_CODE, so CTest reports "Skipped" rather than a
-// failure.
+// a usable NVIDIA GPU. Without CUDA built, or without a GPU, main() returns
+// 77, which CMake declares as this test's SKIP_RETURN_CODE, so CTest reports
+// "Skipped" rather than a failure. A GPU the build's machine code was not
+// made for fails instead: that build cannot run where it is being tested.
 //
 // The references are exact, not tolerances: the gemm's is an std::fma chain
 // in k order (what the kernel computes), batch norm's an explicit multiply
@@ -1118,8 +1119,15 @@ int main() {
         return 77;
     }
     if (!cudaAvailable(&why)) {
-        std::printf("test_cuda: SKIPPED (%s)\n", why.c_str());
-        return 77;
+        // No GPU (or no driver) here: nothing to test. But a GPU the build's
+        // machine code was not made for is a build that cannot run here:
+        // that fails, so ctest does not report it as a harmless skip.
+        if (why.rfind("no CUDA device", 0) == 0) {
+            std::printf("test_cuda: SKIPPED (%s)\n", why.c_str());
+            return 77;
+        }
+        std::printf("test_cuda: FAILED: a GPU is present but unusable: %s\n", why.c_str());
+        return 1;
     }
 #ifdef AZ_USE_CUDA
     checkBackendAvailable("cuda");   // usable here
