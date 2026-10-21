@@ -10,8 +10,10 @@
 # rebuilds), and selfplay is built with -DAZGO_BUILD_ID=<commit> (the copy
 # has no .git) and the options the build directory's name asks for:
 # -DAZ_USE_METAL=ON when one of the name's words (split at - _ .) is "metal"
-# (a Mac's GPU), -DAZ_USE_BLAS=ON when one is "blas" (Accelerate, or
-# OpenBLAS on Linux), neither otherwise
+# (a Mac's GPU), -DAZ_USE_CUDA=ON when one is "cuda" (an NVIDIA GPU on
+# Linux; it implies BLAS, so the binary serves machine/cuda and
+# machine/blas), -DAZ_USE_BLAS=ON when one is "blas" (Accelerate, or
+# OpenBLAS on Linux), none of them otherwise
 # (set explicitly, so a kept CMake cache cannot hold an old choice). The
 # name must start with "build", so it can never be one of the tree's own
 # directories. Its --version must then equal this repository's commit. The
@@ -35,8 +37,10 @@ Syncs every machine with ssh= in the hosts file (default: $AZGO_HOSTS, else
 <repo>/<build>, <repo> being exe's grandparent and <build> exe's parent
 (--build names it for every machine instead); its name starts with
 "build". One with the word "metal" in its name (words split at - _ .) is
-configured with -DAZ_USE_METAL=ON, one with "blas" with -DAZ_USE_BLAS=ON
-(OpenBLAS on Linux), others with neither: build-nometal gets neither. Checks
+configured with -DAZ_USE_METAL=ON, one with "cuda" with -DAZ_USE_CUDA=ON
+(Linux; nvcc from the remote's PATH, else /usr/local/cuda/bin/nvcc), one
+with "blas" with -DAZ_USE_BLAS=ON (OpenBLAS on Linux), others with none:
+build-nometal gets none. Checks
 that each machine's selfplay --version reports HEAD. --dry-run prints the
 commands instead of running them. Refuses a tree with uncommitted changes.
 <repo> is replaced wholesale: it must be a dedicated copy (e.g.
@@ -110,20 +114,26 @@ sync_machine() {
     [[ "$build" =~ $BUILD_NAME ]] ||
         { echo "error: $alias: exe=$exe is not in a build directory (build, build-blas, build-metal, ...)" >&2; return 1; }
     # The name's words, not substrings: build-metal and build_metal_2 are
-    # metal; build-nometal and build-metal2 are not. metal wins over blas
-    # (a Metal build has BLAS too).
+    # metal; build-nometal and build-metal2 are not. metal, then cuda, win
+    # over blas (a Metal or CUDA build has BLAS too).
     local words word flavour=""
     IFS='-_.' read -r -a words <<<"$build"
     for word in "${words[@]}"; do
         case "$word" in
             metal) flavour=metal ;;
+            cuda) [ "$flavour" = metal ] || flavour=cuda ;;
             blas) [ -n "$flavour" ] || flavour=blas ;;
         esac
     done
+    # Every option is set explicitly, so a kept CMake cache cannot hold an
+    # old choice. A non-interactive ssh shell often lacks /usr/local/cuda/bin
+    # on its PATH: nvcc is looked for there too (CMake keeps it after the
+    # first configure).
     case "$flavour" in
-        metal) options="-DAZ_USE_METAL=ON" ;;
-        blas) options="-DAZ_USE_METAL=OFF -DAZ_USE_BLAS=ON" ;;
-        *) options="-DAZ_USE_METAL=OFF -DAZ_USE_BLAS=OFF" ;;
+        metal) options="-DAZ_USE_METAL=ON -DAZ_USE_CUDA=OFF" ;;
+        cuda) options="-DAZ_USE_METAL=OFF -DAZ_USE_CUDA=ON -DCMAKE_CUDA_COMPILER=\$(command -v nvcc || echo /usr/local/cuda/bin/nvcc)" ;;
+        blas) options="-DAZ_USE_METAL=OFF -DAZ_USE_CUDA=OFF -DAZ_USE_BLAS=ON" ;;
+        *) options="-DAZ_USE_METAL=OFF -DAZ_USE_CUDA=OFF -DAZ_USE_BLAS=OFF" ;;
     esac
     echo "== $alias: $COMMIT -> $repo ($build)"
     local ssh_=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$target")
