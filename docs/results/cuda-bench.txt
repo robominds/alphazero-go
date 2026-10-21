@@ -32,7 +32,7 @@
 #
 # 3. Gemm speed at batch 256 (trunk shapes, GFLOP/s): the hand kernel
 #    reaches 11,800-16,300 (best tile), cuBLAS 17,500-25,300. The hand
-#    kernel runs at 0.64-0.69x cuBLAS's rate: single-buffered, scalar global loads, no
+#    kernel runs at 0.65-0.69x cuBLAS's rate: single-buffered, scalar global loads, no
 #    tuning. At batch 8 the grid is too small to fill 66 SMs (0.5-8 TFLOP/s).
 #
 # 4. A whole inference pass, two slots kept full (the hub's case), evals/s:
@@ -83,9 +83,10 @@
 # Recommendation: build a CUDA BatchRunner (backend = cuda, Linux, inference
 # only) on the fused implicit-GEMM kernel with the Metal kernels' contract.
 # Self-play is ~2,900 s of a ~4,100 s 13x13 generation, so the PC could take
-# about 60% of the games, and self-play would drop to roughly 1,200-1,300 s.
-# Use the hand kernel, not cuBLAS: cuBLAS is ~1.5x faster per gemm at batch 256,
-# slower than the fused kernel per pass, and breaks the determinism
+# about 60% of the games, and self-play would drop to ~1,130 s (generation
+# 18's 2,967 s x 19,000 / 49,800 evals/s; a few percent more for the hub).
+# Use the hand kernel, not cuBLAS: cuBLAS is ~1.5x faster per gemm at batch
+# 256, slower than the fused kernel per pass, and breaks the determinism
 # contract.
 #
 # ---- k OpenBLAS workers at batch 8, 13x13 6x96 (one-off program) ----
