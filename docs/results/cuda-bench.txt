@@ -1,0 +1,223 @@
+# CUDA GPU spike: should azgo get a CUDA BatchRunner? (2026-10-20)
+#
+# Machine: AMD Ryzen 7 7700X (8 cores, 16 threads), 30 GB, NVIDIA GeForce RTX
+# 4070 Ti SUPER (16 GB, compute capability 8.9, 66 SMs), Windows 11 with
+# WSL2 Ubuntu 24.04.4 LTS, CUDA 12.8, g++ 13.3, OpenBLAS 0.3.26. Otherwise
+# idle. Program: tools/cuda_bench (source, build script and README there).
+# Raw output follows the analysis. The Metal numbers come from
+# docs/results/bench.txt (Apple M5 Max) and from the 13x13 run's
+# selfplay-engines.csv. The Studio was not measured again: it was training
+# that run, and measuring its GPU would have meant pausing it.
+#
+# ======================================================================
+# Summary
+# ======================================================================
+#
+# 1. A hand-written fp32 SGEMM in the Metal kernel's style is
+#    batch-independent on CUDA, by construction and by test. It walks K from
+#    0 to K in steps of 16 through shared memory, never splits K, and each
+#    output is one fmaf chain in k order. A sample's output columns alone
+#    and inside batches of 8, 144 and 256, at three positions, were bitwise
+#    equal for every stem and trunk shape of the four networks. So were a
+#    repeated run and all three tile shapes (32x256, 64x128, 128x128).
+#    Against a double-precision reference its worst relative error is
+#    0.8-1.4e-7.
+#
+# 2. cuBLAS (fp32, default math mode, no TF32) is not batch-independent. A
+#    sample's columns alone differ from the same columns in a batch in
+#    75-95% of elements, for every shape (repeated runs are equal). cuBLAS
+#    picks other kernels for other N, and a whole pass through it gives
+#    193-1060 different outputs for a position alone and in a batch. It is
+#    a speed ceiling only, the same finding as Apple's MPS.
+#
+# 3. Gemm speed at batch 256 (trunk shapes, GFLOP/s): the hand kernel
+#    reaches 11,800-16,300 (best tile), cuBLAS 17,500-25,300. The hand
+#    kernel runs at 0.64-0.69x cuBLAS's rate: single-buffered, scalar global loads, no
+#    tuning. At batch 8 the grid is too small to fill 66 SMs (0.5-8 TFLOP/s).
+#
+# 4. A whole inference pass, two slots kept full (the hub's case), evals/s:
+#
+#    net           batch  hand explicit  hand fused  cuBLAS+im2col  | Metal M5 Max 2-slot   hub
+#    9x9 6x64        256         75,500     129,300         90,000  |        63,300        57,400
+#    9x9 6x96        256         41,200      48,400         50,800  |        30,400        29,400
+#    13x13 6x96      256         19,100      30,800         24,500  |      ~14,600 (a)   14,200 (b)
+#    19x19 10x128    256          4,460       6,780          5,630  |         2,830         2,780
+#
+#    "explicit" writes the column matrix (im2col) and runs bn_relu after
+#    each gemm, as the Metal backend does. "fused" is one implicit-GEMM
+#    kernel per convolution. It reads the layer input through the im2col
+#    index arithmetic and applies batch norm, the skip and ReLU in its
+#    epilogue. Its outputs are bitwise equal to the explicit pass, and it
+#    is just as batch-independent. The explicit pass spends ~42% of its
+#    time outside the gemms, writing and re-reading 150 MB of columns per
+#    13x13 6x96 layer at batch 256. The fused pass is 97% convolution.
+#    (a) bench.txt's 9x9 6x96 2-slot rate scaled by area (81/169).
+#    (b) the measured local/metal engine of the 13x13 6x96 run in real
+#        self-play: 13,300-14,300 evals/s over generations 1-18 (296 games
+#        at once, 800 simulations). The two M4 minis give ~2,400 each, so
+#        the three Macs together give ~19,000.
+#
+# 5. Estimate for a CUDA engine on 13x13 6x96 at batch ~256: about 30,800
+#    evals/s with the fused hand kernel as it stands. That is 2.1x the
+#    Studio's GPU, 13x a mini and 1.6x the whole current cluster. A
+#    cuBLAS-class gemm (0.41 ms instead of 0.62 ms per trunk layer) would
+#    give ~45,000. Real self-play loses a few percent to the hub and to MCTS
+#    on the CPU: the Studio's real 14,200 is ~97% of its raw 14,600. The
+#    risk on this PC is the CPU side, which must feed 30k evals/s from 16
+#    threads. Random playouts on 13x13 run at 302k moves/s here, against
+#    ~360k on the M5 Max (interpolated between its 9x9 and 19x19 rates),
+#    so it should keep up. Small passes (batch 8: 3,500 evals/s, 2.3 ms)
+#    are latency-bound, so the engine needs many games in flight, as metal
+#    does (every game of the slice at once).
+#
+# 6. The PC's CPU as a blas engine (OpenBLAS, single-threaded per worker,
+#    batch 8, Network::infer, 13x13 6x96): 358 evals/s on one worker; 661,
+#    1,235, 1,619, 1,898, 1,964 and 1,826 on 2, 4, 6, 8, 12 and 16
+#    workers. It peaks at about 1,900-2,000 with 8-12 workers. That is ~0.8
+#    of a mini's GPU, and only if the hosts file gives it cpu_workers=8: a
+#    remote's default rule allows 2 (661 evals/s). bench, one worker:
+#    blas 366 evals/s, train step 549 ms; naive 86 evals/s, 1,437 ms. The
+#    M5 Max's Accelerate does 2,796 evals/s on 9x9 6x96 on one thread
+#    (~1,340 scaled to 13x13), ~3.7x a Ryzen thread.
+#
+# Recommendation: build a CUDA BatchRunner (backend = cuda, Linux, inference
+# only) on the fused implicit-GEMM kernel with the Metal kernels' contract.
+# Self-play is ~2,900 s of a ~4,100 s 13x13 generation, so the PC could take
+# about 60% of the games, and self-play would drop to roughly 1,200-1,300 s.
+# Use the hand kernel, not cuBLAS: cuBLAS is ~1.5x faster per gemm at batch 256,
+# slower than the fused kernel per pass, and breaks the determinism
+# contract.
+#
+# ---- k OpenBLAS workers at batch 8, 13x13 6x96 (one-off program) ----
+# Each worker: makeBackend("blas") (one thread), its own Workspace and
+# Network::infer at batch 8 on random {0,1} planes, as a self-play CPU
+# engine runs; 4 s per k after 0.5 s warm-up; linked against build-blas.
+#   blas workers  1  evals/s      358  per worker    358
+#   blas workers  2  evals/s      661  per worker    330
+#   blas workers  4  evals/s     1235  per worker    309
+#   blas workers  6  evals/s     1619  per worker    270
+#   blas workers  8  evals/s     1898  per worker    237
+#   blas workers 12  evals/s     1964  per worker    164
+#   blas workers 16  evals/s     1826  per worker    114
+#
+# ---- bench --sizes 13 --backend all --seconds 3 (configs/9x9.cfg with board_size 13, filters 96) ----
+#   size   blocks x filters  backend       evals/s  train-step ms
+#   13x13  6 x 96            naive              86         1437.1
+#   13x13  6 x 96            blas              366          549.1
+#   size   random-playout moves/s
+#   13x13                  301737
+#
+# ======================================================================
+# Raw output
+# ======================================================================
+#
+# ---- cuda_bench gemm ----
+#   gpu: NVIDIA GeForce RTX 4070 Ti SUPER, compute 8.9, 66 SMs, 17.2 GB; CUDA runtime 12080, driver 13030
+#   == gemm: fp32, C[M][N] = A[M][K] . B[K][N]; ms per call (GFLOP/s); max relative error vs double ==
+#   net            conv batch      M       N      K             hand 32x256             hand 64x128            hand 128x128                  cuBLAS   err hand err cuBLAS
+#   9x9 6x64       stem     8     64     648    162     0.028 ms (    479)     0.023 ms (    574)     0.028 ms (    476)     0.017 ms (    785)   1.12e-07  4.90e-08
+#   9x9 6x64      trunk     8     64     648    576     0.087 ms (    548)     0.054 ms (    889)     0.074 ms (    648)     0.021 ms (   2271)   1.14e-07  2.22e-08
+#   9x9 6x64       stem   144     64   11664    162     0.035 ms (   6994)     0.027 ms (   8819)     0.040 ms (   6111)     0.020 ms (  12399)   8.87e-08  8.87e-08
+#   9x9 6x64      trunk   144     64   11664    576     0.106 ms (   8142)     0.081 ms (  10581)     0.123 ms (   7011)     0.046 ms (  18840)   1.06e-07  8.42e-08
+#   9x9 6x64       stem   256     64   20736    162     0.043 ms (   9921)     0.040 ms (  10757)     0.060 ms (   7204)     0.027 ms (  15742)   9.35e-08  9.35e-08
+#   9x9 6x64      trunk   256     64   20736    576     0.150 ms (  10178)     0.125 ms (  12215)     0.214 ms (   7156)     0.082 ms (  18746)   1.24e-07  1.24e-07
+#   9x9 6x96       stem     8     96     648    162     0.028 ms (    718)     0.020 ms (   1008)     0.025 ms (    803)     0.008 ms (   2659)   9.16e-08  4.23e-08
+#   9x9 6x96      trunk     8     96     648    864     0.130 ms (    830)     0.079 ms (   1353)     0.110 ms (    980)     0.024 ms (   4555)   1.04e-07  2.58e-08
+#   9x9 6x96       stem   144     96   11664    162     0.044 ms (   8159)     0.037 ms (   9911)     0.041 ms (   8863)     0.032 ms (  11503)   1.15e-07  1.15e-07
+#   9x9 6x96      trunk   144     96   11664    864     0.197 ms (   9801)     0.166 ms (  11666)     0.182 ms (  10642)     0.106 ms (  18272)   1.32e-07  6.47e-08
+#   9x9 6x96       stem   256     96   20736    162     0.058 ms (  11187)     0.059 ms (  10909)     0.062 ms (  10409)     0.042 ms (  15362)   1.22e-07  1.22e-07
+#   9x9 6x96      trunk   256     96   20736    864     0.273 ms (  12613)     0.323 ms (  10662)     0.394 ms (   8739)     0.189 ms (  18222)   9.82e-08  6.50e-08
+#   13x13 6x96     stem     8     96    1352    162     0.035 ms (   1211)     0.020 ms (   2122)     0.025 ms (   1669)     0.011 ms (   3664)   1.34e-07  5.84e-08
+#   13x13 6x96    trunk     8     96    1352    864     0.131 ms (   1709)     0.080 ms (   2821)     0.110 ms (   2041)     0.023 ms (   9818)   1.34e-07  3.06e-08
+#   13x13 6x96     stem   144     96   24336    162     0.075 ms (  10041)     0.070 ms (  10789)     0.066 ms (  11514)     0.048 ms (  15644)   1.40e-07  1.40e-07
+#   13x13 6x96    trunk   144     96   24336    864     0.441 ms (   9152)     0.381 ms (  10590)     0.403 ms (  10013)     0.260 ms (  15538)   1.17e-07  5.80e-08
+#   13x13 6x96     stem   256     96   43264    162     0.111 ms (  12125)     0.123 ms (  10967)     0.114 ms (  11795)     0.079 ms (  16966)   8.98e-08  8.98e-08
+#   13x13 6x96    trunk   256     96   43264    864     0.619 ms (  11592)     0.685 ms (  10474)     0.607 ms (  11814)     0.409 ms (  17531)   1.14e-07  4.95e-08
+#   19x19 10x128   stem     8    128    2888    162     0.029 ms (   4111)     0.020 ms (   6039)     0.030 ms (   3973)     0.013 ms (   8873)   1.27e-07  1.27e-07
+#   19x19 10x128  trunk     8    128    2888   1152     0.175 ms (   4871)     0.106 ms (   8029)     0.151 ms (   5649)     0.048 ms (  17596)   1.13e-07  3.82e-08
+#   19x19 10x128   stem   144    128   51984    162     0.182 ms (  11840)     0.166 ms (  12973)     0.197 ms (  10925)     0.127 ms (  16979)   9.85e-08  9.85e-08
+#   19x19 10x128  trunk   144    128   51984   1152     1.539 ms (   9962)     1.130 ms (  13572)     1.034 ms (  14831)     0.698 ms (  21954)   1.27e-07  5.83e-08
+#   19x19 10x128   stem   256    128   92416    162     0.450 ms (   8508)     0.312 ms (  12283)     0.294 ms (  13018)     0.213 ms (  17972)   1.42e-07  1.42e-07
+#   19x19 10x128  trunk   256    128   92416   1152     2.898 ms (   9405)     1.884 ms (  14468)     1.668 ms (  16343)     1.078 ms (  25285)   8.13e-08  8.13e-08
+#
+# ---- cuda_bench det forward --seconds 1 ----
+#   gpu: NVIDIA GeForce RTX 4070 Ti SUPER, compute 8.9, 66 SMs, 17.2 GB; CUDA runtime 12080, driver 13030
+#   == det: a sample's output columns alone vs inside a batch (bitwise) ==
+#   9x9 6x64       stem hand 32x256     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   9x9 6x64       stem hand 64x128     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   9x9 6x64       stem hand 128x128    B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   9x9 6x64       stem cuBLAS          B=8@0 4235/5184 differ  B=8@5 4235/5184 differ  B=8@7 4235/5184 differ  B=144@0 4584/5184 differ  B=144@73 4584/5184 differ  B=144@143 4584/5184 differ  B=256@0 4584/5184 differ  B=256@129 4584/5184 differ  B=256@255 4584/5184 differ  repeat equal  => NOT batch-independent
+#   9x9 6x64       stem the three hand tile shapes: bitwise equal
+#   9x9 6x64      trunk hand 32x256     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   9x9 6x64      trunk hand 64x128     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   9x9 6x64      trunk hand 128x128    B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   9x9 6x64      trunk cuBLAS          B=8@0 4185/5184 differ  B=8@5 4185/5184 differ  B=8@7 4185/5184 differ  B=144@0 4723/5184 differ  B=144@73 4723/5184 differ  B=144@143 4723/5184 differ  B=256@0 4870/5184 differ  B=256@129 4870/5184 differ  B=256@255 4870/5184 differ  repeat equal  => NOT batch-independent
+#   9x9 6x64      trunk the three hand tile shapes: bitwise equal
+#   9x9 6x96       stem hand 32x256     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   9x9 6x96       stem hand 64x128     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   9x9 6x96       stem hand 128x128    B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   9x9 6x96       stem cuBLAS          B=8@0 6257/7776 differ  B=8@5 6257/7776 differ  B=8@7 6257/7776 differ  B=144@0 6850/7776 differ  B=144@73 6850/7776 differ  B=144@143 6850/7776 differ  B=256@0 6850/7776 differ  B=256@129 6850/7776 differ  B=256@255 6850/7776 differ  repeat equal  => NOT batch-independent
+#   9x9 6x96       stem the three hand tile shapes: bitwise equal
+#   9x9 6x96      trunk hand 32x256     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   9x9 6x96      trunk hand 64x128     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   9x9 6x96      trunk hand 128x128    B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   9x9 6x96      trunk cuBLAS          B=8@0 6779/7776 differ  B=8@5 6779/7776 differ  B=8@7 6779/7776 differ  B=144@0 7129/7776 differ  B=144@73 7129/7776 differ  B=144@143 7129/7776 differ  B=256@0 6987/7776 differ  B=256@129 6987/7776 differ  B=256@255 6987/7776 differ  repeat equal  => NOT batch-independent
+#   9x9 6x96      trunk the three hand tile shapes: bitwise equal
+#   13x13 6x96     stem hand 32x256     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   13x13 6x96     stem hand 64x128     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   13x13 6x96     stem hand 128x128    B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   13x13 6x96     stem cuBLAS          B=8@0 12242/16224 differ  B=8@5 12242/16224 differ  B=8@7 12242/16224 differ  B=144@0 14357/16224 differ  B=144@73 14357/16224 differ  B=144@143 14357/16224 differ  B=256@0 14357/16224 differ  B=256@129 14357/16224 differ  B=256@255 14357/16224 differ  repeat equal  => NOT batch-independent
+#   13x13 6x96     stem the three hand tile shapes: bitwise equal
+#   13x13 6x96    trunk hand 32x256     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   13x13 6x96    trunk hand 64x128     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   13x13 6x96    trunk hand 128x128    B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   13x13 6x96    trunk cuBLAS          B=8@0 14406/16224 differ  B=8@5 14406/16224 differ  B=8@7 14406/16224 differ  B=144@0 14702/16224 differ  B=144@73 14702/16224 differ  B=144@143 14702/16224 differ  B=256@0 14702/16224 differ  B=256@129 14702/16224 differ  B=256@255 14702/16224 differ  repeat equal  => NOT batch-independent
+#   13x13 6x96    trunk the three hand tile shapes: bitwise equal
+#   19x19 10x128   stem hand 32x256     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   19x19 10x128   stem hand 64x128     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   19x19 10x128   stem hand 128x128    B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   19x19 10x128   stem cuBLAS          B=8@0 40913/46208 differ  B=8@5 40913/46208 differ  B=8@7 40913/46208 differ  B=144@0 40913/46208 differ  B=144@73 40913/46208 differ  B=144@143 40913/46208 differ  B=256@0 40913/46208 differ  B=256@129 40913/46208 differ  B=256@255 40913/46208 differ  repeat equal  => NOT batch-independent
+#   19x19 10x128   stem the three hand tile shapes: bitwise equal
+#   19x19 10x128  trunk hand 32x256     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   19x19 10x128  trunk hand 64x128     B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   19x19 10x128  trunk hand 128x128    B=8@0 equal  B=8@5 equal  B=8@7 equal  B=144@0 equal  B=144@73 equal  B=144@143 equal  B=256@0 equal  B=256@129 equal  B=256@255 equal  repeat equal  => batch-independent
+#   19x19 10x128  trunk cuBLAS          B=8@0 42185/46208 differ  B=8@5 42185/46208 differ  B=8@7 42185/46208 differ  B=144@0 42436/46208 differ  B=144@73 42436/46208 differ  B=144@143 42436/46208 differ  B=256@0 43995/46208 differ  B=256@129 43995/46208 differ  B=256@255 43995/46208 differ  repeat equal  => NOT batch-independent
+#   19x19 10x128  trunk the three hand tile shapes: bitwise equal
+#   == forward: whole inference pass, fp32; copies in and out included ==
+#   net           gemm         batch     sync ms    sync ev/s   2-slot ev/s  gemm share  alone vs in batch
+#   9x9 6x64      hand (auto)      8       0.990         8080          8845         72%  bitwise equal
+#   9x9 6x64      hand (auto)    144       2.131        67582         67997         49%  bitwise equal
+#   9x9 6x64      hand (auto)    256       3.412        75039         75493         46%  bitwise equal
+#   9x9 6x64      hand fused       8       1.200         6664          6947         92%  bitwise equal; = hand
+#   9x9 6x64      hand fused     144       1.530        94088         95910         93%  bitwise equal; = hand
+#   9x9 6x64      hand fused     256       2.018       126828        129326         94%  bitwise equal; = hand
+#   9x9 6x64      cuBLAS           8       0.667        11989         18537         34%  193 outputs differ; 582/664 differ from hand
+#   9x9 6x64      cuBLAS         144       1.888        76283         81293         34%  200 outputs differ; 10282/11952 differ from hand
+#   9x9 6x64      cuBLAS         256       2.864        89396         90000         36%  213 outputs differ; 17179/21248 differ from hand
+#   9x9 6x96      hand (auto)      8       1.922         4163          4340         88%  bitwise equal
+#   9x9 6x96      hand (auto)    144       4.099        35134         35524         61%  bitwise equal
+#   9x9 6x96      hand (auto)    256       6.226        41117         41194         54%  bitwise equal
+#   9x9 6x96      hand fused       8       2.147         3726          3817         95%  bitwise equal; = hand
+#   9x9 6x96      hand fused     144       3.302        43616         44013         97%  bitwise equal; = hand
+#   9x9 6x96      hand fused     256       5.276        48520         48357         98%  bitwise equal; = hand
+#   9x9 6x96      cuBLAS           8       1.150         6959         14811         67%  223 outputs differ; 612/664 differ from hand
+#   9x9 6x96      cuBLAS         144       2.921        49299         49015         45%  223 outputs differ; 11022/11952 differ from hand
+#   9x9 6x96      cuBLAS         256       5.035        50848         50764         46%  210 outputs differ; 19453/21248 differ from hand
+#   13x13 6x96    hand (auto)      8       2.112         3788          4000         82%  bitwise equal
+#   13x13 6x96    hand (auto)    144       8.833        16302         16357         62%  bitwise equal
+#   13x13 6x96    hand (auto)    256      13.369        19149         19121         58%  bitwise equal
+#   13x13 6x96    hand fused       8       2.358         3393          3520         94%  bitwise equal; = hand
+#   13x13 6x96    hand fused     144       5.408        26628         27431         97%  bitwise equal; = hand
+#   13x13 6x96    hand fused     256       8.295        30864         30809         97%  bitwise equal; = hand
+#   13x13 6x96    cuBLAS           8       0.851         9398         11271         26%  456 outputs differ; 1274/1368 differ from hand
+#   13x13 6x96    cuBLAS         144       6.180        23299         23283         51%  454 outputs differ; 23024/24624 differ from hand
+#   13x13 6x96    cuBLAS         256      10.420        24567         24502         48%  468 outputs differ; 41025/43776 differ from hand
+#   19x19 10x128  hand (auto)      8       4.324         1850          1754         74%  bitwise equal
+#   19x19 10x128  hand (auto)    144      34.825         4135          4128         60%  bitwise equal
+#   19x19 10x128  hand (auto)    256      58.039         4411          4463         58%  bitwise equal
+#   19x19 10x128  hand fused       8       4.326         1849          1868         94%  bitwise equal; = hand
+#   19x19 10x128  hand fused     144      22.462         6411          6429         99%  bitwise equal; = hand
+#   19x19 10x128  hand fused     256      37.868         6760          6779         98%  bitwise equal; = hand
+#   19x19 10x128  cuBLAS           8       2.492         3210          2989         53%  1060 outputs differ; 2847/2904 differ from hand
+#   19x19 10x128  cuBLAS         144      27.706         5197          5188         50%  1050 outputs differ; 51449/52272 differ from hand
+#   19x19 10x128  cuBLAS         256      45.467         5630          5627         46%  1059 outputs differ; 81716/92928 differ from hand

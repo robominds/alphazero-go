@@ -1441,6 +1441,12 @@ backward pass, the losses and SGD as kernels, opt-in with
 `gpu_training = true`. The CPU's other cores came first. The training
 step runs on all of them (`train_threads`), 4.6× faster for 6×96 on 9×9.
 
+An NVIDIA GPU may follow as a remote self-play engine. A CUDA spike
+(`tools/cuda_bench`, `docs/results/cuda-bench.txt`) on an RTX 4070 Ti
+SUPER ran the 13×13 6×96 inference pass at 30,800 positions per second
+(batch 256). That is 2.1× the M5 Max's GPU. Its hand-written fp32 kernels
+are batch-independent like the Metal ones, and cuBLAS is not.
+
 ## Authorship
 
 Written by Mark Castelluccio. Designed and implemented with the assistance of
