@@ -196,10 +196,14 @@ ArenaRoundSettings roundSettings(const Config& cfg, std::optional<int> bestNetwo
 // (generation `liveGeneration`), which is already in memory. A wave's
 // matches are played at once (playMatches): each checkpoint is read once
 // and each network gets one set of evaluators (one hub with metal) for all
-// its matches, so the GPU sees every search of the wave together.
+// its matches, so the GPU sees every search of the wave together. With
+// arena_engines and a coordinator, the wave's games are split across its
+// engines instead (Coordinator::playArena), merged back by game index.
 MatchesFn runMatches(const Config& cfg, const std::string& runDir, int liveGeneration,
-                     const Network* liveNet, const std::vector<Network>* referenceNets) {
-    return [cfg, runDir, liveGeneration, liveNet, referenceNets](const std::vector<MatchRequest>& wave) {
+                     const Network* liveNet, const std::vector<Network>* referenceNets,
+                     Coordinator* coordinator = nullptr) {
+    return [cfg, runDir, liveGeneration, liveNet, referenceNets,
+            coordinator](const std::vector<MatchRequest>& wave) {
         std::map<int, std::unique_ptr<Network>> loaded;   // generation -> its checkpoint
         const size_t bots = cfg.botSimulations.size();
         auto player = [&](int id) {
@@ -215,6 +219,7 @@ MatchesFn runMatches(const Config& cfg, const std::string& runDir, int liveGener
         };
         std::vector<ArenaMatchSpec> specs;
         for (const MatchRequest& m : wave) specs.push_back({player(m.a), player(m.b), m.games, m.seed});
+        if (coordinator && !cfg.arenaEngines.empty()) return coordinator->playArena(specs, arenaConfig(cfg));
         return playMatches(specs, arenaConfig(cfg), cfg.workers, cfg.backend, cfg.inferenceBatch);
     };
 }
@@ -384,24 +389,33 @@ void checkReferenceHashes(const ReferenceNetworks& loaded, const std::vector<Ref
                               "hash in state.bin); restore the original file");
 }
 
-// With selfplay_engines: the coordinator, its preflight done (it refuses
-// what cannot run and prints the engine lines). Null on the default path,
-// which reads no hosts file.
+// With selfplay_engines or arena_engines: the coordinator, its preflight
+// done (it refuses what cannot run and prints the engine lines). Null on the
+// default path, which reads no hosts file.
 std::unique_ptr<Coordinator> makeCoordinator(const Config& cfg, const std::string& runDir,
-                                                     const TrainerOptions& opts,
-                                                     std::ostream* log) {
-    if (cfg.selfplayEngines.empty()) return nullptr;
+                                             const TrainerOptions& opts, std::ostream* log) {
+    if (cfg.selfplayEngines.empty() && cfg.arenaEngines.empty()) return nullptr;
     auto coordinator = std::make_unique<Coordinator>(
         cfg, runDir, loadHostsFile(resolveHostsPath(opts.hostsFile)), log);
     coordinator->preflight();
     return coordinator;
 }
 
-// The engines a config plays self-play with, for the note on a change:
-// the list, or the default path's one engine.
-std::string describeEngines(const Config& cfg) {
-    if (cfg.selfplayEngines.empty()) return "local/" + cfg.backend;
-    return printEngineList(cfg.selfplayEngines);
+// The engines a list plays with, for the note on a change: the list, or
+// the default path's one engine.
+std::string describeEngines(const std::vector<EngineSpec>& list, const Config& cfg) {
+    if (list.empty()) return "local/" + cfg.backend;
+    return printEngineList(list);
+}
+
+// One "arena engines: ..." line per wave of the arena's reports.
+void printArenaEngines(std::ostream& log, const std::vector<SliceReport>& reports) {
+    for (size_t k = 0; k < reports.size();) {
+        std::vector<SliceReport> wave;
+        for (const int w = reports[k].wave; k < reports.size() && reports[k].wave == w; ++k)
+            wave.push_back(reports[k]);
+        log << enginesLine(wave, "arena engines") << "\n";
+    }
 }
 
 } // namespace
@@ -502,8 +516,10 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     state.references = initialReferences(
         static_cast<int>(cfg.botSimulations.size() + cfg.referenceNetworks.size()));
     // Each fixed player plays generation 0 now, so it has a rating before it can be chosen.
+    const bool arenaEngines = coordinator && !cfg.arenaEngines.empty();
+    if (arenaEngines) coordinator->beginArena(0);
     calibrateFixedPlayers(state.results, state.references, roundSettings(cfg, std::nullopt),
-                          runMatches(cfg, runDir, 0, &net, &referenceNets.networks));
+                          runMatches(cfg, runDir, 0, &net, &referenceNets.networks, coordinator.get()));
 
     if (given || donorBuffer)
         writeFileAtomically(
@@ -515,6 +531,11 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
 
     writeFileAtomically(logPath(runDir), kLogHeader);
     writeRatingFiles(runDir, state.results, state.references, cfg);
+    // Who played the calibration games, as generation 0's rows.
+    if (arenaEngines && !coordinator->arenaReports().empty()) {
+        writeArenaManifest(runDir, 0, coordinator->arenaReports());
+        if (log) printArenaEngines(*log, coordinator->arenaReports());
+    }
     // state.bin last: until it exists the directory is not a run, so a crash
     // anywhere above leaves something startNew can simply redo.
     saveTrainingState(statePath(runDir), state);
@@ -596,15 +617,20 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
              << "\n";
     // Which engine plays which game is part of the result, like the backend.
     if (log && printEngineList(saved.selfplayEngines) != printEngineList(cfg.selfplayEngines))
-        *log << "note: self-play engines changed from " << describeEngines(saved) << " to "
-             << describeEngines(cfg) << "; from here on results differ in the\n"
-             << "last bits from a run that kept " << describeEngines(saved) << "\n";
+        *log << "note: self-play engines changed from " << describeEngines(saved.selfplayEngines, saved)
+             << " to " << describeEngines(cfg.selfplayEngines, cfg) << "; from here on results differ in the\n"
+             << "last bits from a run that kept " << describeEngines(saved.selfplayEngines, saved) << "\n";
+    if (log && printEngineList(saved.arenaEngines) != printEngineList(cfg.arenaEngines))
+        *log << "note: arena engines changed from " << describeEngines(saved.arenaEngines, saved) << " to "
+             << describeEngines(cfg.arenaEngines, cfg) << "; from here on arena results differ in the\n"
+             << "last bits from a run that kept " << describeEngines(saved.arenaEngines, saved) << "\n";
     // Rewritten only after every check passed, so a refused resume leaves the
     // run directory untouched.
     writeFileAtomically(configPath(runDir), configToString(cfg));
     addMissingLogColumns(runDir);
-    // The manifest describes committed generations only (engines on or off).
+    // The manifests describe committed generations only (engines on or off).
     pruneManifest(runDir, state.generation + 1);
+    pruneArenaManifest(runDir, state.generation + 1);
 
     std::unique_ptr<Trainer> trainer(new Trainer(cfg, runDir, std::move(net), std::move(state)));
     trainer->referenceNets_ = std::move(referenceNets.networks);
@@ -658,7 +684,7 @@ GenerationStats Trainer::runGeneration() {
         // (azgo/inference_hub.hpp). Game i's randomness depends only on i,
         // and its record is stored at index i, so the result does not
         // depend on which thread played it.
-        if (coordinator_) {
+        if (coordinator_ && !cfg_.selfplayEngines.empty()) {
             // selfplay_engines: a slice per engine, all at once, merged by index.
             const int selfPlayGeneration = bestNet ? state_.bestGeneration : state_.generation;
             const std::string networkPath = checkpointPath(runDir_, selfPlayGeneration);
@@ -870,11 +896,14 @@ GenerationStats Trainer::runGeneration() {
     int newBest = cfg_.gating ? state_.bestGeneration : g;
     const bool arenaThisGeneration = cfg_.arenaEvery > 0 && g % cfg_.arenaEvery == 0;
     ArenaRoundResult round;
+    // With arena_engines, each wave's games are split across the engines.
+    const bool arenaEngines = coordinator_ && !cfg_.arenaEngines.empty();
+    if (arenaEngines) coordinator_->beginArena(g);
     if (arenaThisGeneration) {
         const std::optional<int> best =
             cfg_.gating ? std::optional<int>(state_.bestGeneration) : std::nullopt;
         round = runArenaRound(g, state_.results, state_.references, roundSettings(cfg_, best),
-                              runMatches(cfg_, runDir_, g, &net_, &referenceNets_));
+                              runMatches(cfg_, runDir_, g, &net_, &referenceNets_, coordinator_.get()));
         for (const ArenaMatch& m : round.matches) {
             if (m.opponent == g - 1) {
                 stats.winRateVsPrev = m.result.scoreA / m.result.games;
@@ -896,7 +925,8 @@ GenerationStats Trainer::runGeneration() {
     state_.generation = g;
     // Who played which slice, written before the commit point: a crash in
     // between leaves rows of an uncommitted generation, which its redo replaces.
-    if (coordinator_) writeManifest(runDir_, g, coordinator_->reports());
+    if (coordinator_ && !cfg_.selfplayEngines.empty()) writeManifest(runDir_, g, coordinator_->reports());
+    if (arenaEngines) writeArenaManifest(runDir_, g, coordinator_->arenaReports());
     saveTrainingState(statePath(runDir_), state_);
     // log.csv is a human-facing record (it contains timings) and is appended
     // after state.bin: a crash between the two loses one row, never corrupts
@@ -930,7 +960,9 @@ GenerationStats Trainer::runGeneration() {
                 validation += " seen p " + formatLoss(stats.seenPolicyLoss, 2) + " v " +
                               formatLoss(stats.seenValueLoss, 2);
         }
-        if (coordinator_) *log_ << enginesLine(coordinator_->reports()) << "\n";
+        if (coordinator_ && !cfg_.selfplayEngines.empty())
+            *log_ << enginesLine(coordinator_->reports()) << "\n";
+        if (arenaEngines) printArenaEngines(*log_, coordinator_->arenaReports());
         char line[512];
         std::snprintf(line, sizeof line,
                       "gen %d | selfplay %d games avg %.1f plies%s %.1fs | "

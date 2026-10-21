@@ -2370,7 +2370,243 @@ static void test_mixed_local_engines_deterministic() {
     assert(row[3] == "local/blas" && row[5] == engineFingerprint("blas"));
 }
 
+// ---- arena engines (distributed arena, one machine) ------------------------------------
+
+static Config withArenaEngines(Config c, const std::string& engines) {
+    applyOverride(c, "arena_engines=" + engines);
+    return c;
+}
+
+// arena-engines.csv's rows, each without its timing column (seconds, the 9th).
+static std::string arenaManifestWithoutTimings(const TempDir& dir) {
+    std::string out;
+    for (const std::string& row : splitLines(readFile(dir.file("arena-engines.csv")))) {
+        const std::vector<std::string> fields = csvFields(row);
+        assert(fields.size() == 12);
+        for (size_t i = 0; i < fields.size(); ++i)
+            if (i != 8) out += fields[i] + "|";
+        out += "\n";
+    }
+    return out;
+}
+
+static std::vector<std::vector<std::string>> arenaRows(const TempDir& dir) {
+    std::vector<std::vector<std::string>> rows;
+    const std::vector<std::string> lines = splitLines(readFile(dir.file("arena-engines.csv")));
+    assert(lines[0] == "generation,wave,first,count,planned,engine,fingerprint,build,seconds,positions,"
+                       "evaluations,note");
+    for (size_t i = 1; i < lines.size(); ++i) rows.push_back(csvFields(lines[i]));
+    return rows;
+}
+
+// Every engine here is naive on this machine: the same arithmetic, so a
+// run whose arena games are split across local engines, or played partly
+// or wholly by a fake remote, is the default run byte for byte, gating
+// decisions, promotions and calibrations included. Only the engine runs
+// write an arena manifest; self-play stays on the default path.
+static void test_arena_engines_equal_default() {
+    TempDir refs("arena_eq_refs"), plain("arena_eq_default");
+    const Config base = roundsConfig(refs, "naive");
+    startQuiet(base, plain)->runUntil(4);
+    const std::string reference = runFingerprint(plain, 4);
+    assert(!fs::exists(plain.file("arena-engines.csv")));
+    int variant = 0;
+    for (const std::string& engines : {std::string("local/naive:1"), std::string("local/naive:2, local/naive:1"),
+                                       std::string("local/naive:1, fake/naive:1"), std::string("fake/naive:1")}) {
+        TempDir dir("arena_eq_" + std::to_string(variant++));
+        TrainerOptions opts;
+        opts.hostsFile = fakeHosts(dir);
+        std::ostringstream startup;
+        std::unique_ptr<Trainer> t =
+            Trainer::startNew(withArenaEngines(base, engines), dir.str(), {}, &startup, opts);
+        std::ostringstream progress;
+        t->setLog(&progress);
+        t->runUntil(4);
+        assert(runFingerprint(dir, 4) == reference);
+        assert(loadTrainingState(statePath(dir.str())).bestGeneration ==
+               loadTrainingState(statePath(plain.str())).bestGeneration);
+        assert(!fs::exists(dir.file("selfplay-engines.csv")));
+        assert(readFile(configPath(dir.str())).find("\narena_engines = " + engines + "\n") != std::string::npos);
+        // Generation 0's calibrations (two bots, two reference networks, 4
+        // games each: one wave of 16), then every generation's waves.
+        const std::vector<std::vector<std::string>> rows = arenaRows(dir);
+        const std::vector<EngineSpec> list = parseEngineList(engines);
+        int calibrationGames = 0, waves2 = 0;
+        for (const std::vector<std::string>& row : rows) {
+            assert(row[5] == row[4] && row[6] == engineFingerprint("naive") && row[7] == shortBuildId());
+            assert(row[11].empty() && std::stoll(row[9]) > 0);
+            if (row[0] == "0") calibrationGames += std::stoi(row[3]);
+            if (row[1] == "2") ++waves2;
+        }
+        assert(calibrationGames == 16 && waves2 > 0);   // a promotion: a second wave
+        assert(rows.front()[0] == "0" && rows.back()[0] == "4");
+        // The progress output: one "arena engines:" line per wave.
+        assert(startup.str().find("arena engines: " + list[0].name() + " ") != std::string::npos);
+        assert(progress.str().find("arena engines: " + list[0].name() + " ") < progress.str().find("gen 1 |"));
+    }
+}
+
+static void test_arena_engines_resume_is_byte_identical() {
+    TempDir refs("arena_resume_refs"), straight("arena_straight"), resumed("arena_resumed");
+    const Config c = withArenaEngines(roundsConfig(refs, "naive"), "local/naive:1, fake/naive:2");
+    startEngines(c, straight, fakeHosts(straight))->runUntil(4);
+    startEngines(c, resumed, fakeHosts(resumed))->runUntil(2);
+    resumeEngines(resumed, {}, resumed.file("hosts"))->runUntil(4);
+    assert(runFingerprint(straight, 4) == runFingerprint(resumed, 4));
+    assert(arenaManifestWithoutTimings(straight) == arenaManifestWithoutTimings(resumed));
+}
+
+// The arena's engines can be switched on (and off) at a generation boundary,
+// with a note, alone or beside self-play's; a crash's rows of an uncommitted
+// generation are dropped by the next resume.
+static void test_arena_engines_switch_and_prune() {
+    TempDir plain("arena_switch_default"), switched("arena_switch");
+    const std::string hosts = fakeHosts(switched);
+    startQuiet(tinyConfig(), plain)->runUntil(4);
+    startQuiet(tinyConfig(), switched)->runUntil(2);
+    std::ostringstream out;
+    resumeEngines(switched, {"arena_engines=fake/naive:1,local/naive:1"}, hosts, &out)->runUntil(4);
+    const std::string note = "note: arena engines changed from local/naive to fake/naive:1, local/naive:1; "
+                             "from here on arena results differ in the\nlast bits from a run that kept local/naive\n";
+    assert(out.str().find(note) != std::string::npos);
+    assert(out.str().find("note:") == out.str().rfind("note:"));   // once
+    assert(runFingerprint(plain, 4) == runFingerprint(switched, 4));
+    assert(readFile(configPath(switched.str())).find("\narena_engines = fake/naive:1, local/naive:1\n") !=
+           std::string::npos);
+    std::vector<std::vector<std::string>> rows = arenaRows(switched);
+    assert(rows.size() == 4 && rows[0][0] == "3" && rows[3][0] == "4" && rows[0][4] == "fake/naive");
+    // What a crash after generation 5's manifest would leave goes on resume.
+    const std::string committed = readFile(switched.file("arena-engines.csv"));
+    writeFile(switched.file("arena-engines.csv"),
+              committed + "5,1,0,2,local/naive,local/naive,\"" + engineFingerprint("naive") + "\",b,1.0,10,20,\n");
+    std::ostringstream same, back;
+    resumeEngines(switched, {}, hosts, &same);
+    assert(same.str().find("note:") == std::string::npos);
+    assert(readFile(switched.file("arena-engines.csv")) == committed);
+    resumeEngines(switched, {"arena_engines="}, hosts, &back)->runUntil(5);
+    resumeQuiet(plain, {})->runUntil(5);
+    assert(back.str().find("note: arena engines changed from fake/naive:1, local/naive:1 to local/naive") !=
+           std::string::npos);
+    assert(runFingerprint(plain, 5) == runFingerprint(switched, 5));
+    assert(arenaRows(switched).size() == 4);   // generation 5 played on the default path
+    // Both lists at once: self-play's and the arena's manifests side by side.
+    TempDir plain2("arena_both_default"), both("arena_both");
+    startQuiet(tinyConfig(), plain2)->runUntil(2);
+    startEngines(withArenaEngines(withEngines(tinyConfig(), "local/naive:1, fake/naive:1"), "fake/naive:1"), both,
+                 fakeHosts(both))
+        ->runUntil(2);
+    assert(runFingerprint(plain2, 2) == runFingerprint(both, 2));
+    assert(manifestRows(both) == 4 && arenaRows(both).size() == 3);   // calibration, generations 1 and 2
+}
+
+// Preflight covers the arena's machines too, before anything is written,
+// and its messages name arena_engines. Re-rating plays every game here
+// whatever arena_engines says.
+static void test_arena_engines_preflight_and_rerate() {
+    {
+        TempDir dir("arena_preflight_alias");
+        bool threw = false;
+        try {
+            startEngines(withArenaEngines(tinyConfig(), "local/naive:1, mini9/naive:1"), dir, fakeHosts(dir));
+        } catch (const ConfigError& e) {
+            threw = std::string(e.what()).find("mini9") != std::string::npos;
+        }
+        assert(threw && !fs::exists(configPath(dir.str())));
+    }
+    {
+        TempDir dir("arena_preflight_build");
+        distributed_probe::setRemoteBuildId("0000000000000000000000000000000000000000");
+        bool threw = false;
+        try {
+            startEngines(withArenaEngines(tinyConfig(), "fake/naive:1"), dir, fakeHosts(dir));
+        } catch (const ConfigError& e) {
+            threw = std::string(e.what()).find("arena_engines: fake runs build 0000000") != std::string::npos;
+        }
+        distributed_probe::reset();
+        assert(threw && !fs::exists(configPath(dir.str())));
+    }
+    TempDir plain("arena_rerate_default"), engines("arena_rerate_engines");
+    startQuiet(tinyConfig(), plain)->runUntil(3);
+    startEngines(withArenaEngines(tinyConfig(), "fake/naive:1"), engines, fakeHosts(engines))->runUntil(3);
+    assert(rerateRun(plain.str(), {}, nullptr) == 3 && rerateRun(engines.str(), {}, nullptr) == 3);
+    for (const char* f : {"results.csv", "elo.csv", "references.csv", "log.csv"})
+        assert(readFile(plain.file(std::string("rerate/") + f)) == readFile(engines.file(std::string("rerate/") + f)));
+    assert(!fs::exists(engines.file("rerate/arena-engines.csv")) && !fs::exists(engines.file("arena-work")));
+}
+
+// A failing remote arena slice: once is retried with the same bits, twice
+// falls back here with a note in the manifest and the log; under stop the
+// generation ends uncommitted, and a resume plays it as planned.
+static void test_arena_failures() {
+    TempDir plain("arena_fail_default");
+    startQuiet(tinyConfig(), plain)->runUntil(2);
+    const Config c = withArenaEngines(tinyConfig(), "local/naive:1, fake/naive:1");
+    using Fail = distributed_probe::Fail;
+    for (Fail mode : {Fail::Exit, Fail::Timeout, Fail::Corrupt}) {
+        TempDir dir("arena_retry_" + std::to_string(static_cast<int>(mode)));
+        std::unique_ptr<Trainer> t = startEngines(c, dir, fakeHosts(dir, mode == Fail::Timeout ? "timeout=5" : ""));
+        distributed_probe::failSlice("fake/naive", 1, mode);
+        t->runUntil(2);
+        distributed_probe::reset();
+        assert(runFingerprint(plain, 2) == runFingerprint(dir, 2));
+        for (const std::vector<std::string>& row : arenaRows(dir)) assert(row[11].empty() && row[5] == row[4]);
+        assert(fs::exists(dir.file("arena-work/gen_0001_w1/fake_naive.log")));
+    }
+    {
+        TempDir dir("arena_fallback");
+        std::unique_ptr<Trainer> t = startEngines(c, dir, fakeHosts(dir));
+        std::ostringstream log;
+        t->setLog(&log);
+        distributed_probe::failSlice("fake/naive", 2, Fail::Exit);
+        t->runUntil(2);
+        distributed_probe::reset();
+        assert(runFingerprint(plain, 2) == runFingerprint(dir, 2));
+        // Generation 1's first wave's fake slice fell back (both injected
+        // failures went to it); every later slice played as planned.
+        int fallbacks = 0;
+        for (const std::vector<std::string>& row : arenaRows(dir)) {
+            if (row[11].empty()) {
+                assert(row[5] == row[4]);
+                continue;
+            }
+            ++fallbacks;
+            assert(row[0] == "1" && row[1] == "1" && row[4] == "fake/naive" && row[5] == "local/naive");
+            assert(row[11] == "fallback: fake: selfplay exit 255" && row[6] == engineFingerprint("naive"));
+        }
+        assert(fallbacks == 1);
+        assert(log.str().find("note: generation 1: arena wave 1 games ") != std::string::npos);
+        assert(log.str().find("(fake/naive) played by local/naive: fake: selfplay exit 255") != std::string::npos);
+    }
+    {
+        TempDir straight("arena_stop_straight"), dir("arena_stop");
+        Config stop = c;
+        stop.selfplayFallback = "stop";
+        startEngines(stop, straight, fakeHosts(straight))->runUntil(3);
+        std::unique_ptr<Trainer> t = startEngines(stop, dir, fakeHosts(dir));
+        t->runUntil(1);
+        distributed_probe::failSlice("fake/naive", 2, Fail::Exit);
+        bool threw = false;
+        try {
+            t->runUntil(2);
+        } catch (const std::runtime_error& e) {
+            threw = std::string(e.what()).find("fake/naive") != std::string::npos;
+        }
+        distributed_probe::reset();
+        assert(threw && t->generation() == 1);
+        t.reset();
+        assert(loadTrainingState(statePath(dir.str())).generation == 1);
+        resumeEngines(dir, {}, dir.file("hosts"))->runUntil(3);
+        assert(runFingerprint(straight, 3) == runFingerprint(dir, 3));
+        assert(arenaManifestWithoutTimings(straight) == arenaManifestWithoutTimings(dir));
+    }
+}
+
 int main() {
+    test_arena_engines_equal_default();
+    test_arena_engines_resume_is_byte_identical();
+    test_arena_engines_switch_and_prune();
+    test_arena_engines_preflight_and_rerate();
+    test_arena_failures();
     test_single_local_engine_equals_default();
     test_split_local_engines_equal_default();
     test_engines_resume_is_byte_identical();

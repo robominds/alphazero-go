@@ -10,8 +10,9 @@
 // self-play, the arena and the validation loss evaluate the network on the
 // GPU through batching hubs, under the same guarantees on one machine. With
 // selfplay_engines, a Coordinator plays each generation's games on
-// several engines at once (azgo/coordinator.hpp); without it, self-play is
-// one engine, exactly as before.
+// several engines at once (azgo/coordinator.hpp), and with arena_engines
+// each arena wave's games; without them, self-play and the arena each run
+// on one engine, exactly as before.
 #include <iostream>
 #include <memory>
 #include <ostream>
@@ -61,7 +62,7 @@ class Coordinator;   // azgo/coordinator.hpp
 // How a run reaches other machines; nothing here changes a result.
 // hostsFile: the machine-local hosts file (azgo/engines.hpp); empty means
 // $AZGO_HOSTS, else ~/.config/azgo/hosts. Read only when selfplay_engines
-// is set.
+// or arena_engines is set.
 struct TrainerOptions {
     std::string hostsFile;
 };
@@ -96,9 +97,12 @@ public:
     // backend (checkBackendAvailable) before writing anything; with metal it
     // prints the device line to `log` (null: silent):
     //   gpu: Apple M5 Max, macOS 27.0.1, shaders 3f1c9a07 (inference: self-play, arena, validation)
-    // With selfplay_engines, the coordinator's preflight runs first, before
-    // anything is written: it reads the hosts file (opts.hostsFile), checks
-    // every engine and prints one line per engine (Coordinator::preflight).
+    // With selfplay_engines or arena_engines, the coordinator's preflight
+    // runs first, before anything is written: it reads the hosts file
+    // (opts.hostsFile), checks every engine and prints one line per engine
+    // (Coordinator::preflight). With arena_engines the calibration games are
+    // split across its engines, recorded as generation 0's rows of
+    // arena-engines.csv, with an "arena engines:" line to `log`.
     static std::unique_ptr<Trainer> startNew(const Config& cfg, const std::string& runDir,
                                              const RunInit& init = {},
                                              std::ostream* log = &std::cout,
@@ -117,9 +121,10 @@ public:
     // and prints to `log` the device line with metal and, when backend
     // differs from the saved config.cfg, a note that the results' last bits
     // will differ from a run that kept the old one. The same preflight as
-    // startNew with selfplay_engines, and the same kind of note when
-    // selfplay_engines differs from the saved config.cfg's. Drops the
-    // manifest's rows of uncommitted generations (pruneManifest).
+    // startNew with selfplay_engines or arena_engines, and the same kind of
+    // note when either differs from the saved config.cfg's. Drops the
+    // manifests' rows of uncommitted generations (pruneManifest,
+    // pruneArenaManifest).
     static std::unique_ptr<Trainer> resume(const std::string& runDir,
                                            const std::vector<std::string>& overrides,
                                            std::ostream* log = &std::cout,
@@ -142,7 +147,8 @@ private:
     // The run's reference networks, read once and fitted to its shape: fixed
     // player -(bots + j + 1) is referenceNets_[j].
     std::vector<Network> referenceNets_;
-    // Plays self-play when selfplay_engines is set; null on the default path.
+    // Plays self-play when selfplay_engines is set and the arena when
+    // arena_engines is; null on the default path.
     std::unique_ptr<Coordinator> coordinator_;
 };
 
@@ -162,7 +168,8 @@ private:
 // reference-networks.csv with reference networks), rewritten after each
 // generation; never touches state.bin or config.cfg. With gating off, a run's
 // checkpoints do not depend on its arena, so this is exactly what a live run
-// would have measured. Progress lines go to `log` (nullptr = silent), the
+// would have measured (with arena_engines, which the replay ignores, up to
+// the last bits: every game is played here, with the run's backend). Progress lines go to `log` (nullptr = silent), the
 // device line first with metal, then the fixed players' calibration. An
 // unavailable backend is refused before anything is written. Returns the
 // last generation replayed.
