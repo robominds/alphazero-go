@@ -22,7 +22,7 @@ constexpr int kMaxFilters = 512;
 
 struct ConfigError : std::runtime_error { using std::runtime_error::runtime_error; };
 
-// One item of selfplay_engines: an engine (a machine alias and a backend)
+// One item of selfplay_engines or arena_engines: an engine (a machine alias and a backend)
 // and its share of a generation's games, either a weight (weight > 0,
 // games = -1) or an exact count (games >= 0, weight = 0). Items are
 // identified by their position in the list, so an engine may appear twice.
@@ -117,6 +117,12 @@ struct Config {
     int arenaSimulations = 100;
     int arenaTemperatureMoves = 4;
     bool arenaRandomSymmetry = false;  // arena search (networks): random symmetry per evaluation
+    // Distributed arena: which engine plays which games of each arena wave,
+    // e.g. "local/metal:133, pc/cuda:300", weights only (a wave holds 40,
+    // 80 or 160 games, so a fixed count would mean a different share in
+    // each). Empty: the whole arena on local/<backend>, through today's code.
+    // selfplay_fallback governs its failed slices too.
+    std::vector<EngineSpec> arenaEngines;
     bool gating = false;
     float gatingThreshold = 0.55f;
     // output
@@ -157,7 +163,8 @@ std::vector<std::string> resumeLockedDiff(const Config& a, const Config& b);
 // false positives on), resign_min_games exceeds resign_window, or
 // inference_batch is below mcts_batch (a request must fit in one GPU pass),
 // or selfplay_engines' fixed counts add up to more than
-// games_per_generation (or, with no weighted item, to anything else).
+// games_per_generation (or, with no weighted item, to anything else), or
+// arena_engines holds a fixed count (it takes weights only).
 void checkConsistency(const Config& cfg);
 
 } // namespace azgo

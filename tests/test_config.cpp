@@ -662,9 +662,9 @@ static void test_metal_backend_and_inference_batch() {
 static void test_config_selfplay_keys() {
     Config d;
     assert(d.selfplayEngines.empty() && d.selfplayFallback == "local");
-    // main's 50 keys, and these two.
+    // main's 50 keys, these two and arena_engines.
     const std::string text = configToString(d);
-    assert(std::count(text.begin(), text.end(), '\n') == 52);
+    assert(std::count(text.begin(), text.end(), '\n') == 53);
     assert(contains(text, "\ninference_batch = 256\nselfplay_engines = \n"
                           "selfplay_fallback = local\n"));
     // A config.cfg written before the keys existed gets the defaults.
@@ -716,9 +716,46 @@ static void test_config_selfplay_keys() {
     assert(consistencyError("", 10).empty());
 }
 
+// Distributed arena: arena_engines, the same list as selfplay_engines
+// (empty: today's arena), after arena_random_symmetry. Arena waves differ
+// in size, so it takes weights only.
+static void test_config_arena_engines() {
+    Config d;
+    assert(d.arenaEngines.empty());
+    assert(contains(configToString(d), "\narena_random_symmetry = false\narena_engines = \ngating = "));
+    assert(parseConfigText("filters = 96\n", "old.cfg").arenaEngines.empty());
+
+    Config c = parseConfigText("arena_engines = local/metal:133 ,mini1/metal : 24, pc/cuda:300\n", "t.cfg");
+    assert(c.arenaEngines.size() == 3);
+    assert(c.arenaEngines[2].machine == "pc" && c.arenaEngines[2].backend == "cuda");
+    assert(c.arenaEngines[2].weight == 300 && c.arenaEngines[2].games == -1);
+    assert(contains(configToString(c), "\narena_engines = local/metal:133, mini1/metal:24, pc/cuda:300\n"));
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    checkConsistency(c);
+    applyOverride(c, "arena_engines=");
+    assert(c.arenaEngines.empty());
+    assert(contains(errorOf("arena_engines = local/gpu:1"), "t.cfg:1: arena_engines: "));
+    // Tunable: a resume may change it.
+    Config e;
+    applyOverride(e, "arena_engines=local/naive:1");
+    assert(architectureDiff(d, e).empty() && resumeLockedDiff(d, e).empty());
+
+    // A fixed count cannot mean the same share of a wave of 40, 80 or 160 games.
+    Config k;
+    applyOverride(k, "arena_engines=local/metal:1, local/blas=4");
+    bool threw = false;
+    try {
+        checkConsistency(k);
+    } catch (const ConfigError& err) {
+        threw = contains(err.what(), "arena_engines") && contains(err.what(), "weights");
+    }
+    assert(threw);
+}
+
 int main() {
     test_defaults();
     test_config_selfplay_keys();
+    test_config_arena_engines();
     test_metal_backend_and_inference_batch();
     test_presets_load();
     test_missing_file();

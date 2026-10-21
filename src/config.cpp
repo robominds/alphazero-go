@@ -305,6 +305,16 @@ const KeyEntry kKeys[] = {
     {"arena_random_symmetry", false,
      [](Config& c, const std::string& v) { return parseBool(v, c.arenaRandomSymmetry); },
      [](const Config& c) { return std::string(c.arenaRandomSymmetry ? "true" : "false"); }},
+    {"arena_engines", false,
+     [](Config& c, const std::string& v) -> std::string {
+         try {
+             c.arenaEngines = parseEngineList(v);
+         } catch (const std::invalid_argument& e) {
+             return e.what();
+         }
+         return "";
+     },
+     [](const Config& c) { return printEngineList(c.arenaEngines); }},
     {"gating", false, [](Config& c, const std::string& v) { return parseBool(v, c.gating); },
      [](const Config& c) { return std::string(c.gating ? "true" : "false"); }},
     {"gating_threshold", false,
@@ -457,6 +467,13 @@ void checkConsistency(const Config& cfg) {
                               "must add up to exactly games_per_generation (" + games + "), not " +
                               std::to_string(fixed));
     }
+    // arena_engines: every wave is shared out by weight, since waves differ
+    // in size (one opponent, two, a promotion's or a calibration's games).
+    for (const EngineSpec& e : cfg.arenaEngines)
+        if (e.games >= 0)
+            throw ConfigError("arena_engines: " + e.name() + "=" + std::to_string(e.games) +
+                              " is a fixed count, but arena waves differ in size (40, 80 or 160 "
+                              "games), so arena_engines takes weights (:W) only");
 }
 
 } // namespace azgo
