@@ -322,3 +322,26 @@
 #                   2          664         332
 #                   4         1232         308
 #                   8         1885         236
+#
+# =============================================================================
+# The CUDA branch on the default path: old against new (2026-10-20)
+# =============================================================================
+# Plan task 10. Old = main c9f8593, new = cuda-backend 65dbd00, both from
+# git archive on the PC (Ubuntu 24.04, g++ 13.3, OpenBLAS 0.3.26; Release,
+# -DAZGO_BUILD_ID), each as a naive build and a BLAS build. No
+# selfplay_engines: the default path. Every file of the run compared byte
+# for byte, and log.csv without selfplay_s, train_s and arena_s; the file
+# lists compared too.
+#   5x5 preset, 40 games, 64 simulations, 50 steps; arena 10 games at 48
+#     simulations, calibration_games 10, one bot (50 simulations); 2
+#     generations with workers 0, resumed to 3 with workers 3.
+#     naive: identical (16 files). blas: identical (16 files).
+#   9x9 preset with filters 96, resignation on, 8 games, 50 simulations, 20
+#     steps; 2 generations. naive: identical (13 files). blas: identical
+#     (13 files).
+# (Not vacuous: the naive and blas runs' gen_0003.azn differ.)
+# On the Studio, this branch's build-metal reports the same metal
+# fingerprint as the live 13x13 run's manifest ("metal; Apple M5 Max;
+# macOS 27.0.1 (26A434); Apple M5 Max, macOS 27.0.1, shaders b7b31a09"):
+# the Metal kernels are untouched, and test_metal passes. No run was
+# made on the Studio, which is training.
