@@ -222,3 +222,103 @@
 #   19x19 10x128  cuBLAS           8       2.492         3210          2989         53%  1060 outputs differ; 2847/2904 differ from hand
 #   19x19 10x128  cuBLAS         144      27.706         5197          5188         50%  1050 outputs differ; 51449/52272 differ from hand
 #   19x19 10x128  cuBLAS         256      45.467         5630          5627         46%  1059 outputs differ; 81716/92928 differ from hand
+#
+# =============================================================================
+# The CUDA engine: backend = cuda measured with bench (2026-10-20)
+# =============================================================================
+# Branch cuda-backend, plan task 9 (docs/superpowers/plans/
+# 2026-10-20-cuda-inference-backend.md), build-cuda (Release,
+# -DAZ_USE_CUDA=ON, AZ_CUDA_ARCHITECTURES 89-real). Same PC, idle.
+# Networks: configs/9x9.cfg with filters = 96, the 9x9 preset at board_size
+# 13 with filters 96 (the 13x13 run's shape), and configs/19x19.cfg (10 x
+# 128, value_hidden 256). Random weights.
+#
+# Against the spec's acceptance (docs/superpowers/specs/
+# 2026-10-20-cuda-inference-backend-design.md):
+#   raw 2-slot pass, 13x13 6x96, batch 256:   32,207 evals/s   target >= 28,000   met
+#   raw 2-slot pass, 9x9 6x96, batch 256:     59,225 evals/s   target >= 45,000   met
+#   raw 2-slot pass, 19x19 10x128, batch 256:  6,724 evals/s   target >=  6,000   met
+#   hub, 13x13 6x96, 128-256 threads x 8:     30,982 evals/s   target >= 25,000   met
+# Against the Metal hub on the M5 Max (docs/results/bench.txt): 9x9 6x96
+# 60,607 against 29,392 (2.06x); 19x19 10x128 6,942 against 2,782 (2.5x);
+# 13x13 6x96 30,982 against ~14,200 in the 13x13 run's real self-play
+# (2.2x).
+#
+# - The hub needs many games in flight. With 32 threads its passes average
+#   85 positions and it gives 20,100 evals/s on 13x13; with 128 or more
+#   they are full (255) and it gives 31,000. A pc/cuda slice of the 13x13
+#   run (~60% of 400 games) keeps every game in flight (cuda_workers 0),
+#   so its passes are full.
+# - Small passes are latency-bound: batch 8 takes 2.3-2.5 ms for 9x9 and
+#   13x13, about 30 kernel launches and copies, each slow to issue under
+#   WSL2. Capturing a pass as a CUDA graph would cut that; it does not
+#   matter at batch 256.
+# - The CPU side. The hub alone (256 threads, 31,600 evals/s) used 37% of
+#   one core (/usr/bin/time over the 10 s run). The runner's completion
+#   thread polls with 50-200 us sleeps; with cudaEventSynchronize it spun a
+#   whole core: kept busy alone, the runner used 104-110% of a core before
+#   and 8-19% after (batch 256 to 8), at the same rate (30,100 / 23,600 /
+#   3,550 evals/s at batch 256 / 64 / 8).
+# - pc/cuda beside pc/blas (bench --mixed, the hub at 256 threads): 2, 4
+#   and 8 BLAS workers keep the hub at 98.6%, 97.6% and 98.9% and add 656,
+#   1,158 and 1,779 evals/s (total 33,030 with 8). The two engines barely
+#   compete: the GPU's work takes little CPU.
+# - A real slice: train on the PC with selfplay_engines = local/cuda:1,
+#   13x13 6x96, 256 games at once, 400 simulations, a random network (games
+#   of 228 plies on average): 30.0k evals/s over 760 s, the whole process
+#   at 89% of one core. The tree search feeds the GPU with most of the
+#   PC's 16 threads to spare.
+#
+# ---- bench --sizes 9,13,19 --backend cuda --seconds 3 --hub-workers 32,64,128,256 ----
+#   gpu: NVIDIA GeForce RTX 4070 Ti SUPER sm_89, driver 13.3, runtime 12.8, kernels ff20383e
+#   
+#   size   blocks x filters  backend       evals/s  train-step ms
+#   9x9    6 x 96            cuda             3517              -
+#   13x13  6 x 96            cuda             3240              -
+#   19x19  10 x 128          cuda             1745              -
+#   
+#   size   blocks x filters   batch   sync evals/s   2-slot evals/s    ms/pass   (cuda)
+#   9x9    6 x 96                 8           3523             3707       2.27
+#   9x9    6 x 96               144          42346            43487       3.40
+#   9x9    6 x 96               256          58120            59225       4.40
+#   13x13  6 x 96                 8           3196             3333       2.50
+#   13x13  6 x 96               144          23060            23619       6.24
+#   13x13  6 x 96               256          30388            32207       8.42
+#   19x19  10 x 128               8           1786             1836       4.48
+#   19x19  10 x 128             144           6310             6338      22.82
+#   19x19  10 x 128             256           6686             6724      38.29
+#   
+#   size   blocks x filters  evaluator       threads      evals/s  mean pass slots busy
+#   9x9    6 x 96            cpu (blas)           16         4898          8          -
+#   9x9    6 x 96            cuda hub             32        26303       85.2        97%
+#   9x9    6 x 96            cuda hub             64        52892      170.4        94%
+#   9x9    6 x 96            cuda hub            128        60038      255.3        94%
+#   9x9    6 x 96            cuda hub            256        60607      255.3        94%
+#   13x13  6 x 96            cpu (blas)           16         1757          8          -
+#   13x13  6 x 96            cuda hub             32        20088       85.1        98%
+#   13x13  6 x 96            cuda hub             64        28526      170.1        97%
+#   13x13  6 x 96            cuda hub            128        30982      254.6        96%
+#   13x13  6 x 96            cuda hub            256        30922      254.6        96%
+#   19x19  10 x 128          cpu (blas)           16          289          8          -
+#   19x19  10 x 128          cuda hub             32         5448       84.7        99%
+#   19x19  10 x 128          cuda hub             64         6630      168.9        98%
+#   19x19  10 x 128          cuda hub            128         6678      250.4        98%
+#   19x19  10 x 128          cuda hub            256         6942      250.9        98%
+#   
+#   size   random-playout moves/s
+#   9x9                    544439
+#   13x13                  305114
+#   19x19                  157565
+#
+# ---- bench --mixed --sizes 13 --hub-backend cuda --hub-workers 256 --cpu-workers 0,2,4,8 --seconds 10 ----
+#   mixed: 13x13 6 x 96, cuda hub 256 threads (inference_batch 256) + k blas workers, batch 8, qos default, 10 s each
+#   cpu workers  hub evals/s  cpu evals/s  total evals/s  hub vs alone  mean pass slots busy
+#             0        31595            0          31595        100.0%      255.6        96%
+#             2        31140          656          31796         98.6%      255.6        95%
+#             4        30849         1158          32007         97.6%      255.5        95%
+#             8        31251         1779          33030         98.9%      255.6        93%
+#   
+#   cpu workers alone  cpu evals/s  per worker
+#                   2          664         332
+#                   4         1232         308
+#                   8         1885         236
