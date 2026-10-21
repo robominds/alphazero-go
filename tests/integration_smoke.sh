@@ -514,11 +514,12 @@ suggested="$(sed -n 's/^selfplay_engines = //p' <<<"$out")"
 cp -R "$DRUN" "$W/weights_copy"
 "$BUILD/train" --run "$W/weights_copy" --resume --hosts "$HOSTS" --set "selfplay_engines=$suggested" \
     --generations 4 > /dev/null || fail "train refused the suggested selfplay_engines '$suggested'"
-# stop_after_generation.sh: SIGINT once log.csv gains a row.
+# stop_after_generation.sh: SIGTERM once log.csv gains a row, then waits for
+# the process to end. The victim is a background job of this script, so it
+# ignores SIGINT, as a train started by a wrapper with & does.
 mkdir -p "$W/stoprun"
 printf 'generation,games\n1,4\n' > "$W/stoprun/log.csv"
-# (A background job of a script ignores SIGINT; perl restores the default.)
-perl -e '$SIG{INT} = "DEFAULT"; sleep 60' &
+sleep 60 &
 victim=$!
 "$SRC/tools/stop_after_generation.sh" "$W/stoprun" "$victim" > "$W/stop.out" 2> "$W/stop.err" &
 stopper=$!
@@ -526,6 +527,7 @@ sleep 0.5
 kill -0 "$victim" || fail "stop_after_generation.sh stopped the process before a new row"
 printf '2,4\n' >> "$W/stoprun/log.csv"
 wait "$stopper" || fail "stop_after_generation.sh failed"
+! kill -0 "$victim" 2>/dev/null || fail "stop_after_generation.sh returned before the process ended"
 status=0
 wait "$victim" || status=$?
 [ "$status" -ne 0 ] || fail "the process was not interrupted"
