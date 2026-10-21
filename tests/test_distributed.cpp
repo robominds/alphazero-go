@@ -466,8 +466,14 @@ static void test_fingerprint() {
         if (backend == "metal") {
             assert(osEnd != std::string::npos && f.substr(osEnd + 2) == metalDescription());
         } else if (backend == "blas" && !blasDescription().empty()) {
-            // A BLAS the OS version does not pin (OpenBLAS): its own build.
-            assert(osEnd != std::string::npos && f.substr(osEnd + 2) == blasDescription());
+            // A BLAS the OS version does not pin (OpenBLAS): its own build,
+            // tidied as every part is (no separators, no outer blanks).
+            std::string blas = blasDescription();
+            for (char& c : blas)
+                if (c == ',' || c == ';' || c == '\n' || c == '\r' || c == '\t') c = ' ';
+            blas.erase(0, blas.find_first_not_of(" \t\r\n\f\v"));
+            blas.erase(blas.find_last_not_of(" \t\r\n\f\v") + 1);
+            assert(osEnd != std::string::npos && f.substr(osEnd + 2) == blas);
             assert(f.find("; ", osEnd + 2) == std::string::npos);
         } else {
             assert(osEnd == std::string::npos);
