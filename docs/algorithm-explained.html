@@ -1470,7 +1470,7 @@ public:
         /* ... return once stopped with nothing in flight ... */
     }
 }</code></pre>
-<span class="src">src/inference_hub.cpp:146 — <code>InferenceHub::dispatcherLoop</code> (abridged)</span>
+<span class="src">src/inference_hub.cpp:147 — <code>InferenceHub::dispatcherLoop</code> (abridged)</span>
 <p>There are two slots, so one pass runs on the GPU while the next one fills. The flush policy is greedy: a pass is submitted as soon as a slot is free and anything waits. There is no timer and no "wait until every worker has asked". Under load, requests pile up while both slots are busy, so the next pass takes all of them and batches grow by themselves. Under light load nobody waits for company that may never come. And nothing can deadlock: a worker waits only for its own request, and a request only for a slot, which the GPU frees. To keep the GPU fed, <code>workers = 0</code> means twice the cores with <code>metal</code>. A worker waiting for the GPU uses no CPU, so one group of searches runs on the CPU while the other waits on the GPU.</p>
 <p><strong>The arena feeds the hub too.</strong> An arena match is a poor customer. In each game only the side to move searches, so a 20-game match between two networks keeps about ten searches waiting on each hub, and its last seconds run with a few long games and nearly empty passes. Such a match ran barely faster on the GPU than on the CPU (1.02× at generation 1), and a generation played its matches one after another. But they do not depend on each other: every opponent was chosen from the ratings before the round. So <code>runArenaRound</code> hands them over as one wave, and <code>playMatches</code> puts every game of every match in one pool of workers with one hub per network. The new network plays in every match, so its hub collects its searches from all of them. Each game keeps its own seed and its result is stored by match and game index, so the files are byte for byte those of matches played one at a time. Only the promotion games wait for a second wave, because whether they happen depends on the first. Two more changes fill the passes. With <code>metal</code>, every game of the wave runs at once, because an arena game has only one search in flight. And when several hubs share the GPU, each keeps one pass in flight instead of two: the other hubs' passes keep the GPU busy, so each pass can take everything that is waiting. On a 9×9 6×96 arena of four opponents, the time fell from 50 s to 31 s (<code>blas</code>: 44–47 s).</p>
 <p><strong>Why timing cannot change a game.</strong> Which requests share a pass, in what order, and how large it is depend on thread scheduling and differ from run to run. The results do not, because every kernel computes a position's outputs from that position alone, with the same sequence of operations wherever it sits in the batch. The copies, batch norm with its running statistics, ReLU, the skip add and tanh are one thread per element. <code>im2col</code> pads with zeros, never with a neighbouring sample's board. The products are the interesting case. A gemm tiles C into 64×64 blocks, one per threadgroup, and walks K in steps of 16 through fast threadgroup memory. The scalar version, from the spike, makes the tiling easy to see:</p>
@@ -1729,7 +1729,7 @@ public:
     }
     return slices;
 }</code></pre>
-<span class="src">src/engines.cpp:115 — <code>assignGames</code> (abridged)</span>
+<span class="src">src/engines.cpp:116 — <code>assignGames</code> (abridged)</span>
 <p>For 100 games and <code>local/metal:50, local/blas=12, mini1/metal:10, mini1/blas=8, mini2/metal:10, mini2/blas=8</code>, the fixed counts take 28 games and the weights share the other 72 as 51.4, 10.3 and 10.3. The leftover game goes to the largest remainder, so the slices are 52, 12, 10, 8, 10 and 8 games. A remote slice comes back as a result file that is checked before any of it is used: its checksum, the job it answers, the build that played it, and a replay of every game, move by move. The slices are then merged by game index, never by the order they finished in:</p>
 <pre><code>std::vector&lt;GameRecord&gt; SelfPlayCoordinator::play(int g, const std::string&amp; networkPath,
                                                   const Network&amp; net, const SelfPlayConfig&amp; sp,
@@ -1756,7 +1756,7 @@ public:
     /* ... every index filled; the work files removed ... */
     return records;
 }</code></pre>
-<span class="src">src/coordinator.cpp:622 — <code>SelfPlayCoordinator::play</code> (abridged)</span>
+<span class="src">src/coordinator.cpp:632 — <code>SelfPlayCoordinator::play</code> (abridged)</span>
 <p>A run with several engines is therefore reproducible given which engine played each game, and it resumes byte for byte. The run's manifest, <code>selfplay-engines.csv</code>, records exactly that: the engine and its fingerprint (chip, OS, shaders) for every slice. Engines with equal fingerprints can split a share without changing a bit. When a remote fails twice, the coordinator plays the slice itself and says so in the manifest. AlphaGo Zero's self-play is unchanged: the same games, seeded the same way, computed in more places. How much that gains depends on the machines. On the Studio, four BLAS workers beside the GPU add about 11% to its 2,930 evaluations per second (19×19, 10×128); each M4 mini adds about 676 more (<code>docs/results/bench.txt</code>).</p>
 </section>
 
@@ -2328,7 +2328,7 @@ void gemmColumns(const Backend&amp; be, ThreadPool* pool, bool transA, bool tran
         gemmColumnBlock(be, block, blocks, transA, transB, M, N, K, alpha, A, B, beta, C);
     });
 }</code></pre>
-<span class="src">src/backend.cpp:225 — <code>gemmColumnBlock</code></span>
+<span class="src">src/backend.cpp:226 — <code>gemmColumnBlock</code></span>
 <p>Each element of a block is still one sum over the whole of K. (A split over the <em>inner</em> dimension K would also be parallel, but partial sums added in a different order give different floating-point results.) Since the cut depends only on the shapes, a run is bit-for-bit the same for any <code>train_threads</code>; <code>tests/test_trainer.cpp</code> checks that 1 and 4 threads write byte-identical checkpoints and <code>state.bin</code>. It is also the same as before the pool existed. For the naive backend a block gives exactly the unsplit call's bits by construction: each element sums over K in one fixed order, whatever the block. For BLAS that is up to the library, so it was measured: on Accelerate every block of 128 to 1,024 columns, over about 11,000 convolution shapes, matched the unsplit call bit for bit (<code>tests/test_backend.cpp</code> keeps a representative set), and the splits that did change bits are never made: a product with fewer than 8 rows (a 1×1 head convolution's forward product) stays one call, and the weight gradient is never cut into columns. The payoff is visible in the results. The komi-24.5 pilot ran with 5 worker threads while another run shared the machine; the first seed-1 reference run, made with the same code (before the pass fix explained in chapter 02, whose story is in chapter 07), used all 10. Apart from the three timing columns, their logs are identical, to the last digit:</p>
 <pre><code>$ diff &lt;(cut -d, -f1-9,13-15 docs/results/pilots/5x5-komi24.5.csv) \
        &lt;(cut -d, -f1-9,13-15 docs/results/passbug/5x5-seed1/log.csv) &amp;&amp; echo identical
@@ -2419,9 +2419,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Input planes and the all-ones color plane</dt>
   <dd><code>encodePlanes</code> <span class="loc">— src/encode.cpp:14</span></dd>
   <dt>Convolution as im2col + gemm</dt>
-  <dd><code>Conv2d::forward</code>, <code>Conv2d::backward</code> <span class="loc">— src/layers.cpp:35, 48</span>; <code>Backend::im2col</code>, <code>Backend::col2im</code> <span class="loc">— src/backend.cpp:20, 56</span></dd>
+  <dd><code>Conv2d::forward</code>, <code>Conv2d::backward</code> <span class="loc">— src/layers.cpp:35, 48</span>; <code>Backend::im2col</code>, <code>Backend::col2im</code> <span class="loc">— src/backend.cpp:21, 57</span></dd>
   <dt>The compute backend seam</dt>
-  <dd><code>Backend</code> <span class="loc">— include/azgo/backend.hpp:20</span>; <code>NaiveBackend::gemm</code> <span class="loc">— src/backend.cpp:145</span></dd>
+  <dd><code>Backend</code> <span class="loc">— include/azgo/backend.hpp:20</span>; <code>NaiveBackend::gemm</code> <span class="loc">— src/backend.cpp:146</span></dd>
   <dt>Batch norm, training vs. inference</dt>
   <dd><code>BatchNorm2d::forwardTrain</code>, <code>BatchNorm2d::forwardInfer</code>, <code>BatchNorm2d::backward</code> <span class="loc">— src/layers.cpp:99, 88, 133</span></dd>
   <dt>Batch norm calibration of generation 0</dt>
@@ -2447,7 +2447,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>The evaluator seam</dt>
   <dd><code>Evaluator</code> <span class="loc">— include/azgo/evaluator.hpp:18</span>; <code>LocalEvaluator::evaluate</code> <span class="loc">— src/evaluator.cpp:20</span></dd>
   <dt>Batching leaves across workers on the GPU</dt>
-  <dd><code>InferenceHub::dispatcherLoop</code> <span class="loc">— src/inference_hub.cpp:146</span>; <code>gemm_simd</code> <span class="loc">— src/metal/kernels.metal:58</span></dd>
+  <dd><code>InferenceHub::dispatcherLoop</code> <span class="loc">— src/inference_hub.cpp:147</span>; <code>gemm_simd</code> <span class="loc">— src/metal/kernels.metal:58</span></dd>
   <dt>Dirichlet root noise</dt>
   <dd><code>Mcts::setRootPriors</code> <span class="loc">— src/mcts.cpp:351</span>; <code>dirichlet</code> <span class="loc">— src/rng.cpp:122</span></dd>
   <dt>Temperature</dt>
@@ -2489,13 +2489,13 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Work sharing by index</dt>
   <dd><code>parallelFor</code> <span class="loc">— src/parallel.cpp:14</span></dd>
   <dt>Training on a thread pool, bit for bit</dt>
-  <dd><code>ThreadPool::run</code>, <code>parallelRanges</code> <span class="loc">— src/parallel.cpp:147, 195</span>; <code>gemmColumnBlock</code> <span class="loc">— src/backend.cpp:225</span></dd>
+  <dd><code>ThreadPool::run</code>, <code>parallelRanges</code> <span class="loc">— src/parallel.cpp:147, 195</span>; <code>gemmColumnBlock</code> <span class="loc">— src/backend.cpp:226</span></dd>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
   <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:45</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:540</span></dd>
   <dt>Self-play on several engines and machines</dt>
-  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:115</span>; <code>SelfPlayCoordinator::play</code> <span class="loc">— src/coordinator.cpp:622</span></dd>
+  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:116</span>; <code>SelfPlayCoordinator::play</code> <span class="loc">— src/coordinator.cpp:632</span></dd>
   <dt>Inspecting a position</dt>
   <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:81, 121</span></dd>
 </dl>

@@ -1373,7 +1373,7 @@ void InferenceHub::dispatcherLoop() {
     }
 }
 ```
-*src/inference_hub.cpp:146 — `InferenceHub::dispatcherLoop` (abridged)*
+*src/inference_hub.cpp:147 — `InferenceHub::dispatcherLoop` (abridged)*
 
 There are two slots, so one pass runs on the GPU while the next one
 fills. The flush policy is greedy: a pass is submitted as soon as a slot
@@ -1836,7 +1836,7 @@ std::vector<Slice> assignGames(const std::vector<EngineSpec>& engines, int games
     return slices;
 }
 ```
-*src/engines.cpp:115 — `assignGames` (abridged)*
+*src/engines.cpp:116 — `assignGames` (abridged)*
 
 For 100 games and `local/metal:50, local/blas=12, mini1/metal:10,
 mini1/blas=8, mini2/metal:10, mini2/blas=8`, the fixed counts take 28
@@ -1875,7 +1875,7 @@ std::vector<GameRecord> SelfPlayCoordinator::play(int g, const std::string& netw
     return records;
 }
 ```
-*src/coordinator.cpp:622 — `SelfPlayCoordinator::play` (abridged)*
+*src/coordinator.cpp:632 — `SelfPlayCoordinator::play` (abridged)*
 
 A run with several engines is therefore reproducible given which engine
 played each game, and it resumes byte for byte. The run's manifest,
@@ -2933,7 +2933,7 @@ void gemmColumns(const Backend& be, ThreadPool* pool, bool transA, bool transB, 
     });
 }
 ```
-*src/backend.cpp:225 — `gemmColumnBlock`*
+*src/backend.cpp:226 — `gemmColumnBlock`*
 
 Each element of a block is still one sum over the whole of K. (A split
 over the *inner* dimension K would also be parallel, but partial sums
@@ -3134,8 +3134,8 @@ see again in place.
 | Zobrist hashing and positional superko | `Board::hashAfter` — `src/board.cpp:174`; `Game::isLegal` — `src/game.cpp:19` |
 | Tromp-Taylor area scoring, komi, the draw | `Board::ownership`, `Board::areaScore` — `src/board.cpp:201, 236`; `Game::resultForBlack` — `src/game.cpp:61` |
 | Input planes and the all-ones color plane | `encodePlanes` — `src/encode.cpp:14` |
-| Convolution as im2col + gemm | `Conv2d::forward`, `Conv2d::backward` — `src/layers.cpp:35, 48`; `Backend::im2col`, `Backend::col2im` — `src/backend.cpp:20, 56` |
-| The compute backend seam | `Backend` — `include/azgo/backend.hpp:20`; `NaiveBackend::gemm` — `src/backend.cpp:145` |
+| Convolution as im2col + gemm | `Conv2d::forward`, `Conv2d::backward` — `src/layers.cpp:35, 48`; `Backend::im2col`, `Backend::col2im` — `src/backend.cpp:21, 57` |
+| The compute backend seam | `Backend` — `include/azgo/backend.hpp:20`; `NaiveBackend::gemm` — `src/backend.cpp:146` |
 | Batch norm, training vs. inference | `BatchNorm2d::forwardTrain`, `BatchNorm2d::forwardInfer`, `BatchNorm2d::backward` — `src/layers.cpp:99, 88, 133` |
 | Batch norm calibration of generation 0 | `bnCalibrationPositions`, `calibrateBatchNorm` — `src/bn_calibration.cpp:12, 33` |
 | Residual ResNet, policy and value heads | `Network::forward`, `Network::backward` — `src/network.cpp:228, 374` |
@@ -3148,7 +3148,7 @@ see again in place.
 | Terminal positions scored by the rules | `Mcts::isTerminal`, `Mcts::terminalValue` — `src/mcts.cpp:41, 52` |
 | Virtual loss and batched search | `Mcts::search`, `Mcts::addVirtualLoss` — `src/mcts.cpp:213, 108` |
 | The evaluator seam | `Evaluator` — `include/azgo/evaluator.hpp:18`; `LocalEvaluator::evaluate` — `src/evaluator.cpp:20` |
-| Batching leaves across workers on the GPU | `InferenceHub::dispatcherLoop` — `src/inference_hub.cpp:146`; `gemm_simd` — `src/metal/kernels.metal:58` |
+| Batching leaves across workers on the GPU | `InferenceHub::dispatcherLoop` — `src/inference_hub.cpp:147`; `gemm_simd` — `src/metal/kernels.metal:58` |
 | Dirichlet root noise | `Mcts::setRootPriors` — `src/mcts.cpp:351`; `dirichlet` — `src/rng.cpp:122` |
 | Temperature | `Mcts::selectAction` — `src/mcts.cpp:314`; `playSelfPlayGame` — `src/selfplay.cpp:50` |
 | Tree reuse and compaction | `Mcts::advance` — `src/mcts.cpp:368` |
@@ -3169,10 +3169,10 @@ see again in place.
 | One generation | `Trainer::runGeneration` — `src/trainer.cpp:627` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
-| Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:225` |
+| Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:226` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
 | Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:540` |
-| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:115`; `SelfPlayCoordinator::play` — `src/coordinator.cpp:622` |
+| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:116`; `SelfPlayCoordinator::play` — `src/coordinator.cpp:632` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |
 
 ---
