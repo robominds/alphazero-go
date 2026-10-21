@@ -243,8 +243,9 @@ Metal spec's tolerance table ("Tolerance against the CPU").
 (`kInferenceSlots`). It owns:
 
 - **Weights.** One device arena laid out by `ParamLayout` (64-float
-  aligned) plus the buffers arena, uploaded once with `cudaMemcpy`.
-  `bn_fold` runs once after upload. The upload checks every tensor's name
+  aligned) plus the buffers arena, uploaded once with `cudaMemcpyAsync`
+  on the stream that then runs `bn_fold`, which is synchronized before
+  the host copies are freed. The upload checks every tensor's name
   and size against the layout and throws `std::logic_error` naming an
   unknown tensor, as `GpuWeights::upload` does. The probe
   `checkForwardReadsEveryTensor` ensures a layer added to the CPU network
@@ -261,8 +262,9 @@ Metal spec's tolerance table ("Tolerance against the CPU").
   positions, `encodeForward`, D2H copies, record the event. It then
   pushes `(slot, done)` to the completion thread's queue. It never
   blocks on the GPU.
-- **The completion thread** pops in order, calls
-  `cudaEventSynchronize(event)` and calls `done(slot, error)` with `""` or
+- **The completion thread** pops in order, polls the event with
+  `cudaEventQuery` (sleeping 50–200 µs between polls, so it does not hold
+  a core spinning) and calls `done(slot, error)` with `""` or
   `"cuda: <cudaGetErrorString>"`. It takes the first error from the
   synchronize or from `cudaGetLastError` after the enqueue.
   - It is a thread of ours, not a `cudaLaunchHostFunc` callback: host

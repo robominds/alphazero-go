@@ -271,6 +271,7 @@
 #
 # ---- bench --sizes 9,13,19 --backend cuda --seconds 3 --hub-workers 32,64,128,256 ----
 #   gpu: NVIDIA GeForce RTX 4070 Ti SUPER sm_89, driver 13.3, runtime 12.8, kernels ff20383e
+#   (output from before the fingerprint said "driver API"; the number is the same)
 #   
 #   size   blocks x filters  backend       evals/s  train-step ms
 #   9x9    6 x 96            cuda             3517              -

@@ -77,7 +77,8 @@ void CudaWeights::upload(const Network& net) {
     // cudaMemcpy from pageable memory may return before its DMA has reached
     // the device, and it runs on the legacy stream, which a non-blocking
     // stream does not wait for. The host images stay alive until the
-    // synchronize below.
+    // synchronize below. No test catches a regression here: the race it
+    // closes does not show up reliably.
     Stream s;
     check(cudaMemcpyAsync(params_.data(), params.data(), params.size() * sizeof(float), cudaMemcpyHostToDevice,
                           s.get()),
