@@ -46,6 +46,28 @@ constexpr GemmTile kLinearTile = GemmTile::Rows32Cols256;
 void launchGemm(bool transB, int M, int N, int K, const float* A, const float* B, float* C, GemmTile tile,
                 cudaStream_t stream);
 
+// ---- the forward layers' other kernels (one thread per output element) ----
+// Network::forward's first step: in [B][P][A] -> out [P][B][A].
+void launchTransposeInput(const float* in, int B, int P, int A, float* out, cudaStream_t stream);
+// Backend::im2col for k = 3: in [C][B][n][n] -> col [C * 9][B * n * n]; 0 off
+// the board, never a neighbouring sample's pixel.
+void launchIm2col3(const float* in, int C, int B, int n, float* col, cudaStream_t stream);
+// BatchNorm2d::forwardInfer on x [C][M] -> y (may be x): scale = gamma /
+// sqrt(var + eps), shift = beta - scale * mean, y = scale * x + shift, every
+// operation rounded on its own, as written.
+void launchBnInfer(const float* x, float* y, int C, size_t M, const float* gamma, const float* beta,
+                   const float* mean, const float* var, cudaStream_t stream);
+// reluForward in place: x > 0 ? x : 0 (-0 and NaN become +0, as on the CPU).
+void launchRelu(float* x, size_t count, cudaStream_t stream);
+// The skip connection: dst += src.
+void launchAddInto(float* dst, const float* src, size_t count, cudaStream_t stream);
+// The policy head's per-sample flatten: act [2][B][A] -> flat [B][2A].
+void launchPolicyFlatten(const float* act, int B, int A, float* flat, cudaStream_t stream);
+// The bias loop of Linear::forward: y [rows][cols] += b per row.
+void launchBiasAddRows(float* y, const float* b, int rows, int cols, cudaStream_t stream);
+// The value head's tanh, in place (CUDA's tanhf, within 2 ulp).
+void launchTanh(float* x, size_t count, cudaStream_t stream);
+
 // data[0 .. n) = value.
 void launchFill(float* data, size_t n, float value, cudaStream_t stream);
 // The attributes of the fill kernel: its binaryVersion is the architecture of

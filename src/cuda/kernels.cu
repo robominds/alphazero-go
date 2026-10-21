@@ -9,6 +9,7 @@
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #include "kernels.cuh"
+#include "azgo/layers.hpp"
 
 namespace azgo {
 namespace cuda {
@@ -138,6 +139,142 @@ void launchGemm(bool transB, int M, int N, int K, const float* A, const float* B
         case GemmTile::Rows64Cols128: launchTile<64, 128, 8, 4>(transB, M, N, K, A, B, C, stream); break;
         case GemmTile::Rows128Cols128: launchTile<128, 128, 8, 8>(transB, M, N, K, A, B, C, stream); break;
     }
+}
+
+// ---------------------------------------------------------------- the other layers
+
+// Each of these is one thread per output element, striding over the rest
+// (blocksFor), and each output is a copy or a fixed expression of its own
+// inputs: per position, so batch-independent by construction.
+
+#define AZGO_FOR_EACH(i, count) \
+    for (size_t i = blockIdx.x * size_t(blockDim.x) + threadIdx.x; i < (count); i += size_t(gridDim.x) * blockDim.x)
+
+// Network::forward's first step: [B][planes][A] -> [planes][B][A].
+// Channel-major lets a convolution treat the whole batch as one wide matrix.
+__global__ void transpose_input(const float* __restrict__ in, float* __restrict__ out, int B, int P, int A) {
+    AZGO_FOR_EACH(i, size_t(P) * B * A) {
+        const size_t a = i % A, pb = i / A;   // out index (plane * B + b) * A + a
+        const size_t b = pb % B, plane = pb / B;
+        out[i] = in[(b * P + plane) * A + a];
+    }
+}
+
+// Backend::im2col for k = 3 ('same' padding): row (c * 3 + dy) * 3 + dx of
+// col holds, for every pixel of every sample, the input value at offset
+// (dy - 1, dx - 1) from it, or 0 off the board.
+__global__ void im2col3(const float* __restrict__ in, float* __restrict__ col, int C, int B, int n) {
+    const size_t area = size_t(n) * n, columns = B * area;
+    AZGO_FOR_EACH(i, size_t(C) * 9 * columns) {
+        const size_t row = i / columns, j = i % columns;
+        const int c = static_cast<int>(row / 9), r = static_cast<int>(row % 9);
+        const size_t b = j / area, q = j % area;
+        const int y = static_cast<int>(q / n) + r / 3 - 1, x = static_cast<int>(q % n) + r % 3 - 1;
+        float v = 0.0f;
+        if (y >= 0 && y < n && x >= 0 && x < n) v = in[(size_t(c) * B + b) * area + size_t(y) * n + x];
+        col[i] = v;
+    }
+}
+
+// BatchNorm2d::kEps, for device code.
+constexpr float kBnEps = 1e-5f;
+static_assert(kBnEps == BatchNorm2d::kEps, "the GPU's batch norm epsilon is the CPU's");
+
+// The running statistics folded into one scale and shift per channel, as
+// BatchNorm2d::forwardInfer folds them: IEEE division and square root,
+// each operation rounded on its own.
+__device__ __forceinline__ void bnScaleShift(float gamma, float beta, float mean, float var, float& scale,
+                                             float& shift) {
+    scale = __fdiv_rn(gamma, __fsqrt_rn(__fadd_rn(var, kBnEps)));
+    shift = __fsub_rn(beta, __fmul_rn(scale, mean));
+}
+
+// y = scale * x + shift, the multiply and the add rounded separately.
+__device__ __forceinline__ float bnApply(float x, float scale, float shift) {
+    return __fadd_rn(__fmul_rn(scale, x), shift);
+}
+
+__global__ void bn_infer(const float* x, float* y, int C, size_t M, const float* __restrict__ gamma,
+                         const float* __restrict__ beta, const float* __restrict__ mean,
+                         const float* __restrict__ var) {
+    AZGO_FOR_EACH(i, size_t(C) * M) {
+        const int c = static_cast<int>(i / M);
+        float scale, shift;
+        bnScaleShift(gamma[c], beta[c], mean[c], var[c], scale, shift);
+        y[i] = bnApply(x[i], scale, shift);
+    }
+}
+
+// reluForward. x > 0 ? x : 0 maps -0 and NaN to +0, as on the CPU.
+__global__ void relu_forward(float* x, size_t count) {
+    AZGO_FOR_EACH(i, count) {
+        const float v = x[i];
+        x[i] = v > 0.0f ? v : 0.0f;
+    }
+}
+
+// The skip connection: dst += src.
+__global__ void add_into(float* __restrict__ dst, const float* __restrict__ src, size_t count) {
+    AZGO_FOR_EACH(i, count) dst[i] = __fadd_rn(dst[i], src[i]);
+}
+
+// The policy head's per-sample flatten: [2][B][A] -> [B][2A], feature index
+// c * A + point.
+__global__ void policy_flatten(const float* __restrict__ act, float* __restrict__ flat, int B, int A) {
+    const size_t features = 2 * size_t(A);
+    AZGO_FOR_EACH(i, B * features) {
+        const size_t b = i / features, f = i % features;
+        const size_t c = f / A, q = f % A;
+        flat[i] = act[(c * B + b) * A + q];
+    }
+}
+
+// The bias loop of Linear::forward: every row of y [rows][cols] += b.
+__global__ void bias_add_rows(float* __restrict__ y, const float* __restrict__ b, int rows, int cols) {
+    AZGO_FOR_EACH(i, size_t(rows) * cols) y[i] = __fadd_rn(y[i], b[i % cols]);
+}
+
+// The value head's last step, in place.
+__global__ void tanh_inplace(float* x, size_t count) {
+    AZGO_FOR_EACH(i, count) x[i] = tanhf(x[i]);
+}
+
+void launchTransposeInput(const float* in, int B, int P, int A, float* out, cudaStream_t s) {
+    const size_t count = size_t(B) * P * A;
+    if (count) transpose_input<<<blocksFor(count), kElementwiseThreads, 0, s>>>(in, out, B, P, A);
+}
+
+void launchIm2col3(const float* in, int C, int B, int n, float* col, cudaStream_t s) {
+    const size_t count = size_t(C) * 9 * B * n * n;
+    if (count) im2col3<<<blocksFor(count), kElementwiseThreads, 0, s>>>(in, col, C, B, n);
+}
+
+void launchBnInfer(const float* x, float* y, int C, size_t M, const float* gamma, const float* beta,
+                   const float* mean, const float* var, cudaStream_t s) {
+    const size_t count = size_t(C) * M;
+    if (count) bn_infer<<<blocksFor(count), kElementwiseThreads, 0, s>>>(x, y, C, M, gamma, beta, mean, var);
+}
+
+void launchRelu(float* x, size_t count, cudaStream_t s) {
+    if (count) relu_forward<<<blocksFor(count), kElementwiseThreads, 0, s>>>(x, count);
+}
+
+void launchAddInto(float* dst, const float* src, size_t count, cudaStream_t s) {
+    if (count) add_into<<<blocksFor(count), kElementwiseThreads, 0, s>>>(dst, src, count);
+}
+
+void launchPolicyFlatten(const float* act, int B, int A, float* flat, cudaStream_t s) {
+    const size_t count = size_t(2) * B * A;
+    if (count) policy_flatten<<<blocksFor(count), kElementwiseThreads, 0, s>>>(act, flat, B, A);
+}
+
+void launchBiasAddRows(float* y, const float* b, int rows, int cols, cudaStream_t s) {
+    const size_t count = size_t(rows) * cols;
+    if (count) bias_add_rows<<<blocksFor(count), kElementwiseThreads, 0, s>>>(y, b, rows, cols);
+}
+
+void launchTanh(float* x, size_t count, cudaStream_t s) {
+    if (count) tanh_inplace<<<blocksFor(count), kElementwiseThreads, 0, s>>>(x, count);
 }
 
 // ---------------------------------------------------------------- fill

@@ -67,5 +67,97 @@ void gemm(bool transB, int M, int N, int K, const float* A, const float* B, floa
     finish(s);
 }
 
+void transposeInput(const float* input, int B, int planes, int area, float* out) {
+    Context::instance();
+    const size_t count = static_cast<size_t>(B) * planes * area;
+    Stream s;
+    DeviceBuffer in(count), d(count);
+    upload(in, input, count, s);
+    cuda::launchTransposeInput(in.data(), B, planes, area, d.data(), s.get());
+    download(out, d, count, s);
+    finish(s);
+}
+
+void im2col3(const float* in, int C, int B, int n, float* col) {
+    Context::instance();
+    const size_t count = static_cast<size_t>(C) * B * n * n;
+    Stream s;
+    DeviceBuffer x(count), d(count * 9);
+    upload(x, in, count, s);
+    cuda::launchIm2col3(x.data(), C, B, n, d.data(), s.get());
+    download(col, d, count * 9, s);
+    finish(s);
+}
+
+void bnInfer(const BatchNorm2d& bn, const float* x, int M, float* y) {
+    Context::instance();
+    const size_t count = static_cast<size_t>(bn.c) * M, C = static_cast<size_t>(bn.c);
+    Stream s;
+    DeviceBuffer dx(count), gamma(C), beta(C), mean(C), var(C);
+    upload(dx, x, count, s);
+    upload(gamma, bn.gamma.data(), C, s);
+    upload(beta, bn.beta.data(), C, s);
+    upload(mean, bn.runMean.data(), C, s);
+    upload(var, bn.runVar.data(), C, s);
+    cuda::launchBnInfer(dx.data(), dx.data(), bn.c, static_cast<size_t>(M), gamma.data(), beta.data(), mean.data(),
+                        var.data(), s.get());
+    download(y, dx, count, s);
+    finish(s);
+}
+
+void relu(float* x, size_t count) {
+    Context::instance();
+    Stream s;
+    DeviceBuffer d(count);
+    upload(d, x, count, s);
+    cuda::launchRelu(d.data(), count, s.get());
+    download(x, d, count, s);
+    finish(s);
+}
+
+void addInto(float* dst, const float* src, size_t count) {
+    Context::instance();
+    Stream s;
+    DeviceBuffer a(count), b(count);
+    upload(a, dst, count, s);
+    upload(b, src, count, s);
+    cuda::launchAddInto(a.data(), b.data(), count, s.get());
+    download(dst, a, count, s);
+    finish(s);
+}
+
+void policyFlatten(const float* act, int B, int A, float* flat) {
+    Context::instance();
+    const size_t count = static_cast<size_t>(2) * B * A;
+    Stream s;
+    DeviceBuffer in(count), out(count);
+    upload(in, act, count, s);
+    cuda::launchPolicyFlatten(in.data(), B, A, out.data(), s.get());
+    download(flat, out, count, s);
+    finish(s);
+}
+
+void biasAddRows(float* y, const float* b, int rows, int cols) {
+    Context::instance();
+    const size_t count = static_cast<size_t>(rows) * cols;
+    Stream s;
+    DeviceBuffer dy(count), db(static_cast<size_t>(cols));
+    upload(dy, y, count, s);
+    upload(db, b, static_cast<size_t>(cols), s);
+    cuda::launchBiasAddRows(dy.data(), db.data(), rows, cols, s.get());
+    download(y, dy, count, s);
+    finish(s);
+}
+
+void tanhInPlace(float* x, size_t count) {
+    Context::instance();
+    Stream s;
+    DeviceBuffer d(count);
+    upload(d, x, count, s);
+    cuda::launchTanh(d.data(), count, s.get());
+    download(x, d, count, s);
+    finish(s);
+}
+
 } // namespace cuda_probe
 } // namespace azgo

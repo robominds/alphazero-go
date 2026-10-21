@@ -83,6 +83,18 @@ void fill(float* data, size_t n, float value, size_t tail = 0);
 // convolution (by M), or 0, 1, 2 to force 32x256, 64x128, 128x128.
 void gemm(bool transB, int M, int N, int K, const float* A, const float* B, float* C, int tile = -1);
 
+// The forward layers' other kernels, each against its CPU counterpart
+// (Network::forward's loops, Backend::im2col, the layer objects of
+// azgo/layers.hpp). Activations are channel-major [C][B * n * n] as on the CPU.
+void transposeInput(const float* input, int B, int planes, int area, float* out);  // [B][P][A] -> [P][B][A]
+void im2col3(const float* in, int C, int B, int n, float* col);                    // Backend::im2col, k = 3
+void bnInfer(const BatchNorm2d& bn, const float* x, int M, float* y);              // BatchNorm2d::forwardInfer
+void relu(float* x, size_t count);                                                 // reluForward
+void addInto(float* dst, const float* src, size_t count);                          // dst += src
+void policyFlatten(const float* act, int B, int A, float* flat);                   // [2][B][A] -> [B][2A]
+void biasAddRows(float* y, const float* b, int rows, int cols);                    // y [rows][cols] += b
+void tanhInPlace(float* x, size_t count);                                          // x = tanh(x)
+
 } // namespace cuda_probe
 
 #endif // AZ_USE_CUDA

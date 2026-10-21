@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <climits>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -27,6 +29,7 @@
 #include <vector>
 #include "azgo/backend.hpp"
 #include "azgo/cuda.hpp"
+#include "azgo/layers.hpp"
 #include "azgo/rng.hpp"
 
 using namespace azgo;
@@ -59,6 +62,64 @@ float fmaChain(const float* A, const float* B, bool transB, int N, int K, int m,
         acc = std::fma(A[static_cast<size_t>(m) * K + k], b, acc);
     }
     return acc;
+}
+
+// BatchNorm2d::forwardInfer as written, with no fused multiply-add: the
+// scale and shift per channel, then y = scale * x + shift, each operation
+// rounded on its own (this file is compiled with -ffp-contract=off).
+std::vector<float> bnInferNoContract(const BatchNorm2d& bn, const std::vector<float>& x, int M) {
+    std::vector<float> y(x.size());
+    for (int c = 0; c < bn.c; ++c) {
+        const float scale = bn.gamma[c] / std::sqrt(bn.runVar[c] + BatchNorm2d::kEps);
+        const float shift = bn.beta[c] - scale * bn.runMean[c];
+        for (int i = 0; i < M; ++i) {
+            const size_t j = static_cast<size_t>(c) * M + i;
+            y[j] = scale * x[j] + shift;
+        }
+    }
+    return y;
+}
+
+// [B][P][A] -> [P][B][A], and the policy head's [2][B][A] -> [B][2A].
+std::vector<float> cpuTranspose(const std::vector<float>& x, int B, int P, int A) {
+    std::vector<float> t(x.size());
+    for (int b = 0; b < B; ++b)
+        for (int p = 0; p < P; ++p)
+            for (int a = 0; a < A; ++a)
+                t[(static_cast<size_t>(p) * B + b) * A + a] = x[(static_cast<size_t>(b) * P + p) * A + a];
+    return t;
+}
+
+std::vector<float> cpuFlatten(const std::vector<float>& act, int B, int A) {
+    std::vector<float> flat(act.size());
+    for (int c = 0; c < 2; ++c)
+        for (int b = 0; b < B; ++b)
+            for (int a = 0; a < A; ++a)
+                flat[static_cast<size_t>(b) * 2 * A + c * A + a] = act[(static_cast<size_t>(c) * B + b) * A + a];
+    return flat;
+}
+
+// Distance in units in the last place between two finite floats.
+long long ulpDistance(float a, float b) {
+    auto key = [](float f) {
+        int32_t i;
+        std::memcpy(&i, &f, sizeof i);
+        return i < 0 ? static_cast<long long>(INT32_MIN) - i : static_cast<long long>(i);
+    };
+    return std::llabs(key(a) - key(b));
+}
+
+// A batch-norm layer with running statistics like a trained network's.
+BatchNorm2d randomBn(Rng& rng, int C) {
+    BatchNorm2d bn(C);
+    for (int c = 0; c < C; ++c) {
+        bn.gamma[c] = static_cast<float>(0.5 + rng.uniform());
+        bn.beta[c] = static_cast<float>(rng.uniform() - 0.5);
+        bn.runMean[c] = static_cast<float>(2.0 * rng.uniform() - 1.0);
+        bn.runVar[c] = static_cast<float>(0.05 + 2.0 * rng.uniform());
+    }
+    bn.runVar[0] = 0.0f;   // a dead channel: the variance at its floor, eps alone
+    return bn;
 }
 
 // ---------------------------------------------------------------- the context
@@ -217,6 +278,139 @@ void test_gemm_ignores_c() {
     for (float c : C) assert(std::isfinite(c));
 }
 
+// ---------------------------------------------------------------- the elementwise kernels
+
+// The copies are bit for bit the CPU's: the input transpose, im2col (k = 3,
+// zeros off the board, never a neighbouring sample's pixels) and the policy
+// head's flatten.
+void test_copy_kernels_bitwise() {
+    Rng rng(401);
+    NaiveBackend cpu;
+    for (int n : {5, 9, 13, 19}) {
+        const int A = n * n;
+        for (int C : {1, 18, 96}) {
+            for (int B : {1, 2, 8}) {
+                const std::vector<float> x = randomVector(rng, static_cast<size_t>(B) * C * A);
+                std::vector<float> t(x.size());
+                cuda_probe::transposeInput(x.data(), B, C, A, t.data());
+                const std::vector<float> tRef = cpuTranspose(x, B, C, A);
+                assert(bitwiseEqual(t.data(), tRef.data(), t.size()));
+                std::vector<float> col(static_cast<size_t>(C) * 9 * B * A), ref(col.size());
+                cuda_probe::im2col3(x.data(), C, B, n, col.data());
+                cpu.im2col(x.data(), C, B, n, 3, ref.data());
+                assert(bitwiseEqual(col.data(), ref.data(), col.size()));
+            }
+        }
+        for (int B : {1, 2, 8}) {
+            const std::vector<float> act = randomVector(rng, static_cast<size_t>(2) * B * A);
+            std::vector<float> flat(act.size());
+            cuda_probe::policyFlatten(act.data(), B, A, flat.data());
+            const std::vector<float> ref = cpuFlatten(act, B, A);
+            assert(bitwiseEqual(flat.data(), ref.data(), flat.size()));
+        }
+    }
+}
+
+// Inference batch norm, bitwise against its formula evaluated without fused
+// multiply-adds (what BatchNorm2d::forwardInfer computes where the compiler
+// does not contract it, as g++ on x86-64 does not).
+void test_bn_infer_bitwise() {
+    Rng rng(402);
+    for (int C : {1, 2, 96}) {
+        for (int M : {1, 169, 169 * 8}) {
+            const BatchNorm2d bn = randomBn(rng, C);
+            const std::vector<float> x = randomVector(rng, static_cast<size_t>(C) * M, 5.0);
+            std::vector<float> y(x.size());
+            cuda_probe::bnInfer(bn, x.data(), M, y.data());
+            const std::vector<float> ref = bnInferNoContract(bn, x, M);
+            assert(bitwiseEqual(y.data(), ref.data(), y.size()));
+#if defined(__x86_64__) && !defined(__FMA__)
+            // Here the CPU layer itself is that formula, uncontracted.
+            std::vector<float> cpu(x.size());
+            bn.forwardInfer(x.data(), M, cpu.data());
+            assert(bitwiseEqual(y.data(), cpu.data(), y.size()));
+#endif
+        }
+    }
+}
+
+// ReLU (x > 0 ? x : 0, which maps -0 and NaN to +0), the skip connection's
+// sum and the Linear layers' bias, bitwise.
+void test_relu_add_bias_bitwise() {
+    Rng rng(403);
+    std::vector<float> x = randomVector(rng, 100000, 3.0);
+    for (float v : {0.0f, -0.0f, std::nanf(""), INFINITY, -INFINITY, 1e-40f, -1e-40f}) x.push_back(v);
+    std::vector<float> y = x, ref = x;
+    reluForward(ref.data(), ref.size());
+    cuda_probe::relu(y.data(), y.size());
+    assert(bitwiseEqual(y.data(), ref.data(), y.size()));
+
+    const std::vector<float> a = randomVector(rng, 50000), b = randomVector(rng, 50000);
+    std::vector<float> sum = a, sumRef(a.size());
+    for (size_t i = 0; i < a.size(); ++i) sumRef[i] = a[i] + b[i];
+    cuda_probe::addInto(sum.data(), b.data(), sum.size());
+    assert(bitwiseEqual(sum.data(), sumRef.data(), sum.size()));
+
+    const int rows = 37, cols = 170;
+    const std::vector<float> bias = randomVector(rng, cols);
+    std::vector<float> m = randomVector(rng, static_cast<size_t>(rows) * cols), mRef = m;
+    for (int r = 0; r < rows; ++r)
+        for (int c = 0; c < cols; ++c) mRef[static_cast<size_t>(r) * cols + c] += bias[c];
+    cuda_probe::biasAddRows(m.data(), bias.data(), rows, cols);
+    assert(bitwiseEqual(m.data(), mRef.data(), m.size()));
+}
+
+// tanh: the GPU's tanhf and the C library's round differently, so it is the
+// one kernel held to a tolerance: within 2 ulp of tanh in double, rounded.
+void test_tanh_within_two_ulp() {
+    Rng rng(404);
+    std::vector<float> x = randomVector(rng, 1000000, 20.0);
+    for (float v : {0.0f, -0.0f, 1e-8f, -1e-8f, 1e-40f, 0.5f, -0.5f, 9.0f, -9.0f, 20.0f, -20.0f, 100.0f})
+        x.push_back(v);
+    std::vector<float> y = x;
+    cuda_probe::tanhInPlace(y.data(), y.size());
+    long long worst = 0;
+    for (size_t i = 0; i < x.size(); ++i) {
+        const float ref = static_cast<float>(std::tanh(static_cast<double>(x[i])));
+        worst = std::max(worst, ulpDistance(y[i], ref));
+    }
+    std::printf("test_cuda: tanh worst %lld ulp (ceiling 2)\n", worst);
+    assert(worst <= 2);
+    float special[] = {INFINITY, -INFINITY, std::nanf(""), 0.0f, -0.0f};
+    cuda_probe::tanhInPlace(special, 5);
+    assert(special[0] == 1.0f && special[1] == -1.0f && std::isnan(special[2]));
+    assert(special[3] == 0.0f && !std::signbit(special[3]) && special[4] == 0.0f && std::signbit(special[4]));
+}
+
+// Each kernel's output for a sample is the same alone and inside a batch:
+// im2col (the one with neighbours: padding never reads another sample) and
+// batch norm with the sample at the first, a middle and the last position.
+void test_elementwise_batch_independent() {
+    Rng rng(405);
+    const int n = 13, A = n * n, C = 18;
+    const std::vector<float> one = randomVector(rng, static_cast<size_t>(C) * A);   // [C][1][A]
+    std::vector<float> colAlone(static_cast<size_t>(C) * 9 * A);
+    cuda_probe::im2col3(one.data(), C, 1, n, colAlone.data());
+    const BatchNorm2d bn = randomBn(rng, C);
+    std::vector<float> bnAlone(one.size());
+    cuda_probe::bnInfer(bn, one.data(), A, bnAlone.data());
+    for (int B : {8, 144}) {
+        for (int at : {0, B / 2, B - 1}) {
+            std::vector<float> x = randomVector(rng, static_cast<size_t>(C) * B * A);   // [C][B][A]
+            for (int c = 0; c < C; ++c)
+                std::copy_n(&one[static_cast<size_t>(c) * A], A, &x[(static_cast<size_t>(c) * B + at) * A]);
+            std::vector<float> col(static_cast<size_t>(C) * 9 * B * A);
+            cuda_probe::im2col3(x.data(), C, B, n, col.data());
+            for (int r = 0; r < C * 9; ++r)
+                assert(bitwiseEqual(&col[static_cast<size_t>(r) * B * A + at * A], &colAlone[static_cast<size_t>(r) * A], A));
+            std::vector<float> y(x.size());
+            cuda_probe::bnInfer(bn, x.data(), B * A, y.data());
+            for (int c = 0; c < C; ++c)
+                assert(bitwiseEqual(&y[(static_cast<size_t>(c) * B + at) * A], &bnAlone[static_cast<size_t>(c) * A], A));
+        }
+    }
+}
+
 } // namespace
 
 #endif // AZ_USE_CUDA
@@ -251,6 +445,11 @@ int main() {
     test_gemm_tiles_agree();
     test_gemm_batch_independent();
     test_gemm_ignores_c();
+    test_copy_kernels_bitwise();
+    test_bn_infer_bitwise();
+    test_relu_add_bias_bitwise();
+    test_tanh_within_two_ulp();
+    test_elementwise_batch_independent();
 #endif
     std::printf("test_cuda: all tests passed\n");
     return 0;
