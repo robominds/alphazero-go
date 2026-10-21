@@ -405,6 +405,20 @@ static void test_engine_workers() {
 // What determines an engine's arithmetic: "<backend>; <cpu>; <os>", and for
 // metal "; <metalDescription()>". No host name: fingerprints go into the
 // manifest, which a run directory keeps.
+// os-release's PRETTY_NAME, read as the file's shell-like syntax defines it.
+static void test_os_release_pretty_name() {
+    assert(osReleasePrettyName("NAME=\"Ubuntu\"\nPRETTY_NAME=\"Ubuntu 24.04.4 LTS\"\nID=ubuntu\n") ==
+           "Ubuntu 24.04.4 LTS");
+    assert(osReleasePrettyName("PRETTY_NAME='Arch Linux'\n") == "Arch Linux");
+    assert(osReleasePrettyName("PRETTY_NAME=Gentoo\n") == "Gentoo");
+    // Backslash escapes inside double quotes: \" \\ \$ \`.
+    assert(osReleasePrettyName("PRETTY_NAME=\"A \\\"quoted\\\" \\\\ \\$x \\`y\\`\"\n") ==
+           "A \"quoted\" \\ $x `y`");
+    assert(osReleasePrettyName("NAME=x\n").empty());
+    assert(osReleasePrettyName("# PRETTY_NAME=\"no\"\n").empty());
+    assert(osReleasePrettyName("PRETTY_NAME=\"\"\n").empty());
+}
+
 static void test_fingerprint() {
     char host[256] = "";
     gethostname(host, sizeof host - 1);
@@ -1542,6 +1556,7 @@ int main() {
     test_hosts_refusals();
     test_hosts_search_order();
     test_engine_workers();
+    test_os_release_pretty_name();
     test_fingerprint();
     test_manifest_rows();
     test_failing_engine_stops_the_others();

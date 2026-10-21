@@ -136,4 +136,11 @@ int sliceWorkers(const std::string& backend, int requested, int sliceGames, int 
 // message) for a backend that cannot run here.
 std::string engineFingerprint(const std::string& backend);
 
+// PRETTY_NAME from the text of an os-release file (/etc/os-release, else
+// /usr/lib/os-release), read with the file's shell-like syntax: a value in
+// double quotes with the escapes \" \\ \$ \`, in single quotes taken
+// literally, or bare. "" when absent or empty. The Linux fingerprint's OS
+// part.
+std::string osReleasePrettyName(const std::string& text);
+
 } // namespace azgo

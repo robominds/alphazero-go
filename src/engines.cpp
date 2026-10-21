@@ -404,20 +404,45 @@ std::string osVersion() {
     // The distribution pins the C library (libm's exp and tanh) and the
     // packaged BLAS, which the kernel's version does not:
     // "Ubuntu 24.04.4 LTS (Linux 6.6.114.1-microsoft-standard-WSL2)".
-    std::ifstream release("/etc/os-release");
-    for (std::string line; std::getline(release, line);) {
-        if (line.rfind("PRETTY_NAME=", 0) != 0) continue;
-        std::string name = line.substr(12);
-        if (name.size() >= 2 && (name.front() == '"' || name.front() == '\'') && name.back() == name.front())
-            name = name.substr(1, name.size() - 2);
-        name = tidy(name);
+    // os-release(5): /etc/os-release, falling back to /usr/lib/os-release.
+    for (const char* path : {"/etc/os-release", "/usr/lib/os-release"}) {
+        std::ifstream release(path, std::ios::binary);
+        if (!release) continue;
+        std::ostringstream text;
+        text << release.rdbuf();
+        const std::string name = tidy(osReleasePrettyName(text.str()));
         if (!name.empty()) return kernel.empty() ? name : name + " (" + kernel + ")";
+        break;   // the first file that exists is the one that counts
     }
 #endif
     return kernel.empty() ? "unknown os" : kernel;
 }
 
 } // namespace
+
+std::string osReleasePrettyName(const std::string& text) {
+    std::istringstream in(text);
+    for (std::string line; std::getline(in, line);) {
+        if (line.rfind("PRETTY_NAME=", 0) != 0) continue;
+        const std::string raw = line.substr(12);
+        std::string value;
+        if (!raw.empty() && raw.front() == '"') {
+            for (size_t i = 1; i < raw.size() && raw[i] != '"'; ++i) {
+                if (raw[i] == '\\' && i + 1 < raw.size() &&
+                    (raw[i + 1] == '"' || raw[i + 1] == '\\' || raw[i + 1] == '$' || raw[i + 1] == '`'))
+                    ++i;
+                value += raw[i];
+            }
+        } else if (!raw.empty() && raw.front() == '\'') {
+            const size_t end = raw.find('\'', 1);
+            value = raw.substr(1, end == std::string::npos ? std::string::npos : end - 1);
+        } else {
+            value = trim(raw);
+        }
+        return value;
+    }
+    return "";
+}
 
 std::string engineFingerprint(const std::string& backend) {
     checkBackendAvailable(backend);
