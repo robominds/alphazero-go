@@ -4639,6 +4639,242 @@ measured against Pachi itself overstated (1k to 4k), resignation off
 (Pachi's default resigns games it would win, at 1k most of all), and
 Elo relative to these two programs only.
 
+### 13×13: the gated run against GNU Go 3.8 and Pachi 12.90
+
+Question: how strong is the gated 13×13 run (`runs/13x13-agz`) after 50
+generations, against the outside programs that rated the 9×9 networks?
+The run: 6 blocks of 96 filters, 400 self-play games per generation at
+800 simulations (leaf batch 8, random symmetry, 14 opening moves at
+temperature, resignation with a 5% false-positive target), 540 training
+steps per generation at a learning rate of 0.02, and gating: a candidate
+replaces the best network when it scores 0.55 or more in a 40-game arena
+match at 800 simulations. Generation 50 was promoted, so it is the run's
+final and best network. Its internal Elo, the run's own Bradley-Terry
+fit anchored at generation 0, is 2386; the best networks after
+generations 10, 20, 30 and 40 (generations 8, 19, 30 and 40) are at 328,
+957, 1500 and 2038.
+
+The result: generation 50 is far weaker than both reference opponents
+at their usual settings. It scored 1/100 against GNU Go 3.8 at level 10
+(−798 Elo), 4/50 against GNU Go's lowest level (0), and 0/100 against
+Pachi at its lowest playout setting. On one scale with GNU Go level 10
+at 0 it rates −587 (95% interval −665 to −508): level with Pachi's tree
+search without patterns and with uniformly random playouts (−595), and
+well above Pachi's search-free engines (−1,000 or so). The earlier best
+networks rate −721 (generation 40), −977 (30) and −1306 (19), and
+generation 8 lost every game it played. Between generations 19 and 50
+the outside scale gains about 720 Elo (920 without the pattern engine)
+where the internal one gains about 1,430: the internal scale is
+inflated by a factor of 1.6 to 2.
+
+- *Pachi has a playout floor, so weakened settings were used.* Pachi's
+  `-t =N` refuses N below 500 ("minimum 500 playouts"), and its search
+  stops at its first clock check, 100 ms in, so `-t =500` searched about
+  1,100 playouts at the root (median; 10th percentile about 620, 90th
+  2,900 to 5,200). At that floor Pachi rates +215 above GNU Go level 10
+  on 13×13 (it beat GNU Go 81/100), and generation 50 scored 0/100
+  against it. No playout count brackets the network. Instead the ladder
+  goes down through Pachi settings that remove its knowledge, all
+  single-threaded with resignation off and `pass_all_alive` as on 9×9:
+  `--nopatterns` (no MM patterns to give the tree its priors; "no
+  patterns" below), `--nopatterns playout=light` (also uniformly random
+  playouts instead of Pachi's playout policy, about 40,000 a second, so
+  the 100 ms floor gives about 2,600 at the root; "light"), and two of
+  Pachi's engines without a search: `-e replay` (the move its playout
+  policy plays most often in 1,000 samples) and `-e pattern` (the move its
+  MM patterns rate highest). Probes on generation 40 also tried Pachi's
+  plain UCB1 tree policy (`policy=ucb1`, with light or default playouts)
+  and its flat Monte Carlo engine; they were about as strong as replay
+  or weaker (replay beat Monte Carlo 10/10 in a probe) and were left
+  out. Changing Pachi's clock check would have meant changing
+  Pachi, which was not done.
+- *Setup* (`13x13-gnugo/`, `13x13-pachi/`). `gnugo-match.sh` and
+  `pachi-match.sh` play one match with `tools/gtp_match.py`: 13×13, komi
+  7.5, colors alternating, at most 338 moves, our engine as A and scorer
+  (Tromp-Taylor), 800 simulations, leaf batch 8, `--random-symmetry` and
+  a different `--seed` per chunk. GNU Go is the GCC 16 `-O2` build of
+  the 9×9 work (`--chinese-rules --capture-all-dead
+  --positional-superko`), Pachi the same clang build (sha256
+  `3209bca7…`, `--nojoseki`, no DCNN, Chinese rules), both checked
+  byte-identical on every machine. Our `gtp` was built from main at
+  4dd4c64. The matches against GNU Go, Pachi and between GNU Go and the
+  Pachi settings (the anchor links, 100 games each, 50 for those with
+  the pattern engine) were split into chunks of 10 games (20 for the
+  anchor links), each with its own seed; the summaries pool them. All
+  188 chunks ran in one GNU Parallel call (`13x13-pachi/all-jobs.txt`,
+  its job log `all-jobs.joblog` with host names replaced by `local`,
+  `mini1` and `mini2`) on 21 October from 14:48 to 16:55, 16 at a time
+  on the Mac Studio and 8 on each Mac mini, after the run had finished.
+  `summarize.py` in each folder pools the chunks, recounts every game
+  Tromp-Taylor from its SGF (`13x13-pachi/`) and reports Pachi's root
+  playouts; `ladder.py` fits the scale; `edges.py` counts first- and
+  second-line moves.
+- *Backends.* The batch began with our engine on the BLAS backend, as on
+  9×9. With 32 matches at once it ran about five times slower than on
+  the GPU (three to five times in a timing under that load, on both
+  kinds of machine), so the match scripts were switched to the `metal`
+  backend (the run's own; a `gtp` built with `-DAZ_USE_METAL=ON` from the
+  same commit) after 32 chunks had started. Those 32 finished on BLAS:
+  9 of the 10 chunks against GNU Go level 10 (c01 to c08 and c10), all 5
+  against level 0, all 10 against Pachi `=500`, and 7 of the 10 against
+  Pachi without patterns. Every other chunk used Metal; each chunk's
+  `backend.txt` says which (absent means BLAS), and the summaries list
+  the counts. The two backends evaluate the same network with different
+  arithmetic and play the same search.
+- *One failed chunk.* In `agz-g50-s800-c09` (BLAS, on a Mac mini) GNU
+  Go exited during a `genmove` in game 4, with nothing on its stderr and
+  no crash report. A rerun with the same seed played on without a
+  failure (its games were not move-for-move the same), so the cause is
+  unknown. The chunk's three finished games (all losses) are in
+  `13x13-gnugo/set-aside/` and left out; a replacement chunk, `c11`
+  (`jobs-rerun.txt`, seed 100011, which a level-0 chunk also used
+  against a different opponent), ran on the Studio with Metal.
+- *Trimming.* To free the machines for further training, 38 chunks were
+  skipped after the batch had started (`13x13-pachi/skip.txt`; the
+  match scripts exit at once for a label listed in `./skip`): the
+  progress networks' second chunk against GNU Go and their third to
+  fifth against light and replay, leaving 10, 20 and 20 games, and
+  generation 50's replay games 151 to 200 and pattern games 51 to 100.
+  The job lists (`jobs-*.txt`) are as written; the job log shows the
+  skipped lines with a run time of zero.
+
+Generation 50 (800 simulations) against each opponent. Score is ours
+(95% Wilson interval); Elo is ours minus the opponent's. From
+`13x13-gnugo/summary.txt` and `13x13-pachi/summary.txt`:
+
+| opponent | games | score | 95% interval | Elo (interval) |
+|---|---|---|---|---|
+| GNU Go 3.8 level 10 | 100 | 1/100 = 0.010 | 0.002-0.054 | −798 (−1101 to −496) |
+| GNU Go 3.8 level 0 | 50 | 4/50 = 0.080 | 0.032-0.188 | −424 (−595 to −254) |
+| Pachi `=500` | 100 | 0/100 = 0.000 | 0.000-0.037 | −∞ (below −566) |
+| Pachi `=500`, no patterns | 100 | 29/100 = 0.290 | 0.210-0.385 | −156 (−230 to −81) |
+| Pachi `=500`, light | 200 | 86/200 = 0.430 | 0.363-0.499 | −49 (−97 to 0) |
+| Pachi pattern | 50 | 45/50 = 0.900 | 0.786-0.957 | +382 (+226 to +537) |
+| Pachi replay | 150 | 148/150 = 0.987 | 0.953-0.996 | +748 (+522 to +974) |
+
+The earlier best networks, 800 simulations:
+
+| network | internal Elo | vs GNU Go level 10 | vs Pachi light | vs Pachi replay |
+|---|---|---|---|---|
+| gen 8 | 328 | 0/10 | 0/20 | 0/20 |
+| gen 19 | 957 | 0/10 | 1/20 | 3/20 |
+| gen 30 | 1500 | 0/10 | 1/20 | 13/20 |
+| gen 40 | 2038 | 0/10 | 5/20 | 19/20 |
+| gen 50 | 2386 | 1/100 | 86/200 | 148/150 |
+
+The anchor links (100 games each, 50 with the pattern engine; A's score):
+GNU Go level 10 scored 19/100 against Pachi `=500`, 85/100 against no
+patterns and 98/100 against light; GNU Go level 0 scored 18, 60 and 92;
+Pachi `=500` beat no patterns 99/100, no patterns beat light 92/100,
+light beat replay 98/100 and pattern 31/50, and replay beat pattern
+36/50.
+
+*One scale* (`13x13-pachi/ladder.txt`, `ladder-nopattern.txt`). A
+Bradley-Terry fit of every player to every game above, GNU Go level 10
+fixed at 0; generation 8, which lost all its games, has no finite
+rating. The second column leaves out the pattern engine's matches:
+
+| player | Elo, joint fit (95% interval) | without the pattern engine |
+|---|---|---|
+| Pachi `=500` (about 1,100 playouts) | +215 (+147 to +284) | +216 (+147 to +284) |
+| GNU Go 3.8 level 10 | 0 (fixed) | 0 (fixed) |
+| GNU Go 3.8 level 0 | −170 (−250 to −91) | −169 (−249 to −89) |
+| Pachi `=500`, no patterns | −304 (−373 to −236) | −304 (−372 to −235) |
+| **gen 50** | **−587 (−665 to −508)** | **−595 (−675 to −516)** |
+| Pachi `=500`, light | −595 (−674 to −517) | −586 (−665 to −507) |
+| gen 40 | −721 (−873 to −569) | −776 (−950 to −603) |
+| gen 30 | −977 (−1137 to −817) | −1150 (−1353 to −947) |
+| Pachi pattern | −991 (−1106 to −877) | |
+| Pachi replay | −1046 (−1149 to −943) | −1267 (−1421 to −1113) |
+| gen 19 | −1306 (−1517 to −1095) | −1513 (−1755 to −1271) |
+| gen 8 | below −882 (0/20 against light) | below −882 |
+
+- *The pattern engine does not fit.* With it, Pearson's chi-square is
+  121.4 on 17 degrees of freedom; most of it is the pattern engine's
+  two links to the Pachi settings: light beat it only 31/50 where the
+  fit expects 45 (residual −7.0), replay 36/50 where it expects 21
+  (+4.3). The engine never passes, so 99 of its 100 games against light
+  and replay ran to the 338-move cap, unfinished, and Tromp-Taylor
+  counted the position as it stood. Without it the chi-square is 48.2 on
+  15 (p < 0.001; largest residuals generation 50 against no patterns,
+  29/100 where the fit expects 16, +3.7, and GNU Go level 0 against
+  Pachi `=500`, 18 where it expects 10, +2.7). Generation 50 moves by 8
+  Elo and the ratings above it by 1; replay and the earlier networks,
+  tied to the rest only through each other and light, move down by 55 to
+  220. The scale is rough below light, and generation 50's own rating
+  rests mostly on its 200 games against light (−49, so −644 ± 49 through
+  light) and its 100 against no patterns (−460 ± 75 through it).
+- *Directly against GNU Go.* Generation 50's one match against GNU Go
+  level 10 (1/100, −798, interval −1101 to −496) and its match against
+  level 0 (−424, so −595 through level 0) agree with the joint fit
+  within their wide intervals.
+- *Internal against outside.* From generation 19 to 50 the internal
+  scale gains 1,429 Elo, the joint fit about 720 (920 without the
+  pattern engine); from 40 to 50, 348 against 134 (181). The internal
+  gains are 1.6 to 2.6 times the outside ones. On 9×9 the outside and
+  internal scales agreed (see
+  [GNU Go](#against-gnu-go-38-an-outside-anchor)); there the networks
+  had trained for 250 generations or more.
+
+*Why it is weak* (a separate read-only diagnosis, and the games here).
+No fault in the GTP path: the same `gtp` build, with the 9×9 network
+from the twice-stepped run at generation 400, beat GNU Go level 10 in 6
+of 6 games at 200 simulations, as it did 97/100 in the 9×9 rating.
+Generation 50 is weak because it is early in training: it misjudges the
+middle game, its value collapsing from winning to lost around ply 140,
+much as the 9×9 networks at generation 50 lost to GNU Go (0/100 and
+5/100 at 200 simulations). The games show the same:
+
+- *Whole-board margins are cosmetic.* Of the networks' 950 games, 26
+  reached the move cap (10 of generation 50's: 9 of its 50 against the
+  pattern engine and 1 against light; 16 of the earlier networks'
+  against light and replay); the rest ended in two passes. Our `gtp` never
+  resigns, GNU Go (`--capture-all-dead`) and Pachi (`pass_all_alive`)
+  capture everything before passing, and Tromp-Taylor counts what is
+  left, so a lost game often ends with most of our stones captured: 56 of
+  generation 50's 99 losses to GNU Go level 10 were by more than half
+  the board (84.5 points; W+176.5 is the whole board,
+  `13x13-gnugo/sgf/agz-g50-s800-c11-game1.sgf`). The scores here are
+  wins and losses; the margins say nothing more. The scorers agreed on
+  every winner: GNU Go's own count and Pachi's matched our engine's, and
+  the recount from the SGFs matched our engine's in every game.
+- *Passes during play.* Our engine passed while the game went on (its
+  pass answered by a move) in many games. In wins, at a root value near
+  +1 (122 of 148 against replay): the game was won, and it answered the
+  opponent's later moves. In losses to Pachi `=500` (44 of 100) and
+  without patterns (33 of 71), at median values of −1.00 and −0.73: the
+  game was lost. Against light it passed during play in 61 of its
+  114 losses, at a median root value of +0.68 (median ply 177 of 237),
+  and its value then fell to a median low of −0.96: it judged an
+  unsettled position won. The same happened in 7 of generation 30's and
+  9 of generation 40's losses to light. Most of the network's passes are
+  forced by a decided game; these are the misjudgement above.
+- *Not the first line.* The 13×13 run without gating
+  (`runs/13x13-agz-nogate`) learned to pass and play the first line. In
+  their first 30 moves the gated networks from generation 19 on put 1 to
+  6% of their stones on the first line, against 1 to 21% for their
+  opponents (3 to 12% for GNU Go; `13x13-pachi/edges.txt`). Generation 8
+  put 14 to 16% there, against 1 to 15% for its opponents.
+
+Games in `13x13-gnugo/sgf/`: generation 50's one win against GNU Go
+level 10 (`agz-g50-s800-c02-game2.sgf`, W+2.5) and a whole-board loss;
+in `13x13-pachi/sgf/`: a win against Pachi without patterns, a win
+against light, and a game against the pattern engine that reached the
+move cap.
+
+**Verdict.** The gated 13×13 run's final network, generation 50, is far
+below GNU Go 3.8 level 10 (1/100) and below its level 0 (4/50), and
+loses every game to Pachi at its minimum of 500 playouts. On one scale
+with GNU Go level 10 at 0 it rates about −590 (−665 to −508), level with
+Pachi searching without patterns and with random playouts, and the best
+networks before it about −720 (generation 40), −980 to −1,150 (30) and
+−1,300 to −1,500 (19). It improves steadily against outside opponents,
+but at about half to two-thirds the rate its internal Elo suggests. Caveats: Pachi's
+settings below its playout floor are not standard levels, and the scale
+below light rests on few links (the pattern engine does not fit it);
+the progress networks played 10 to 20 games per pairing; our engine ran
+on two backends; and Elo is relative to these opponents only.
+
 ### 19×19: criterion met (it runs)
 
 The criterion is that both generations complete, the losses are finite
@@ -5167,6 +5403,25 @@ matches at temperature 0 (AGZ's evaluation size).
   `sgf/`. The SGFs and engine logs of all matches are not in the
   repository. See
   [its section](#against-pachi-1290-a-stronger-outside-anchor).
+- `13x13-gnugo/`: the 13×13 matches against GNU Go 3.8: the scripts
+  `gnugo-match.sh`, `gnugo-jobs.sh` and `summarize.py`; the job lists
+  `jobs-final.txt`, `jobs-progress.txt` and `jobs-rerun.txt` (they ran
+  in the combined list in `13x13-pachi/`); `matches/<label>/results.csv`,
+  `summary.txt` and `backend.txt` for each of the 19 chunks; the table
+  `summary.txt` and `results.csv` (one row per match, chunks pooled);
+  `set-aside/`, the failed chunk; and two games in `sgf/`. See
+  [its section](#1313-the-gated-run-against-gnu-go-38-and-pachi-1290).
+- `13x13-pachi/`: the 13×13 matches against Pachi 12.90 and the anchor
+  links: the scripts `pachi-match.sh`, `pachi-jobs.sh`, `summarize.py`,
+  `ladder.py` and `edges.py`; the job lists `jobs-final.txt`,
+  `jobs-progress.txt` and `jobs-anchor.txt`, the combined list that ran
+  (`all-jobs.txt`, both folders' lines) with its GNU Parallel job log
+  (`all-jobs.joblog`, host names replaced) and the skip list
+  (`skip.txt`); `matches/<label>/results.csv`, `summary.txt` and
+  `backend.txt` for each of the 131 chunks; the table `summary.txt` and
+  `results.csv`; the fits `ladder.txt` and `ladder-nopattern.txt`; the
+  first-line counts `edges.txt`; and three games in `sgf/`. The other
+  SGFs and the engine logs are not in the repository.
 - `9x9/log-250.csv`, `9x9/config-250.cfg` and `9x9/{buf,pass,side}-250.txt`:
   `9x9-main` continued to generation 250: its `log.csv` over generations
   1–250 (the first 150 rows are `9x9/log.csv`), its `config.cfg` as
