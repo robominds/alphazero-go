@@ -1,0 +1,7 @@
+match,network,shape,chunks,backend_chunks,gnugo_level,generation,simulations,mcts_batch,games,score,fraction,ci_low,ci_high,elo,elo_low,elo_high,distinct,score_as_black,score_as_white,two_passes,gnugo_resigned,ours_resigned,forfeits,max_moves,winner_disagreements,margin_disagreements,losses_by_over_half_board,mean_moves
+agz-g8-s800,13x13-agz (gated),6x96,1,metal 1,10,8,800,8,10,0,0.000,0.000,0.278,-inf,-inf,-166,10,0,0,10,0,0,0,0,0,0,10,245.3
+agz-g19-s800,13x13-agz (gated),6x96,1,metal 1,10,19,800,8,10,0,0.000,0.000,0.278,-inf,-inf,-166,10,0,0,10,0,0,0,0,0,0,10,258.5
+agz-g30-s800,13x13-agz (gated),6x96,1,metal 1,10,30,800,8,10,0,0.000,0.000,0.278,-inf,-inf,-166,10,0,0,10,0,0,0,0,0,0,10,262.3
+agz-g40-s800,13x13-agz (gated),6x96,1,metal 1,10,40,800,8,10,0,0.000,0.000,0.278,-inf,-inf,-166,10,0,0,10,0,0,0,0,0,0,8,260.5
+agz-g50-s800,13x13-agz (gated),6x96,10,"blas 9, metal 1",10,50,800,8,100,1,0.010,0.002,0.054,-798,-1101,-496,100,0,1,100,0,0,0,0,0,6,56,239.3
+agz-g50-s800-l0,13x13-agz (gated),6x96,5,blas 5,0,50,800,8,50,4,0.080,0.032,0.188,-424,-595,-254,50,1,3,50,0,0,0,0,0,3,19,224.5

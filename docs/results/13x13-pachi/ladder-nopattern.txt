@@ -1,0 +1,99 @@
+Without the matches of: pattern.
+
+1. The anchor: GNU Go 3.8 and the Pachi settings
+
+| A | B | A's score | Elo A - B (95% interval) |
+|---|---|---|---|
+| GNU Go L0 | Pachi =500 | 18/100 | -263 (-352 to -175) |
+| GNU Go L0 | Pachi light =500 | 92/100 | +424 (+299 to +550) |
+| GNU Go L0 | Pachi nopat =500 | 60/100 | +70 (+1 to +140) |
+| GNU Go L10 | Pachi =500 | 19/100 | -252 (-339 to -165) |
+| GNU Go L10 | Pachi light =500 | 98/100 | +676 (+433 to +919) |
+| GNU Go L10 | Pachi nopat =500 | 85/100 | +301 (+206 to +397) |
+| Pachi =500 | Pachi nopat =500 | 99/100 | +798 (+456 to +1140) |
+| Pachi light =500 | Pachi replay | 98/100 | +676 (+433 to +919) |
+| Pachi nopat =500 | Pachi light =500 | 92/100 | +424 (+299 to +550) |
+
+Fitted to these matches only:
+
+| player | Elo | 95% interval |
+|---|---|---|
+| Pachi replay | -1324 | -1588 to -1060 |
+| Pachi light =500 | -648 | -751 to -545 |
+| Pachi nopat =500 | -267 | -338 to -197 |
+| GNU Go L0 | -157 | -240 to -74 |
+| GNU Go L10 | 0 | (fixed) |
+| Pachi =500 | +220 | +151 to +289 |
+
+2. Joint fit (every game above and below; GNU Go 3.8 level 10 = 0)
+
+| player | Elo | 95% interval |
+|---|---|---|
+| gen 19 | -1513 | -1755 to -1271 |
+| Pachi replay | -1267 | -1421 to -1113 |
+| gen 30 | -1150 | -1353 to -947 |
+| gen 40 | -776 | -950 to -603 |
+| gen 50 | -595 | -675 to -516 |
+| Pachi light =500 | -586 | -665 to -507 |
+| Pachi nopat =500 | -304 | -372 to -235 |
+| GNU Go L0 | -169 | -249 to -89 |
+| GNU Go L10 | 0 | (fixed) |
+| Pachi =500 | +216 | +147 to +284 |
+
+Not rated (outside GNU Go level 10's strongly connected group), with their matches:
+
+- gen 8: 0/20 vs Pachi replay (-1267); 0/20 vs Pachi light =500 (-586); 0/10 vs GNU Go L10 (+0)
+
+Each network against each opponent (opponent's joint rating plus the network's Elo against it; ± is the match's own 95% half-width):
+
+| network | opponent | score | Elo vs opponent | opponent's rating | network via opponent |
+|---|---|---|---|---|---|
+| gen 8 | Pachi replay | 0/20 | -inf | -1267 | below -1553 |
+| gen 8 | Pachi light =500 | 0/20 | -inf | -586 | below -872 |
+| gen 8 | GNU Go L10 | 0/10 | -inf | +0 | below -166 |
+| gen 19 | Pachi replay | 3/20 | -301 | -1267 | -1568 ± 213 |
+| gen 19 | Pachi light =500 | 1/20 | -512 | -586 | -1097 ± 349 |
+| gen 19 | GNU Go L10 | 0/10 | -inf | +0 | below -166 |
+| gen 30 | Pachi replay | 13/20 | +108 | -1267 | -1159 ± 160 |
+| gen 30 | Pachi light =500 | 1/20 | -512 | -586 | -1097 ± 349 |
+| gen 30 | GNU Go L10 | 0/10 | -inf | +0 | below -166 |
+| gen 40 | Pachi replay | 19/20 | +512 | -1267 | -755 ± 349 |
+| gen 40 | Pachi light =500 | 5/20 | -191 | -586 | -777 ± 176 |
+| gen 40 | GNU Go L10 | 0/10 | -inf | +0 | below -166 |
+| gen 50 | Pachi replay | 148/150 | +748 | -1267 | -519 ± 242 |
+| gen 50 | Pachi =500 | 0/100 | -inf | +216 | below -351 |
+| gen 50 | Pachi light =500 | 86/200 | -49 | -586 | -635 ± 49 |
+| gen 50 | Pachi nopat =500 | 29/100 | -156 | -304 | -459 ± 75 |
+| gen 50 | GNU Go L10 | 1/100 | -798 | +0 | -798 ± 342 |
+| gen 50 | GNU Go L0 | 4/50 | -424 | -169 | -593 ± 177 |
+
+3. Residuals of the joint fit (rated players only)
+
+| A | B | games | A's score | expected | Pearson residual |
+|---|---|---|---|---|---|
+| gen 50 | Pachi replay | 150 | 148 | 146.9 | +0.62 |
+| gen 50 | Pachi =500 | 100 | 0 | 0.9 | -0.97 |
+| gen 50 | Pachi light =500 | 200 | 86 | 97.3 | -1.60 |
+| gen 50 | Pachi nopat =500 | 100 | 29 | 15.7 | +3.65 |
+| gen 40 | Pachi replay | 20 | 19 | 18.9 | +0.12 |
+| gen 40 | Pachi light =500 | 20 | 5 | 5.0 | -0.00 |
+| gen 30 | Pachi replay | 20 | 13 | 13.2 | -0.11 |
+| gen 30 | Pachi light =500 | 20 | 1 | 0.7 | +0.30 |
+| gen 19 | Pachi replay | 20 | 3 | 3.9 | -0.51 |
+| gen 19 | Pachi light =500 | 20 | 1 | 0.1 | +2.93 |
+| GNU Go L0 | Pachi =500 | 100 | 18 | 9.8 | +2.74 |
+| GNU Go L0 | Pachi light =500 | 100 | 92 | 91.7 | +0.12 |
+| GNU Go L0 | Pachi nopat =500 | 100 | 60 | 68.4 | -1.82 |
+| GNU Go L10 | Pachi =500 | 100 | 19 | 22.4 | -0.82 |
+| GNU Go L10 | Pachi light =500 | 100 | 98 | 96.7 | +0.74 |
+| GNU Go L10 | Pachi nopat =500 | 100 | 85 | 85.2 | -0.05 |
+| Pachi =500 | Pachi nopat =500 | 100 | 99 | 95.2 | +1.78 |
+| Pachi light =500 | Pachi replay | 100 | 98 | 98.1 | -0.04 |
+| Pachi nopat =500 | Pachi light =500 | 100 | 92 | 83.5 | +2.28 |
+| gen 19 | GNU Go L10 | 10 | 0 | 0.0 | -0.04 |
+| gen 30 | GNU Go L10 | 10 | 0 | 0.0 | -0.12 |
+| gen 40 | GNU Go L10 | 10 | 0 | 0.1 | -0.34 |
+| gen 50 | GNU Go L10 | 100 | 1 | 3.1 | -1.23 |
+| gen 50 | GNU Go L0 | 50 | 4 | 4.0 | +0.02 |
+
+Pearson chi-square 48.2 on 15 degrees of freedom (24 pairings, 9 free ratings)

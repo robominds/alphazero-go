@@ -1,0 +1,11 @@
+game,black,white,moves,end,result,score_a,a_final_score,b_final_score
+1,A,B,238,two passes,W+138.5,0.0,W+138.5,W+138.5
+2,B,A,203,two passes,B+49.5,0.0,B+49.5,B+49.5
+3,A,B,258,two passes,W+22.5,0.0,W+22.5,W+22.5
+4,B,A,194,two passes,B+27.5,0.0,B+27.5,B+27.5
+5,A,B,230,two passes,W+74.5,0.0,W+74.5,W+74.5
+6,B,A,223,two passes,B+39.5,0.0,B+39.5,B+39.5
+7,A,B,212,two passes,W+26.5,0.0,W+26.5,W+26.5
+8,B,A,217,two passes,B+31.5,0.0,B+31.5,B+31.5
+9,A,B,208,two passes,W+40.5,0.0,W+40.5,W+40.5
+10,B,A,193,two passes,B+35.5,0.0,B+35.5,B+35.5

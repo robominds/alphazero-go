@@ -1,0 +1,15 @@
+agz-g50-s800-c01 nets/agz-g50.azn 800 100001 8 10 10
+agz-g50-s800-c02 nets/agz-g50.azn 800 100002 8 10 10
+agz-g50-s800-c03 nets/agz-g50.azn 800 100003 8 10 10
+agz-g50-s800-c04 nets/agz-g50.azn 800 100004 8 10 10
+agz-g50-s800-c05 nets/agz-g50.azn 800 100005 8 10 10
+agz-g50-s800-c06 nets/agz-g50.azn 800 100006 8 10 10
+agz-g50-s800-c07 nets/agz-g50.azn 800 100007 8 10 10
+agz-g50-s800-c08 nets/agz-g50.azn 800 100008 8 10 10
+agz-g50-s800-c09 nets/agz-g50.azn 800 100009 8 10 10
+agz-g50-s800-c10 nets/agz-g50.azn 800 100010 8 10 10
+agz-g50-s800-l0-c01 nets/agz-g50.azn 800 100011 8 10 0
+agz-g50-s800-l0-c02 nets/agz-g50.azn 800 100012 8 10 0
+agz-g50-s800-l0-c03 nets/agz-g50.azn 800 100013 8 10 0
+agz-g50-s800-l0-c04 nets/agz-g50.azn 800 100014 8 10 0
+agz-g50-s800-l0-c05 nets/agz-g50.azn 800 100015 8 10 0

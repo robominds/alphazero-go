@@ -1,0 +1,14 @@
+game 1: A Black, W+2.5 after 251 moves (two passes); A scores 0
+game 2: A White, B+23.5 after 223 moves (two passes); A scores 0
+game 3: A Black, B+8.5 after 131 moves (two passes); A scores 1
+game 4: A White, W+34.5 after 112 moves (two passes); A scores 1
+game 5: A Black, W+2.5 after 211 moves (two passes); A scores 0
+game 6: A White, B+32.5 after 219 moves (two passes); A scores 0
+game 7: A Black, W+18.5 after 218 moves (two passes); A scores 0
+game 8: A White, B+7.5 after 235 moves (two passes); A scores 0
+game 9: A Black, W+4.5 after 224 moves (two passes); A scores 0
+game 10: A White, W+2.5 after 172 moves (two passes); A scores 1
+A alphazero-go agz-g50.azn, 800 simulations, random symmetry vs B Pachi 12.90 (no dcnn): A scored 3/10 = 0.300 (95% CI 0.108-0.603), distinct games 10
+A wins 3, B wins 7, draws 0
+Elo A - B: -147 (95% CI -367 to +73)
+final_score: scored by A; the other engine named a different winner in 0 game(s)

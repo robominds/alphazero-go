@@ -1,0 +1,189 @@
+Seq	Host	Starttime	JobRuntime	Send	Receive	Exitval	Signal	Command
+9	mini2	1792619269.867	   842.787	0	0	1	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-c09 nets/agz-g50.azn 800 100009 8 10 10
+33	mini2	1792620112.717	   642.723	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctnp500-c08 nets/agz-g50.azn 'uctnp=500' 100041 10 800 8
+24	mini2	1792619269.921	  1977.996	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uct500-c09 nets/agz-g50.azn 'uct=500' 100032 10 800 8
+11	mini1	1792619269.873	  1988.453	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-l0-c01 nets/agz-g50.azn 800 100011 8 10 0
+28	local	1792619269.931	  1993.003	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctnp500-c03 nets/agz-g50.azn 'uctnp=500' 100036 10 800 8
+20	mini1	1792619269.906	  2004.996	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uct500-c05 nets/agz-g50.azn 'uct=500' 100028 10 800 8
+17	mini1	1792619269.896	  2018.087	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uct500-c02 nets/agz-g50.azn 'uct=500' 100025 10 800 8
+12	mini2	1792619269.878	  2058.628	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-l0-c02 nets/agz-g50.azn 800 100012 8 10 0
+21	mini2	1792619269.910	  2093.926	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uct500-c06 nets/agz-g50.azn 'uct=500' 100029 10 800 8
+14	mini1	1792619269.884	  2096.103	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-l0-c04 nets/agz-g50.azn 800 100014 8 10 0
+29	local	1792619269.933	  2100.598	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctnp500-c04 nets/agz-g50.azn 'uctnp=500' 100037 10 800 8
+23	mini1	1792619269.917	  2105.243	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uct500-c08 nets/agz-g50.azn 'uct=500' 100031 10 800 8
+32	local	1792619269.941	  2109.009	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctnp500-c07 nets/agz-g50.azn 'uctnp=500' 100040 10 800 8
+15	mini2	1792619269.888	  2139.770	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-l0-c05 nets/agz-g50.azn 800 100015 8 10 0
+5	mini1	1792619269.853	  2160.595	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-c05 nets/agz-g50.azn 800 100005 8 10 10
+18	mini2	1792619269.899	  2164.045	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uct500-c03 nets/agz-g50.azn 'uct=500' 100026 10 800 8
+8	mini1	1792619269.863	  2185.331	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-c08 nets/agz-g50.azn 800 100008 8 10 10
+30	local	1792619269.936	  2257.738	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctnp500-c05 nets/agz-g50.azn 'uctnp=500' 100038 10 800 8
+31	local	1792619269.939	  2263.562	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctnp500-c06 nets/agz-g50.azn 'uctnp=500' 100039 10 800 8
+22	local	1792619269.913	  2264.016	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uct500-c07 nets/agz-g50.azn 'uct=500' 100030 10 800 8
+2	mini1	1792619269.842	  2266.480	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-c02 nets/agz-g50.azn 800 100002 8 10 10
+19	local	1792619269.902	  2276.633	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uct500-c04 nets/agz-g50.azn 'uct=500' 100027 10 800 8
+3	mini2	1792619269.846	  2306.863	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-c03 nets/agz-g50.azn 800 100003 8 10 10
+27	local	1792619269.929	  2312.938	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctnp500-c02 nets/agz-g50.azn 'uctnp=500' 100035 10 800 8
+6	mini2	1792619269.857	  2316.046	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-c06 nets/agz-g50.azn 800 100006 8 10 10
+16	local	1792619269.892	  2319.340	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uct500-c01 nets/agz-g50.azn 'uct=500' 100024 10 800 8
+25	local	1792619269.924	  2371.573	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uct500-c10 nets/agz-g50.azn 'uct=500' 100033 10 800 8
+13	local	1792619269.880	  2380.675	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-l0-c03 nets/agz-g50.azn 800 100013 8 10 0
+34	mini2	1792620755.453	   936.148	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctnp500-c09 nets/agz-g50.azn 'uctnp=500' 100042 10 800 8
+26	local	1792619269.927	  2437.478	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctnp500-c01 nets/agz-g50.azn 'uctnp=500' 100034 10 800 8
+1	local	1792619269.839	  2483.724	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-c01 nets/agz-g50.azn 800 100001 8 10 10
+7	local	1792619269.860	  2504.582	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-c07 nets/agz-g50.azn 800 100007 8 10 10
+4	local	1792619269.849	  2509.101	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-c04 nets/agz-g50.azn 800 100004 8 10 10
+10	local	1792619269.870	  2515.389	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g50-s800-c10 nets/agz-g50.azn 800 100010 8 10 10
+37	local	1792621262.940	   914.276	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c02 nets/agz-g50.azn 'uctlight=500' 100045 10 800 8
+43	local	1792621370.539	  1521.836	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c08 nets/agz-g50.azn 'uctlight=500' 100051 10 800 8
+45	local	1792621378.955	  1615.871	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c10 nets/agz-g50.azn 'uctlight=500' 100053 10 800 8
+35	mini2	1792621247.929	  2117.429	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctnp500-c10 nets/agz-g50.azn 'uctnp=500' 100043 10 800 8
+38	mini1	1792621274.931	  2178.982	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c03 nets/agz-g50.azn 'uctlight=500' 100046 10 800 8
+71	mini1	1792623453.921	     0.171	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c16 nets/agz-g50.azn replay 100079 10 800 8
+72	mini1	1792623454.099	     0.157	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c17 nets/agz-g50.azn replay 100080 10 800 8
+73	mini1	1792623454.261	     0.161	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c18 nets/agz-g50.azn replay 100081 10 800 8
+74	mini1	1792623454.428	     0.163	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c19 nets/agz-g50.azn replay 100082 10 800 8
+75	mini1	1792623454.597	     0.160	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c20 nets/agz-g50.azn replay 100083 10 800 8
+36	mini1	1792621258.344	  2257.084	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c01 nets/agz-g50.azn 'uctlight=500' 100044 10 800 8
+51	local	1792621533.506	  2095.408	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c16 nets/agz-g50.azn 'uctlight=500' 100059 10 800 8
+40	mini2	1792621328.516	  2307.385	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c05 nets/agz-g50.azn 'uctlight=500' 100048 10 800 8
+42	mini1	1792621365.998	  2308.674	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c07 nets/agz-g50.azn 'uctlight=500' 100050 10 800 8
+44	mini1	1792621375.168	  2392.201	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c09 nets/agz-g50.azn 'uctlight=500' 100052 10 800 8
+81	mini1	1792623767.375	     0.161	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-pattern-c06 nets/agz-g50.azn pattern 100089 10 800 8
+82	mini1	1792623767.544	     0.157	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-pattern-c07 nets/agz-g50.azn pattern 100090 10 800 8
+83	mini1	1792623767.706	     0.161	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-pattern-c08 nets/agz-g50.azn pattern 100091 10 800 8
+84	mini1	1792623767.874	     0.161	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-pattern-c09 nets/agz-g50.azn pattern 100092 10 800 8
+85	mini1	1792623768.043	     0.163	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-pattern-c10 nets/agz-g50.azn pattern 100093 10 800 8
+41	mini2	1792621363.845	  2433.421	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c06 nets/agz-g50.azn 'uctlight=500' 100049 10 800 8
+87	mini2	1792623797.275	     0.457	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g8-s800-c02 nets/agz-g8.azn 800 100017 8 10 10
+53	mini1	1792621536.330	  2267.238	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c18 nets/agz-g50.azn 'uctlight=500' 100061 10 800 8
+89	mini1	1792623803.574	     0.151	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g19-s800-c02 nets/agz-g19.azn 800 100019 8 10 10
+50	local	1792621527.680	  2305.836	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c15 nets/agz-g50.azn 'uctlight=500' 100058 10 800 8
+91	local	1792623833.520	     0.186	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g30-s800-c02 nets/agz-g30.azn 800 100021 8 10 10
+52	local	1792621533.935	  2337.932	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c17 nets/agz-g50.azn 'uctlight=500' 100060 10 800 8
+93	local	1792623871.871	     0.014	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g40-s800-c02 nets/agz-g40.azn 800 100023 8 10 10
+49	mini1	1792621455.202	  2487.781	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c14 nets/agz-g50.azn 'uctlight=500' 100057 10 800 8
+48	mini2	1792621433.954	  2534.553	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c13 nets/agz-g50.azn 'uctlight=500' 100056 10 800 8
+96	mini2	1792623968.516	     0.177	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g8-s800-vs-uctlight500-c03 nets/agz-g8.azn 'uctlight=500' 100096 10 800 8
+97	mini2	1792623968.701	     0.170	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g8-s800-vs-uctlight500-c04 nets/agz-g8.azn 'uctlight=500' 100097 10 800 8
+98	mini2	1792623968.880	     0.179	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g8-s800-vs-uctlight500-c05 nets/agz-g8.azn 'uctlight=500' 100098 10 800 8
+54	local	1792621546.539	  2446.573	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c19 nets/agz-g50.azn 'uctlight=500' 100062 10 800 8
+39	mini1	1792621287.993	  2737.137	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c04 nets/agz-g50.azn 'uctlight=500' 100047 10 800 8
+101	mini1	1792624025.136	     0.173	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g8-s800-vs-replay-c03 nets/agz-g8.azn replay 100101 10 800 8
+102	mini1	1792624025.318	     0.166	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g8-s800-vs-replay-c04 nets/agz-g8.azn replay 100102 10 800 8
+103	mini1	1792624025.493	     0.172	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g8-s800-vs-replay-c05 nets/agz-g8.azn replay 100103 10 800 8
+58	local	1792621589.237	  2468.793	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c03 nets/agz-g50.azn replay 100066 10 800 8
+47	mini1	1792621430.459	  2642.296	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c12 nets/agz-g50.azn 'uctlight=500' 100055 10 800 8
+106	mini1	1792624072.764	     0.164	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g19-s800-vs-uctlight500-c03 nets/agz-g19.azn 'uctlight=500' 100106 10 800 8
+107	mini1	1792624072.934	     0.141	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g19-s800-vs-uctlight500-c04 nets/agz-g19.azn 'uctlight=500' 100107 10 800 8
+108	mini1	1792624073.083	     0.169	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g19-s800-vs-uctlight500-c05 nets/agz-g19.azn 'uctlight=500' 100108 10 800 8
+56	local	1792621582.872	  2522.595	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c01 nets/agz-g50.azn replay 100064 10 800 8
+57	mini2	1792621585.910	  2534.952	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c02 nets/agz-g50.azn replay 100065 10 800 8
+111	mini2	1792624120.869	     0.164	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g19-s800-vs-replay-c03 nets/agz-g19.azn replay 100111 10 800 8
+112	mini2	1792624121.040	     0.169	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g19-s800-vs-replay-c04 nets/agz-g19.azn replay 100112 10 800 8
+113	mini2	1792624121.216	     0.179	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g19-s800-vs-replay-c05 nets/agz-g19.azn replay 100113 10 800 8
+46	mini2	1792621409.669	  2712.627	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c11 nets/agz-g50.azn 'uctlight=500' 100054 10 800 8
+63	local	1792621753.568	  2507.125	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c08 nets/agz-g50.azn replay 100071 10 800 8
+116	local	1792624260.697	     0.013	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g30-s800-vs-uctlight500-c03 nets/agz-g30.azn 'uctlight=500' 100116 10 800 8
+117	local	1792624260.716	     0.011	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g30-s800-vs-uctlight500-c04 nets/agz-g30.azn 'uctlight=500' 100117 10 800 8
+118	local	1792624260.732	     0.012	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g30-s800-vs-uctlight500-c05 nets/agz-g30.azn 'uctlight=500' 100118 10 800 8
+55	mini2	1792621576.717	  2684.407	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-uctlight500-c20 nets/agz-g50.azn 'uctlight=500' 100063 10 800 8
+59	local	1792621641.503	  2631.463	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c04 nets/agz-g50.azn replay 100067 10 800 8
+121	local	1792624272.969	     0.010	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g30-s800-vs-replay-c03 nets/agz-g30.azn replay 100121 10 800 8
+122	local	1792624272.983	     0.009	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g30-s800-vs-replay-c04 nets/agz-g30.azn replay 100122 10 800 8
+123	local	1792624272.996	     0.009	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g30-s800-vs-replay-c05 nets/agz-g30.azn replay 100123 10 800 8
+60	local	1792621650.561	  2628.826	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c05 nets/agz-g50.azn replay 100068 10 800 8
+62	local	1792621707.410	  2575.940	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c07 nets/agz-g50.azn replay 100070 10 800 8
+126	local	1792624283.355	     0.012	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g40-s800-vs-uctlight500-c03 nets/agz-g40.azn 'uctlight=500' 100126 10 800 8
+127	local	1792624283.370	     0.012	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g40-s800-vs-uctlight500-c04 nets/agz-g40.azn 'uctlight=500' 100127 10 800 8
+128	local	1792624283.385	     0.009	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g40-s800-vs-uctlight500-c05 nets/agz-g40.azn 'uctlight=500' 100128 10 800 8
+61	mini2	1792621691.609	  2644.848	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c06 nets/agz-g50.azn replay 100069 10 800 8
+64	local	1792621774.446	  2593.573	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c09 nets/agz-g50.azn replay 100072 10 800 8
+131	local	1792624368.023	     0.010	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g40-s800-vs-replay-c03 nets/agz-g40.azn replay 100131 10 800 8
+132	local	1792624368.037	     0.009	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g40-s800-vs-replay-c04 nets/agz-g40.azn replay 100132 10 800 8
+133	local	1792624368.050	     0.009	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g40-s800-vs-replay-c05 nets/agz-g40.azn replay 100133 10 800 8
+65	local	1792621778.954	  2613.674	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c10 nets/agz-g50.azn replay 100073 10 800 8
+66	local	1792621785.262	  2673.791	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c11 nets/agz-g50.azn replay 100074 10 800 8
+134	local	1792624368.063	   322.687	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uct500-c01 gnugo10 'uct=500' 100134 20  
+135	local	1792624392.633	   302.160	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uct500-c02 gnugo10 'uct=500' 100135 20  
+67	local	1792622177.221	  2530.450	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c12 nets/agz-g50.azn replay 100075 10 800 8
+136	local	1792624459.057	   288.256	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uct500-c03 gnugo10 'uct=500' 100136 20  
+137	local	1792624690.755	   327.346	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uct500-c04 gnugo10 'uct=500' 100137 20  
+138	local	1792624694.796	   326.193	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uct500-c05 gnugo10 'uct=500' 100138 20  
+68	local	1792622892.381	  2320.046	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c13 nets/agz-g50.azn replay 100076 10 800 8
+139	local	1792624707.674	   516.622	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uctnp500-c01 gnugo10 'uctnp=500' 100139 20  
+140	local	1792624747.318	   577.164	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uctnp500-c02 gnugo10 'uctnp=500' 100140 20  
+69	local	1792622994.830	  2350.401	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c14 nets/agz-g50.azn replay 100077 10 800 8
+142	local	1792625020.992	   492.621	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uctnp500-c04 gnugo10 'uctnp=500' 100142 20  
+141	local	1792625018.106	   566.281	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uctnp500-c03 gnugo10 'uctnp=500' 100141 20  
+144	local	1792625224.301	   485.321	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uctlight500-c01 gnugo10 'uctlight=500' 100144 20  
+143	local	1792625212.433	   540.098	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uctnp500-c05 gnugo10 'uctnp=500' 100143 20  
+145	local	1792625324.486	   451.937	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uctlight500-c02 gnugo10 'uctlight=500' 100145 20  
+146	local	1792625345.235	   478.664	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uctlight500-c03 gnugo10 'uctlight=500' 100146 20  
+149	local	1792625709.627	   126.283	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uct500-c01 gnugo0 'uct=500' 100149 20  
+70	mini2	1792623365.362	  2507.676	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-replay-c15 nets/agz-g50.azn replay 100078 10 800 8
+150	local	1792625752.537	   125.302	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uct500-c02 gnugo0 'uct=500' 100150 20  
+151	local	1792625776.427	   121.572	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uct500-c03 gnugo0 'uct=500' 100151 20  
+152	local	1792625823.903	   132.836	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uct500-c04 gnugo0 'uct=500' 100152 20  
+153	local	1792625835.914	   126.398	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uct500-c05 gnugo0 'uct=500' 100153 20  
+147	local	1792625513.618	   508.095	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uctlight500-c04 gnugo10 'uctlight=500' 100147 20  
+154	mini2	1792625873.043	   166.378	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uctnp500-c01 gnugo0 'uctnp=500' 100154 20  
+155	local	1792625877.843	   166.571	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uctnp500-c02 gnugo0 'uctnp=500' 100155 20  
+156	local	1792625898.003	   155.223	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uctnp500-c03 gnugo0 'uctnp=500' 100156 20  
+100	local	1792623993.118	  2080.720	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g8-s800-vs-replay-c02 nets/agz-g8.azn replay 100100 10 800 8
+148	local	1792625584.391	   499.789	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo10-vs-uctlight500-c05 gnugo10 'uctlight=500' 100148 20  
+78	local	1792623628.920	  2488.003	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-pattern-c03 nets/agz-g50.azn pattern 100086 10 800 8
+157	local	1792625956.744	   167.959	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uctnp500-c04 gnugo0 'uctnp=500' 100157 20  
+158	local	1792625962.316	   169.796	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uctnp500-c05 gnugo0 'uctnp=500' 100158 20  
+159	local	1792626021.716	   142.911	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uctlight500-c01 gnugo0 'uctlight=500' 100159 20  
+161	local	1792626044.418	   140.213	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uctlight500-c03 gnugo0 'uctlight=500' 100161 20  
+160	mini2	1792626039.426	   150.875	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uctlight500-c02 gnugo0 'uctlight=500' 100160 20  
+162	local	1792626053.231	   144.782	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uctlight500-c04 gnugo0 'uctlight=500' 100162 20  
+163	local	1792626073.843	   142.445	0	0	0	0	cd rating-13x13 && ./pachi-match.sh gnugo0-vs-uctlight500-c05 gnugo0 'uctlight=500' 100163 20  
+94	local	1792623871.890	  2360.569	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g8-s800-vs-uctlight500-c01 nets/agz-g8.azn 'uctlight=500' 100094 10 800 8
+129	local	1792624283.398	  1983.641	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g40-s800-vs-replay-c01 nets/agz-g40.azn replay 100129 10 800 8
+92	local	1792623833.710	  2451.003	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g40-s800-c01 nets/agz-g40.azn 800 100022 8 10 10
+119	local	1792624260.748	  2032.578	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g30-s800-vs-replay-c01 nets/agz-g30.azn replay 100119 10 800 8
+124	local	1792624273.009	  2074.302	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g40-s800-vs-uctlight500-c01 nets/agz-g40.azn 'uctlight=500' 100124 10 800 8
+125	local	1792624279.393	  2073.750	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g40-s800-vs-uctlight500-c02 nets/agz-g40.azn 'uctlight=500' 100125 10 800 8
+110	local	1792624105.472	  2255.155	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g19-s800-vs-replay-c02 nets/agz-g19.azn replay 100110 10 800 8
+105	local	1792624058.036	  2320.480	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g19-s800-vs-uctlight500-c02 nets/agz-g19.azn 'uctlight=500' 100105 10 800 8
+174	local	1792626267.044	   119.394	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctlight500-vs-replay-c01 'pachi:uctlight=500' replay 100174 20  
+164	local	1792626084.183	   306.102	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uct500-vs-uctnp500-c01 'pachi:uct=500' 'uctnp=500' 100164 20  
+175	local	1792626284.719	   122.921	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctlight500-vs-replay-c02 'pachi:uctlight=500' replay 100175 20  
+176	local	1792626293.330	   121.570	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctlight500-vs-replay-c03 'pachi:uctlight=500' replay 100176 20  
+77	mini1	1792623515.433	  2906.677	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-pattern-c02 nets/agz-g50.azn pattern 100085 10 800 8
+184	local	1792626414.905	    10.180	0	0	0	0	cd rating-13x13 && ./pachi-match.sh replay-vs-pattern-c01 'pachi:replay' pattern 100184 10  
+185	mini1	1792626422.146	     7.124	0	0	0	0	cd rating-13x13 && ./pachi-match.sh replay-vs-pattern-c02 'pachi:replay' pattern 100185 10  
+165	local	1792626116.927	   315.753	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uct500-vs-uctnp500-c02 'pachi:uct=500' 'uctnp=500' 100165 20  
+167	local	1792626132.116	   302.656	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uct500-vs-uctnp500-c04 'pachi:uct=500' 'uctnp=500' 100167 20  
+186	local	1792626425.097	    10.757	0	0	0	0	cd rating-13x13 && ./pachi-match.sh replay-vs-pattern-c03 'pachi:replay' pattern 100186 10  
+166	local	1792626124.706	   311.223	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uct500-vs-uctnp500-c03 'pachi:uct=500' 'uctnp=500' 100166 20  
+187	mini1	1792626429.290	     8.194	0	0	0	0	cd rating-13x13 && ./pachi-match.sh replay-vs-pattern-c04 'pachi:replay' pattern 100187 10  
+188	local	1792626432.692	     8.789	0	0	0	0	cd rating-13x13 && ./pachi-match.sh replay-vs-pattern-c05 'pachi:replay' pattern 100188 10  
+99	mini2	1792623969.068	  2473.751	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g8-s800-vs-replay-c01 nets/agz-g8.azn replay 100099 10 800 8
+79	mini2	1792623635.908	  2817.061	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-pattern-c04 nets/agz-g50.azn pattern 100087 10 800 8
+179	local	1792626360.630	   100.933	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctlight500-vs-pattern-c01 'pachi:uctlight=500' pattern 100179 10  
+169	local	1792626184.634	   281.632	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctnp500-vs-uctlight500-c01 'pachi:uctnp=500' 'uctlight=500' 100169 20  
+177	local	1792626347.315	   126.148	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctlight500-vs-replay-c04 'pachi:uctlight=500' replay 100177 20  
+171	local	1792626198.017	   278.479	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctnp500-vs-uctlight500-c03 'pachi:uctnp=500' 'uctlight=500' 100171 20  
+168	local	1792626164.631	   313.042	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uct500-vs-uctnp500-c05 'pachi:uct=500' 'uctnp=500' 100168 20  
+178	local	1792626353.148	   125.285	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctlight500-vs-replay-c05 'pachi:uctlight=500' replay 100178 20  
+180	local	1792626378.527	   100.802	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctlight500-vs-pattern-c02 'pachi:uctlight=500' pattern 100180 10  
+172	local	1792626216.291	   264.068	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctnp500-vs-uctlight500-c04 'pachi:uctnp=500' 'uctlight=500' 100172 20  
+170	mini2	1792626190.306	   293.361	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctnp500-vs-uctlight500-c02 'pachi:uctnp=500' 'uctlight=500' 100170 20  
+181	local	1792626386.443	   100.543	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctlight500-vs-pattern-c03 'pachi:uctlight=500' pattern 100181 10  
+182	local	1792626390.289	   100.402	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctlight500-vs-pattern-c04 'pachi:uctlight=500' pattern 100182 10  
+183	local	1792626407.644	    98.356	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctlight500-vs-pattern-c05 'pachi:uctlight=500' pattern 100183 10  
+173	local	1792626232.464	   275.161	0	0	0	0	cd rating-13x13 && ./pachi-match.sh uctnp500-vs-uctlight500-c05 'pachi:uctnp=500' 'uctlight=500' 100173 20  
+76	mini1	1792623454.763	  3125.451	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-pattern-c01 nets/agz-g50.azn pattern 100084 10 800 8
+80	mini1	1792623674.681	  2942.351	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g50-s800-vs-pattern-c05 nets/agz-g50.azn pattern 100088 10 800 8
+88	mini2	1792623797.740	  2827.173	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g19-s800-c01 nets/agz-g19.azn 800 100018 8 10 10
+130	mini2	1792624336.466	  2333.750	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g40-s800-vs-replay-c02 nets/agz-g40.azn replay 100130 10 800 8
+95	mini1	1792623942.990	  2735.249	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g8-s800-vs-uctlight500-c02 nets/agz-g8.azn 'uctlight=500' 100095 10 800 8
+86	mini1	1792623768.212	  2920.005	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g8-s800-c01 nets/agz-g8.azn 800 100016 8 10 10
+90	mini1	1792623803.733	  2941.592	0	0	0	0	cd rating-13x13 && ./gnugo-match.sh agz-g30-s800-c01 nets/agz-g30.azn 800 100020 8 10 10
+120	mini2	1792624261.133	  2523.148	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g30-s800-vs-replay-c02 nets/agz-g30.azn replay 100120 10 800 8
+115	mini2	1792624122.304	  2708.266	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g30-s800-vs-uctlight500-c02 nets/agz-g30.azn 'uctlight=500' 100115 10 800 8
+109	mini1	1792624073.259	  2779.359	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g19-s800-vs-replay-c01 nets/agz-g19.azn replay 100109 10 800 8
+114	mini2	1792624121.402	  2750.805	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g30-s800-vs-uctlight500-c01 nets/agz-g30.azn 'uctlight=500' 100114 10 800 8
+104	mini1	1792624025.672	  2916.423	0	0	0	0	cd rating-13x13 && ./pachi-match.sh agz-g19-s800-vs-uctlight500-c01 nets/agz-g19.azn 'uctlight=500' 100104 10 800 8

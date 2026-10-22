@@ -1,0 +1,4 @@
+game,black,white,moves,end,result,score_a,a_final_score,b_final_score
+1,A,B,226,two passes,W+90.5,0.0,W+90.5,W+90.5
+2,B,A,279,two passes,B+161.5,0.0,B+161.5,B+161.5
+3,A,B,288,two passes,W+176.5,0.0,W+176.5,W+176.5

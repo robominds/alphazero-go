@@ -1,0 +1,24 @@
+game 1: A Black, B+63.5 after 217 moves (two passes); A scores 1
+game 2: A White, W+42.5 after 202 moves (two passes); A scores 1
+game 3: A Black, W+176.5 after 254 moves (two passes); A scores 0
+game 4: A White, W+29.5 after 198 moves (two passes); A scores 1
+game 5: A Black, B+161.5 after 213 moves (two passes); A scores 1
+game 6: A White, W+17.5 after 166 moves (two passes); A scores 1
+game 7: A Black, B+161.5 after 247 moves (two passes); A scores 1
+game 8: A White, W+61.5 after 245 moves (two passes); A scores 1
+game 9: A Black, B+51.5 after 221 moves (two passes); A scores 1
+game 10: A White, W+32.5 after 190 moves (two passes); A scores 1
+game 11: A Black, B+63.5 after 227 moves (two passes); A scores 1
+game 12: A White, B+114.5 after 263 moves (two passes); A scores 0
+game 13: A Black, B+161.5 after 279 moves (two passes); A scores 1
+game 14: A White, W+176.5 after 238 moves (two passes); A scores 1
+game 15: A Black, B+161.5 after 277 moves (two passes); A scores 1
+game 16: A White, W+176.5 after 242 moves (two passes); A scores 1
+game 17: A Black, B+69.5 after 213 moves (two passes); A scores 1
+game 18: A White, W+44.5 after 202 moves (two passes); A scores 1
+game 19: A Black, B+161.5 after 245 moves (two passes); A scores 1
+game 20: A White, W+40.5 after 198 moves (two passes); A scores 1
+A Pachi 12.90 (no dcnn) vs B Pachi 12.90 (no dcnn): A scored 18/20 = 0.900 (95% CI 0.699-0.972), distinct games 20
+A wins 18, B wins 2, draws 0
+Elo A - B: +382 (95% CI +146 to +617)
+final_score: scored by A; the other engine named a different winner in 0 game(s)

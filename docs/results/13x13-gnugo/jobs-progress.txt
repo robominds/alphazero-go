@@ -1,0 +1,8 @@
+agz-g8-s800-c01 nets/agz-g8.azn 800 100016 8 10 10
+agz-g8-s800-c02 nets/agz-g8.azn 800 100017 8 10 10
+agz-g19-s800-c01 nets/agz-g19.azn 800 100018 8 10 10
+agz-g19-s800-c02 nets/agz-g19.azn 800 100019 8 10 10
+agz-g30-s800-c01 nets/agz-g30.azn 800 100020 8 10 10
+agz-g30-s800-c02 nets/agz-g30.azn 800 100021 8 10 10
+agz-g40-s800-c01 nets/agz-g40.azn 800 100022 8 10 10
+agz-g40-s800-c02 nets/agz-g40.azn 800 100023 8 10 10

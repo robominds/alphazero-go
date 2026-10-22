@@ -1,0 +1,188 @@
+gnugo-match.sh agz-g50-s800-c01 nets/agz-g50.azn 800 100001 8 10 10
+gnugo-match.sh agz-g50-s800-c02 nets/agz-g50.azn 800 100002 8 10 10
+gnugo-match.sh agz-g50-s800-c03 nets/agz-g50.azn 800 100003 8 10 10
+gnugo-match.sh agz-g50-s800-c04 nets/agz-g50.azn 800 100004 8 10 10
+gnugo-match.sh agz-g50-s800-c05 nets/agz-g50.azn 800 100005 8 10 10
+gnugo-match.sh agz-g50-s800-c06 nets/agz-g50.azn 800 100006 8 10 10
+gnugo-match.sh agz-g50-s800-c07 nets/agz-g50.azn 800 100007 8 10 10
+gnugo-match.sh agz-g50-s800-c08 nets/agz-g50.azn 800 100008 8 10 10
+gnugo-match.sh agz-g50-s800-c09 nets/agz-g50.azn 800 100009 8 10 10
+gnugo-match.sh agz-g50-s800-c10 nets/agz-g50.azn 800 100010 8 10 10
+gnugo-match.sh agz-g50-s800-l0-c01 nets/agz-g50.azn 800 100011 8 10 0
+gnugo-match.sh agz-g50-s800-l0-c02 nets/agz-g50.azn 800 100012 8 10 0
+gnugo-match.sh agz-g50-s800-l0-c03 nets/agz-g50.azn 800 100013 8 10 0
+gnugo-match.sh agz-g50-s800-l0-c04 nets/agz-g50.azn 800 100014 8 10 0
+gnugo-match.sh agz-g50-s800-l0-c05 nets/agz-g50.azn 800 100015 8 10 0
+pachi-match.sh agz-g50-s800-vs-uct500-c01 nets/agz-g50.azn uct=500 100024 10 800 8
+pachi-match.sh agz-g50-s800-vs-uct500-c02 nets/agz-g50.azn uct=500 100025 10 800 8
+pachi-match.sh agz-g50-s800-vs-uct500-c03 nets/agz-g50.azn uct=500 100026 10 800 8
+pachi-match.sh agz-g50-s800-vs-uct500-c04 nets/agz-g50.azn uct=500 100027 10 800 8
+pachi-match.sh agz-g50-s800-vs-uct500-c05 nets/agz-g50.azn uct=500 100028 10 800 8
+pachi-match.sh agz-g50-s800-vs-uct500-c06 nets/agz-g50.azn uct=500 100029 10 800 8
+pachi-match.sh agz-g50-s800-vs-uct500-c07 nets/agz-g50.azn uct=500 100030 10 800 8
+pachi-match.sh agz-g50-s800-vs-uct500-c08 nets/agz-g50.azn uct=500 100031 10 800 8
+pachi-match.sh agz-g50-s800-vs-uct500-c09 nets/agz-g50.azn uct=500 100032 10 800 8
+pachi-match.sh agz-g50-s800-vs-uct500-c10 nets/agz-g50.azn uct=500 100033 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctnp500-c01 nets/agz-g50.azn uctnp=500 100034 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctnp500-c02 nets/agz-g50.azn uctnp=500 100035 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctnp500-c03 nets/agz-g50.azn uctnp=500 100036 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctnp500-c04 nets/agz-g50.azn uctnp=500 100037 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctnp500-c05 nets/agz-g50.azn uctnp=500 100038 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctnp500-c06 nets/agz-g50.azn uctnp=500 100039 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctnp500-c07 nets/agz-g50.azn uctnp=500 100040 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctnp500-c08 nets/agz-g50.azn uctnp=500 100041 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctnp500-c09 nets/agz-g50.azn uctnp=500 100042 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctnp500-c10 nets/agz-g50.azn uctnp=500 100043 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c01 nets/agz-g50.azn uctlight=500 100044 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c02 nets/agz-g50.azn uctlight=500 100045 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c03 nets/agz-g50.azn uctlight=500 100046 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c04 nets/agz-g50.azn uctlight=500 100047 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c05 nets/agz-g50.azn uctlight=500 100048 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c06 nets/agz-g50.azn uctlight=500 100049 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c07 nets/agz-g50.azn uctlight=500 100050 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c08 nets/agz-g50.azn uctlight=500 100051 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c09 nets/agz-g50.azn uctlight=500 100052 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c10 nets/agz-g50.azn uctlight=500 100053 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c11 nets/agz-g50.azn uctlight=500 100054 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c12 nets/agz-g50.azn uctlight=500 100055 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c13 nets/agz-g50.azn uctlight=500 100056 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c14 nets/agz-g50.azn uctlight=500 100057 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c15 nets/agz-g50.azn uctlight=500 100058 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c16 nets/agz-g50.azn uctlight=500 100059 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c17 nets/agz-g50.azn uctlight=500 100060 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c18 nets/agz-g50.azn uctlight=500 100061 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c19 nets/agz-g50.azn uctlight=500 100062 10 800 8
+pachi-match.sh agz-g50-s800-vs-uctlight500-c20 nets/agz-g50.azn uctlight=500 100063 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c01 nets/agz-g50.azn replay 100064 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c02 nets/agz-g50.azn replay 100065 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c03 nets/agz-g50.azn replay 100066 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c04 nets/agz-g50.azn replay 100067 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c05 nets/agz-g50.azn replay 100068 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c06 nets/agz-g50.azn replay 100069 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c07 nets/agz-g50.azn replay 100070 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c08 nets/agz-g50.azn replay 100071 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c09 nets/agz-g50.azn replay 100072 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c10 nets/agz-g50.azn replay 100073 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c11 nets/agz-g50.azn replay 100074 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c12 nets/agz-g50.azn replay 100075 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c13 nets/agz-g50.azn replay 100076 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c14 nets/agz-g50.azn replay 100077 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c15 nets/agz-g50.azn replay 100078 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c16 nets/agz-g50.azn replay 100079 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c17 nets/agz-g50.azn replay 100080 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c18 nets/agz-g50.azn replay 100081 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c19 nets/agz-g50.azn replay 100082 10 800 8
+pachi-match.sh agz-g50-s800-vs-replay-c20 nets/agz-g50.azn replay 100083 10 800 8
+pachi-match.sh agz-g50-s800-vs-pattern-c01 nets/agz-g50.azn pattern 100084 10 800 8
+pachi-match.sh agz-g50-s800-vs-pattern-c02 nets/agz-g50.azn pattern 100085 10 800 8
+pachi-match.sh agz-g50-s800-vs-pattern-c03 nets/agz-g50.azn pattern 100086 10 800 8
+pachi-match.sh agz-g50-s800-vs-pattern-c04 nets/agz-g50.azn pattern 100087 10 800 8
+pachi-match.sh agz-g50-s800-vs-pattern-c05 nets/agz-g50.azn pattern 100088 10 800 8
+pachi-match.sh agz-g50-s800-vs-pattern-c06 nets/agz-g50.azn pattern 100089 10 800 8
+pachi-match.sh agz-g50-s800-vs-pattern-c07 nets/agz-g50.azn pattern 100090 10 800 8
+pachi-match.sh agz-g50-s800-vs-pattern-c08 nets/agz-g50.azn pattern 100091 10 800 8
+pachi-match.sh agz-g50-s800-vs-pattern-c09 nets/agz-g50.azn pattern 100092 10 800 8
+pachi-match.sh agz-g50-s800-vs-pattern-c10 nets/agz-g50.azn pattern 100093 10 800 8
+gnugo-match.sh agz-g8-s800-c01 nets/agz-g8.azn 800 100016 8 10 10
+gnugo-match.sh agz-g8-s800-c02 nets/agz-g8.azn 800 100017 8 10 10
+gnugo-match.sh agz-g19-s800-c01 nets/agz-g19.azn 800 100018 8 10 10
+gnugo-match.sh agz-g19-s800-c02 nets/agz-g19.azn 800 100019 8 10 10
+gnugo-match.sh agz-g30-s800-c01 nets/agz-g30.azn 800 100020 8 10 10
+gnugo-match.sh agz-g30-s800-c02 nets/agz-g30.azn 800 100021 8 10 10
+gnugo-match.sh agz-g40-s800-c01 nets/agz-g40.azn 800 100022 8 10 10
+gnugo-match.sh agz-g40-s800-c02 nets/agz-g40.azn 800 100023 8 10 10
+pachi-match.sh agz-g8-s800-vs-uctlight500-c01 nets/agz-g8.azn uctlight=500 100094 10 800 8
+pachi-match.sh agz-g8-s800-vs-uctlight500-c02 nets/agz-g8.azn uctlight=500 100095 10 800 8
+pachi-match.sh agz-g8-s800-vs-uctlight500-c03 nets/agz-g8.azn uctlight=500 100096 10 800 8
+pachi-match.sh agz-g8-s800-vs-uctlight500-c04 nets/agz-g8.azn uctlight=500 100097 10 800 8
+pachi-match.sh agz-g8-s800-vs-uctlight500-c05 nets/agz-g8.azn uctlight=500 100098 10 800 8
+pachi-match.sh agz-g8-s800-vs-replay-c01 nets/agz-g8.azn replay 100099 10 800 8
+pachi-match.sh agz-g8-s800-vs-replay-c02 nets/agz-g8.azn replay 100100 10 800 8
+pachi-match.sh agz-g8-s800-vs-replay-c03 nets/agz-g8.azn replay 100101 10 800 8
+pachi-match.sh agz-g8-s800-vs-replay-c04 nets/agz-g8.azn replay 100102 10 800 8
+pachi-match.sh agz-g8-s800-vs-replay-c05 nets/agz-g8.azn replay 100103 10 800 8
+pachi-match.sh agz-g19-s800-vs-uctlight500-c01 nets/agz-g19.azn uctlight=500 100104 10 800 8
+pachi-match.sh agz-g19-s800-vs-uctlight500-c02 nets/agz-g19.azn uctlight=500 100105 10 800 8
+pachi-match.sh agz-g19-s800-vs-uctlight500-c03 nets/agz-g19.azn uctlight=500 100106 10 800 8
+pachi-match.sh agz-g19-s800-vs-uctlight500-c04 nets/agz-g19.azn uctlight=500 100107 10 800 8
+pachi-match.sh agz-g19-s800-vs-uctlight500-c05 nets/agz-g19.azn uctlight=500 100108 10 800 8
+pachi-match.sh agz-g19-s800-vs-replay-c01 nets/agz-g19.azn replay 100109 10 800 8
+pachi-match.sh agz-g19-s800-vs-replay-c02 nets/agz-g19.azn replay 100110 10 800 8
+pachi-match.sh agz-g19-s800-vs-replay-c03 nets/agz-g19.azn replay 100111 10 800 8
+pachi-match.sh agz-g19-s800-vs-replay-c04 nets/agz-g19.azn replay 100112 10 800 8
+pachi-match.sh agz-g19-s800-vs-replay-c05 nets/agz-g19.azn replay 100113 10 800 8
+pachi-match.sh agz-g30-s800-vs-uctlight500-c01 nets/agz-g30.azn uctlight=500 100114 10 800 8
+pachi-match.sh agz-g30-s800-vs-uctlight500-c02 nets/agz-g30.azn uctlight=500 100115 10 800 8
+pachi-match.sh agz-g30-s800-vs-uctlight500-c03 nets/agz-g30.azn uctlight=500 100116 10 800 8
+pachi-match.sh agz-g30-s800-vs-uctlight500-c04 nets/agz-g30.azn uctlight=500 100117 10 800 8
+pachi-match.sh agz-g30-s800-vs-uctlight500-c05 nets/agz-g30.azn uctlight=500 100118 10 800 8
+pachi-match.sh agz-g30-s800-vs-replay-c01 nets/agz-g30.azn replay 100119 10 800 8
+pachi-match.sh agz-g30-s800-vs-replay-c02 nets/agz-g30.azn replay 100120 10 800 8
+pachi-match.sh agz-g30-s800-vs-replay-c03 nets/agz-g30.azn replay 100121 10 800 8
+pachi-match.sh agz-g30-s800-vs-replay-c04 nets/agz-g30.azn replay 100122 10 800 8
+pachi-match.sh agz-g30-s800-vs-replay-c05 nets/agz-g30.azn replay 100123 10 800 8
+pachi-match.sh agz-g40-s800-vs-uctlight500-c01 nets/agz-g40.azn uctlight=500 100124 10 800 8
+pachi-match.sh agz-g40-s800-vs-uctlight500-c02 nets/agz-g40.azn uctlight=500 100125 10 800 8
+pachi-match.sh agz-g40-s800-vs-uctlight500-c03 nets/agz-g40.azn uctlight=500 100126 10 800 8
+pachi-match.sh agz-g40-s800-vs-uctlight500-c04 nets/agz-g40.azn uctlight=500 100127 10 800 8
+pachi-match.sh agz-g40-s800-vs-uctlight500-c05 nets/agz-g40.azn uctlight=500 100128 10 800 8
+pachi-match.sh agz-g40-s800-vs-replay-c01 nets/agz-g40.azn replay 100129 10 800 8
+pachi-match.sh agz-g40-s800-vs-replay-c02 nets/agz-g40.azn replay 100130 10 800 8
+pachi-match.sh agz-g40-s800-vs-replay-c03 nets/agz-g40.azn replay 100131 10 800 8
+pachi-match.sh agz-g40-s800-vs-replay-c04 nets/agz-g40.azn replay 100132 10 800 8
+pachi-match.sh agz-g40-s800-vs-replay-c05 nets/agz-g40.azn replay 100133 10 800 8
+pachi-match.sh gnugo10-vs-uct500-c01 gnugo10 uct=500 100134 20
+pachi-match.sh gnugo10-vs-uct500-c02 gnugo10 uct=500 100135 20
+pachi-match.sh gnugo10-vs-uct500-c03 gnugo10 uct=500 100136 20
+pachi-match.sh gnugo10-vs-uct500-c04 gnugo10 uct=500 100137 20
+pachi-match.sh gnugo10-vs-uct500-c05 gnugo10 uct=500 100138 20
+pachi-match.sh gnugo10-vs-uctnp500-c01 gnugo10 uctnp=500 100139 20
+pachi-match.sh gnugo10-vs-uctnp500-c02 gnugo10 uctnp=500 100140 20
+pachi-match.sh gnugo10-vs-uctnp500-c03 gnugo10 uctnp=500 100141 20
+pachi-match.sh gnugo10-vs-uctnp500-c04 gnugo10 uctnp=500 100142 20
+pachi-match.sh gnugo10-vs-uctnp500-c05 gnugo10 uctnp=500 100143 20
+pachi-match.sh gnugo10-vs-uctlight500-c01 gnugo10 uctlight=500 100144 20
+pachi-match.sh gnugo10-vs-uctlight500-c02 gnugo10 uctlight=500 100145 20
+pachi-match.sh gnugo10-vs-uctlight500-c03 gnugo10 uctlight=500 100146 20
+pachi-match.sh gnugo10-vs-uctlight500-c04 gnugo10 uctlight=500 100147 20
+pachi-match.sh gnugo10-vs-uctlight500-c05 gnugo10 uctlight=500 100148 20
+pachi-match.sh gnugo0-vs-uct500-c01 gnugo0 uct=500 100149 20
+pachi-match.sh gnugo0-vs-uct500-c02 gnugo0 uct=500 100150 20
+pachi-match.sh gnugo0-vs-uct500-c03 gnugo0 uct=500 100151 20
+pachi-match.sh gnugo0-vs-uct500-c04 gnugo0 uct=500 100152 20
+pachi-match.sh gnugo0-vs-uct500-c05 gnugo0 uct=500 100153 20
+pachi-match.sh gnugo0-vs-uctnp500-c01 gnugo0 uctnp=500 100154 20
+pachi-match.sh gnugo0-vs-uctnp500-c02 gnugo0 uctnp=500 100155 20
+pachi-match.sh gnugo0-vs-uctnp500-c03 gnugo0 uctnp=500 100156 20
+pachi-match.sh gnugo0-vs-uctnp500-c04 gnugo0 uctnp=500 100157 20
+pachi-match.sh gnugo0-vs-uctnp500-c05 gnugo0 uctnp=500 100158 20
+pachi-match.sh gnugo0-vs-uctlight500-c01 gnugo0 uctlight=500 100159 20
+pachi-match.sh gnugo0-vs-uctlight500-c02 gnugo0 uctlight=500 100160 20
+pachi-match.sh gnugo0-vs-uctlight500-c03 gnugo0 uctlight=500 100161 20
+pachi-match.sh gnugo0-vs-uctlight500-c04 gnugo0 uctlight=500 100162 20
+pachi-match.sh gnugo0-vs-uctlight500-c05 gnugo0 uctlight=500 100163 20
+pachi-match.sh uct500-vs-uctnp500-c01 pachi:uct=500 uctnp=500 100164 20
+pachi-match.sh uct500-vs-uctnp500-c02 pachi:uct=500 uctnp=500 100165 20
+pachi-match.sh uct500-vs-uctnp500-c03 pachi:uct=500 uctnp=500 100166 20
+pachi-match.sh uct500-vs-uctnp500-c04 pachi:uct=500 uctnp=500 100167 20
+pachi-match.sh uct500-vs-uctnp500-c05 pachi:uct=500 uctnp=500 100168 20
+pachi-match.sh uctnp500-vs-uctlight500-c01 pachi:uctnp=500 uctlight=500 100169 20
+pachi-match.sh uctnp500-vs-uctlight500-c02 pachi:uctnp=500 uctlight=500 100170 20
+pachi-match.sh uctnp500-vs-uctlight500-c03 pachi:uctnp=500 uctlight=500 100171 20
+pachi-match.sh uctnp500-vs-uctlight500-c04 pachi:uctnp=500 uctlight=500 100172 20
+pachi-match.sh uctnp500-vs-uctlight500-c05 pachi:uctnp=500 uctlight=500 100173 20
+pachi-match.sh uctlight500-vs-replay-c01 pachi:uctlight=500 replay 100174 20
+pachi-match.sh uctlight500-vs-replay-c02 pachi:uctlight=500 replay 100175 20
+pachi-match.sh uctlight500-vs-replay-c03 pachi:uctlight=500 replay 100176 20
+pachi-match.sh uctlight500-vs-replay-c04 pachi:uctlight=500 replay 100177 20
+pachi-match.sh uctlight500-vs-replay-c05 pachi:uctlight=500 replay 100178 20
+pachi-match.sh uctlight500-vs-pattern-c01 pachi:uctlight=500 pattern 100179 10
+pachi-match.sh uctlight500-vs-pattern-c02 pachi:uctlight=500 pattern 100180 10
+pachi-match.sh uctlight500-vs-pattern-c03 pachi:uctlight=500 pattern 100181 10
+pachi-match.sh uctlight500-vs-pattern-c04 pachi:uctlight=500 pattern 100182 10
+pachi-match.sh uctlight500-vs-pattern-c05 pachi:uctlight=500 pattern 100183 10
+pachi-match.sh replay-vs-pattern-c01 pachi:replay pattern 100184 10
+pachi-match.sh replay-vs-pattern-c02 pachi:replay pattern 100185 10
+pachi-match.sh replay-vs-pattern-c03 pachi:replay pattern 100186 10
+pachi-match.sh replay-vs-pattern-c04 pachi:replay pattern 100187 10
+pachi-match.sh replay-vs-pattern-c05 pachi:replay pattern 100188 10

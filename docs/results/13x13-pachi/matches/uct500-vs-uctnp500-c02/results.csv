@@ -1,0 +1,21 @@
+game,black,white,moves,end,result,score_a,a_final_score,b_final_score
+1,A,B,209,two passes,B+161.5,1.0,B+161.5,B+161.5
+2,B,A,218,two passes,W+176.5,1.0,W+176.5,W+176.5
+3,A,B,187,two passes,B+161.5,1.0,B+161.5,B+161.5
+4,B,A,212,two passes,W+176.5,1.0,W+176.5,W+176.5
+5,A,B,217,two passes,B+161.5,1.0,B+161.5,B+161.5
+6,B,A,220,two passes,W+176.5,1.0,W+176.5,W+176.5
+7,A,B,217,two passes,B+161.5,1.0,B+161.5,B+161.5
+8,B,A,212,two passes,W+176.5,1.0,W+176.5,W+176.5
+9,A,B,219,two passes,B+161.5,1.0,B+161.5,B+161.5
+10,B,A,212,two passes,W+176.5,1.0,W+176.5,W+176.5
+11,A,B,211,two passes,B+161.5,1.0,B+161.5,B+161.5
+12,B,A,222,two passes,W+176.5,1.0,W+176.5,W+176.5
+13,A,B,199,two passes,B+161.5,1.0,B+161.5,B+161.5
+14,B,A,200,two passes,W+176.5,1.0,W+176.5,W+176.5
+15,A,B,203,two passes,B+161.5,1.0,B+161.5,B+161.5
+16,B,A,208,two passes,W+176.5,1.0,W+176.5,W+176.5
+17,A,B,187,two passes,B+161.5,1.0,B+161.5,B+161.5
+18,B,A,216,two passes,W+176.5,1.0,W+176.5,W+176.5
+19,A,B,225,two passes,B+161.5,1.0,B+161.5,B+161.5
+20,B,A,220,two passes,W+176.5,1.0,W+176.5,W+176.5

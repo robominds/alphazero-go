@@ -1,0 +1,14 @@
+game 1: A Black, W+176.5 after 254 moves (two passes); A scores 0
+game 2: A White, B+161.5 after 267 moves (two passes); A scores 0
+game 3: A Black, W+176.5 after 268 moves (two passes); A scores 0
+game 4: A White, B+161.5 after 247 moves (two passes); A scores 0
+game 5: A Black, W+176.5 after 272 moves (two passes); A scores 0
+game 6: A White, B+161.5 after 255 moves (two passes); A scores 0
+game 7: A Black, W+176.5 after 262 moves (two passes); A scores 0
+game 8: A White, B+161.5 after 257 moves (two passes); A scores 0
+game 9: A Black, W+176.5 after 274 moves (two passes); A scores 0
+game 10: A White, B+161.5 after 267 moves (two passes); A scores 0
+A alphazero-go agz-g30.azn, 800 simulations, random symmetry vs B GNU Go 3.8: A scored 0/10 = 0.000 (95% CI 0.000-0.278), distinct games 10
+A wins 0, B wins 10, draws 0
+Elo A - B: -inf (95% CI -inf to -166)
+final_score: scored by A; the other engine named a different winner in 0 game(s)

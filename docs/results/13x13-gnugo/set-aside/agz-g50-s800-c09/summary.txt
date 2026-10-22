@@ -1,0 +1,4 @@
+game 1: A Black, W+90.5 after 226 moves (two passes); A scores 0
+game 2: A White, B+161.5 after 279 moves (two passes); A scores 0
+game 3: A Black, W+176.5 after 288 moves (two passes); A scores 0
+error: B (bin/gnugo --mode gtp --level 10 --chinese-rules --capture-all-dead --positional-superko) exited during 'genmove B'; see its stderr log

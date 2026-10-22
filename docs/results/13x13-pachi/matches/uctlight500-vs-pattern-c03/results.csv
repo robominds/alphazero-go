@@ -1,0 +1,11 @@
+game,black,white,moves,end,result,score_a,a_final_score,b_final_score
+1,A,B,338,max moves (338),W+3.5,0.0,W+3.5,W+3.5
+2,B,A,338,max moves (338),W+145.5,1.0,W+145.5,W+145.5
+3,A,B,338,max moves (338),B+111.5,1.0,B+111.5,B+111.5
+4,B,A,338,max moves (338),W+176.5,1.0,W+176.5,W+176.5
+5,A,B,338,max moves (338),W+7.5,0.0,W+7.5,W+7.5
+6,B,A,338,max moves (338),W+56.5,1.0,W+56.5,W+56.5
+7,A,B,338,max moves (338),W+7.5,0.0,W+7.5,W+7.5
+8,B,A,338,max moves (338),B+161.5,0.0,B+161.5,B+161.5
+9,A,B,338,max moves (338),B+43.5,1.0,B+43.5,B+43.5
+10,B,A,338,max moves (338),W+137.5,1.0,W+137.5,W+137.5

@@ -1,0 +1,14 @@
+game 1: A Black, W+176.5 after 338 moves (max moves (338)); A scores 0
+game 2: A White, W+62.5 after 338 moves (max moves (338)); A scores 1
+game 3: A Black, B+7.5 after 338 moves (max moves (338)); A scores 1
+game 4: A White, B+161.5 after 338 moves (max moves (338)); A scores 0
+game 5: A Black, W+176.5 after 338 moves (max moves (338)); A scores 0
+game 6: A White, W+8.5 after 338 moves (max moves (338)); A scores 1
+game 7: A Black, B+99.5 after 338 moves (max moves (338)); A scores 1
+game 8: A White, W+72.5 after 338 moves (max moves (338)); A scores 1
+game 9: A Black, W+176.5 after 338 moves (max moves (338)); A scores 0
+game 10: A White, W+79.5 after 338 moves (max moves (338)); A scores 1
+A Pachi 12.90 (no dcnn) vs B Pachi Pattern 12.90: A scored 6/10 = 0.600 (95% CI 0.313-0.832), distinct games 10
+A wins 6, B wins 4, draws 0
+Elo A - B: +70 (95% CI -137 to +278)
+final_score: scored by A; the other engine named a different winner in 0 game(s)
