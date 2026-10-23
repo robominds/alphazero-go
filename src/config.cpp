@@ -227,6 +227,13 @@ const KeyEntry kKeys[] = {
          return "";
      },
      [](const Config& c) { return c.selfplayFallback; }},
+    {"selfplay_allocation", false,
+     [](Config& c, const std::string& v) -> std::string {
+         if (v != "static" && v != "dynamic") return "expected static|dynamic, got " + quoted(v);
+         c.selfplayAllocation = v;
+         return "";
+     },
+     [](const Config& c) { return c.selfplayAllocation; }},
     {"c_puct", false, [](Config& c, const std::string& v) { return parseFloat(v, 0, 100, c.cPuct, true); },
      printFloat<&Config::cPuct>},
     {"dirichlet_scale", false,

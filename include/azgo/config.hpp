@@ -80,6 +80,12 @@ struct Config {
     // When a remote slice fails twice: "local" plays it on the coordinator
     // and records that in the manifest; "stop" ends the generation uncommitted.
     std::string selfplayFallback = "local";
+    // How selfplay_engines share a generation's games: "static" cuts them
+    // into one fixed slice per engine before it starts (reproducible from
+    // the config); "dynamic" puts them in one queue that engines take from
+    // as they finish games, so all finish at about the same time (which
+    // engine played each game is then recorded in selfplay-games.csv).
+    std::string selfplayAllocation = "static";
     float cPuct = 1.5f;
     float dirichletScale = 10.0f;
     float noiseFraction = 0.25f;

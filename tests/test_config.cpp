@@ -662,9 +662,9 @@ static void test_metal_backend_and_inference_batch() {
 static void test_config_selfplay_keys() {
     Config d;
     assert(d.selfplayEngines.empty() && d.selfplayFallback == "local");
-    // main's 50 keys, these two and arena_engines.
+    // main's 50 keys, these two, arena_engines and selfplay_allocation.
     const std::string text = configToString(d);
-    assert(std::count(text.begin(), text.end(), '\n') == 53);
+    assert(std::count(text.begin(), text.end(), '\n') == 54);
     assert(contains(text, "\ninference_batch = 256\nselfplay_engines = \n"
                           "selfplay_fallback = local\n"));
     // A config.cfg written before the keys existed gets the defaults.
@@ -716,6 +716,27 @@ static void test_config_selfplay_keys() {
     assert(consistencyError("", 10).empty());
 }
 
+// Dynamic allocation: selfplay_allocation (static | dynamic), after
+// selfplay_fallback. static, the default, is today's assignment; the key is
+// tunable, so a running run can switch at a generation boundary.
+static void test_config_selfplay_allocation() {
+    Config d;
+    assert(d.selfplayAllocation == "static");
+    assert(contains(configToString(d), "\nselfplay_fallback = local\nselfplay_allocation = static\n"));
+    // A config.cfg written before the key existed gets the default.
+    assert(parseConfigText("filters = 96\n", "old.cfg").selfplayAllocation == "static");
+    Config c = parseConfigText("selfplay_allocation = dynamic\n", "t.cfg");
+    assert(c.selfplayAllocation == "dynamic");
+    assert(contains(configToString(c), "\nselfplay_allocation = dynamic\n"));
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    assert(contains(errorOf("selfplay_allocation = queue"), "expected static|dynamic"));
+    applyOverride(c, "selfplay_allocation=static");
+    assert(c.selfplayAllocation == "static");
+    Config e;
+    e.selfplayAllocation = "dynamic";
+    assert(architectureDiff(d, e).empty() && resumeLockedDiff(d, e).empty());
+}
+
 // Distributed arena: arena_engines, the same list as selfplay_engines
 // (empty: today's arena), after arena_random_symmetry. Arena waves differ
 // in size, so it takes weights only.
@@ -755,6 +776,7 @@ static void test_config_arena_engines() {
 int main() {
     test_defaults();
     test_config_selfplay_keys();
+    test_config_selfplay_allocation();
     test_config_arena_engines();
     test_metal_backend_and_inference_batch();
     test_presets_load();
