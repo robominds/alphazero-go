@@ -117,6 +117,14 @@ std::string resolveHostsPath(const std::string& cli);
 // Always at most sliceGames, at least 1.
 int engineWorkers(const MachineSettings& machine, const std::string& backend, int sliceGames,
                   int cores);
+// Dynamic allocation: the games an engine keeps in flight (its worker
+// threads, one game each) when its share of the generation (assignGames'
+// count for its item) is `share` of `games`. A positive metal_workers,
+// cuda_workers or cpu_workers of the machine, else: for metal and cuda a
+// quarter of the share, rounded up (at least 1, at most 256), for naive and
+// blas engineWorkers' CPU rule. Always at most `games`.
+int dynamicWorkers(const MachineSettings& machine, const std::string& backend, int share, int games,
+                   int cores);
 // The selfplay app's worker threads on a machine with `cores` cores:
 // `requested` (its --workers, capped at the slice's games) when positive,
 // else a remote's default rule of engineWorkers (every game at once with

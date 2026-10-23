@@ -173,8 +173,8 @@ void requeue(int engine, int index);     // its engine failed: back to the queue
 void retire(int engine);                 // takes no more games
 ```
 
-The queue hands out the lowest index first; requeued games go to the
-front. `take` returns kNone once every game is finished (the engine's
+The queue hands out the lowest queued index first, so a requeued game
+(lower than any game never handed out) comes next. `take` returns kNone once every game is finished (the engine's
 work is over) and kWait when the engine should ask again later (full,
 nothing queued now, or the rule below says so).
 
@@ -310,7 +310,7 @@ parse or verify, or no frame arrives for the hosts file's `timeout`
 seconds while it has games in flight (in dynamic mode `timeout` limits the
 silence between two games, not a slice's total time). Then:
 
-1. Its in-flight games go back to the front of the queue at once; its
+1. Its in-flight games go back to the queue at once (taken next); its
    finished, verified games are kept. Other engines start them as soon as
    they have a free slot.
 2. **Retry once**: a new session, attempt 2 (after `killJob` and removing
@@ -417,19 +417,45 @@ simulation of engines: each engine e evaluates at `R_e(n) = rmax_e ·
 min(1, n / sat_e)` positions/s with n games in flight, shared equally
 among them, and games cost a random number of evaluations (19×19: 760
 per ply, plies ~ N(490, 60) clipped to [300, 722]). Static allocation is
-`assignGames` with every slice at once. The figures below are filled in
-from the C++ simulation (Task 2) and compared against the fluid ideal,
-Σ evaluations / Σ rmax.
+`assignGames` with every slice at once; dynamic engines ask whenever a
+game ends and every 30 s while they wait. Fitted to the evidence above:
+the Studio `rmax` 2,780 and `sat` 4, each mini 490 and 2, the PC 6,770 and
+40. Loss is the phase's length over the fluid ideal (Σ evaluations /
+Σ rmax) minus one, over 30 generations; spread is the mean time between
+the first and the last engine's end.
 
-Fitted to the evidence above: the Studio `rmax` 2,780 and `sat` 4, each
-mini 490 and 2, the PC 6,770 and 40.
+| weights | allocation (concurrency Studio/mini/PC) | mean loss | worst | spread |
+|---|---|---|---|---|
+| live 26/5/5/64 | static | 10.0% | 16.5% | 1,610 s |
+| | plain queue, default 26/5/64 | 7.9% | 11.6% | 1,204 s |
+| | handout rule, default 26/5/64 | 7.9% | 11.8% | 1,202 s |
+| | plain queue, 36/4/128 | 7.5% | 11.3% | 2,345 s |
+| | handout rule, 36/4/128 | **4.6%** | 8.2% | 925 s |
+| minis ×2 (20/10/10/60) | static | 118.6% | 124.9% | 20,205 s |
+| | handout rule, default 20/10/60 | 10.1% | 14.9% | 1,542 s |
+| | handout rule, 36/4/128 | 4.6% | 8.2% | 925 s |
+| PC short (31/5/5/59) | static | 17.7% | 20.0% | 3,328 s |
+| | handout rule, default 31/5/59 | 9.1% | 12.4% | 1,558 s |
+| | handout rule, 36/4/128 | 4.6% | 8.2% | 925 s |
 
-| allocation (W: Studio/mini/PC) | live weights | minis weighted ×2 | PC weighted short |
-|---|---|---|---|
-| static | (Task 2) | | |
-| dynamic, plain queue, 26/5/64 | | | |
-| dynamic, handout rule, 26/5/64 | | | |
-| dynamic, handout rule, 24/3/128 | | | |
+The simulated static loss (10%) matches the run's measured 9–12%. Three
+findings shaped the design:
+
+- **The rule matters once concurrency is tuned.** With the PC at 128
+  games in flight its games take ~7,000 s; a plain queue hands it late
+  games that end long after the others (spread 2,345 s), and the rule
+  halves the loss (7.5% → 4.6%).
+- **Concurrency below saturation costs more than it gains.** With the PC
+  at 32 games (below its ~40) the loss rose to 24% in an exploratory
+  run of the same simulation; 24–36 on the Studio, 3–4 on a mini and
+  96–192 on the PC all gave 4.6–6%.
+- **Dynamic allocation makes the weights almost irrelevant.** Wrong
+  weights cost static 18–119%; dynamic, with concurrency set in the hosts
+  file, is unaffected, and with the default concurrency (which follows
+  the weights) stays at 8–10%.
+
+The test asserts that the rule beats static's mean under every weighting,
+with the default and the tuned concurrency.
 
 A real check on one machine (Task 9) runs a short 9×9 run with engines of
 different speeds (`local/naive` with 1 worker and a fake remote with 3)
@@ -440,11 +466,10 @@ both ways and compares the engines' finish times from the manifest.
 1. Build, sync the minis and the PC (`tools/cluster_sync.sh`): the build
    ID changes, and the preflight refuses a mismatch.
 2. Optionally set the concurrency in the coordinator's hosts file (see
-   "Sizing" in the README for the measured basis): `local metal_workers=24`,
-   `mini1`/`mini2` `metal_workers=3`, `pc cuda_workers=128`. These keys
-   also cap arena slices on those machines (worker threads), which play
-   fewer games than that except on the minis (2–4 arena games each, which
-   then play in waves of 3).
+   "Measuring the gain"): `local metal_workers=36`, `mini1` and `mini2`
+   `metal_workers=4`, `pc cuda_workers=128`. These keys also cap arena
+   slices on those machines (worker threads), which already play fewer
+   games than that (the minis 2–4 per wave).
 3. Stop after a commit (`tools/stop_after_generation.sh`) and resume with
    `--set selfplay_allocation=dynamic`.
 
@@ -465,7 +490,7 @@ untouched; the redone or next generation is the first dynamic one.
 ## Testing
 
 - **`test_game_queue`** (new): every index handed out once; lowest first;
-  requeue to the front; concurrency respected; retire; kNone only when all
+  requeued games next; concurrency respected; retire; kNone only when all
   are finished; the handout rule's cases (unknown latency, in time, C
   counting, never stalling as time passes); forced assignment; the
   simulation's table and its acceptance (dynamic with the rule beats

@@ -349,6 +349,22 @@ int engineWorkers(const MachineSettings& machine, const std::string& backend, in
     return std::max(1, std::min(workers, sliceGames));
 }
 
+int dynamicWorkers(const MachineSettings& machine, const std::string& backend, int share, int games,
+                   int cores) {
+    const bool gpu = backend == "metal" || backend == "cuda";
+    const int set = backend == "metal" ? machine.metalWorkers
+                    : backend == "cuda" ? machine.cudaWorkers
+                                        : machine.cpuWorkers;
+    if (!gpu || set > 0) return engineWorkers(machine, backend, games, cores);
+    // A quarter of the share: enough games in flight to fill the GPU
+    // (Apple GPUs fill with a few games, the CUDA hub with 64-128), few
+    // enough that the engine plays about four rolling waves, so the queue
+    // can still move games between engines (spec 2026-10-23, "What the
+    // weights mean in dynamic mode").
+    const int quarter = (std::max(0, share) + 3) / 4;
+    return std::max(1, std::min({quarter, kMaxArenaWorkers, games}));
+}
+
 int sliceWorkers(const std::string& backend, int requested, int sliceGames, int cores) {
     if (requested > 0) return std::max(1, std::min(requested, sliceGames));
     MachineSettings remote;

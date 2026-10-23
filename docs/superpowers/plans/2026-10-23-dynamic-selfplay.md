@@ -39,7 +39,7 @@
 
 **Files:** new `include/azgo/game_queue.hpp`, `src/game_queue.cpp`, `tests/test_game_queue.cpp`; `CMakeLists.txt` if the source list is explicit.
 
-- [ ] Tests: lowest index first; concurrency respected; `finished` frees a slot; `kNone` only once every index is finished; `requeue` to the front, only an index the engine holds; `retire` (no more games; its held indices must be requeued by the caller); double `finished` or a foreign index is a `logic_error`; the handout rule (unknown latency gives; in time gives; C counts other engines' slots; holds when others can absorb; gives once their predictions are overdue; never stalls when nothing is in flight); forced assignment.
+- [ ] Tests: lowest index first; concurrency respected; `finished` frees a slot; `kNone` only once every index is finished; `requeue` (lowest first again), only an index the engine holds; `retire` (no more games; its held indices must be requeued by the caller); double `finished` or a foreign index is a `logic_error`; the handout rule (unknown latency gives; in time gives; C counts other engines' slots; holds when others can absorb; gives once their predictions are overdue; never stalls when nothing is in flight); forced assignment.
 - [ ] The simulation: discrete events over engines with `R(n) = rmax · min(1, n/sat)`, shared equally, random game costs; static (`assignGames`, all at once) against dynamic (plain and with the rule) for the live run's engines under three weightings, 30 seeds each; print the table; assert the rule beats static's mean in every scenario and the plain queue on the live weights.
 - [ ] Implement `GameQueue`.
 - [ ] Run, commit.
