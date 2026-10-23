@@ -5,8 +5,10 @@
 #include <csignal>
 #include <cstring>
 #include <fcntl.h>
+#include <pthread.h>
 #include <spawn.h>
 #include <stdexcept>
+#include <string>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -197,6 +199,42 @@ ProcessResult runProcess(const std::vector<std::string>& argv, const ProcessOpti
     if (WIFEXITED(status) && !termSent) result.exitCode = WEXITSTATUS(status);
     if (WIFSIGNALED(status)) result.signal = WTERMSIG(status);
     return result;
+}
+
+bool writeAll(int fd, const std::string& data) {
+    sigset_t pipeOnly, old;
+    sigemptyset(&pipeOnly);
+    sigaddset(&pipeOnly, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &pipeOnly, &old);
+    // Was a SIGPIPE pending already (not ours to take back)?
+    sigset_t before;
+    sigpending(&before);
+    const bool pendingBefore = sigismember(&before, SIGPIPE) == 1;
+    bool ok = true;
+    size_t done = 0;
+    int error = 0;
+    while (done < data.size()) {
+        const ssize_t n = write(fd, data.data() + done, data.size() - done);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            error = errno;
+            ok = false;
+            break;
+        }
+        done += static_cast<size_t>(n);
+    }
+    if (!ok && error == EPIPE && !pendingBefore) {
+        // The SIGPIPE this write raised is pending on this thread: take it.
+        sigset_t pending;
+        sigpending(&pending);
+        if (sigismember(&pending, SIGPIPE) == 1) {
+            int sig = 0;
+            sigwait(&pipeOnly, &sig);
+        }
+    }
+    pthread_sigmask(SIG_SETMASK, &old, nullptr);
+    errno = error;
+    return ok;
 }
 
 void forwardTerminationSignals() {

@@ -67,6 +67,12 @@ ProcessResult runProcess(const std::vector<std::string>& argv, const ProcessOpti
 ProcessResult runProcess(const std::vector<std::string>& argv, const std::string& logPath,
                          double timeoutSeconds, const std::string& stdinPath = "");
 
+// Writes all of `data` to fd, retrying after EINTR and short writes.
+// Returns false on any error, a reader that is gone (EPIPE) included,
+// without raising SIGPIPE: the signal is blocked on the calling thread for
+// the write and a SIGPIPE it caused is taken back.
+bool writeAll(int fd, const std::string& data);
+
 // Installs handlers for SIGINT, SIGTERM and SIGHUP that send SIGTERM to
 // the process group of every child runProcess is waiting for, then let the
 // signal end this process as it would have. Children run in their own

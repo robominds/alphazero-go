@@ -157,6 +157,11 @@ std::string serializeSliceResult(const SliceResult& result, int first);
 // positions.
 SliceResult readSliceResult(const std::string& path, const std::string& jobBytes,
                             const std::string& expectedBuild);
+// The checks readSliceResult makes of each game, for one record of `job`
+// at `index`: the replay (board size, komi, every position, legal and
+// visited moves, the end, the result) and resignation (flags, lows and
+// v_resign against the game's seed). SliceError naming the defect.
+void verifySelfPlayRecord(const SelfPlayJob& job, const GameRecord& record, int index);
 
 // What the selfplay app does with a job: reads and checks the job at
 // jobPath (its build ID must be this binary's), loads the network

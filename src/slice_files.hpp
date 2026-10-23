@@ -6,7 +6,9 @@
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #pragma once
 #include <cstdint>
+#include <memory>
 #include <string>
+#include "azgo/serialize.hpp"
 #include "azgo/selfplay_slice.hpp"
 
 namespace azgo::slice_files {
@@ -45,5 +47,22 @@ inline bool printableFingerprint(const std::string& f) {
     for (char c : f) ok = ok && static_cast<unsigned char>(c) >= 0x20;
     return ok;
 }
+
+// One game as a self-play result file and a stream carry it:
+// writeGameRecord's layout, u8 resignDisabled, and per side u32 n and n x
+// (i32 ply, f32 value) of resign lows. readSliceRecord throws SliceError
+// (or std::runtime_error, truncation) naming `game`; it does not verify.
+void writeSliceRecord(BinaryWriter& w, const GameRecord& g);
+GameRecord readSliceRecord(BinaryReader& r, const std::string& game);
+
+// A self-play job file and its network, checked as the selfplay app checks
+// them: the job parses, was written by this build, and names a network in
+// its directory whose hash and board size match (SliceError otherwise).
+struct LoadedSliceJob {
+    std::string bytes;
+    SelfPlayJob job;
+    std::unique_ptr<Network> net;
+};
+LoadedSliceJob loadSliceJob(const std::string& jobPath);
 
 } // namespace azgo::slice_files

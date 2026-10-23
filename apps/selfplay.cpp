@@ -7,14 +7,20 @@
 //
 //   selfplay --job JOB --out OUT --backend naive|blas|metal|cuda [--workers N] [--inference-batch N]
 //            [--exit-on-stdin-eof]
+//   selfplay --stream --job JOB --backend B [--workers N] [--inference-batch N]
 //   selfplay --version
 //   selfplay --fingerprint --backend B
+//
+// --stream plays the games of a self-play job that the coordinator names
+// one at a time on stdin and writes each back on stdout as it ends
+// (dynamic allocation, azgo/selfplay_stream.hpp).
 //
 // Exit status: 0 on success, 1 on any error (the reason on stderr), 2 on a
 // usage error.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #include <cerrno>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -30,6 +36,7 @@
 #include "azgo/build_info.hpp"
 #include "azgo/engines.hpp"
 #include "azgo/selfplay_slice.hpp"
+#include "azgo/selfplay_stream.hpp"
 #include "cli.hpp"
 
 namespace {
@@ -38,6 +45,7 @@ const char* const kUsage =
     "usage:\n"
     "  selfplay --job JOB --out OUT --backend naive|blas|metal|cuda [--workers N] [--inference-batch N]\n"
     "           [--exit-on-stdin-eof]\n"
+    "  selfplay --stream --job JOB --backend B [--workers N] [--inference-batch N]\n"
     "  selfplay --version\n"
     "  selfplay --fingerprint --backend B\n"
     "\n"
@@ -50,6 +58,11 @@ const char* const kUsage =
     "rule of the hosts file); --inference-batch: most positions per GPU pass (default:\n"
     "the job's). Neither changes a result. --exit-on-stdin-eof stops at once when\n"
     "stdin reaches its end: the coordinator holds it open while it waits.\n"
+    "--stream plays the games of the self-play job JOB that stdin names, one command\n"
+    "per line (`play <index>`, then `end`), on --workers threads, and writes each\n"
+    "game to stdout as a checksummed frame as soon as it ends (train's dynamic\n"
+    "allocation; the coordinator verifies every game). End of file before `end`\n"
+    "stops it at once.\n"
     "--version prints the build ID, short and full, and the strongest backend built.\n"
     "--fingerprint checks that backend B can run here and prints what determines its\n"
     "arithmetic (backend, CPU, OS, and with metal or cuda the GPU and kernels).\n"
@@ -67,7 +80,7 @@ int main(int argc, char** argv) {
     try {
         const std::vector<std::string> values = {"job", "out", "backend", "workers", "inference-batch"};
         const std::vector<std::string> flags = {"help", "version", "fingerprint",
-                                                "exit-on-stdin-eof"};
+                                                "exit-on-stdin-eof", "stream"};
         args = std::make_unique<ArgParser>(argc, argv, values, flags);
     } catch (const std::invalid_argument& e) {
         return usageError(e.what());
@@ -92,7 +105,12 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    if (!args->has("job") || !args->has("out")) return usageError("--job and --out are required");
+    const bool stream = args->flag("stream");
+    if (stream && (!args->has("job") || args->has("out") || args->flag("exit-on-stdin-eof")))
+        return usageError("--stream takes --job and no --out (stdout carries the games; stdin's end "
+                          "stops it)");
+    if (!stream && (!args->has("job") || !args->has("out")))
+        return usageError("--job and --out are required");
     if (args->flag("exit-on-stdin-eof")) {
         // The coordinator holds our stdin open while it waits for us (over
         // ssh too): end of file means it is gone, and so is any use for
@@ -119,5 +137,11 @@ int main(int argc, char** argv) {
     if (workers < 0 || workers > 256) return usageError("--workers must be in 0..256");
     if (inferenceBatch < 0 || inferenceBatch > 1024)
         return usageError("--inference-batch must be in 0..1024");
+    if (stream) {
+        // stdout is the coordinator's pipe: a write after it is gone must
+        // fail, not kill the process before it can say why.
+        std::signal(SIGPIPE, SIG_IGN);
+        return azgo::runStreamJob(args->get("job"), backend, workers, inferenceBatch, 0, 1, std::cerr);
+    }
     return azgo::runJob(args->get("job"), args->get("out"), backend, workers, inferenceBatch, std::cerr);
 }

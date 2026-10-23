@@ -197,8 +197,9 @@ bool readFlag(BinaryReader& r, const char* what) {
 
 std::string ownerName(int side) { return side == 0 ? "Black" : "White"; }
 
-// The checks of readSliceResult that need only the record and the job.
-void verifyRecord(const SelfPlayJob& job, const GameRecord& g, int index) {
+} // namespace
+
+void verifySelfPlayRecord(const SelfPlayJob& job, const GameRecord& g, int index) {
     const std::string game = "game " + std::to_string(index) + ": ";
     const int n = g.boardSize, area = n * n;
     if (n != job.boardSize)
@@ -306,7 +307,60 @@ void verifyRecord(const SelfPlayJob& job, const GameRecord& g, int index) {
     }
 }
 
-} // namespace
+namespace slice_files {
+
+void writeSliceRecord(BinaryWriter& w, const GameRecord& g) {
+    writeGameRecord(w, g);
+    w.u8(g.resignDisabled ? 1 : 0);
+    for (const ResignLows& lows : g.resignLows) {
+        w.u32(static_cast<uint32_t>(lows.size()));
+        for (const auto& [ply, value] : lows) {
+            w.i32(ply);
+            w.f32(value);
+        }
+    }
+}
+
+GameRecord readSliceRecord(BinaryReader& r, const std::string& game) {
+    GameRecord g = readGameRecord(r, game);
+    const uint8_t disabled = r.u8();
+    if (disabled > 1) throw SliceError(game + ": bad resign-disabled flag");
+    g.resignDisabled = disabled == 1;
+    for (ResignLows& lows : g.resignLows) {
+        const uint32_t m = r.u32();
+        if (m > static_cast<uint32_t>(g.positions()) + 1)
+            throw SliceError(game + ": more resign lows than positions");
+        lows.resize(m);
+        for (auto& [ply, value] : lows) {
+            ply = r.i32();
+            value = r.f32();
+        }
+    }
+    return g;
+}
+
+LoadedSliceJob loadSliceJob(const std::string& jobPath) {
+    std::ifstream in(jobPath, std::ios::binary);
+    if (!in) throw SliceError(jobPath + ": cannot read the job");
+    LoadedSliceJob out;
+    out.bytes.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    out.job = parseJob(out.bytes);
+    if (out.job.buildId != buildId())
+        throw SliceError("build ID mismatch: the job comes from " + out.job.buildId +
+                         ", this binary is " + buildId() + " (sync the machines)");
+    const std::string netPath =
+        (std::filesystem::path(jobPath).parent_path() / out.job.networkFile).string();
+    if (!std::filesystem::exists(netPath)) throw SliceError(netPath + ": network missing");
+    if (fileHash(netPath) != out.job.networkHash)
+        throw SliceError(netPath + ": its hash differs from the job's network hash");
+    out.net = std::make_unique<Network>(loadNetwork(netPath));
+    if (out.net->config().boardSize != out.job.boardSize)
+        throw SliceError(netPath + " is not a " + std::to_string(out.job.boardSize) + "x" +
+                         std::to_string(out.job.boardSize) + " network");
+    return out;
+}
+
+} // namespace slice_files
 
 uint64_t fnv1a64(const std::string& bytes) {
     uint64_t hash = 0xcbf29ce484222325ull;   // as fileHash: offset basis, then xor and multiply
@@ -420,15 +474,7 @@ std::string serializeSliceResult(const SliceResult& result, int first) {
     for (size_t k = 0; k < result.records.size(); ++k) {
         const GameRecord& g = result.records[k];
         w.i32(first + static_cast<int>(k));
-        writeGameRecord(w, g);
-        w.u8(g.resignDisabled ? 1 : 0);
-        for (const ResignLows& lows : g.resignLows) {
-            w.u32(static_cast<uint32_t>(lows.size()));
-            for (const auto& [ply, value] : lows) {
-                w.i32(ply);
-                w.f32(value);
-            }
-        }
+        slice_files::writeSliceRecord(w, g);
     }
     w.f64(result.stats.seconds);
     w.u64(static_cast<uint64_t>(result.stats.positions));
@@ -501,21 +547,8 @@ SliceResult readSliceResult(const std::string& path, const std::string& jobBytes
                 throw SliceError("record " + std::to_string(k) + " has index " +
                                  std::to_string(index) + ", expected " + std::to_string(expected));
             const std::string game = "game " + std::to_string(index);
-            GameRecord g = readGameRecord(r, game);
-            const uint8_t disabled = r.u8();
-            if (disabled > 1) throw SliceError(game + ": bad resign-disabled flag");
-            g.resignDisabled = disabled == 1;
-            for (ResignLows& lows : g.resignLows) {
-                const uint32_t m = r.u32();
-                if (m > static_cast<uint32_t>(g.positions()) + 1)
-                    throw SliceError(game + ": more resign lows than positions");
-                lows.resize(m);
-                for (auto& [ply, value] : lows) {
-                    ply = r.i32();
-                    value = r.f32();
-                }
-            }
-            verifyRecord(job, g, index);
+            GameRecord g = slice_files::readSliceRecord(r, game);
+            verifySelfPlayRecord(job, g, index);
             positions += g.positions();
             result.records.push_back(std::move(g));
         }
@@ -536,24 +569,11 @@ SliceResult readSliceResult(const std::string& path, const std::string& jobBytes
 int runSliceJob(const std::string& jobPath, const std::string& outPath, const std::string& backend,
                 int workers, int inferenceBatch, std::ostream& err) {
     try {
-        std::ifstream in(jobPath, std::ios::binary);
-        if (!in) throw SliceError(jobPath + ": cannot read the job");
-        const std::string jobBytes((std::istreambuf_iterator<char>(in)),
-                                   std::istreambuf_iterator<char>());
-        const SelfPlayJob job = parseJob(jobBytes);
-        if (job.buildId != buildId())
-            throw SliceError("build ID mismatch: the job comes from " + job.buildId +
-                             ", this binary is " + buildId() + " (sync the machines)");
-        const std::string netPath =
-            (std::filesystem::path(jobPath).parent_path() / job.networkFile).string();
-        if (!std::filesystem::exists(netPath)) throw SliceError(netPath + ": network missing");
-        if (fileHash(netPath) != job.networkHash)
-            throw SliceError(netPath + ": its hash differs from the job's network hash");
+        const slice_files::LoadedSliceJob loaded = slice_files::loadSliceJob(jobPath);
         checkBackendAvailable(backend);
-        const Network net = loadNetwork(netPath);
-        if (net.config().boardSize != job.boardSize)
-            throw SliceError(netPath + " is not a " + std::to_string(job.boardSize) + "x" +
-                             std::to_string(job.boardSize) + " network");
+        const SelfPlayJob& job = loaded.job;
+        const std::string& jobBytes = loaded.bytes;
+        const Network& net = *loaded.net;
         EngineRun run;
         run.backend = backend;
         run.workers = sliceWorkers(backend, workers, job.count, resolveWorkers(0));
