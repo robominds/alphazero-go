@@ -8,6 +8,9 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <map>
+#include <mutex>
+#include <condition_variable>
 #include <vector>
 #include "azgo/encode.hpp"
 #include "azgo/game.hpp"
@@ -639,7 +642,117 @@ static void test_slice_cancel() {
     for (int i = 0; i < 3; ++i) assert(sameRecord(a[i], b[i]));
 }
 
+// ---- self-play from a queue of game indices -------------------------------------
+
+// A source over a fixed list of indices, handed out in that order; records
+// and evaluations kept by index. Optionally its done() throws at the k-th
+// game, and next() can block until stop() (a worker waiting on an empty
+// queue).
+class ListSource : public GameSource {
+public:
+    explicit ListSource(std::vector<int> order, int failAt = -1, bool blockAtEnd = false)
+        : order_(std::move(order)), failAt_(failAt), blockAtEnd_(blockAtEnd) {}
+    int next() override {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (stopped_) return -1;
+        if (at_ < order_.size()) return order_[at_++];
+        if (!blockAtEnd_) return -1;
+        wake_.wait(lock, [&] { return stopped_; });
+        return -1;
+    }
+    void done(int index, GameRecord record, long long evaluations) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (++doneCount_ == failAt_) throw std::runtime_error("done failed");
+        assert(!records_.count(index));
+        records_[index] = std::move(record);
+        evaluations_[index] = evaluations;
+    }
+    void stop() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        stopped_ = true;
+        wake_.notify_all();
+    }
+    std::map<int, GameRecord> records_;
+    std::map<int, long long> evaluations_;
+    bool stopped_ = false;
+private:
+    std::vector<int> order_;
+    size_t at_ = 0;
+    int failAt_, doneCount_ = 0;
+    bool blockAtEnd_;
+    std::mutex mutex_;
+    std::condition_variable wake_;
+};
+
+// Game i from a queue is game i of the generation, whatever the order of
+// the queue and the worker count; per-game evaluations add up to the
+// engine's.
+static void test_queue_equals_slices() {
+    const Network net(tinyNet(), 9);
+    std::vector<std::string> backends = {"naive"};
+    if (blasAvailable()) backends.push_back("blas");
+    for (const std::string& backend : backends)
+        for (bool resignation : {false, true}) {
+            const SelfPlayConfig sp = sliceConfig(resignation);
+            const std::vector<GameRecord> whole =
+                playSelfPlayGames(net, sp, 77, 3, 0, 7, EngineRun{backend, 3});
+            for (int workers : {1, 3}) {
+                ListSource source({5, 0, 6, 2});
+                SliceStats stats;
+                playSelfPlayQueue(net, sp, 77, 3, EngineRun{backend, workers}, source, &stats);
+                assert(source.records_.size() == 4 && !source.stopped_);
+                long long plies = 0, evaluations = 0;
+                for (const auto& [i, r] : source.records_) {
+                    assert(sameRecord(r, whole[static_cast<size_t>(i)]));
+                    assert(sameResignFields(r, whole[static_cast<size_t>(i)]));
+                    plies += r.positions();
+                    evaluations += source.evaluations_[i];
+                    assert(source.evaluations_[i] > 0);
+                }
+                assert(stats.positions == plies && stats.evaluations == evaluations && stats.seconds >= 0);
+            }
+        }
+    // Nothing to play: no game, nothing counted.
+    ListSource none({});
+    SliceStats stats;
+    playSelfPlayQueue(net, sliceConfig(false), 77, 3, EngineRun{"naive", 2}, none, &stats);
+    assert(none.records_.empty() && stats.positions == 0 && stats.evaluations == 0);
+}
+
+// A failure stops the engine: the first error is rethrown, the source is
+// told to stop (so a worker blocked waiting for a game returns), and the
+// cancel flag stops it as it stops a slice.
+static void test_queue_failures() {
+    const Network net(tinyNet(), 9);
+    const SelfPlayConfig sp = sliceConfig(false);
+    {
+        ListSource source({0, 1, 2, 3, 4, 5}, 2, true);
+        bool threw = false;
+        try {
+            playSelfPlayQueue(net, sp, 77, 3, EngineRun{"naive", 3}, source);
+        } catch (const std::runtime_error& e) {
+            threw = std::string(e.what()) == "done failed";
+        }
+        assert(threw && source.stopped_);
+    }
+    {
+        std::atomic<bool> cancel{true};
+        EngineRun run{"naive", 2};
+        run.cancel = &cancel;
+        ListSource source({0, 1, 2}, -1, true);
+        bool threw = false;
+        try {
+            playSelfPlayQueue(net, sp, 77, 3, run, source);
+        } catch (const SliceCancelled&) {
+            threw = true;
+        }
+        assert(threw && source.stopped_ && source.records_.empty());
+    }
+}
+
 int main() {
+    test_queue_equals_slices();
+    test_queue_failures();
     test_slice_equals_part_of_whole();
     test_slice_stats();
     test_qos_changes_nothing();

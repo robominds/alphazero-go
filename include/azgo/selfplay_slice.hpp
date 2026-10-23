@@ -173,4 +173,33 @@ std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConf
                                           uint64_t seed, int generation, int first, int count,
                                           const EngineRun& run, SliceStats* stats = nullptr);
 
+// Where a queue-driven engine gets its games and leaves its records:
+// dynamic allocation's queue on the coordinator, or a stream's commands on
+// a remote (azgo/selfplay_stream.hpp). Called from the worker threads.
+class GameSource {
+public:
+    virtual ~GameSource() = default;
+    // The next game index for a worker, blocking until there is one, or -1
+    // when the worker is done.
+    virtual int next() = 0;
+    // Game `index` ended: its record and the positions its searches
+    // evaluated. An exception stops the engine as a failed game does.
+    virtual void done(int index, GameRecord record, long long evaluations) = 0;
+    // A worker failed: from now on next() must return -1 at once, and
+    // workers blocked in it must be woken.
+    virtual void stop() = 0;
+};
+
+// playSelfPlayGames with its games from a source: run.workers threads
+// (at least 1), each with its evaluator from one WorkerEvaluators of
+// run.backend, each looping i = source.next(), play game i with
+// Rng(deriveSeed(seed, generation, kPhaseSelfPlay, i)), source.done(i, ...).
+// A game's record depends only on i (and the engine's arithmetic), never
+// on which worker or when. The first exception of a worker (a game, done,
+// or SliceCancelled once run.cancel is set) stops the others at their next
+// evaluation, calls source.stop(), and is rethrown after every worker has
+// returned. stats: wall time, positions of the games done, evaluations.
+void playSelfPlayQueue(const Network& net, const SelfPlayConfig& sp, uint64_t seed, int generation,
+                       const EngineRun& run, GameSource& source, SliceStats* stats = nullptr);
+
 } // namespace azgo

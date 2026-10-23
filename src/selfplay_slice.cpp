@@ -1,5 +1,9 @@
 #include "azgo/selfplay_slice.hpp"
 #include <algorithm>
+#include <exception>
+#include <thread>
+#include <mutex>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -35,6 +39,115 @@ void setThreadQos(CpuQos qos) {
 #endif
 }
 
+namespace {
+
+// A worker's evaluator for one engine: passes every call through
+// unchanged (so the games are the same bits with or without it), counts
+// the positions evaluated, and stops the worker with SliceCancelled at
+// its next evaluation once the run's cancel flag or the engine's own stop
+// flag is set.
+class EngineEvaluator : public Evaluator {
+public:
+    EngineEvaluator(Evaluator& inner, const std::atomic<bool>* cancel, const std::atomic<bool>& stop)
+        : inner_(inner), cancel_(cancel), stop_(stop) {}
+    int boardSize() const override { return inner_.boardSize(); }
+    int history() const override { return inner_.history(); }
+    int maxBatch() const override { return inner_.maxBatch(); }
+    void evaluate(const float* input, int B, float* logits, float* values) override {
+        if ((cancel_ && cancel_->load(std::memory_order_relaxed)) || stop_.load(std::memory_order_relaxed))
+            throw SliceCancelled();
+        inner_.evaluate(input, B, logits, values);
+        count_ += B;
+    }
+    long long count() const { return count_; }
+private:
+    Evaluator& inner_;
+    const std::atomic<bool>* cancel_;
+    const std::atomic<bool>& stop_;
+    long long count_ = 0;
+};
+
+// The games [first, first + count), in order, into records[i - first].
+class RangeSource : public GameSource {
+public:
+    RangeSource(int first, int count, std::vector<GameRecord>& records)
+        : first_(first), count_(count), records_(records) {}
+    int next() override {
+        if (stopped_) return -1;
+        const int k = next_.fetch_add(1);
+        return k < count_ ? first_ + k : -1;
+    }
+    void done(int index, GameRecord record, long long) override {
+        records_[static_cast<size_t>(index - first_)] = std::move(record);
+    }
+    void stop() override { stopped_ = true; }
+private:
+    const int first_, count_;
+    std::atomic<int> next_{0};
+    std::atomic<bool> stopped_{false};
+    std::vector<GameRecord>& records_;
+};
+
+} // namespace
+
+void playSelfPlayQueue(const Network& net, const SelfPlayConfig& sp, uint64_t seed, int generation,
+                       const EngineRun& run, GameSource& source, SliceStats* stats) {
+    const auto start = std::chrono::steady_clock::now();
+    const int workers = std::max(1, run.workers);
+    // One evaluator per worker; the network itself is shared read-only.
+    // naive, blas: a single-threaded backend and workspace per worker.
+    // metal, cuda: one batching hub that gathers every worker's leaves into
+    // GPU passes; a position's outputs do not depend on its batch, so the
+    // games are the same either way (azgo/inference_hub.hpp).
+    WorkerEvaluators evaluators(net, run.backend, workers, sp.mcts.batchSize, run.inferenceBatch);
+    std::atomic<bool> stop{false};
+    std::atomic<long long> positions{0};
+    std::mutex errorMutex;
+    std::exception_ptr firstError;
+    auto fail = [&] {
+        {
+            std::lock_guard<std::mutex> lock(errorMutex);
+            if (!firstError) firstError = std::current_exception();
+        }
+        stop = true;
+        source.stop();
+    };
+    // Each worker is one thread for the whole loop: it sets its QoS class
+    // once, before its first game. Game i's randomness depends only on i,
+    // so the record does not depend on which worker played it, or when.
+    auto work = [&](int w) {
+        try {
+            setThreadQos(run.qos);
+            EngineEvaluator ev(evaluators.forWorker(w), run.cancel, stop);
+            while (!stop) {
+                const int i = source.next();
+                if (i < 0) break;
+                Rng rng(deriveSeed(seed, static_cast<uint64_t>(generation), kPhaseSelfPlay,
+                                   static_cast<uint64_t>(i)));
+                const long long before = ev.count();
+                GameRecord record = playSelfPlayGame(ev, sp, rng);
+                positions += record.positions();
+                source.done(i, std::move(record), ev.count() - before);
+            }
+        } catch (...) {
+            fail();
+        }
+    };
+    std::vector<std::thread> threads;
+    try {
+        for (int w = 0; w < workers; ++w) threads.emplace_back(work, w);
+    } catch (...) {
+        fail();   // a thread could not start: stop the others, join them first
+    }
+    for (std::thread& t : threads) t.join();
+    if (stats) {
+        stats->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        stats->positions = positions;
+        stats->evaluations = evaluators.evaluations();
+    }
+    if (firstError) std::rethrow_exception(firstError);
+}
+
 std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConfig& sp,
                                           uint64_t seed, int generation, int first, int count,
                                           const EngineRun& run, SliceStats* stats) {
@@ -42,45 +155,19 @@ std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConf
         throw std::invalid_argument("playSelfPlayGames: negative index range");
     const auto start = std::chrono::steady_clock::now();
     std::vector<GameRecord> records(static_cast<size_t>(count));
-    long long evaluations = 0;
+    SliceStats played;
     if (count > 0) {
-        // One evaluator per worker; the network itself is shared read-only.
-        // naive, blas: a single-threaded backend and workspace per worker.
-        // metal: one batching hub that gathers every worker's leaves into
-        // GPU passes; a position's outputs do not depend on its batch, so
-        // the games are the same either way (azgo/inference_hub.hpp).
-        const int workers = std::max(1, std::min(run.workers, count));
-        WorkerEvaluators evaluators(net, run.backend, workers, sp.mcts.batchSize,
-                                    run.inferenceBatch);
-        // Each worker is one thread for the whole loop: it sets its QoS
-        // class once, before its first game.
-        std::vector<char> qosSet(static_cast<size_t>(workers), 0);
-        // Game i's randomness depends only on i, and its record is stored at
-        // index i, so the result does not depend on which thread played it.
-        parallelFor(count, workers, [&](int k, int w) {
-            if (!qosSet[static_cast<size_t>(w)]) {
-                setThreadQos(run.qos);
-                qosSet[static_cast<size_t>(w)] = 1;
-            }
-            const int i = first + k;
-            Rng rng(deriveSeed(seed, static_cast<uint64_t>(generation), kPhaseSelfPlay,
-                               static_cast<uint64_t>(i)));
-            if (run.cancel) {
-                CancellableEvaluator ev(evaluators.forWorker(w), *run.cancel);
-                records[static_cast<size_t>(k)] = playSelfPlayGame(ev, sp, rng);
-            } else {
-                Evaluator& ev = evaluators.forWorker(w);
-                records[static_cast<size_t>(k)] = playSelfPlayGame(ev, sp, rng);
-            }
-        });
-        evaluations = evaluators.evaluations();
+        // The slice as a queue of its own indices, in order, on
+        // min(workers, count) workers: game i is stored at [i - first].
+        EngineRun slice = run;
+        slice.workers = std::max(1, std::min(run.workers, count));
+        RangeSource source(first, count, records);
+        playSelfPlayQueue(net, sp, seed, generation, slice, source, &played);
     }
     if (stats) {
-        const auto elapsed = std::chrono::steady_clock::now() - start;
-        stats->seconds = std::chrono::duration<double>(elapsed).count();
-        stats->positions = 0;
-        for (const GameRecord& r : records) stats->positions += r.positions();
-        stats->evaluations = evaluations;
+        stats->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        stats->positions = played.positions;
+        stats->evaluations = played.evaluations;
     }
     return records;
 }
