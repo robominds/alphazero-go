@@ -22,6 +22,7 @@
 #include <vector>
 #include "azgo/build_info.hpp"
 #include "azgo/checkpoint.hpp"
+#include "azgo/coordinator.hpp"
 #include "azgo/engines.hpp"
 #include "azgo/network.hpp"
 #include "azgo/run_state.hpp"
@@ -349,6 +350,109 @@ static void test_run_stream_refusals() {
     }
 }
 
+// A child process with pipes: what it writes comes back, its stdin's end
+// ends it, stop() ends one that would not, a write to one that is gone
+// fails quietly, and a program that cannot start reads as end of file.
+static void test_child_process() {
+    {
+        ChildProcess cat({"cat"}, "");
+        assert(cat.pid() > 0 && cat.send("hello\n"));
+        std::string got;
+        char buf[64];
+        while (got.size() < 6) {
+            const long n = cat.receive(buf, sizeof buf, 5.0);
+            assert(n > 0);
+            got.append(buf, static_cast<size_t>(n));
+        }
+        assert(got == "hello\n");
+        assert(cat.receive(buf, sizeof buf, 0.05) == -1);   // nothing more for now
+        cat.stop();
+        const ProcessResult r = cat.wait();
+        assert(r.cancelled);
+    }
+    {
+        ChildProcess sleeper({"sleep", "600"}, "");
+        const auto start = std::chrono::steady_clock::now();
+        sleeper.stop();
+        sleeper.wait();
+        assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(10));
+    }
+    {
+        ChildProcess quick({"true"}, "");
+        char buf[8];
+        while (quick.receive(buf, sizeof buf, 5.0) != 0) {
+        }
+        assert(quick.wait().exitCode == 0);
+        assert(!quick.send(std::string(1 << 20, 'x')));   // gone: false, no SIGPIPE
+    }
+    {
+        ChildProcess missing({"/nonexistent/azgo-program"}, "");
+        char buf[8];
+        assert(missing.receive(buf, sizeof buf, 1.0) == 0);
+        const ProcessResult r = missing.wait();
+        assert(r.exitCode != 0);
+    }
+}
+
+// The real selfplay binary through the subprocess transport, and
+// runStreamJob through the in-process transport, answer a stream exactly
+// as playSelfPlayGames plays its games.
+static void test_transports_stream() {
+    StreamWork work("transport");
+    const std::vector<GameRecord> whole = playSelfPlayGames(work.net(), work.job.sp, work.job.seed,
+                                                            work.job.generation, 0, 8, EngineRun{"naive", 1});
+    MachineSettings m;
+    m.alias = "fake";
+    m.exe = AZGO_SELFPLAY_EXE;
+    m.workdir = work.dir.string();
+    for (bool inProcess : {false, true}) {
+        std::unique_ptr<Transport> t;
+        if (inProcess) t = std::make_unique<InProcessTransport>(m);
+        else t = makeTransport(m);
+        const std::string log = (work.dir / "stream.log").string();
+        std::unique_ptr<StreamChannel> c =
+            t->openStream({"--stream", "--job", work.jobPath, "--backend", "naive", "--workers", "2"}, log);
+        StreamFrames frames;
+        StreamChecker check(work.jobBytes, buildId());
+        auto frame = [&](char& kind, std::string& payload) {
+            for (;;) {
+                if (frames.next(kind, payload)) return true;
+                char buf[4096];
+                const long n = c->receive(buf, sizeof buf, 30.0);
+                assert(n != -1);
+                if (n == 0) return false;
+                frames.feed(buf, static_cast<size_t>(n));
+            }
+        };
+        char kind;
+        std::string payload;
+        assert(frame(kind, payload) && kind == 'H');
+        check.hello(payload);
+        assert(c->send("play 4\nplay 2\nplay 7\n"));
+        std::map<int, GameRecord> got;
+        while (got.size() < 3) {
+            assert(frame(kind, payload) && kind == 'G');
+            StreamGame g = check.game(payload);
+            got[g.index] = std::move(g.record);
+        }
+        assert(c->send("end\n"));
+        assert(frame(kind, payload) && kind == 'E');
+        check.end(payload);
+        assert(!frame(kind, payload));
+        assert(c->wait().exitCode == 0);
+        for (const auto& [i, r] : got) assert(sameRecord(r, whole[static_cast<size_t>(i)]));
+        // Stopped in the middle: it ends promptly, not with 0.
+        StreamWork slow("transport_slow", 400);
+        std::unique_ptr<StreamChannel> d =
+            t->openStream({"--stream", "--job", slow.jobPath, "--backend", "naive", "--workers", "1"}, log);
+        assert(d->send("play 0\n"));
+        const auto start = std::chrono::steady_clock::now();
+        d->stop();
+        assert(d->wait().exitCode != 0);
+        assert(std::chrono::steady_clock::now() - start < std::chrono::seconds(10));
+    }
+}
+
 // writeAll to a pipe nobody reads fails without killing the process.
 static void test_write_all_without_sigpipe() {
     int fds[2];
@@ -365,6 +469,8 @@ int main() {
     test_run_stream_in_process();
     test_run_stream_refusals();
     test_write_all_without_sigpipe();
+    test_child_process();
+    test_transports_stream();
     std::printf("test_selfplay_stream: OK\n");
     return 0;
 }

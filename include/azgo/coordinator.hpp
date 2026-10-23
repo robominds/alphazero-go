@@ -80,6 +80,11 @@ public:
         return run(args, log, timeout, nullptr);
     }
     virtual void download(const std::string& remote, const std::string& local) = 0;
+    // Starts the machine's selfplay with `args` (niced, as run()) as a
+    // stream (azgo/selfplay_stream.hpp): the channel is its stdin and
+    // stdout; its stderr is appended to the local file `log`.
+    virtual std::unique_ptr<StreamChannel> openStream(const std::vector<std::string>& args,
+                                                      const std::string& log) = 0;
     // Removes the files that exist; missing ones are no error.
     virtual void remove(const std::vector<std::string>& remote) = 0;
     // Best effort: stops the processes whose command line holds `pattern`,
@@ -113,6 +118,8 @@ public:
     ProcessResult run(const std::vector<std::string>& args, const std::string& log, double timeout,
                       const std::atomic<bool>* cancel) override;
     void download(const std::string& remote, const std::string& local) override;
+    std::unique_ptr<StreamChannel> openStream(const std::vector<std::string>& args,
+                                              const std::string& log) override;
     void remove(const std::vector<std::string>& remote) override;
     void killJob(const std::string& pattern) override;
     bool reachable() override;
@@ -137,6 +144,8 @@ public:
     ProcessResult run(const std::vector<std::string>& args, const std::string& log, double timeout,
                       const std::atomic<bool>* cancel) override;
     void download(const std::string& remote, const std::string& local) override;
+    std::unique_ptr<StreamChannel> openStream(const std::vector<std::string>& args,
+                                              const std::string& log) override;
     void remove(const std::vector<std::string>& remote) override;
     void killJob(const std::string& pattern) override;
     bool reachable() override;
@@ -147,13 +156,16 @@ protected:
 
 // For tests: SubprocessTransport's files, but run() calls runJob on
 // the calling thread (the selfplay app's arguments, parsed here), and
-// answers --version and --fingerprint as the app does.
+// answers --version and --fingerprint as the app does; openStream runs
+// runStreamJob on a thread of its own, over two pipes.
 class InProcessTransport : public SubprocessTransport {
 public:
     using SubprocessTransport::SubprocessTransport;
     using Transport::run;
     ProcessResult run(const std::vector<std::string>& args, const std::string& log, double timeout,
                       const std::atomic<bool>* cancel) override;
+    std::unique_ptr<StreamChannel> openStream(const std::vector<std::string>& args,
+                                              const std::string& log) override;
 };
 
 // SshTransport when the machine has ssh, else SubprocessTransport. `log`:

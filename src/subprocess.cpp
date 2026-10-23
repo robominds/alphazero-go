@@ -5,6 +5,7 @@
 #include <csignal>
 #include <cstring>
 #include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <spawn.h>
 #include <stdexcept>
@@ -199,6 +200,163 @@ ProcessResult runProcess(const std::vector<std::string>& argv, const ProcessOpti
     if (WIFEXITED(status) && !termSent) result.exitCode = WEXITSTATUS(status);
     if (WIFSIGNALED(status)) result.signal = WTERMSIG(status);
     return result;
+}
+
+// ---- ChildProcess ----------------------------------------------------------------
+
+namespace {
+double monotonicSeconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+} // namespace
+
+ChildProcess::ChildProcess(const std::vector<std::string>& argv, const std::string& log) {
+    if (argv.empty()) throw std::invalid_argument("ChildProcess: no program");
+    SpawnSetup s;
+    if (s.initialized != 2) {
+        result_.error = "posix_spawn setup failed";
+        return;
+    }
+    sigset_t none, all;
+    sigemptyset(&none);
+    sigfillset(&all);
+    short flags = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETPGROUP;
+#ifdef __APPLE__
+    flags |= POSIX_SPAWN_CLOEXEC_DEFAULT;   // only the descriptors set up below reach the child
+#endif
+    int toChild[2] = {-1, -1}, fromChild[2] = {-1, -1};
+#ifdef __linux__
+    const bool piped = pipe2(toChild, O_CLOEXEC) == 0 && pipe2(fromChild, O_CLOEXEC) == 0;
+#else
+    const bool piped = pipe(toChild) == 0 && pipe(fromChild) == 0;
+#endif
+    auto closeAll = [&] {
+        for (int* fd : {&toChild[0], &toChild[1], &fromChild[0], &fromChild[1]})
+            if (*fd >= 0) {
+                close(*fd);
+                *fd = -1;
+            }
+    };
+    if (!piped) {
+        result_.error = std::string("pipe: ") + std::strerror(errno);
+        closeAll();
+        return;
+    }
+    for (int fd : {toChild[0], toChild[1], fromChild[0], fromChild[1]}) fcntl(fd, F_SETFD, FD_CLOEXEC);
+#ifdef __APPLE__
+    // Our end of its stdin: a write after the child is gone fails with
+    // EPIPE instead of raising SIGPIPE (writeAll handles it elsewhere too).
+    fcntl(toChild[1], F_SETNOSIGPIPE, 1);
+#endif
+    const std::string err = log.empty() ? "/dev/null" : log;
+    int rc = posix_spawnattr_setsigmask(&s.attr, &none);
+    if (rc == 0) rc = posix_spawnattr_setsigdefault(&s.attr, &all);
+    if (rc == 0) rc = posix_spawnattr_setpgroup(&s.attr, 0);
+    if (rc == 0) rc = posix_spawnattr_setflags(&s.attr, flags);
+    if (rc == 0) rc = posix_spawn_file_actions_adddup2(&s.actions, toChild[0], 0);
+    if (rc == 0) rc = posix_spawn_file_actions_adddup2(&s.actions, fromChild[1], 1);
+    if (rc == 0)
+        rc = posix_spawn_file_actions_addopen(&s.actions, 2, err.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+#if !defined(__APPLE__) && AZGO_SPAWN_CLOSES_INHERITED_FDS
+    if (rc == 0) rc = posix_spawn_file_actions_addclosefrom_np(&s.actions, 3);
+#endif
+    if (rc != 0) {
+        closeAll();
+        result_.error = std::string("posix_spawn setup: ") + std::strerror(rc);
+        return;
+    }
+    std::vector<char*> args;
+    for (const std::string& a : argv) args.push_back(const_cast<char*>(a.c_str()));
+    args.push_back(nullptr);
+    pid_t pid = 0;
+    rc = posix_spawnp(&pid, args[0], &s.actions, &s.attr, args.data(), environ);
+    // The child has its copies; ours would hide its end of file and ours.
+    close(toChild[0]);
+    close(fromChild[1]);
+    if (rc != 0) {
+        close(toChild[1]);
+        close(fromChild[0]);
+        result_.error = "cannot run " + argv[0] + ": " + std::strerror(rc);
+        return;
+    }
+    pid_ = pid;
+    in_ = toChild[1];
+    out_ = fromChild[0];
+    slot_ = registerChild(pid);
+}
+
+ChildProcess::~ChildProcess() {
+    if (pid_ > 0 && !waited_) {
+        stop();
+        wait();
+    }
+    std::lock_guard<std::mutex> lock(inMutex_);
+    if (in_ >= 0) close(in_);
+    if (out_ >= 0) close(out_);
+}
+
+bool ChildProcess::send(const std::string& text) {
+    std::lock_guard<std::mutex> lock(inMutex_);
+    return in_ >= 0 && writeAll(in_, text);
+}
+
+long ChildProcess::receive(char* buf, size_t size, double timeoutSeconds) {
+    if (out_ < 0) return 0;
+    pollfd p{out_, POLLIN, 0};
+    const int ms = timeoutSeconds <= 0 ? 0 : static_cast<int>(std::min(timeoutSeconds * 1000.0, 2.0e9));
+    const int ready = poll(&p, 1, ms);
+    if (ready <= 0) return -1;   // nothing in time (or interrupted: the caller asks again)
+    for (;;) {
+        const ssize_t got = read(out_, buf, size);
+        if (got < 0 && errno == EINTR) continue;
+        return got < 0 ? 0 : static_cast<long>(got);   // an error reads as end of file
+    }
+}
+
+void ChildProcess::stop() {
+    std::lock_guard<std::mutex> lock(inMutex_);
+    if (in_ >= 0) {
+        close(in_);   // its stdin ends: a stream stops at once
+        in_ = -1;
+    }
+    if (pid_ > 0 && !waited_ && !termSent_) {
+        kill(-pid_, SIGTERM);   // the whole group: ssh, and what it started
+        termSent_ = true;
+        termAt_ = monotonicSeconds();
+    }
+}
+
+ProcessResult ChildProcess::wait() {
+    if (waited_ || pid_ <= 0) {
+        waited_ = true;
+        return result_;
+    }
+    bool killSent = false;
+    for (;;) {
+        siginfo_t info;
+        std::memset(&info, 0, sizeof info);
+        const int w = waitid(P_PID, static_cast<id_t>(pid_), &info, WEXITED | WNOHANG | WNOWAIT);
+        if (w == 0 && info.si_pid == pid_) break;
+        if (w < 0 && errno != EINTR) {
+            result_.error = std::string("waitid: ") + std::strerror(errno);
+            break;
+        }
+        if (termSent_ && !killSent && monotonicSeconds() >= termAt_ + kKillGraceSeconds) {
+            kill(-pid_, SIGKILL);
+            killSent = true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(kPollMillis));
+    }
+    if (termSent_) kill(-pid_, SIGKILL);   // what is left of a group told to stop
+    int status = 0;
+    while (waitpid(pid_, &status, 0) < 0 && errno == EINTR) {
+    }
+    unregisterChild(slot_);
+    waited_ = true;
+    if (WIFEXITED(status) && !termSent_) result_.exitCode = WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) result_.signal = WTERMSIG(status);
+    result_.cancelled = termSent_;
+    return result_;
 }
 
 bool writeAll(int fd, const std::string& data) {

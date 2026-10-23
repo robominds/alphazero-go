@@ -8,6 +8,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <poll.h>
 #include <iterator>
 #include <sstream>
 #include <stdexcept>
@@ -24,6 +25,7 @@
 #include "azgo/metal.hpp"
 #include "azgo/parallel.hpp"
 #include "azgo/run_state.hpp"
+#include "azgo/selfplay_stream.hpp"
 #include "azgo/serialize.hpp"
 
 namespace azgo {
@@ -1141,6 +1143,13 @@ void SshTransport::download(const std::string& remote, const std::string& local)
                          why(copy) + ")");
 }
 
+std::unique_ptr<StreamChannel> SshTransport::openStream(const std::vector<std::string>& args,
+                                                      const std::string& log) {
+    // ssh forwards stdin and stdout byte for byte, and its end of file;
+    // its own messages and the remote's stderr go to the log.
+    return std::make_unique<ChildProcess>(sshArgv(m_, args), log);
+}
+
 void SshTransport::remove(const std::vector<std::string>& remote) {
     if (remote.empty()) return;
     std::vector<std::string> words = {"rm", "-f"};
@@ -1214,6 +1223,15 @@ void SubprocessTransport::download(const std::string& remote, const std::string&
                          ec.message());
 }
 
+std::unique_ptr<StreamChannel> SubprocessTransport::openStream(const std::vector<std::string>& args,
+                                                             const std::string& log) {
+    std::vector<std::string> argv;
+    if (m_.nice > 0) argv = {"nice", "-n", std::to_string(m_.nice)};
+    argv.push_back(expandHome(m_.exe));
+    for (const std::string& a : args) argv.push_back(a[0] == '~' ? expandHome(a) : a);
+    return std::make_unique<ChildProcess>(argv, log);
+}
+
 void SubprocessTransport::remove(const std::vector<std::string>& remote) {
     for (const std::string& r : remote) {
         std::error_code ec;
@@ -1285,6 +1303,90 @@ ProcessResult InProcessTransport::run(const std::vector<std::string>& given, con
         out << err.str();
     }
     return result;
+}
+
+namespace {
+
+// InProcessTransport's stream: runStreamJob on a thread, its stdin and
+// stdout two pipes, its stderr appended to the log when it ends.
+class InProcessChannel : public StreamChannel {
+public:
+    InProcessChannel(std::map<std::string, std::string> options, std::string log) : log_(std::move(log)) {
+        if (pipe(toChild_) != 0 || pipe(fromChild_) != 0)
+            throw std::runtime_error("InProcessChannel: pipe failed");
+        auto number = [&](const char* key) {
+            return options.count(key) ? std::atoi(options[key].c_str()) : 0;
+        };
+        const std::string job = options["--job"], backend = options["--backend"];
+        const int workers = number("--workers"), batch = number("--inference-batch");
+        thread_ = std::thread([this, job, backend, workers, batch] {
+            std::ostringstream err;
+            status_ = runStreamJob(job, backend, workers, batch, toChild_[0], fromChild_[1], err);
+            if (!log_.empty()) {
+                std::ofstream out(log_, std::ios::app | std::ios::binary);
+                out << err.str();
+            }
+            close(fromChild_[1]);   // our reader's end of file
+        });
+    }
+    ~InProcessChannel() override {
+        stop();
+        wait();
+        close(fromChild_[0]);
+        close(toChild_[0]);
+    }
+    bool send(const std::string& text) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return toChild_[1] >= 0 && writeAll(toChild_[1], text);
+    }
+    long receive(char* buf, size_t size, double timeoutSeconds) override {
+        pollfd p{fromChild_[0], POLLIN, 0};
+        const int ready = poll(&p, 1, static_cast<int>(std::max(0.0, timeoutSeconds) * 1000));
+        if (ready <= 0) return -1;
+        const ssize_t got = read(fromChild_[0], buf, size);
+        return got < 0 ? 0 : static_cast<long>(got);
+    }
+    void stop() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (toChild_[1] >= 0) close(toChild_[1]);   // end of file: it stops at once
+        toChild_[1] = -1;
+        stopped_ = true;
+    }
+    ProcessResult wait() override {
+        if (thread_.joinable()) {
+            // Whatever it still writes is read and dropped, so it can end.
+            char buf[4096];
+            while (read(fromChild_[0], buf, sizeof buf) > 0) {
+            }
+            thread_.join();
+        }
+        ProcessResult r;
+        r.exitCode = stopped_ ? -1 : status_.load();
+        r.cancelled = stopped_;
+        return r;
+    }
+private:
+    int toChild_[2] = {-1, -1}, fromChild_[2] = {-1, -1};
+    std::string log_;
+    std::thread thread_;
+    std::mutex mutex_;
+    std::atomic<int> status_{-1};
+    std::atomic<bool> stopped_{false};
+};
+
+} // namespace
+
+std::unique_ptr<StreamChannel> InProcessTransport::openStream(const std::vector<std::string>& args,
+                                                            const std::string& log) {
+    std::map<std::string, std::string> options;
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--stream") continue;
+        if (i + 1 < args.size()) {
+            options[args[i]] = expandHome(args[i + 1]);
+            ++i;
+        }
+    }
+    return std::make_unique<InProcessChannel>(options, log);
 }
 
 std::unique_ptr<Transport> makeTransport(const MachineSettings& machine, const std::string& log) {

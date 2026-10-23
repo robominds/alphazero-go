@@ -11,7 +11,10 @@
 #pragma once
 #include <atomic>
 #include <cstddef>   // on glibc, also its version macros
+#include <memory>
+#include <mutex>
 #include <string>
+#include <sys/types.h>
 #include <vector>
 
 // Whether a child really gets no other descriptor of ours. macOS has
@@ -66,6 +69,54 @@ ProcessResult runProcess(const std::vector<std::string>& argv, const ProcessOpti
 // The same with only a log, a timeout and stdin.
 ProcessResult runProcess(const std::vector<std::string>& argv, const std::string& logPath,
                          double timeoutSeconds, const std::string& stdinPath = "");
+
+// Both ends of a conversation with a running program: what a self-play
+// stream (azgo/selfplay_stream.hpp) runs over, whether the program is a
+// child process here, ssh to another machine, or (tests) a thread.
+class StreamChannel {
+public:
+    virtual ~StreamChannel() = default;
+    // Writes to the program's stdin; false once it cannot (it is gone).
+    virtual bool send(const std::string& text) = 0;
+    // What the program wrote to stdout since: up to `size` bytes, waiting
+    // at most timeoutSeconds. > 0 bytes read, 0 at end of file, -1 when
+    // nothing came in time.
+    virtual long receive(char* buf, size_t size, double timeoutSeconds) = 0;
+    // Stops the program now (its stdin closed, then SIGTERM to its process
+    // group and SIGKILL 5 s later, as runProcess's timeout).
+    virtual void stop() = 0;
+    // Waits for the program to end and reaps it; once.
+    virtual ProcessResult wait() = 0;
+};
+
+// A child process with a pipe to its stdin and one from its stdout, its
+// stderr appended to `log` ("" = /dev/null), started as runProcess starts
+// one: no shell, a clean signal mask, its own process group, no other
+// descriptor of ours, and its group registered for
+// forwardTerminationSignals. A child that cannot be started gives a
+// channel whose receive() is at end of file and whose wait() carries the
+// error. The destructor stops and reaps a child still running. send() and
+// stop() may be called from another thread than receive() and wait().
+class ChildProcess : public StreamChannel {
+public:
+    ChildProcess(const std::vector<std::string>& argv, const std::string& log);
+    ~ChildProcess() override;
+    ChildProcess(const ChildProcess&) = delete;
+    ChildProcess& operator=(const ChildProcess&) = delete;
+    bool send(const std::string& text) override;
+    long receive(char* buf, size_t size, double timeoutSeconds) override;
+    void stop() override;
+    ProcessResult wait() override;
+    pid_t pid() const { return pid_; }
+private:
+    pid_t pid_ = -1;
+    std::mutex inMutex_;   // send and stop may come from different threads
+    int in_ = -1, out_ = -1, slot_ = -1;
+    std::atomic<bool> termSent_{false};
+    std::atomic<double> termAt_{0};
+    bool waited_ = false;
+    ProcessResult result_;
+};
 
 // Writes all of `data` to fd, retrying after EINTR and short writes.
 // Returns false on any error, a reader that is gone (EPIPE) included,
