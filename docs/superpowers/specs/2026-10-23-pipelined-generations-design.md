@@ -289,8 +289,10 @@ generation behind training`.
   ```
 
   A switch that must take effect at k+1 (the 19×19 plan turns
-  resignation on at generation 10) is made at a commit without pending
-  games: before turning the pipeline on, or together with it.
+  resignation on from generation 11's self-play) is made at a commit
+  without pending games, before turning the pipeline on or together with
+  it; or one commit earlier, at a pipelined commit k−1 whose pending games
+  (SP(k)) were played without it.
 
 A run stopped by `generations = N` commits N with SP(N+1) pending: the
 last iteration plays the next generation's self-play as every iteration
@@ -360,8 +362,15 @@ phase alone:
 `checkMetalInferenceMemory` (and its CUDA twin) gain an overload taking a
 list of (hubs, slots, batch) groups. Each hub's allocation is still
 checked against what the process already holds when it is made, as
-today. Remote machines are not checked up front (as today); a 10×128
-19×19 hub at batch 256 needs a few hundred MB.
+today. Remote machines are not checked up front (as today). On Metal a
+10×128 19×19 inference slot at batch 256 is about 630 MB (the im2col
+buffer alone 425 MB), so self-play's hub is 1.3 GB and an arena wave's
+hubs 0.63 GB per network: with this run's four (gating, no extra
+opponents) a Metal mini holds about 3.8 GB at once, twice that at batch
+512, against a recommended working set of about 10.7 GB on 16 GB. A
+remote Metal process checks only what it holds itself, so neither of
+the two sees the other's hubs; a CUDA process checks the device's free
+memory, which includes the other's.
 
 ## Training beside self-play on one machine
 
@@ -481,7 +490,11 @@ the engines' GPUs, the expectation above holds.
    then train after a commit (`tools/stop_after_generation.sh`).
 3. Resume with `--set pipeline=on` (plus, at the generation-10 boundary,
    `resignation=true`, so that SP(11) is the prologue's and plays with
-   resignation).
+   resignation). Or switch the pipeline on earlier with `--generations 9`:
+   commit 9 then holds SP(10), played without resignation, and the resume
+   from it with `--set resignation=true` plays SP(11) with resignation
+   (its note says so), v_resign starting from `resign_threshold_initial`
+   as the sequential plan's would.
 
 The resume's first output is the prologue: generation k+1's self-play,
 alone, committed with generation k. Switching back is `--set
@@ -538,7 +551,7 @@ pipeline=off` at any commit.
 | risk | consequence | mitigation |
 |---|---|---|
 | a data race between the two phases in the coordinator | wrong network removed, crash | shared state enumerated above, each under a mutex; TSan; review |
-| a remote GPU holds two hubs | memory pressure on the minis | small networks; the remote processes check their own allocations |
+| a remote GPU holds two hubs | memory pressure on the minis | about 3.8 GB on a Metal mini at batch 256 (see GPU memory); each remote process checks its own allocations (CUDA: the device's free memory) |
 | B(g) longer than SP(g+1) | engines wait at the barrier | correct, only less gain; the progress line shows it |
 | the lag slows learning | fewer effective generations | one generation, AlphaGo Zero's own lag; switch off at any commit |
 | a self-play key changed on resume applies a generation late | surprise | the resume prints a note; switch at a commit without pending games |
