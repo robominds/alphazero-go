@@ -620,6 +620,15 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
         *log << "note: self-play engines changed from " << describeEngines(saved.selfplayEngines, saved)
              << " to " << describeEngines(cfg.selfplayEngines, cfg) << "; from here on results differ in the\n"
              << "last bits from a run that kept " << describeEngines(saved.selfplayEngines, saved) << "\n";
+    // Which engine plays which game: fixed by the list (static), or by
+    // timing and recorded (dynamic). Only meaningful with engines.
+    if (log && saved.selfplayAllocation != cfg.selfplayAllocation && !cfg.selfplayEngines.empty())
+        *log << "note: self-play allocation changed from " << saved.selfplayAllocation << " to "
+             << cfg.selfplayAllocation
+             << (cfg.selfplayAllocation == "dynamic"
+                     ? "; from here on which engine plays which game depends on timing\n(recorded in "
+                       "selfplay-games.csv)\n"
+                     : "; from here on each engine plays a fixed slice of every generation\n");
     if (log && printEngineList(saved.arenaEngines) != printEngineList(cfg.arenaEngines))
         *log << "note: arena engines changed from " << describeEngines(saved.arenaEngines, saved) << " to "
              << describeEngines(cfg.arenaEngines, cfg) << "; from here on arena results differ in the\n"
@@ -630,6 +639,7 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     addMissingLogColumns(runDir);
     // The manifests describe committed generations only (engines on or off).
     pruneManifest(runDir, state.generation + 1);
+    pruneGamesManifest(runDir, state.generation + 1);
     pruneArenaManifest(runDir, state.generation + 1);
 
     std::unique_ptr<Trainer> trainer(new Trainer(cfg, runDir, std::move(net), std::move(state)));
@@ -685,7 +695,8 @@ GenerationStats Trainer::runGeneration() {
         // and its record is stored at index i, so the result does not
         // depend on which thread played it.
         if (coordinator_ && !cfg_.selfplayEngines.empty()) {
-            // selfplay_engines: a slice per engine, all at once, merged by index.
+            // selfplay_engines: a slice per engine, all at once (static), or
+            // one queue all engines take from (dynamic); merged by index.
             const int selfPlayGeneration = bestNet ? state_.bestGeneration : state_.generation;
             const std::string networkPath = checkpointPath(runDir_, selfPlayGeneration);
             records = coordinator_->play(g, networkPath, selfPlayNet, sp, numGames);
@@ -925,7 +936,11 @@ GenerationStats Trainer::runGeneration() {
     state_.generation = g;
     // Who played which slice, written before the commit point: a crash in
     // between leaves rows of an uncommitted generation, which its redo replaces.
-    if (coordinator_ && !cfg_.selfplayEngines.empty()) writeManifest(runDir_, g, coordinator_->reports());
+    if (coordinator_ && !cfg_.selfplayEngines.empty()) {
+        writeManifest(runDir_, g, coordinator_->reports());
+        // Dynamic allocation: which engine played each game.
+        if (!coordinator_->assignment().empty()) writeGamesManifest(runDir_, g, coordinator_->assignment());
+    }
     if (arenaEngines) writeArenaManifest(runDir_, g, coordinator_->arenaReports());
     saveTrainingState(statePath(runDir_), state_);
     // log.csv is a human-facing record (it contains timings) and is appended

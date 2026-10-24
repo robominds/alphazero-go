@@ -2601,7 +2601,175 @@ static void test_arena_failures() {
     }
 }
 
+// ---- dynamic allocation (selfplay_allocation = dynamic) ---------------------------
+
+static Config dynamicConfig(const std::string& engines) {
+    Config c = withEngines(resignConfig(), engines);
+    c.selfplayAllocation = "dynamic";
+    return c;
+}
+
+// selfplay-games.csv: generation g's rows name an engine for each game,
+// each index once, in order.
+static std::vector<std::string> gamesOf(const TempDir& dir, int g) {
+    std::vector<std::string> out;
+    for (const std::string& row : splitLines(readFile(dir.file("selfplay-games.csv")))) {
+        const std::vector<std::string> f = csvFields(row);
+        assert(f.size() == 3);
+        if (f[0] != std::to_string(g)) continue;
+        assert(f[1] == std::to_string(out.size()));
+        out.push_back(f[2]);
+    }
+    return out;
+}
+
+// Every engine naive on this machine (one arithmetic): whoever plays a
+// game, the run is the default run, byte for byte. The manifests say who
+// played what: a row per engine (first empty) and a row per game.
+static void test_dynamic_equals_default() {
+    TempDir plain("dynamic_default"), dir("dynamic_engines");
+    startQuiet(resignConfig(), plain)->runUntil(3);
+    std::unique_ptr<Trainer> t = startEngines(dynamicConfig("local/naive:1, fake/naive:1"), dir, fakeHosts(dir));
+    std::ostringstream log;
+    t->setLog(&log);
+    t->runUntil(3);
+    assert(runFingerprint(plain, 3) == runFingerprint(dir, 3));
+    assert(manifestRows(dir) == 6);
+    for (int g = 1; g <= 3; ++g) {
+        const std::vector<std::string> games = gamesOf(dir, g);
+        assert(games.size() == 8);
+        int counted = 0;
+        for (int row = 2 * g - 1; row <= 2 * g; ++row) {
+            const std::vector<std::string> f =
+                csvFields(splitLines(readFile(dir.file("selfplay-engines.csv")))[static_cast<size_t>(row)]);
+            assert(f[0] == std::to_string(g) && f[1].empty() && f[3] == f[4] && f[10].empty());
+            assert(static_cast<int>(std::count(games.begin(), games.end(), f[4])) == std::stoi(f[2]));
+            counted += std::stoi(f[2]);
+        }
+        assert(counted == 8);
+    }
+    assert(log.str().find("selfplay engines: local/naive ") != std::string::npos);
+    // The default path and static allocation write no games manifest.
+    assert(!fs::exists(plain.file("selfplay-games.csv")));
+}
+
+// Resume is byte-identical (one arithmetic), the manifests describe the
+// committed generations only, and an uncommitted generation's rows go.
+static void test_dynamic_resume_and_prune() {
+    TempDir straight("dynamic_straight"), resumed("dynamic_resumed");
+    const Config c = dynamicConfig("fake/naive:2, local/naive=3");
+    startEngines(c, straight, fakeHosts(straight))->runUntil(4);
+    startEngines(c, resumed, fakeHosts(resumed))->runUntil(2);
+    const std::string committed = readFile(resumed.file("selfplay-games.csv"));
+    writeFile(resumed.file("selfplay-games.csv"), committed + "3,0,local/naive\n");   // a crash's leftovers
+    resumeEngines(resumed, {}, resumed.file("hosts"))->runUntil(4);
+    assert(runFingerprint(straight, 4) == runFingerprint(resumed, 4));
+    for (int g = 1; g <= 4; ++g) assert(gamesOf(resumed, g).size() == 8);
+    assert(splitLines(readFile(resumed.file("selfplay-games.csv"))).size() == 1 + 4 * 8);
+}
+
+// Switching at a generation boundary: noted once, recorded in config.cfg,
+// and back again.
+static void test_dynamic_switch_at_resume() {
+    TempDir plain("dynamic_switch_default"), dir("dynamic_switch");
+    startQuiet(resignConfig(), plain)->runUntil(5);
+    startEngines(withEngines(resignConfig(), "local/naive:1, fake/naive:1"), dir, fakeHosts(dir))->runUntil(2);
+    std::ostringstream on, same, off;
+    resumeEngines(dir, {"selfplay_allocation=dynamic"}, dir.file("hosts"), &on)->runUntil(4);
+    assert(on.str().find("note: self-play allocation changed from static to dynamic; from here on which engine "
+                         "plays which game depends on timing\n(recorded in selfplay-games.csv)\n") !=
+           std::string::npos);
+    assert(readFile(configPath(dir.str())).find("\nselfplay_allocation = dynamic\n") != std::string::npos);
+    resumeEngines(dir, {}, dir.file("hosts"), &same);
+    assert(same.str().find("note: self-play allocation") == std::string::npos);
+    resumeEngines(dir, {"selfplay_allocation=static"}, dir.file("hosts"), &off)->runUntil(5);
+    assert(off.str().find("note: self-play allocation changed from dynamic to static") != std::string::npos);
+    assert(runFingerprint(plain, 5) == runFingerprint(dir, 5));
+    assert(gamesOf(dir, 2).empty() && gamesOf(dir, 3).size() == 8 && gamesOf(dir, 4).size() == 8 &&
+           gamesOf(dir, 5).empty());
+    // Without engines, the key changes nothing and says nothing.
+    TempDir bare("dynamic_bare");
+    startQuiet(tinyConfig(), bare)->runUntil(1);
+    std::ostringstream quiet;
+    resumeEngines(bare, {"selfplay_allocation=dynamic"}, bare.file("none"), &quiet)->runUntil(2);
+    assert(quiet.str().find("note:") == std::string::npos && !fs::exists(bare.file("selfplay-games.csv")));
+}
+
+// A remote failing mid-generation: its games in flight go back to the
+// queue, the stream is retried, then the engine retires; no game is lost
+// or played twice, and (one arithmetic) the run is the failure-free one.
+// Under stop the generation is not committed, and a resume replays it.
+static void test_dynamic_failures() {
+    TempDir plain("dynamic_fail_default");
+    startQuiet(resignConfig(), plain)->runUntil(2);
+    for (int failures : {1, 2}) {
+        TempDir dir("dynamic_fail_" + std::to_string(failures));
+        std::unique_ptr<Trainer> t = startEngines(dynamicConfig("local/naive:1, fake/naive:1"), dir, fakeHosts(dir));
+        distributed_probe::failSession("fake/naive", failures, 1);
+        distributed_probe::delaySlice("local/naive", 0.5);   // the remote has games when it fails
+        t->runUntil(1);
+        distributed_probe::reset();
+        t->runUntil(2);
+        assert(runFingerprint(plain, 2) == runFingerprint(dir, 2));
+        assert(gamesOf(dir, 1).size() == 8 && gamesOf(dir, 2).size() == 8);
+        const std::string note = manifestNote(dir, 2);
+        assert(note.find(std::to_string(failures) + " failed stream") == 0);
+        assert((note.find("retired") != std::string::npos) == (failures == 2));
+        assert(manifestNote(dir, 4).empty());   // generation 2 tried it again
+    }
+    TempDir stopped("dynamic_stop");
+    Config c = dynamicConfig("local/naive:1, fake/naive:1");
+    c.selfplayFallback = "stop";
+    std::unique_ptr<Trainer> t = startEngines(c, stopped, fakeHosts(stopped));
+    t->runUntil(1);
+    distributed_probe::failSession("fake/naive", 2, 1);
+    distributed_probe::delaySlice("local/naive", 0.5);
+    bool threw = false;
+    try {
+        t->runUntil(2);
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find("selfplay_fallback = stop") != std::string::npos;
+    }
+    distributed_probe::reset();
+    assert(threw && gamesOf(stopped, 2).empty());
+    resumeEngines(stopped, {}, stopped.file("hosts"))->runUntil(2);
+    assert(runFingerprint(plain, 2) == runFingerprint(stopped, 2));
+}
+
+// Two arithmetics (naive and blas): which engine plays a game shows in the
+// last bits (resign lows in state.bin). Replaying a dynamic run's recorded
+// assignment reproduces it byte for byte; another assignment does not.
+static void test_dynamic_replay_of_assignment() {
+    if (!blasAvailable()) return;
+    TempDir live("dynamic_live"), replay("dynamic_replay"), other("dynamic_other");
+    const Config c = dynamicConfig("local/naive:1, local/blas:1");
+    startEngines(c, live, live.file("none"))->runUntil(3);
+    std::map<int, std::vector<std::string>> recorded;
+    for (int g = 1; g <= 3; ++g) {
+        recorded[g] = gamesOf(live, g);
+        distributed_probe::forceAssignment(g, recorded[g]);
+    }
+    startEngines(c, replay, replay.file("none"))->runUntil(3);
+    distributed_probe::reset();
+    assert(runFingerprint(live, 3) == runFingerprint(replay, 3));
+    assert(readFile(live.file("selfplay-games.csv")) == readFile(replay.file("selfplay-games.csv")));
+    // Every game on the other engine than recorded.
+    for (int g = 1; g <= 3; ++g) {
+        std::vector<std::string> swapped = recorded[g];
+        for (std::string& e : swapped) e = e == "local/naive" ? "local/blas" : "local/naive";
+        distributed_probe::forceAssignment(g, swapped);
+    }
+    startEngines(c, other, other.file("none"))->runUntil(3);
+    distributed_probe::reset();
+    assert(runFingerprint(live, 3) != runFingerprint(other, 3));
+}
+
 int main() {
+    test_dynamic_equals_default();
+    test_dynamic_resume_and_prune();
+    test_dynamic_switch_at_resume();
+    test_dynamic_failures();
+    test_dynamic_replay_of_assignment();
     test_arena_engines_equal_default();
     test_arena_engines_resume_is_byte_identical();
     test_arena_engines_switch_and_prune();
