@@ -11,6 +11,7 @@
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #include <algorithm>
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -258,6 +259,36 @@ static void test_failures() {
     }
 }
 
+// A remote whose stream never answers (stuck before its hello, as a GPU
+// that hangs while it starts) and ignores its stdin: the other engines
+// play every game, and once the session has had its time to end after
+// `end`, it is stopped rather than waited for.
+static void test_silent_stream() {
+    Fixture f("silent");
+    const std::string script = (f.dir / "silent.sh").string();
+    {
+        std::ofstream out(script);
+        out << "#!/bin/sh\n"
+               "for a in \"$@\"; do [ \"$a\" = --stream ] && exec sleep 60; done\n"
+               "exec '"
+            << AZGO_SELFPLAY_EXE << "' \"$@\"\n";
+    }
+    std::filesystem::permissions(script, std::filesystem::perms::owner_all);
+    applyOverride(f.cfg, "selfplay_engines=local/naive:1, silent/naive:1");
+    distributed_probe::endTimeout(1);
+    Coordinator c(f.cfg, f.runDir(),
+                  parseHostsText("silent exe=" + script + " workdir=" + (f.dir / "remote_silent").string() + "\n",
+                                 "h"),
+                  nullptr);
+    c.preflight();
+    const auto start = std::chrono::steady_clock::now();
+    assert(sameRecords(f.play(c, 1), f.whole(1)));
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    assert(seconds < 30);   // not the 60 s the stuck process would take to end by itself
+    assert(c.reports()[0].slice.count == 12 && c.reports()[1].slice.count == 0);
+    distributed_probe::reset();
+}
+
 // A forced assignment is played as given, whoever is faster.
 static void test_forced_assignment() {
     Fixture f("forced");
@@ -307,6 +338,7 @@ int main() {
     test_fake_remote();
     test_remote_only();
     test_failures();
+    test_silent_stream();
     test_forced_assignment();
     test_games_manifest();
     std::printf("test_dynamic_selfplay: OK\n");

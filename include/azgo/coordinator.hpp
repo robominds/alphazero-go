@@ -392,6 +392,9 @@ void failSession(const std::string& engine, int times, int afterGames);
 // (engine names, one per game; a name stands for the first engine item of
 // that name), to replay a recorded assignment.
 void forceAssignment(int g, const std::vector<std::string>& engineOfGame);
+// Dynamic allocation: how long a session may take to end after `end`
+// (120 s outside tests).
+void endTimeout(double seconds);
 void reset();
 } // namespace distributed_probe
 

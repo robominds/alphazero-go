@@ -240,6 +240,8 @@ struct ProbeSession {
 };
 std::map<std::string, ProbeSession> gSessionFailures;
 std::map<int, std::vector<std::string>> gForced;   // generation -> engine of each game
+constexpr double kEndTimeout = 120;   // a session's longest wait after `end`
+double gEndTimeout = kEndTimeout;
 
 enum class ProbeFailure { None, Exit, Timeout, Corrupt };
 
@@ -278,6 +280,10 @@ int probeSessionFailure(const std::string& engine) {
     if (it == gSessionFailures.end() || it->second.times <= 0) return -1;
     --it->second.times;
     return it->second.afterGames;
+}
+double probeEndTimeout() {
+    std::lock_guard<std::mutex> lock(gProbeMutex);
+    return gEndTimeout;
 }
 std::vector<std::string> probeForced(int g) {
     std::lock_guard<std::mutex> lock(gProbeMutex);
@@ -897,9 +903,6 @@ std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath,
 // handout rule depends on time.
 struct Coordinator::DynamicPhase {
     static constexpr double kDynamicPoll = 0.5;
-    // How long a session may take to end after `end` (all its games are
-    // back by then: only the end frame and the exit are left).
-    static constexpr double kEndTimeout = 120;
 
     struct Engine {
         EngineSpec spec;
@@ -1143,6 +1146,9 @@ struct Coordinator::DynamicPhase {
         std::thread reader([&] {
             StreamFrames frames;
             StreamChecker check(jobBytes, buildId());
+            // How long the session may take to end after `end` (all its
+            // games are back by then: only the end frame and the exit are left).
+            const double endTimeout = probeEndTimeout();
             double lastFrame = now(), endAt = 0;
             int returned = 0;
             char buf[1 << 16];
@@ -1152,7 +1158,7 @@ struct Coordinator::DynamicPhase {
                     const double t0 = now();
                     if (ended) {
                         if (endAt == 0) endAt = t0;
-                        if (t0 - endAt > kEndTimeout) fail("selfplay did not end after `end`");
+                        if (t0 - endAt > endTimeout) fail("selfplay did not end after `end`");
                         continue;
                     }
                     if (m.timeout > 0 && t0 - lastFrame > m.timeout) {
@@ -1236,6 +1242,10 @@ struct Coordinator::DynamicPhase {
         }
         if (!ended || failed || stop) channel->stop();
         reader.join();
+        // The reader can fail after the look above (a session silent after
+        // `end`), and the generation can stop: either way the process is
+        // stopped, not waited for, as it may never end by itself.
+        if (failed || stop) channel->stop();
         const ProcessResult r = channel->wait();
         if (!failed && !stop && (!endSeen || r.exitCode != 0)) fail("selfplay " + brief(r));
         if (stop && !failed) {
@@ -2128,11 +2138,16 @@ void forceAssignment(int g, const std::vector<std::string>& engineOfGame) {
     std::lock_guard<std::mutex> lock(gProbeMutex);
     gForced[g] = engineOfGame;
 }
+void endTimeout(double seconds) {
+    std::lock_guard<std::mutex> lock(gProbeMutex);
+    gEndTimeout = seconds;
+}
 void reset() {
     std::lock_guard<std::mutex> lock(gProbeMutex);
     gFailures.clear();
     gSessionFailures.clear();
     gForced.clear();
+    gEndTimeout = kEndTimeout;
     gRemoteBuild.clear();
     gDelays.clear();
     gInProcess = false;
