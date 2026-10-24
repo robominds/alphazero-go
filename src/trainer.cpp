@@ -702,7 +702,12 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
                        "including the gating games played meanwhile\n"
                      : "; from here on the arena plays only the gating match (the new network against the\n"
                        "best), log.csv's elo is empty, and elo.csv and references.csv keep the last round's "
-                       "ratings\n(train --rerate rebuilds the ladder)\n");
+                       "ratings\n(train --rerate rebuilds the ladder)\n")
+             << (!cfg.arenaLadder && !cfg.arenaEngines.empty()
+                     ? "note: with arena_engines the gating match is a smaller wave, so a gating game can fall to "
+                       "another engine\nthan in the full round; with engines of different fingerprints, results "
+                       "differ in the last bits\n"
+                     : "");
     if (log && saved.pipeline != cfg.pipeline)
         *log << "note: pipeline changed from " << (saved.pipeline ? "on" : "off") << " to "
              << (cfg.pipeline ? "on" : "off")
@@ -726,6 +731,11 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     // Rewritten only after every check passed, so a refused resume leaves the
     // run directory untouched.
     writeFileAtomically(configPath(runDir), configToString(cfg));
+    // Switched off, the ladder's files are never rewritten again until it is
+    // back on; a crash after the last round's rating files and before its
+    // commit would leave that uncommitted round in them. Rewrite them from
+    // the commit: the same bytes when there was no crash.
+    if (saved.arenaLadder && !cfg.arenaLadder) writeRatingFiles(runDir, state.results, state.references, cfg);
     addMissingLogColumns(runDir);
     // The manifests describe committed generations only (engines on or off),
     // and the self-play manifests a pipelined commit's pending games too.

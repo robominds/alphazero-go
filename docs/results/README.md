@@ -4912,7 +4912,7 @@ simulations a move on the same engines, so the time goes with the games.
 Only the gating match decided anything. Generation 1, whose only
 opponent was also the best network, is what `arena_ladder = off` (see the
 main README) plays every generation: 40 games, about 1,850 s on the
-sequential loop, where generations 2–4 took 3,650–3,830 s. That is about
+sequential loop, where generations 2–4 took 3,630–3,830 s. That is about
 30 minutes a generation, roughly half the arena; more after a
 generation that plays three opponents, and 80 games more after a
 promotion into the reference set, which none of these five generations had.

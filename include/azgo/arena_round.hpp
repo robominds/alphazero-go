@@ -92,7 +92,9 @@ ArenaRoundResult runArenaRound(int generation, ResultsTable& results, std::vecto
 // played it: generation g >= 1 plays settings.arenaGames games against
 // *settings.bestNetwork with seed deriveSeed(seed, g, kPhaseArena, best),
 // g as player a: the request runArenaRound makes for that match, so the
-// result is the same. One wave of one match, added to `results`. Nothing
+// same games (on one arithmetic; arena engines split a wave by game
+// index, so in a smaller wave a game may fall to an engine of another
+// fingerprint). One wave of one match, added to `results`. Nothing
 // is calibrated or promoted and the reference set is not involved; the
 // result's `strongest` is unset (0). Throws std::invalid_argument without
 // a best network or for g < 1.

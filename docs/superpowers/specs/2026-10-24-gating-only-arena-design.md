@@ -23,10 +23,13 @@ The live 19×19 run (`arena_games = 40`, `arena_opponents = 0`, no fixed
 players) shows the cost. Generation 4 (rejected, best 3) played
 `vs 3:0.47 0:0.60`, 80 games, where the gating match is the 40 against 3.
 Generation 5 (promoted, best 3) played `vs 4:0.42 0:0.68 3:0.55`, 120
-games, where the gating match is again the 40 against 3. At about an hour
-per 40-game slice of work on all four machines, the ladder is half to two
-thirds of the arena: roughly 30 minutes or more per generation, more after
-a promotion into the reference set (80 more games).
+games, where the gating match is again the 40 against 3. On the
+sequential loop generation 1's 40 games (its only opponent, 0, was also
+the best) took 1,856 s and generations 2–4's 80 took 3,630–3,830 s: the
+ladder is half to two thirds of the arena, roughly 30 minutes or more per
+generation, and 80 games more after a promotion into the reference set.
+With the pipeline on the arena overlaps self-play, so the saving is GPU
+time given back to self-play.
 
 ## AlphaGo Zero
 
@@ -51,7 +54,14 @@ not architecture), printed after `gating_threshold` in `config.cfg`.
   `deriveSeed(seed, g, kPhaseArena, best)`, g as player a. These are
   exactly the seed and colours today's round gives its gating match, so
   game k of the match is the same game it would have been with the ladder
-  on (a match's result never depends on which others share its wave).
+  on (a match's result never depends on which others share its wave) —
+  on one arithmetic. With `arena_engines` of different fingerprints it is
+  the same game up to the last bits: engines take slices of a wave by game
+  index (`assignGames` over the wave's total), so when the wave shrinks to
+  the gating match alone, game k can fall to another engine, as after any
+  change of `arena_engines`. Keeping the ladder wave's layout for the
+  gating games would need the ladder-off wave to carry the other matches'
+  indices, which it does not play; not worth it for last-bit differences.
   Promotion is `passesGate(score, arena_games, gating_threshold)`, as
   today. No calibration, no g−1 / strongest / extra opponents, no
   promotion into the reference set.
@@ -107,13 +117,19 @@ results table or the reference set: the arena influences them only
 through `bestGeneration`, and the gating decision is the same with the
 ladder on or off. So **checkpoints, self-play games, SGFs and every
 promotion decision are identical** whether a run kept the ladder on,
-kept it off, or switched in between; only the arena's own files differ.
+kept it off, or switched in between, on one arithmetic (with arena
+engines of different fingerprints, up to the last bits of the gating
+games, above); only the arena's own files differ.
 
 - off → on: the round runs as today on a results table that also holds
   the gating-only generations' games; fixed players not yet calibrated
   are calibrated first.
-- on → off: references and elo.csv stay as the last ladder round left
-  them.
+- on → off: references and elo.csv stay as the last committed ladder
+  round left them. The resume that switches rewrites elo.csv and
+  references.csv once from `state.bin` (the same bytes after a clean
+  stop): a crash after a round's rating files and before its commit would
+  otherwise leave that uncommitted round in them for as long as the
+  ladder stays off, since a redo with the ladder off never writes them.
 - Pipeline on or off: both loops rate through `trainAndRate`, unchanged.
 - `selfplay_allocation = dynamic`: unaffected (the arena is not part of
   it).

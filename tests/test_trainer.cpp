@@ -2902,10 +2902,13 @@ static void test_ladder_off_resume_and_switch() {
     TempDir on("ladder_switch_on"), switched("ladder_switch");
     startQuiet(ladderConfig(true), on)->runUntil(last);
     startQuiet(ladderConfig(true), switched)->runUntil(2);
+    const std::string elo2 = readFile(switched.file("elo.csv")), refs2 = readFile(switched.file("references.csv"));
     std::ostringstream toOff, toOn, same;
     std::unique_ptr<Trainer> t = Trainer::resume(switched.str(), {"arena_ladder=off"}, &toOff);
     t->setLog(nullptr);
     t->runUntil(4);
+    // Off: the ladder's files stay as generation 2 left them.
+    assert(readFile(switched.file("elo.csv")) == elo2 && readFile(switched.file("references.csv")) == refs2);
     t = Trainer::resume(switched.str(), {"arena_ladder=on"}, &toOn);
     t->setLog(nullptr);
     t->runUntil(last);
@@ -2917,6 +2920,9 @@ static void test_ladder_off_resume_and_switch() {
     assert(same.str().find("note: arena_ladder") == std::string::npos);
     assert(trainingFingerprint(on, last) == trainingFingerprint(switched, last));
     const std::map<std::pair<int, int>, ResultsTable::Pair> pairs = readResults(switched);
+    // Back on, the refit includes the gating games: generations 3 and 4 are rated.
+    const std::string eloAfter = readFile(switched.file("elo.csv"));
+    assert(eloAfter.find("\n3,") != std::string::npos && eloAfter.find("\n4,") != std::string::npos);
     for (int g = 1; g <= last; ++g) {
         int opponents = 0;
         for (const auto& [key, pair] : pairs) opponents += key.second == g ? 1 : 0;
@@ -2998,11 +3004,54 @@ static void test_ladder_off_arena_every() {
     assert(bestOf(lines.at(1)) == 0 && readResults(dir).size() == 2);
 }
 
+// A crash after a ladder round's rating files and before its commit,
+// then a resume that switches the ladder off: the redo never rewrites
+// elo.csv and references.csv, so the resume restores the committed fit
+// (what a run stopped at the last commit has). A sequential ladder-off run
+// crashed after its arena and resumed is the straight run.
+static void test_ladder_off_after_a_crash() {
+    TempDir clean("ladder_crash_clean"), crashed("ladder_crash");
+    startQuiet(ladderConfig(true), clean)->runUntil(2);
+    std::unique_ptr<Trainer> t = startQuiet(ladderConfig(true), crashed);
+    pipeline_probe::crashAt(pipeline_probe::Point::Arena, 3);
+    bool threw = false;
+    try {
+        t->runUntil(3);
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find("pipeline_probe: crash") != std::string::npos;
+    }
+    pipeline_probe::reset();
+    t.reset();
+    assert(threw);
+    assert(readFile(crashed.file("elo.csv")) != readFile(clean.file("elo.csv")));   // generation 3's round
+    std::ostringstream note;
+    Trainer::resume(crashed.str(), {"arena_ladder=off"}, &note).reset();
+    for (const char* f : {"results.csv", "elo.csv", "references.csv"})
+        assert(readFile(crashed.file(f)) == readFile(clean.file(f)));
+
+    TempDir straight("ladder_off_crash_straight"), redo("ladder_off_crash_redo");
+    startQuiet(ladderConfig(false), straight)->runUntil(4);
+    t = startQuiet(ladderConfig(false), redo);
+    pipeline_probe::crashAt(pipeline_probe::Point::Arena, 3);
+    threw = false;
+    try {
+        t->runUntil(4);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    pipeline_probe::reset();
+    t.reset();
+    assert(threw);
+    resumeQuiet(redo, {})->runUntil(4);
+    assert(runFingerprint(straight, 4) == runFingerprint(redo, 4));
+}
+
 int main() {
     test_ladder_off_plays_only_the_gating_match();
     test_ladder_off_resume_and_switch();
     test_ladder_off_with_engines();
     test_ladder_off_arena_every();
+    test_ladder_off_after_a_crash();
     test_dynamic_equals_default();
     test_dynamic_resume_and_prune();
     test_dynamic_switch_at_resume();

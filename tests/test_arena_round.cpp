@@ -379,8 +379,13 @@ static void test_gating_match_alone() {
         for (const MatchRequest& f : wave)
             same = same || (f.a == m.a && f.b == m.b && f.games == m.games && f.seed == m.seed);
     assert(same);
+    int vsBest = 0;
     for (const ArenaMatch& a : r.matches)
-        if (a.opponent == 1) assert(a.result.scoreA == round.matches[0].result.scoreA);
+        if (a.opponent == 1) {
+            assert(a.result.scoreA == round.matches[0].result.scoreA);
+            ++vsBest;
+        }
+    assert(vsBest == 1);
 
     // The summary names the best network with the new network's score.
     assert(opponentSummary(round, {}).rfind("vs 1:", 0) == 0);

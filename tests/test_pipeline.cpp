@@ -928,6 +928,15 @@ static void test_ladder_off() {
     assert(trainingFingerprint(on, 5) == trainingFingerprint(off, 5));
     const std::string results = readFile(off.file("run/results.csv"));
     assert(std::count(results.begin(), results.end(), '\n') == 1 + 5);   // header, one pair a generation
+    // Both decisions happened: some generation passed the gate, some did not.
+    int passed = 0, best = 0;
+    for (const std::string& row : splitLines(results)) {
+        const std::vector<std::string> f = splitFields(row);
+        if (f[0] == "a") continue;
+        assert(std::stoi(f[0]) == best);
+        if (std::stoi(f[2]) - std::stod(f[3]) >= 0.5 * std::stoi(f[2])) best = std::stoi(f[1]), ++passed;
+    }
+    assert(passed > 0 && passed < 5 && best == stateOf(off).bestGeneration);
 
     Dir a("ladder_switch_a"), b("ladder_switch_b");
     start(pipeConfig(), a)->runUntil(2);

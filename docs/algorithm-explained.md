@@ -2799,8 +2799,10 @@ only that match: generation g against the best, `arena_games` games, with
 the seed and colours the full round gives it, so the gate decides
 exactly as it would with the ladder. Self-play and training read nothing
 else from the arena, so a run's checkpoints and games are the same with
-the ladder on, off, or switched in between; what it gives up is the
-running curve. `log.csv`'s `elo` stays empty, `elo.csv` keeps the last
+the ladder on, off, or switched in between (on one arithmetic: with arena
+engines of different fingerprints a gating game may move to another
+engine and differ in the last bits); what it gives up is the running
+curve. `log.csv`'s `elo` stays empty, `elo.csv` keeps the last
 ladder round's fit rather than chaining each generation to the best
 network through 40 games, and `train --rerate` rebuilds the full ladder
 from the checkpoints afterwards. On the 19×19 run this halves the
@@ -2978,7 +2980,7 @@ GenerationStats Trainer::runPipelined() {
     /* ... */
 }
 ```
-*src/trainer.cpp:1318 — `Trainer::runPipelined` (abridged)*
+*src/trainer.cpp:1328 — `Trainer::runPipelined` (abridged)*
 
 A crash anywhere in an iteration loses that iteration's work, both
 halves, and the redo starts from exactly the committed state: the same
@@ -3339,8 +3341,8 @@ see again in place.
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
 | `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:162, 135` |
-| One generation | `Trainer::runSequential`, `Trainer::trainAndRate` — `src/trainer.cpp:1142, 874` |
-| Pipelined generations | `Trainer::runPipelined`, `Trainer::playAhead` — `src/trainer.cpp:1318, 1280`; `Coordinator::startPhaseOn`, `Coordinator::prepareMachine` — `src/coordinator.cpp:332, 562` |
+| One generation | `Trainer::runSequential`, `Trainer::trainAndRate` — `src/trainer.cpp:1152, 884` |
+| Pipelined generations | `Trainer::runPipelined`, `Trainer::playAhead` — `src/trainer.cpp:1328, 1290`; `Coordinator::startPhaseOn`, `Coordinator::prepareMachine` — `src/coordinator.cpp:332, 562` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
 | Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:226` |
