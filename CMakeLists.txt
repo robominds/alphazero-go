@@ -224,9 +224,10 @@ foreach(app arena analyze bench grow gtp selfplay)
 endforeach()
 
 # test_distributed, test_distributed_arena, test_trainer,
-# test_selfplay_stream and test_dynamic_selfplay run the real selfplay binary (a remote's whole
+# test_selfplay_stream, test_dynamic_selfplay and test_pipeline run the real selfplay binary (a remote's whole
 # interface) as a child process, so they need it built and its path.
-foreach(test_name test_distributed test_distributed_arena test_trainer test_selfplay_stream test_dynamic_selfplay)
+foreach(test_name test_distributed test_distributed_arena test_trainer test_selfplay_stream test_dynamic_selfplay
+                  test_pipeline)
   add_dependencies(${test_name} selfplay)
   target_compile_definitions(${test_name} PRIVATE AZGO_SELFPLAY_EXE="$<TARGET_FILE:selfplay>")
 endforeach()

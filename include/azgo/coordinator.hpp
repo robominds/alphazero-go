@@ -19,6 +19,12 @@
 // that engine's fingerprint and build, and what it cost. With the seed, the
 // manifests are the exact recipe for every game of the run.
 //
+// With pipeline = on, a generation's self-play (play) and the previous
+// generation's arena (playArena) run at once, on two threads, against one
+// coordinator. Each kind runs one phase at a time; what the two share (the
+// machines' states, the networks kept on each machine, the fingerprints) is
+// guarded, each phase keeps its own failure flag, and cancel() stops both.
+//
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #pragma once
 #include <atomic>
@@ -237,6 +243,13 @@ public:
     // list order, after every slice has stopped.
     std::vector<GameRecord> play(int g, const std::string& networkPath, const Network& net,
                                  const SelfPlayConfig& sp, int games);
+    // Stops every phase in flight (play, playArena) as a failed slice does:
+    // they throw SliceCancelled once their slices have stopped; a phase that
+    // starts while the flag is set throws at once. resetCancel() clears it.
+    // For a pipelined trainer whose other half failed.
+    void cancel() { cancel_ = true; }
+    void resetCancel() { cancel_ = false; }
+
     // The last play()'s slices, in list order. With selfplay_allocation =
     // dynamic, one report per engine item that had a share (list order),
     // then the fallback engine's if it played.
@@ -290,19 +303,23 @@ private:
     // The key that lists a remote machine, for messages.
     std::string keyFor(const std::string& alias) const;
     void unreachable(const std::string& alias, const std::string& why);
+    // The two kinds of phase, which may run at once (pipeline = on).
+    enum PhaseKind { kSelfPlayPhase = 0, kArenaPhase = 1 };
     // Runs a phase's slices at once, one thread each, and returns their
     // reports in list order. `list` is the engine list they come from (its
     // first local item is the fallback engine); workDir must exist when a
     // slice is remote; `what` names the games in notes ("games", "arena wave
-    // 1 games"). Throws the first failure by list order after every slice
-    // stopped.
-    std::vector<SliceReport> runSlices(int g, std::vector<PhaseSlice>& slices,
+    // 1 games"). `failed` is set when an attempt failed (the phase keeps its
+    // logs). Throws the first failure by list order after every slice
+    // stopped; SliceCancelled when cancel() was called.
+    std::vector<SliceReport> runSlices(int g, PhaseKind kind, std::vector<PhaseSlice>& slices,
                                        const std::vector<EngineSpec>& list, const std::string& workDir,
-                                       const std::string& what);
+                                       const std::string& what, std::atomic<bool>& failed);
     // A machine ready for a phase's work: at the first contact, what an
     // earlier coordinator of this run left in its directory goes; then each
-    // network not there yet is uploaded, and those the phase no longer needs
-    // (MachineState::keep) are removed. Returns the networks' remote paths.
+    // network not there yet is uploaded, and those no phase needs any more
+    // (MachineState::keep of either kind) are removed. Returns the networks'
+    // remote paths.
     std::vector<std::string> prepareMachine(const std::string& alias, Transport& t,
                                             const std::vector<std::pair<std::string, uint64_t>>& networks);
     // One attempt at a remote slice, start to verified result; fills
@@ -315,29 +332,40 @@ private:
     // fingerprint and note say so, and a note goes to the log), with stop a
     // SliceError.
     void playRemote(int g, PhaseSlice& slice, const std::string& fallback, const std::string& workDir,
-                    const std::atomic<bool>& stop, const std::string& what, SliceReport& report);
+                    const std::atomic<bool>& stop, const std::string& what, SliceReport& report,
+                    std::atomic<bool>& failed);
+    // A remote machine's state for a phase about to start: made at the first
+    // phase that meets the machine, its `down` cleared (tried afresh every
+    // phase) and the networks this kind of phase needs there recorded.
+    void startPhaseOn(const std::string& alias, PhaseKind kind, const std::set<std::string>& networks);
+    // The engine's fingerprint, measured here once for a local engine.
+    std::string fingerprintOf(const EngineSpec& e);
     Config cfg_;
     std::string runDir_, runId_;
     HostsFile hosts_;
     std::ostream* log_;
-    std::map<std::string, std::string> fingerprints_;   // engine name -> fingerprint
+    std::mutex fingerprintsMutex_;
+    std::map<std::string, std::string> fingerprints_;   // engine name -> fingerprint (under its mutex)
     std::map<std::string, std::string> remoteBuilds_;   // alias -> its full build ID
     std::set<std::string> unreachable_;                 // aliases preflight could not reach
-    // What the coordinator knows of a remote machine. The map is filled by
-    // runSlices before any slice thread starts and never changes while they
-    // run; each entry's fields are touched only under its own mutex.
+    // What the coordinator knows of a remote machine. An entry is made by
+    // the first phase that meets the machine (startPhaseOn) and lives as long
+    // as the coordinator; the map is read and extended under machinesMutex_
+    // (a self-play and an arena phase may run at once), and each entry's
+    // fields are touched only under its own mutex.
     struct MachineState {
         std::mutex mutex;              // its uploads and cleanup, one slice at a time
         bool contacted = false;        // stale files of an earlier coordinator cleared
         std::set<std::string> uploaded;   // network paths uploaded there
-        std::set<std::string> keep;       // those the current phase's slices need
+        std::set<std::string> keep[2];    // those each kind's current phase needs (PhaseKind)
         bool suspect = false;          // unreachable at preflight or in an earlier phase
         bool down = false;             // found unreachable this phase: its slices fall back
     };
-    MachineState& machine(const std::string& alias);   // must exist (runSlices made it)
+    MachineState& machine(const std::string& alias);   // must exist (startPhaseOn made it)
+    std::mutex machinesMutex_;
     std::map<std::string, std::unique_ptr<MachineState>> machines_;   // by alias
     std::mutex logMutex_;                               // slices' notes, from their threads
-    std::atomic<bool> failedSlices_{false};             // this phase: keep the logs
+    std::atomic<bool> cancel_{false};                   // cancel(): every phase stops
     std::vector<SliceReport> reports_;
     std::vector<std::string> assignment_;
     // selfplay_allocation = dynamic: the generation's games in one GameQueue

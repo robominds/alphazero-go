@@ -321,7 +321,33 @@ std::unique_ptr<Transport> Coordinator::transportFor(const MachineSettings& m,
 }
 
 Coordinator::MachineState& Coordinator::machine(const std::string& alias) {
-    return *machines_.at(alias);   // a lookup only: no slice thread inserts
+    // The entry itself never moves (a unique_ptr), so the reference stays
+    // good after the lock; the map may be extended by another phase.
+    std::lock_guard<std::mutex> lock(machinesMutex_);
+    return *machines_.at(alias);
+}
+
+void Coordinator::startPhaseOn(const std::string& alias, PhaseKind kind, const std::set<std::string>& networks) {
+    MachineState* state;
+    {
+        std::lock_guard<std::mutex> lock(machinesMutex_);
+        std::unique_ptr<MachineState>& entry = machines_[alias];
+        if (!entry) {
+            entry = std::make_unique<MachineState>();
+            entry->suspect = unreachable_.count(alias) > 0;
+        }
+        state = entry.get();
+    }
+    std::lock_guard<std::mutex> lock(state->mutex);
+    state->down = false;   // tried afresh every phase
+    state->keep[kind] = networks;
+}
+
+std::string Coordinator::fingerprintOf(const EngineSpec& e) {
+    std::lock_guard<std::mutex> lock(fingerprintsMutex_);
+    auto it = fingerprints_.find(e.name());
+    if (it == fingerprints_.end()) it = fingerprints_.emplace(e.name(), engineFingerprint(e.backend)).first;
+    return it->second;
 }
 
 std::string Coordinator::remoteDir(const MachineSettings& m) const {
@@ -372,7 +398,9 @@ void Coordinator::preflight() {
     }
     // Self-play's engines run at once, each one hub with two slots; an
     // arena wave's engines too, each one one-slot hub per network of the
-    // wave. The two phases never overlap.
+    // wave. Sequentially the two phases never overlap; with pipeline = on
+    // they do, so their hubs are checked together, with the trainer's own
+    // (local/<backend>) when a list is empty and that phase runs on it.
     auto hubs = [](const std::vector<EngineSpec>& list, const std::string& backend) {
         int n = 0;
         for (const EngineSpec& e : list) n += e.machine == "local" && e.backend == backend ? 1 : 0;
@@ -386,20 +414,44 @@ void Coordinator::preflight() {
     if (batch < cfg_.mctsBatch)
         throw ConfigError("hosts file: local inference_batch (" + std::to_string(batch) +
                           ") is below mcts_batch (" + std::to_string(cfg_.mctsBatch) + ")");
+    // The groups a pipelined run holds at once on this machine's GPU of
+    // `backend`: the engines' hubs, and the trainer's own for a phase with
+    // an empty list (the trainer's backend is metal at most).
+    auto together = [&](const std::string& backend, int selfplay, int arena) {
+        std::vector<GpuHubs> groups;
+        if (selfplay > 0) groups.push_back({selfplay, kInferenceSlots, batch});
+        if (arena > 0) groups.push_back({arena, 1, batch});
+        if (cfg_.backend == backend && cfg_.selfplayEngines.empty())
+            groups.push_back({1, kInferenceSlots, cfg_.inferenceBatch});
+        if (cfg_.backend == backend && cfg_.arenaEngines.empty())
+            groups.push_back({arenaWaveNetworks(cfg_), 1, cfg_.inferenceBatch});
+        return groups;
+    };
 #ifdef AZ_USE_METAL
-    if (metalHubs > 0) checkMetalInferenceMemory(cfg_.netConfig(), batch, metalHubs, kInferenceSlots);
-    if (metalArena > 0) checkMetalInferenceMemory(cfg_.netConfig(), batch, metalArena, 1);
+    if (cfg_.pipeline) {
+        const std::vector<GpuHubs> groups = together("metal", metalHubs, metalArena);
+        if (metalHubs + metalArena > 0) checkMetalInferenceMemory(cfg_.netConfig(), groups);
+    } else {
+        if (metalHubs > 0) checkMetalInferenceMemory(cfg_.netConfig(), batch, metalHubs, kInferenceSlots);
+        if (metalArena > 0) checkMetalInferenceMemory(cfg_.netConfig(), batch, metalArena, 1);
+    }
 #else
     (void)metalHubs;
     (void)metalArena;
 #endif
 #ifdef AZ_USE_CUDA
-    if (cudaHubs > 0) checkCudaInferenceMemory(cfg_.netConfig(), batch, cudaHubs, kInferenceSlots);
-    if (cudaArena > 0) checkCudaInferenceMemory(cfg_.netConfig(), batch, cudaArena, 1);
+    if (cfg_.pipeline) {
+        const std::vector<GpuHubs> groups = together("cuda", cudaHubs, cudaArena);
+        if (cudaHubs + cudaArena > 0) checkCudaInferenceMemory(cfg_.netConfig(), groups);
+    } else {
+        if (cudaHubs > 0) checkCudaInferenceMemory(cfg_.netConfig(), batch, cudaHubs, kInferenceSlots);
+        if (cudaArena > 0) checkCudaInferenceMemory(cfg_.netConfig(), batch, cudaArena, 1);
+    }
 #else
     (void)cudaHubs;
     (void)cudaArena;
 #endif
+    (void)together;
 
     // Remote machines: reachable, this build, and every engine's backend usable.
     if (!remotes.empty() && buildId() == "unknown")
@@ -514,9 +566,11 @@ std::vector<std::string> Coordinator::prepareMachine(
             state.uploaded.insert(remoteNet);
         }
     }
+    // A network goes once neither kind of phase needs it: with pipeline =
+    // on, the arena's waves come and go while self-play's network must stay.
     std::vector<std::string> unused;
     for (const std::string& net : state.uploaded)
-        if (!state.keep.count(net)) unused.push_back(net);
+        if (!state.keep[kSelfPlayPhase].count(net) && !state.keep[kArenaPhase].count(net)) unused.push_back(net);
     if (!unused.empty()) {
         t.remove(unused);
         for (const std::string& net : unused) state.uploaded.erase(net);
@@ -628,7 +682,7 @@ void Coordinator::attemptRemote(int attempt, const EngineSpec& e, const RemoteWo
 
 void Coordinator::playRemote(int g, PhaseSlice& slice, const std::string& fallback,
                              const std::string& workDir, const std::atomic<bool>& stop,
-                             const std::string& what, SliceReport& report) {
+                             const std::string& what, SliceReport& report, std::atomic<bool>& failed) {
     // Two attempts on the planned engine: a transient failure costs time,
     // not reproducibility. A machine that does not answer at all costs
     // only a quick probe: one known to be down this phase (a generation's
@@ -666,7 +720,7 @@ void Coordinator::playRemote(int g, PhaseSlice& slice, const std::string& fallba
     if (isDown() || (suspect && !checkReachable())) {
         reason = e.machine + " unreachable";
         logLine("slice " + std::to_string(slice.slice.first) + ": " + reason + "; not tried");
-        failedSlices_ = true;
+        failed = true;
     } else {
         for (int attempt = 1; attempt <= 2; ++attempt) {
             try {
@@ -676,7 +730,7 @@ void Coordinator::playRemote(int g, PhaseSlice& slice, const std::string& fallba
                 throw;
             } catch (const std::exception& ex) {
                 reason = ex.what();
-                failedSlices_ = true;
+                failed = true;
                 logLine("slice " + std::to_string(slice.slice.first) + ", attempt " +
                         std::to_string(attempt) + " failed: " + reason);
                 if (stop) throw SliceCancelled();
@@ -714,9 +768,11 @@ void Coordinator::playRemote(int g, PhaseSlice& slice, const std::string& fallba
     slice.playLocal(run, &report.stats);
 }
 
-std::vector<SliceReport> Coordinator::runSlices(int g, std::vector<PhaseSlice>& slices,
+std::vector<SliceReport> Coordinator::runSlices(int g, PhaseKind kind, std::vector<PhaseSlice>& slices,
                                                 const std::vector<EngineSpec>& list,
-                                                const std::string& workDir, const std::string& what) {
+                                                const std::string& workDir, const std::string& what,
+                                                std::atomic<bool>& failed) {
+    if (cancel_) throw SliceCancelled();
     const int cores = resolveWorkers(0);
     const size_t n = slices.size();
     std::vector<SliceReport> reports(n);
@@ -728,12 +784,6 @@ std::vector<SliceReport> Coordinator::runSlices(int g, std::vector<PhaseSlice>& 
         reports[k].slice = slices[k].slice;
         reports[k].planned = reports[k].engine = e.name();
         if (!m.local()) {
-            // Every remote machine's entry exists before the threads start.
-            if (!machines_.count(e.machine)) {
-                machines_[e.machine] = std::make_unique<MachineState>();
-                machines_[e.machine]->suspect = unreachable_.count(e.machine) > 0;
-            }
-            machines_[e.machine]->down = false;   // tried afresh every phase
             std::set<std::string>& nets = keep[e.machine];
             for (const auto& net : slices[k].remote.networks)
                 nets.insert(remoteDir(m) + "/" + netFileName(net.second));
@@ -746,11 +796,11 @@ std::vector<SliceReport> Coordinator::runSlices(int g, std::vector<PhaseSlice>& 
         // (metal, cuda): they keep the default class. CPU engines take the
         // machine's.
         runs[k].qos = e.backend == "metal" || e.backend == "cuda" ? CpuQos::Default : m.cpuQos;
-        if (!fingerprints_.count(e.name())) fingerprints_[e.name()] = engineFingerprint(e.backend);
-        reports[k].fingerprint = fingerprints_[e.name()];
+        reports[k].fingerprint = fingerprintOf(e);
         reports[k].build = shortBuildId();
     }
-    for (auto& [alias, nets] : keep) machines_.at(alias)->keep = nets;
+    // Every remote machine's entry exists before the threads start.
+    for (auto& [alias, nets] : keep) startPhaseOn(alias, kind, nets);
 
     // The BLAS backend sets its environment once, with setenv, which is not
     // thread-safe: do that here, before any engine thread runs.
@@ -760,25 +810,33 @@ std::vector<SliceReport> Coordinator::runSlices(int g, std::vector<PhaseSlice>& 
             makeBackend("blas", 1);
             break;
         }
-    failedSlices_ = false;
+    failed = false;
 
     // One thread per slice, all at once. Each local engine has its own
     // evaluators, so a slice's games are what it would give alone. The
     // first slice to fail sets `stop`, and the local ones stop at their
     // next network evaluation: the generation will not be committed anyway.
-    std::atomic<bool> stop{false};
+    // cancel() sets it too, through a watcher.
+    std::atomic<bool> stop{false}, done{false};
     for (EngineRun& run : runs) run.cancel = &stop;
     std::vector<std::exception_ptr> errors(n);
     std::vector<std::thread> threads;
     std::exception_ptr launchError;
+    std::thread watcher;
     try {
+        watcher = std::thread([&] {
+            while (!done) {
+                if (cancel_) stop = true;
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+        });
         for (size_t k = 0; k < n; ++k)
             threads.emplace_back([&, k] {
                 try {
                     if (slices[k].engine.machine == "local")
                         slices[k].playLocal(runs[k], &reports[k].stats);
                     else
-                        playRemote(g, slices[k], fallback, workDir, stop, what, reports[k]);
+                        playRemote(g, slices[k], fallback, workDir, stop, what, reports[k], failed);
                 } catch (...) {
                     errors[k] = std::current_exception();
                     stop = true;
@@ -789,6 +847,8 @@ std::vector<SliceReport> Coordinator::runSlices(int g, std::vector<PhaseSlice>& 
         stop = true;
     }
     for (std::thread& t : threads) t.join();
+    done = true;
+    if (watcher.joinable()) watcher.join();
     if (launchError) std::rethrow_exception(launchError);
     // The failure itself, by list order, rather than the cancellations it caused.
     std::exception_ptr first;
@@ -868,7 +928,9 @@ std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath,
             results[k] = std::move(result.records);
         };
     }
-    std::vector<SliceReport> reports = runSlices(g, slices, cfg_.selfplayEngines, workDir, "games");
+    std::atomic<bool> failed{false};
+    std::vector<SliceReport> reports =
+        runSlices(g, kSelfPlayPhase, slices, cfg_.selfplayEngines, workDir, "games", failed);
 
     // Merge by game index: records[first + k] = slice's k-th, each index
     // filled exactly once, whatever order the slices finished in.
@@ -889,7 +951,7 @@ std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath,
     }
     for (size_t i = 0; i < filled.size(); ++i)
         if (!filled[i]) throw std::logic_error("game " + std::to_string(i) + " was not played");
-    if (anyRemote) finishWorkDir(workDir, failedSlices_);
+    if (anyRemote) finishWorkDir(workDir, failed);
     reports_ = std::move(reports);
     return records;
 }
@@ -929,6 +991,7 @@ struct Coordinator::DynamicPhase {
     std::unique_ptr<GameQueue> queue;
     std::vector<GameRecord> records;
     std::atomic<bool> stop{false};
+    std::atomic<bool> failed{false};   // a session failed: the phase keeps its logs
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     bool fallbackJoined = false;
 
@@ -1045,7 +1108,7 @@ struct Coordinator::DynamicPhase {
         if (down || (suspect && !checkReachable())) {
             reason = e.spec.machine + " unreachable";
             logLine("stream: " + reason + "; not tried");
-            c.failedSlices_ = true;
+            failed = true;
         } else {
             for (int attempt = 1; attempt <= 2; ++attempt) {
                 try {
@@ -1055,7 +1118,7 @@ struct Coordinator::DynamicPhase {
                     throw;
                 } catch (const std::exception& ex) {
                     reason = ex.what();
-                    c.failedSlices_ = true;
+                    failed = true;
                     logLine("stream, attempt " + std::to_string(attempt) + " failed: " + reason);
                     int requeued;
                     {
@@ -1306,6 +1369,7 @@ struct Coordinator::DynamicPhase {
 
 std::vector<GameRecord> Coordinator::playDynamic(int g, const std::string& networkPath, const Network& net,
                                                  const SelfPlayConfig& sp, int games) {
+    if (cancel_) throw SliceCancelled();
     DynamicPhase p(*this, g, games, net, sp);
     p.networkPath = networkPath;
     const int cores = resolveWorkers(0);
@@ -1377,19 +1441,14 @@ std::vector<GameRecord> Coordinator::playDynamic(int g, const std::string& netwo
         e.report.planned = e.report.engine = e.spec.name();
         e.report.dynamic = true;
         if (e.machine.local()) {
-            if (!fingerprints_.count(e.spec.name())) fingerprints_[e.spec.name()] = engineFingerprint(e.spec.backend);
-            e.report.fingerprint = fingerprints_[e.spec.name()];
+            e.report.fingerprint = fingerprintOf(e.spec);
             e.report.build = shortBuildId();
             continue;
         }
-        if (!machines_.count(e.spec.machine)) {
-            machines_[e.spec.machine] = std::make_unique<MachineState>();
-            machines_[e.spec.machine]->suspect = unreachable_.count(e.spec.machine) > 0;
-        }
-        machines_[e.spec.machine]->down = false;   // tried afresh every phase
         keep[e.spec.machine].insert(remoteDir(e.machine) + "/" + netFileName(p.networkHash));
     }
-    for (auto& [alias, nets] : keep) machines_.at(alias)->keep = nets;
+    // Every remote machine's entry exists before any thread starts.
+    for (auto& [alias, nets] : keep) startPhaseOn(alias, kSelfPlayPhase, nets);
     // The BLAS backend sets its environment once, with setenv, which is not
     // thread-safe: do that here, before any engine thread runs.
     for (const DynamicPhase::Engine& e : p.engines)
@@ -1397,8 +1456,6 @@ std::vector<GameRecord> Coordinator::playDynamic(int g, const std::string& netwo
             makeBackend("blas", 1);
             break;
         }
-    failedSlices_ = false;
-
     std::vector<std::thread> threads;
     {
         std::unique_lock<std::mutex> lock(p.mutex);
@@ -1406,7 +1463,12 @@ std::vector<GameRecord> Coordinator::playDynamic(int g, const std::string& netwo
             for (size_t k = 0; k < listed; ++k) threads.emplace_back([&p, k] { p.runEngine(k); });
             // Until every game is back or the generation failed; the
             // fallback engine joins once every listed engine has retired.
+            // cancel() stops it as a failure would (within a poll).
             while (!p.queue->done() && !p.stop) {
+                if (cancel_) {
+                    p.stop = true;
+                    break;
+                }
                 bool allRetired = !p.fallbackJoined;
                 for (size_t k = 0; k < listed && allRetired; ++k) allRetired = p.engines[k].retired;
                 if (allRetired) {
@@ -1449,7 +1511,10 @@ std::vector<GameRecord> Coordinator::playDynamic(int g, const std::string& netwo
         std::rethrow_exception(e.error);
     }
     if (firstCancel) std::rethrow_exception(firstCancel);
-    if (!p.queue->done()) throw std::logic_error("playDynamic: games left unplayed");
+    if (!p.queue->done()) {
+        if (cancel_) throw SliceCancelled();   // stopped before any engine noticed
+        throw std::logic_error("playDynamic: games left unplayed");
+    }
 
     // Who played what.
     std::vector<SliceReport> reports;
@@ -1472,7 +1537,7 @@ std::vector<GameRecord> Coordinator::playDynamic(int g, const std::string& netwo
     assignment_.assign(static_cast<size_t>(games), "");
     for (int i = 0; i < games; ++i)
         assignment_[static_cast<size_t>(i)] = p.engines[static_cast<size_t>(p.queue->playedBy(i))].spec.name();
-    if (anyRemote) finishWorkDir(p.workDir, failedSlices_);
+    if (anyRemote) finishWorkDir(p.workDir, p.failed);
     reports_ = std::move(reports);
     return std::move(p.records);
 }
@@ -1487,6 +1552,7 @@ std::vector<MatchResult> Coordinator::playArena(const std::vector<ArenaMatchSpec
                                                 const ArenaConfig& cfg) {
     if (cfg_.arenaEngines.empty())
         throw std::logic_error("Coordinator::playArena: arena_engines is empty (the default path)");
+    if (cancel_) throw SliceCancelled();
     const int g = arenaGeneration_, w = ++arenaWave_;
     int total = 0;
     for (const ArenaMatchSpec& m : wave) {
@@ -1599,8 +1665,9 @@ std::vector<MatchResult> Coordinator::playArena(const std::vector<ArenaMatchSpec
             results[k] = std::move(result.games);
         };
     }
-    std::vector<SliceReport> reports =
-        runSlices(g, slices, cfg_.arenaEngines, workDir, "arena wave " + std::to_string(w) + " games");
+    std::atomic<bool> failed{false};
+    std::vector<SliceReport> reports = runSlices(g, kArenaPhase, slices, cfg_.arenaEngines, workDir,
+                                                 "arena wave " + std::to_string(w) + " games", failed);
 
     // Merge by wave index, each filled exactly once, then each match's
     // result from its games in index order.
@@ -1630,7 +1697,7 @@ std::vector<MatchResult> Coordinator::playArena(const std::vector<ArenaMatchSpec
     if (anyRemote) {
         std::error_code ec;
         std::filesystem::remove_all(netDir, ec);
-        finishWorkDir(workDir, failedSlices_);
+        finishWorkDir(workDir, failed);
         // arena-work itself, once its last wave directory is gone.
         if (std::filesystem::is_empty(std::filesystem::path(workDir).parent_path(), ec))
             std::filesystem::remove(std::filesystem::path(workDir).parent_path(), ec);
