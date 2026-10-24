@@ -631,7 +631,7 @@ the barrier is the commit.
 holds plus generation g+1's games, not yet processed: `state.bin` is then
 version 6 (version 5 plus that block; a run without pending games keeps
 writing version 5, and `tools/buf.py`, `pass.py` and `side.py` read
-both). A crash or kill anywhere in an iteration loses that iteration's
+both); on 19×19 the block adds about 160 MB. A crash or kill anywhere in an iteration loses that iteration's
 work, both halves, and the redo starts from exactly the committed state,
 so a pipelined run resumes byte for byte like a sequential one (one
 arithmetic, or the recorded dynamic assignment). When the state has no

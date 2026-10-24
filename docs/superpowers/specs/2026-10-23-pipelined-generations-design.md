@@ -176,6 +176,9 @@ keeps writing version 5, byte for byte. The pending games are stored as a
 self-play result file stores them (`writeSliceRecord`: the record, the
 resign-disabled flag and both sides' resign lows), since processing them
 needs everything a slice's result carries. The trainer reads versions 1–6.
+The block is one generation's games: about 160 MB on the 19×19 run, whose
+`state.bin` is 481 MB after three generations (the buffer grows to a
+million positions); it is rewritten at every commit, as the buffer is.
 
 | moment | `state.bin` | a crash here resumes into |
 |---|---|---|
