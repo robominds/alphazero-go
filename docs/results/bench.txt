@@ -685,3 +685,35 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 # 40 games, 2 networks, 573 s ~ 9.3k evals/s; 80 games, 3 networks, 1,021 s
 # ~ 10.4k. Fewer games fill the GPU less on both, which is why arena weights
 # are not self-play's (see the spec's "Sizing").
+# =============================================================================
+# Dynamic allocation (selfplay_allocation = dynamic), checks and balance (2026-10-23)
+# =============================================================================
+# Branch dynamic-selfplay (spec docs/superpowers/specs/2026-10-23-dynamic-selfplay-design.md).
+# Studio builds niced (-j6) while the 19x19 run trained; tiny runs only.
+#
+# Old against new train, selfplay_allocation absent (static): main c2bf540
+# and the branch, 4 generations straight and 2 plus a resume to 4, on 5x5
+# (naive, metal; resignation, gating, promotions) and 9x9 (blas, metal), with
+# and without selfplay_engines and arena_engines (local/metal:2,
+# local/blas=2, fake/naive:1 and local/blas:2, fake/naive:1; fake: the
+# subprocess transport): every checkpoint, state.bin, rating file, SGF and
+# log.csv without timings byte-identical (6 of 6 configurations, 19-21 files
+# each); selfplay-engines.csv and arena-engines.csv identical but for their
+# build and seconds columns; config.cfg differs only by
+# "selfplay_allocation = static", the progress output only by that line of
+# the printed config and the rates.
+#
+# Balance on one machine: 9x9 (1x16 network, naive, 200 simulations, 40
+# games, resignation off, no arena), local/naive with cpu_workers=1 and a
+# fake remote with cpu_workers=4, three generations each:
+#   allocation              self-play phase    engines' ends apart   games local:fake
+#   static, weights 1:1     16.8-18.9 s        12.3-14.1 s           20:20
+#   static, weights 1:4      7.5-7.9 s          0.2-0.8 s             8:32
+#   dynamic, weights 1:1     7.0-7.9 s          0.1-0.2 s             7-9:31-33
+# All three runs' state.bin equal the default run's (one arithmetic).
+#
+# Simulation of the 19x19 run (tests/test_game_queue.cpp, 30 generations per
+# row; loss = phase / fluid ideal - 1): live weights static 10.0% (the run
+# measured 9-12%), dynamic with the default concurrency 26/5/64 7.9%, with
+# 36/4/128 and the handout rule 4.6% (plain queue 7.5%); wrong weights cost
+# static 18-119% and dynamic nothing with tuned concurrency.

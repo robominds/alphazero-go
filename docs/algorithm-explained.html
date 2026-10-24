@@ -1733,6 +1733,9 @@ public:
 <p>For 100 games and <code>local/metal:50, local/blas=12, mini1/metal:10, mini1/blas=8, mini2/metal:10, mini2/blas=8</code>, the fixed counts take 28 games and the weights share the other 72 as 51.4, 10.3 and 10.3. The leftover game goes to the largest remainder, so the slices are 52, 12, 10, 8, 10 and 8 games. A remote slice comes back as a result file that is checked before any of it is used: its checksum, the job it answers, the build that played it, and a replay of every game, move by move. The slices are then merged by game index, never by the order they finished in:</p>
 <pre><code>std::vector&lt;GameRecord&gt; Coordinator::play(int g, const std::string&amp; networkPath, const Network&amp; net,
                                           const SelfPlayConfig&amp; sp, int games) {
+    /* ... */
+    if (cfg_.selfplayAllocation == "dynamic") return playDynamic(g, networkPath, net, sp, games);
+    /* ... */
     const std::vector&lt;Slice&gt; assigned = assignGames(cfg_.selfplayEngines, games);
     /* ... one thread per slice: a local engine runs playSelfPlayGames,
            a remote one sends a job, runs selfplay there and verifies the
@@ -1755,9 +1758,31 @@ public:
     /* ... every index filled; the work files removed ... */
     return records;
 }</code></pre>
-<span class="src">src/coordinator.cpp:775 — <code>Coordinator::play</code> (abridged)</span>
+<span class="src">src/coordinator.cpp:804 — <code>Coordinator::play</code> (abridged)</span>
 <p>A run with several engines is therefore reproducible given which engine played each game, and it resumes byte for byte. The run's manifest, <code>selfplay-engines.csv</code>, records exactly that: the engine and its fingerprint (chip, OS, shaders) for every slice. Engines with equal fingerprints can split a share without changing a bit. When a remote fails twice, the coordinator plays the slice itself and says so in the manifest. AlphaGo Zero's self-play is unchanged: the same games, seeded the same way, computed in more places. How much that gains depends on the machines. On the Studio, four BLAS workers beside the GPU add about 11% to its 2,930 evaluations per second (19×19, 10×128); each M4 mini adds about 676 more (<code>docs/results/bench.txt</code>).</p>
 <p>The arena's waves can be spread the same way (<code>arena_engines</code>). A wave's games are numbered match by match, each engine plays a contiguous slice, and game j of a match keeps its seed and its colours wherever it is played. A remote slice returns each game's moves and score, and the coordinator replays every game before it counts: each move legal, the game over at its last move, the score the board's. The gating decision and the ratings are then taken from the merged results, as before.</p>
+<p><strong>Or one queue.</strong> Fixed slices have a price: a generation lasts as long as its slowest slice. Weights can set each engine's average, but a mini's 20 games of 19×19 vary in total length by several percent from one generation to the next, the weights are a person's estimate, and a failed remote moves its whole slice to one machine. In the 19×19 run on the Studio, two minis and a PC, 9–12% of each self-play phase was spent waiting for the slowest slice.</p>
+<p><code>selfplay_allocation = dynamic</code> (opt-in; <code>static</code> stays the default) puts a generation's games in one queue instead. Nothing about a game changes: game i is still seeded by its index and merged at its index; only <em>who</em> plays it is decided while the generation runs. Each engine keeps up to its <em>concurrency</em> of games in flight (for a GPU engine, enough to keep its passes full) and takes the lowest queued index whenever one of its games ends, so a fast engine simply takes more. A remote engine runs one <code>selfplay --stream</code> process for the whole generation, which receives <code>play &lt;index&gt;</code> lines and sends each game back the moment it ends, verified as a result file's games are. When a remote fails, only its games in flight go back to the queue.</p>
+<p>A plain first-come queue balances the middle of a generation but not its end. An engine with many games in flight takes a long time over each one: the PC, with 128 at once, about 7,000 s per 19×19 game. Handed one of the last games, it finishes long after everyone else. So <code>GameQueue::take</code> gives an engine a game only if it will finish it in time, or if the others cannot:</p>
+<pre><code>bool GameQueue::inTime(int engine, double now) const {
+    const double mine = latency(engine);
+    if (mine &lt; 0) return true;   // nothing known yet: the start of a generation
+    // The latest predicted end of a game in flight: the generation lasts at
+    // least that long, whatever this engine does.
+    double bound = now;
+    /* ... bound = the latest start + latency(f) over every engine f's
+           games in flight ... */
+    if (now + mine &lt;= bound) return true;
+    // The games the other engines can still start and finish by then: a
+    // slot whose game is predicted to end early enough to play one more,
+    // and a free slot.
+    long long absorb = 0;
+    /* ... */
+    return queued() &gt; absorb;
+}</code></pre>
+<span class="src">src/game_queue.cpp:57 — <code>GameQueue::inTime</code> (abridged)</span>
+<p>An engine's latency is its mean time from handout to finished game, measured during the generation. If the engine would finish the game before the last game already in flight ends, it gets it. Otherwise it waits, unless more games are queued than the other engines can still start and finish by then. The rule never stalls: a slot whose game runs late stops counting as time passes, and with nothing in flight the next engine to ask is served. In a simulation of the 19×19 run (<code>tests/test_game_queue.cpp</code>), static slices ran 10.0% over the ideal. With concurrency 36 on the Studio, 4 on each mini and 128 on the PC, a plain queue ran 7.5% over and the queue with this rule 4.6%, and it stayed at 4.6% under wrong weights that cost static slices 18–119%.</p>
+<p>The price is the assignment. Which engine plays game i now depends on timing, and engines of different arithmetic can play the same game differently in the last bits. So the run records the assignment in <code>selfplay-games.csv</code>, one row per game, and is reproducible from that manifest rather than from its config: replaying the recorded assignment gives the same bytes, and with engines of one arithmetic the assignment cannot change a bit. A generation redone after an interruption may be assigned differently. That is why <code>static</code> stays the default, for experiments that must be reproducible from the config alone, and why the arena, a small share of a generation's time, keeps its fixed slices.</p>
 </section>
 
 <section id="credit">
@@ -2278,36 +2303,41 @@ A wins 4, B wins 0, draws 0</code></pre>
   <li>results are stored by index, not by completion order;</li>
   <li>the training phase, on threads of its own, cuts its work into chunks fixed by the data's shapes, never by the thread count, so every output value is computed by exactly one chunk with the same sequence of floating-point operations.</li>
 </ul>
-<p><code>Trainer::runGeneration</code> plays generation g's games as one slice, games [0, G), with <code>playSelfPlayGames</code>:</p>
-<pre><code>std::vector&lt;GameRecord&gt; playSelfPlayGames(const Network&amp; net, const SelfPlayConfig&amp; sp,
-                                          uint64_t seed, int generation, int first, int count,
-                                          const EngineRun&amp; run, SliceStats* stats) {
+<p><code>Trainer::runGeneration</code> plays generation g's games as one slice, games [0, G), with <code>playSelfPlayGames</code>, which hands the range to <code>playSelfPlayQueue</code> as a source of game indices:</p>
+<pre><code>void playSelfPlayQueue(const Network&amp; net, const SelfPlayConfig&amp; sp, uint64_t seed, int generation,
+                       const EngineRun&amp; run, GameSource&amp; source, SliceStats* stats) {
     /* ... */
-        // One evaluator per worker; the network itself is shared read-only.
-        // naive, blas: a single-threaded backend and workspace per worker.
-        // metal: one batching hub that gathers every worker's leaves into
-        // GPU passes; a position's outputs do not depend on its batch, so
-        // the games are the same either way (azgo/inference_hub.hpp).
-        const int workers = std::max(1, std::min(run.workers, count));
-        WorkerEvaluators evaluators(net, run.backend, workers, sp.mcts.batchSize,
-                                    run.inferenceBatch);
+    const int workers = std::max(1, run.workers);
+    // One evaluator per worker; the network itself is shared read-only.
+    // naive, blas: a single-threaded backend and workspace per worker.
+    // metal, cuda: one batching hub that gathers every worker's leaves into
+    // GPU passes; a position's outputs do not depend on its batch, so the
+    // games are the same either way (azgo/inference_hub.hpp).
+    WorkerEvaluators evaluators(net, run.backend, workers, sp.mcts.batchSize, run.inferenceBatch);
+    /* ... */
+    // Each worker is one thread for the whole loop: it sets its QoS class
+    // once, before its first game. Game i's randomness depends only on i,
+    // so the record does not depend on which worker played it, or when.
+    auto work = [&amp;](int w) {
         /* ... */
-        // Game i's randomness depends only on i, and its record is stored at
-        // index i, so the result does not depend on which thread played it.
-        parallelFor(count, workers, [&amp;](int k, int w) {
-            /* ... the worker's QoS class, once ... */
-            const int i = first + k;
-            Rng rng(deriveSeed(seed, static_cast&lt;uint64_t&gt;(generation), kPhaseSelfPlay,
-                               static_cast&lt;uint64_t&gt;(i)));
-            /* ... */
-                Evaluator&amp; ev = evaluators.forWorker(w);
-                records[static_cast&lt;size_t&gt;(k)] = playSelfPlayGame(ev, sp, rng);
-            /* ... */
-        });
-    /* ... statistics: seconds, positions, evaluations ... */
+            EngineEvaluator ev(evaluators.forWorker(w), run.cancel, stop);
+            while (!stop) {
+                const int i = source.next();
+                if (i &lt; 0) break;
+                Rng rng(deriveSeed(seed, static_cast&lt;uint64_t&gt;(generation), kPhaseSelfPlay,
+                                   static_cast&lt;uint64_t&gt;(i)));
+                /* ... */
+                GameRecord record = playSelfPlayGame(ev, sp, rng);
+                /* ... */
+                source.done(i, std::move(record), ev.count() - before);
+            }
+        /* ... */
+    };
+    /* ... one thread per worker, joined; statistics: seconds, positions,
+           evaluations ... */
 }</code></pre>
-<span class="src">src/selfplay_slice.cpp:38 — <code>playSelfPlayGames</code> (abridged)</span>
-<p><code>parallelFor</code> hands out indices from an atomic counter; which worker plays game 17 varies from run to run, but game 17 itself does not.</p>
+<span class="src">src/selfplay_slice.cpp:93 — <code>playSelfPlayQueue</code> (abridged)</span>
+<p>For a slice, the source counts through the range with an atomic counter and stores game i's record at index i; which worker plays game 17 varies from run to run, but game 17 itself does not.</p>
 <p>Training has threads of its own. With BLAS, every training step used to run on one core: the BLAS backend is single-threaded, which suits self-play, where every worker already has a core to itself. Now <code>runGeneration</code> makes one <code>ThreadPool trainPool(cfg_.effectiveTrainThreads())</code> — <code>train_threads</code> threads, 0 (the default) meaning every core — and hands it to the <code>Workspace</code> of the validation loss and of the training steps, to <code>ReplayBuffer::sample</code> and to <code>SgdMomentum::step</code>. The pool (<code>include/azgo/parallel.hpp</code>) starts its threads once, because a step is about a hundred short parallel loops, and lets them spin briefly, then sleep, between loops. <code>ThreadPool::run(chunks, fn)</code> (<code>src/parallel.cpp</code>) calls <code>fn</code> once per chunk, handing chunk indices out from an atomic counter as <code>parallelFor</code> hands out games, with the calling thread taking chunks too, and returns when every chunk is done. On an Apple M5 Max with 18 cores, a 9×9 step at batch 256 with BLAS went from 427 ms to 93 ms on a 6 × 96 network, and from 266 to 52 ms on the 6 × 64 preset (<code>docs/results/bench.txt</code>). Part of that is the rewritten loops alone, 323 and 201 ms on one thread: ReLU's backward lost a mispredicted branch per element, and <code>im2col</code> and <code>col2im</code> their per-pixel bounds checks.</p>
 <p>Every layer cuts its loops into chunks fixed by the shapes, never by the thread count: a channel for batch norm and for <code>im2col</code> and <code>col2im</code>, a block of 512 gemm columns — 512 pixels — for a convolution's forward product and its input gradient, a run of 32,768 elements for ReLU, the residual sums and the SGD update, and 16 samples for per-sample work such as encoding the batch and the loss's softmax. The weight gradient, a sum over every pixel, is not cut into columns; it runs as one call beside the input gradient's blocks (the naive backend cuts it into bands of 16 output rows instead). The pool hands chunks to whichever thread is free, but each output value belongs to exactly one chunk and is computed with the same operations in the same order as on one thread. Sums over the whole batch keep their old order: batch norm sums each channel inside that channel's chunk, and the loss adds up its per-sample terms serially afterwards. A block of gemm columns is one plain gemm call on its own columns of C:</p>
 <pre><code>void gemmColumnBlock(const Backend&amp; be, int block, int blocks, bool transA, bool transB, int M, int N, int K,
@@ -2483,7 +2513,7 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
   <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:144, 117</span></dd>
   <dt>One generation</dt>
-  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:641</span></dd>
+  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:651</span></dd>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
@@ -2495,7 +2525,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Training state and resume</dt>
   <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:45</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:549</span></dd>
   <dt>Self-play on several engines and machines</dt>
-  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:116</span>; <code>Coordinator::play</code> <span class="loc">— src/coordinator.cpp:775</span></dd>
+  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:116</span>; <code>Coordinator::play</code>, <code>Coordinator::playDynamic</code> <span class="loc">— src/coordinator.cpp:804, 1297</span></dd>
+  <dt>Dynamic allocation: one queue per generation</dt>
+  <dd><code>GameQueue::take</code>, <code>GameQueue::inTime</code> <span class="loc">— src/game_queue.cpp:85, 57</span>; <code>dynamicWorkers</code> <span class="loc">— src/engines.cpp:352</span>; <code>playSelfPlayQueue</code> <span class="loc">— src/selfplay_slice.cpp:93</span></dd>
   <dt>Inspecting a position</dt>
   <dd><code>printHeatMap</code>, <code>main</code> <span class="loc">— apps/analyze.cpp:81, 121</span></dd>
 </dl>

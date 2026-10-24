@@ -1851,6 +1851,9 @@ in:
 ```cpp
 std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath, const Network& net,
                                           const SelfPlayConfig& sp, int games) {
+    /* ... */
+    if (cfg_.selfplayAllocation == "dynamic") return playDynamic(g, networkPath, net, sp, games);
+    /* ... */
     const std::vector<Slice> assigned = assignGames(cfg_.selfplayEngines, games);
     /* ... one thread per slice: a local engine runs playSelfPlayGames,
            a remote one sends a job, runs selfplay there and verifies the
@@ -1874,7 +1877,7 @@ std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath,
     return records;
 }
 ```
-*src/coordinator.cpp:775 — `Coordinator::play` (abridged)*
+*src/coordinator.cpp:804 — `Coordinator::play` (abridged)*
 
 A run with several engines is therefore reproducible given which engine
 played each game, and it resumes byte for byte. The run's manifest,
@@ -1895,6 +1898,76 @@ played. A remote slice returns each game's moves and score, and the
 coordinator replays every game before it counts: each move legal, the
 game over at its last move, the score the board's. The gating decision
 and the ratings are then taken from the merged results, as before.
+
+**Or one queue.** Fixed slices have a price: a generation lasts as long
+as its slowest slice. Weights can set each engine's average, but a
+mini's 20 games of 19×19 vary in total length by several percent from
+one generation to the next, the weights are a person's estimate, and a
+failed remote moves its whole slice to one machine. In the 19×19 run on
+the Studio, two minis and a PC, 9–12% of each self-play phase was spent
+waiting for the slowest slice.
+
+`selfplay_allocation = dynamic` (opt-in; `static` stays the default)
+puts a generation's games in one queue instead. Nothing about a game
+changes: game i is still seeded by its index and merged at its index;
+only *who* plays it is decided while the generation runs. Each engine
+keeps up to its *concurrency* of games in flight (for a GPU engine,
+enough to keep its passes full) and takes the lowest queued index
+whenever one of its games ends, so a fast engine simply takes more. A
+remote engine runs one `selfplay --stream` process for the whole
+generation, which receives `play <index>` lines and sends each game back
+the moment it ends, verified as a result file's games are. When a remote
+fails, only its games in flight go back to the queue.
+
+A plain first-come queue balances the middle of a generation but not its
+end. An engine with many games in flight takes a long time over each
+one: the PC, with 128 at once, about 7,000 s per 19×19 game. Handed one
+of the last games, it finishes long after everyone else. So
+`GameQueue::take` gives an engine a game only if it will finish it in
+time, or if the others cannot:
+
+```cpp
+bool GameQueue::inTime(int engine, double now) const {
+    const double mine = latency(engine);
+    if (mine < 0) return true;   // nothing known yet: the start of a generation
+    // The latest predicted end of a game in flight: the generation lasts at
+    // least that long, whatever this engine does.
+    double bound = now;
+    /* ... bound = the latest start + latency(f) over every engine f's
+           games in flight ... */
+    if (now + mine <= bound) return true;
+    // The games the other engines can still start and finish by then: a
+    // slot whose game is predicted to end early enough to play one more,
+    // and a free slot.
+    long long absorb = 0;
+    /* ... */
+    return queued() > absorb;
+}
+```
+*src/game_queue.cpp:57 — `GameQueue::inTime` (abridged)*
+
+An engine's latency is its mean time from handout to finished game,
+measured during the generation. If the engine would finish the game
+before the last game already in flight ends, it gets it. Otherwise it
+waits, unless more games are queued than the other engines can still
+start and finish by then. The rule never stalls: a slot whose game runs
+late stops counting as time passes, and with nothing in flight the next
+engine to ask is served. In a simulation of the 19×19 run
+(`tests/test_game_queue.cpp`), static slices ran 10.0% over the ideal.
+With concurrency 36 on the Studio, 4 on each mini and 128 on the PC, a
+plain queue ran 7.5% over and the queue with this rule 4.6%, and it
+stayed at 4.6% under wrong weights that cost static slices 18–119%.
+
+The price is the assignment. Which engine plays game i now depends on
+timing, and engines of different arithmetic can play the same game
+differently in the last bits. So the run records the assignment in
+`selfplay-games.csv`, one row per game, and is reproducible from that
+manifest rather than from its config: replaying the recorded assignment
+gives the same bytes, and with engines of one arithmetic the assignment
+cannot change a bit. A generation redone after an interruption may be
+assigned differently. That is why `static` stays the default, for
+experiments that must be reproducible from the config alone, and why the
+arena, a small share of a generation's time, keeps its fixed slices.
 
 ---
 
@@ -2849,41 +2922,48 @@ The output is identical for any W anyway, because of three rules:
   floating-point operations.
 
 `Trainer::runGeneration` plays generation g's games as one slice, games
-[0, G), with `playSelfPlayGames`:
+[0, G), with `playSelfPlayGames`, which hands the range to
+`playSelfPlayQueue` as a source of game indices:
 
 ```cpp
-std::vector<GameRecord> playSelfPlayGames(const Network& net, const SelfPlayConfig& sp,
-                                          uint64_t seed, int generation, int first, int count,
-                                          const EngineRun& run, SliceStats* stats) {
+void playSelfPlayQueue(const Network& net, const SelfPlayConfig& sp, uint64_t seed, int generation,
+                       const EngineRun& run, GameSource& source, SliceStats* stats) {
     /* ... */
-        // One evaluator per worker; the network itself is shared read-only.
-        // naive, blas: a single-threaded backend and workspace per worker.
-        // metal: one batching hub that gathers every worker's leaves into
-        // GPU passes; a position's outputs do not depend on its batch, so
-        // the games are the same either way (azgo/inference_hub.hpp).
-        const int workers = std::max(1, std::min(run.workers, count));
-        WorkerEvaluators evaluators(net, run.backend, workers, sp.mcts.batchSize,
-                                    run.inferenceBatch);
+    const int workers = std::max(1, run.workers);
+    // One evaluator per worker; the network itself is shared read-only.
+    // naive, blas: a single-threaded backend and workspace per worker.
+    // metal, cuda: one batching hub that gathers every worker's leaves into
+    // GPU passes; a position's outputs do not depend on its batch, so the
+    // games are the same either way (azgo/inference_hub.hpp).
+    WorkerEvaluators evaluators(net, run.backend, workers, sp.mcts.batchSize, run.inferenceBatch);
+    /* ... */
+    // Each worker is one thread for the whole loop: it sets its QoS class
+    // once, before its first game. Game i's randomness depends only on i,
+    // so the record does not depend on which worker played it, or when.
+    auto work = [&](int w) {
         /* ... */
-        // Game i's randomness depends only on i, and its record is stored at
-        // index i, so the result does not depend on which thread played it.
-        parallelFor(count, workers, [&](int k, int w) {
-            /* ... the worker's QoS class, once ... */
-            const int i = first + k;
-            Rng rng(deriveSeed(seed, static_cast<uint64_t>(generation), kPhaseSelfPlay,
-                               static_cast<uint64_t>(i)));
-            /* ... */
-                Evaluator& ev = evaluators.forWorker(w);
-                records[static_cast<size_t>(k)] = playSelfPlayGame(ev, sp, rng);
-            /* ... */
-        });
-    /* ... statistics: seconds, positions, evaluations ... */
+            EngineEvaluator ev(evaluators.forWorker(w), run.cancel, stop);
+            while (!stop) {
+                const int i = source.next();
+                if (i < 0) break;
+                Rng rng(deriveSeed(seed, static_cast<uint64_t>(generation), kPhaseSelfPlay,
+                                   static_cast<uint64_t>(i)));
+                /* ... */
+                GameRecord record = playSelfPlayGame(ev, sp, rng);
+                /* ... */
+                source.done(i, std::move(record), ev.count() - before);
+            }
+        /* ... */
+    };
+    /* ... one thread per worker, joined; statistics: seconds, positions,
+           evaluations ... */
 }
 ```
-*src/selfplay_slice.cpp:38 — `playSelfPlayGames` (abridged)*
+*src/selfplay_slice.cpp:93 — `playSelfPlayQueue` (abridged)*
 
-`parallelFor` hands out indices from an atomic counter; which worker
-plays game 17 varies from run to run, but game 17 itself does not.
+For a slice, the source counts through the range with an atomic counter
+and stores game i's record at index i; which worker plays game 17 varies
+from run to run, but game 17 itself does not.
 
 Training has threads of its own. With BLAS, every training step used
 to run on one core: the BLAS backend is single-threaded, which suits
@@ -3173,13 +3253,14 @@ see again in place.
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
 | `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:144, 117` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:641` |
+| One generation | `Trainer::runGeneration` — `src/trainer.cpp:651` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
 | Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:226` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
 | Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:549` |
-| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:116`; `Coordinator::play` — `src/coordinator.cpp:775` |
+| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:116`; `Coordinator::play`, `Coordinator::playDynamic` — `src/coordinator.cpp:804, 1297` |
+| Dynamic allocation: one queue per generation | `GameQueue::take`, `GameQueue::inTime` — `src/game_queue.cpp:85, 57`; `dynamicWorkers` — `src/engines.cpp:352`; `playSelfPlayQueue` — `src/selfplay_slice.cpp:93` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |
 
 ---

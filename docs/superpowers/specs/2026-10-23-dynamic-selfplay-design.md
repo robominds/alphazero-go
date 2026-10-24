@@ -457,9 +457,14 @@ findings shaped the design:
 The test asserts that the rule beats static's mean under every weighting,
 with the default and the tuned concurrency.
 
-A real check on one machine (Task 9) runs a short 9×9 run with engines of
-different speeds (`local/naive` with 1 worker and a fake remote with 3)
-both ways and compares the engines' finish times from the manifest.
+A real check on the Studio (`docs/results/bench.txt`, "Dynamic
+allocation"): a 9×9 run with `local/naive` on 1 worker and a fake remote
+on 4 (about 4× faster), 40 games of 200 simulations, three generations.
+Static with weights 1:1 took 16.8–18.9 s per self-play phase, the engines
+ending 12–14 s apart; static with hand-tuned weights 1:4 took 7.5–7.9 s;
+dynamic with weights 1:1 took 7.0–7.9 s, the engines ending at most 0.2 s
+apart, the queue having found the 32:8 split itself. All three runs'
+`state.bin` equal the default run's (one arithmetic).
 
 ## Switching the live run
 

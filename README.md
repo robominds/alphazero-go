@@ -99,7 +99,8 @@ Seven programs are built next to the tests. Each prints its options with
 `--help`. `gtp` plays other Go programs and is described in Playing other
 programs via GTP below; `selfplay` plays one slice of a generation's
 self-play, or of an arena wave, for distributed self-play and the
-distributed arena, described in Distributed self-play below.
+distributed arena, or with `--stream` the games a coordinator names one
+by one (dynamic allocation), described in Distributed self-play below.
 
 **`train`** runs the generation loop (self-play, training, checkpoint,
 arena, commit). A new run copies the config into the run directory:
@@ -455,6 +456,130 @@ engines: ...` line. Empty (the default), the arena runs as before. Like
 a note), and `tools/engine_weights.py RUN_DIR --arena` suggests weights from
 the measured arena rates. `train --rerate` ignores it and plays every game
 locally, so a re-rated run can differ from the live one in the last bits.
+
+#### Dynamic allocation
+
+With fixed slices, a generation lasts as long as its slowest slice. In
+the 19×19 run on the Studio, two minis and the PC, 9–12% of each
+self-play phase was spent waiting for it: a mini's 20 games vary in total
+length from one generation to the next, the weights are an estimate, and
+a failed slice moves whole to one machine. The `selfplay_allocation` key
+offers a second way to share a generation
+([design](docs/superpowers/specs/2026-10-23-dynamic-selfplay-design.md),
+[plan](docs/superpowers/plans/2026-10-23-dynamic-selfplay.md)):
+
+```
+selfplay_allocation = dynamic
+```
+
+`static` (the default) is the slicing above, unchanged: a run with it is
+byte-identical to one from before the key existed, except that its
+`config.cfg` gains the line `selfplay_allocation = static`. With
+`dynamic`, a generation's games wait in one queue. Each engine keeps up
+to its *concurrency* of games in flight and takes another whenever one
+ends, so a fast engine simply takes more. Local engines take games from
+the queue on their worker threads. A remote engine runs one `selfplay
+--stream` session per generation: the coordinator writes `play <index>`
+lines to its stdin, and it writes each game back on its stdout, as a
+checksummed frame, as soon as the game ends; the coordinator replays and
+verifies every game as it does a result file's. Near the end of a
+generation, a handout rule keeps the last games off engines that would
+finish them late: an engine is given a game only if it is predicted to
+finish it before the games already in flight end, or if the other
+engines could not take every queued game in time. The key applies only
+with `selfplay_engines` set. It is tunable on resume, and a change prints
+`note: self-play allocation changed from static to dynamic; ...`.
+
+**What the weights mean.** The list's weights and counts still go through
+`assignGames`, but in dynamic mode an engine's share no longer fixes which
+games it plays; it sets only its default concurrency. For a GPU engine
+(`metal`, `cuda`) that is a quarter of its share, rounded up, at most
+256: enough games to keep its passes full, few enough that it plays
+several rolling waves, so the queue can still move games between engines.
+A positive `metal_workers`, `cuda_workers` or `cpu_workers` in the hosts
+file overrides it for that machine. A CPU engine keeps the worker rule
+above (`min(4, cores / 3)` on `local`, 2 on a remote). Since the queue
+balances the engines, wrong weights cost little; `tools/engine_weights.py`
+reads a dynamic run's manifest the same way, and its suggested weights
+then set only the default concurrency.
+
+**When a remote fails** (ssh or `selfplay` exits early, a frame does not
+parse or verify, or the stream is silent too long), its games in flight
+go back to the queue and are played by every engine still running; the
+games it already returned are kept. The stream is retried once. Then,
+with `selfplay_fallback = local`, the engine retires for the rest of the
+generation (the next generation tries the machine again), and with
+`stop` the generation ends uncommitted. The fallback engine (the first
+`local/...` item, or `local/<backend>` when the list has none) joins the
+queue only when every listed engine has retired. The hosts file's `timeout` means, in dynamic
+mode, the longest silence of a stream that has games in flight, not a
+slice's total time.
+
+**The manifests.** `selfplay-engines.csv` keeps its header and has one
+row per engine and generation, with an empty `first` column, the games
+the engine played as `count`, its busy time as `seconds`, and a `note`
+such as `1 failed stream, 13 games requeued; retired: ...` when something
+went wrong. A new file, `selfplay-games.csv`, records which engine played
+each game, one row per game:
+
+```
+generation,game,engine
+12,0,local/metal
+12,1,local/metal
+12,2,pc/cuda
+...
+```
+
+**What stays exact.** Game i is still seeded by its index, played by one
+engine from start to end, and merged by index; only *who* plays it is
+decided while the generation runs, and that depends on timing.
+
+- Given the recorded assignment, a run is byte-identical: a test replays
+  a dynamic run's `selfplay-games.csv` on engines of two arithmetics and
+  compares the bytes.
+- With engines of one arithmetic (equal fingerprints and build), the
+  assignment cannot change a bit, so the run is identical to a static one
+  and to the default path.
+- A generation redone after an interruption, or resumed, may assign its
+  games differently, so with engines of different arithmetics its last
+  bits may differ from the interrupted attempt's. Committed generations
+  are never touched.
+- `static` remains for experiments that must be reproducible from the
+  config alone.
+
+A simulation of the live 19×19 run (`tests/test_game_queue.cpp`) measures
+the gain. With the live weights, static allocation ran 10.0% over the
+ideal, close to the run's measured 9–12%; dynamic allocation with
+concurrency 36 on the Studio, 4 on each mini and 128 on the PC ran 4.6%
+over. Wrong weights cost static allocation 18–119%; dynamic allocation
+stayed at 4.6% with that concurrency set in the hosts file, and at 8–10%
+with the default concurrency, which follows the weights.
+
+**Switching a running run.** Rebuild and sync the remotes with
+`tools/cluster_sync.sh` (the build ID changes, and `train` refuses a
+remote with another). Optionally set the concurrency in the hosts file;
+for the machines of the example above (`...` stands for each line's other
+keys):
+
+```
+local  metal_workers=36 cpu_workers=4 cpu_qos=utility
+mini1  ssh=<user>@<address> ... metal_workers=4
+mini2  ssh=<user>@<address> ... metal_workers=4
+pc     ssh=<user>@<address> ... cuda_workers=128 cpu_workers=8
+```
+
+These keys also cap the same machines' arena slices, which already hold
+fewer games than that. Then stop the run after a commit and resume it:
+
+```
+$ tools/stop_after_generation.sh RUN_DIR PID
+$ ./build-metal/train --run RUN_DIR --resume --set selfplay_allocation=dynamic
+```
+
+Generations before the switch are untouched; the next one is the first
+dynamic one, and `--set selfplay_allocation=static` switches back the same
+way. The arena stays static: `arena_engines` keeps its fixed slices,
+since a wave is a small share of a generation's time.
 
 ### Batch norm calibration of generation 0
 
@@ -1451,6 +1576,9 @@ python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-mai
 - [`docs/superpowers/specs/2026-10-20-distributed-arena-design.md`](docs/superpowers/specs/2026-10-20-distributed-arena-design.md)
   and [`docs/superpowers/plans/2026-10-20-distributed-arena.md`](docs/superpowers/plans/2026-10-20-distributed-arena.md)
   — the distributed arena: each arena wave's games split across the same engines, verified by replay.
+- [`docs/superpowers/specs/2026-10-23-dynamic-selfplay-design.md`](docs/superpowers/specs/2026-10-23-dynamic-selfplay-design.md)
+  and [`docs/superpowers/plans/2026-10-23-dynamic-selfplay.md`](docs/superpowers/plans/2026-10-23-dynamic-selfplay.md)
+  — dynamic allocation: one queue per generation, the handout rule, self-play streams and the recorded assignment.
 
 `python3 tools/check_citations.py` checks that every `file:line` citation
 in both explainers still points at the quoted definition.
