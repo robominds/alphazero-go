@@ -236,10 +236,23 @@ std::unique_ptr<BatchRunner> makeCudaRunner(const Network& net, int maxBatch, in
 void checkCudaInferenceMemory(const NetConfig& cfg, int inferenceBatch, int hubs, int slotsPerHub) {
     if (inferenceBatch < 1 || hubs < 1 || slotsPerHub < 1)
         throw std::invalid_argument("checkCudaInferenceMemory: bad arguments");
+    checkCudaInferenceMemory(cfg, std::vector<GpuHubs>{{hubs, slotsPerHub, inferenceBatch}});
+}
+
+void checkCudaInferenceMemory(const NetConfig& cfg, const std::vector<GpuHubs>& groups) {
+    if (groups.empty()) throw std::invalid_argument("checkCudaInferenceMemory: no hubs");
     Network shape(cfg, 0);   // only for the tensor sizes
     const ParamLayout layout = ParamLayout::of(shape);
-    checkFits(hubs * hubBytes(cfg, layout.paramFloats + layout.bufferFloats, inferenceBatch, slotsPerHub),
-              inferenceBatch, hubs);
+    double need = 0;
+    int hubs = 0, batch = 0;
+    for (const GpuHubs& g : groups) {
+        if (g.inferenceBatch < 1 || g.hubs < 1 || g.slotsPerHub < 1)
+            throw std::invalid_argument("checkCudaInferenceMemory: bad arguments");
+        need += g.hubs * hubBytes(cfg, layout.paramFloats + layout.bufferFloats, g.inferenceBatch, g.slotsPerHub);
+        hubs += g.hubs;
+        batch = std::max(batch, g.inferenceBatch);
+    }
+    checkFits(need, batch, hubs);
 }
 
 namespace cuda_probe {

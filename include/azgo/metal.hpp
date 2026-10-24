@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
+#include "azgo/gpu_memory.hpp"
 #include "azgo/network.hpp"
 
 namespace azgo {
@@ -50,6 +52,11 @@ std::unique_ptr<BatchRunner> makeMetalRunner(const Network& net, int maxBatch, i
 // throws that error unless `hubs` hubs of `slotsPerHub` slots each, for a
 // network shaped cfg at inferenceBatch positions per pass, fit.
 void checkMetalInferenceMemory(const NetConfig& cfg, int inferenceBatch, int hubs, int slotsPerHub = 2);
+// The same for several groups of hubs held at once (pipeline = on:
+// self-play's beside the arena's): their sum must fit. One group gives
+// the verdict of the call above. std::invalid_argument for no group or a
+// group with a count below 1.
+void checkMetalInferenceMemory(const NetConfig& cfg, const std::vector<GpuHubs>& groups);
 
 // The whole network's inference forward on the GPU, synchronously: weights
 // uploaded once, one workspace for up to maxBatch positions. For the

@@ -1201,8 +1201,17 @@ void test_memory_check() {
         threw = std::string(e.what()).find("lower inference_batch") != std::string::npos;
     }
     assert(threw);
+    // Groups held at once (pipeline = on) are added up.
+    threw = false;
+    try {
+        checkCudaInferenceMemory(cfg, {GpuHubs{1, 2, 64}, GpuHubs{4, 1, 64}});
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()).find("lower inference_batch") != std::string::npos;
+    }
+    assert(threw);
     cuda_probe::setMemoryLimit(0);
     checkCudaInferenceMemory(cfg, 64, 1);   // fits the real GPU
+    checkCudaInferenceMemory(cfg, {GpuHubs{1, 2, 64}, GpuHubs{4, 1, 64}});
     auto ok = makeCudaRunner(net, 8);
     assert(ok->slots() == kInferenceSlots && ok->maxBatch() == 8);
 }

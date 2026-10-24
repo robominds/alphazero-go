@@ -18,6 +18,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
+#include "azgo/gpu_memory.hpp"
 #include "azgo/network.hpp"
 
 namespace azgo {
@@ -59,6 +61,9 @@ std::unique_ptr<BatchRunner> makeCudaRunner(const Network& net, int maxBatch, in
 // throws that error unless `hubs` hubs of `slotsPerHub` slots each, for a
 // network shaped cfg at inferenceBatch positions per pass, fit.
 void checkCudaInferenceMemory(const NetConfig& cfg, int inferenceBatch, int hubs, int slotsPerHub = 2);
+// The same for several groups of hubs held at once, as
+// checkMetalInferenceMemory's overload.
+void checkCudaInferenceMemory(const NetConfig& cfg, const std::vector<GpuHubs>& groups);
 
 // The whole network's inference forward on the GPU, synchronously: weights
 // uploaded once, one workspace for up to maxBatch positions. For tests and

@@ -1022,6 +1022,53 @@ void test_metal_runner_memory_check() {
     }
 }
 
+// Groups of hubs held at once (pipeline = on: self-play's hub beside an
+// arena wave's) are checked together: one group gives the old call's
+// verdict at every limit, and a limit that just fits self-play's hub
+// refuses it with the arena's hubs added.
+void test_metal_memory_of_groups() {
+    const NetConfig cfg = netConfig(19, 10, 128, false, 256);
+    auto fits = [&](const std::function<void()>& check) {
+        try {
+            check();
+        } catch (const std::runtime_error& e) {
+            assert(std::string(e.what()).find("lower inference_batch") != std::string::npos);
+            return false;
+        }
+        return true;
+    };
+    // The smallest working set that holds self-play's hub (beside what this
+    // process already holds), by bisection.
+    size_t lo = 1, hi = size_t(1) << 40;
+    while (hi - lo > 1) {
+        const size_t mid = lo + (hi - lo) / 2;
+        metal_probe::setWorkingSetLimit(mid);
+        (fits([&] { checkMetalInferenceMemory(cfg, 256, 1, 2); }) ? hi : lo) = mid;
+    }
+    for (size_t limit : {lo, hi}) {
+        metal_probe::setWorkingSetLimit(limit);
+        assert(fits([&] { checkMetalInferenceMemory(cfg, 256, 1, 2); }) ==
+               fits([&] { checkMetalInferenceMemory(cfg, {GpuHubs{1, 2, 256}}); }));
+    }
+    metal_probe::setWorkingSetLimit(hi);
+    assert(fits([&] { checkMetalInferenceMemory(cfg, {GpuHubs{1, 2, 256}}); }));
+    assert(!fits([&] { checkMetalInferenceMemory(cfg, {GpuHubs{1, 2, 256}, GpuHubs{4, 1, 256}}); }));
+    assert(!fits([&] { checkMetalInferenceMemory(cfg, {GpuHubs{1, 2, 256}, GpuHubs{1, 1, 8}}); }));
+    metal_probe::setWorkingSetLimit(0);
+    assert(fits([&] { checkMetalInferenceMemory(cfg, {GpuHubs{1, 2, 256}, GpuHubs{4, 1, 256}}); }));
+    for (const std::vector<GpuHubs>& bad :
+         {std::vector<GpuHubs>{}, std::vector<GpuHubs>{{0, 1, 8}}, std::vector<GpuHubs>{{1, 0, 8}},
+          std::vector<GpuHubs>{{1, 1, 0}}}) {
+        bool refused = false;
+        try {
+            checkMetalInferenceMemory(cfg, bad);
+        } catch (const std::invalid_argument&) {
+            refused = true;
+        }
+        assert(refused);
+    }
+}
+
 // ---------------------------------------------------------------- backend = metal in a run
 
 namespace fs = std::filesystem;
@@ -1697,6 +1744,7 @@ int main() {
     test_metal_hub_outputs_equal_alone_under_chaos();
     test_metal_hub_vs_cpu();
     test_metal_runner_memory_check();
+    test_metal_memory_of_groups();
     test_metal_validation_vs_cpu();
     test_metal_arena_matches();
     test_metal_run_independent_of_workers_and_batching();
