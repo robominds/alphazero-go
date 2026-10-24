@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -20,6 +21,7 @@
 #include "azgo/build_info.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/cuda.hpp"
+#include "azgo/game_queue.hpp"
 #include "azgo/game.hpp"
 #include "azgo/inference_hub.hpp"
 #include "azgo/metal.hpp"
@@ -34,6 +36,7 @@ namespace {
 
 const char* const kManifestHeader =
     "generation,first,count,planned,engine,fingerprint,build,seconds,positions,evaluations,note\n";
+const char* const kGamesManifestHeader = "generation,game,engine\n";
 const char* const kArenaManifestHeader =
     "generation,wave,first,count,planned,engine,fingerprint,build,seconds,positions,evaluations,note\n";
 
@@ -232,6 +235,11 @@ struct ProbeFail {
     distributed_probe::Fail mode = distributed_probe::Fail::Exit;
 };
 std::map<std::string, ProbeFail> gFailures;
+struct ProbeSession {
+    int times = 0, afterGames = 0;
+};
+std::map<std::string, ProbeSession> gSessionFailures;
+std::map<int, std::vector<std::string>> gForced;   // generation -> engine of each game
 
 enum class ProbeFailure { None, Exit, Timeout, Corrupt };
 
@@ -261,6 +269,20 @@ double probeDelay(const std::string& engine) {
 bool probeInProcess() {
     std::lock_guard<std::mutex> lock(gProbeMutex);
     return gInProcess;
+}
+// Whether this session of the engine is to fail once it has returned
+// `games` games (each session asks once, when it starts: -1 = no).
+int probeSessionFailure(const std::string& engine) {
+    std::lock_guard<std::mutex> lock(gProbeMutex);
+    auto it = gSessionFailures.find(engine);
+    if (it == gSessionFailures.end() || it->second.times <= 0) return -1;
+    --it->second.times;
+    return it->second.afterGames;
+}
+std::vector<std::string> probeForced(int g) {
+    std::lock_guard<std::mutex> lock(gProbeMutex);
+    auto it = gForced.find(g);
+    return it == gForced.end() ? std::vector<std::string>() : it->second;
 }
 
 } // namespace
@@ -460,6 +482,42 @@ void Coordinator::preflight() {
     }
 }
 
+std::vector<std::string> Coordinator::prepareMachine(
+    const std::string& alias, Transport& t, const std::vector<std::pair<std::string, uint64_t>>& networks) {
+    // The networks, uploaded by this coordinator once per machine and hash
+    // (a file already there may be a stranger's or cut short: it is
+    // replaced, atomically); those the phase no longer needs go. At the
+    // first contact with a machine, what an earlier coordinator of this run
+    // left there (a crash: networks, jobs, results, parts of uploads) goes
+    // first.
+    const std::string dir = remoteDir(hosts_.settings(alias));
+    std::vector<std::string> remoteNets;
+    MachineState& state = machine(alias);
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (!state.contacted) {
+        std::vector<std::string> stale;
+        for (const std::string& name : t.list(dir)) stale.push_back(dir + "/" + name);
+        t.remove(stale);
+        state.contacted = true;
+    }
+    for (const auto& [localPath, hash] : networks) {
+        const std::string remoteNet = dir + "/" + netFileName(hash);
+        remoteNets.push_back(remoteNet);
+        if (!state.uploaded.count(remoteNet)) {
+            t.upload(localPath, remoteNet);
+            state.uploaded.insert(remoteNet);
+        }
+    }
+    std::vector<std::string> unused;
+    for (const std::string& net : state.uploaded)
+        if (!state.keep.count(net)) unused.push_back(net);
+    if (!unused.empty()) {
+        t.remove(unused);
+        for (const std::string& net : unused) state.uploaded.erase(net);
+    }
+    return remoteNets;
+}
+
 void Coordinator::attemptRemote(int attempt, const EngineSpec& e, const RemoteWork& work,
                                 const std::string& workDir, const std::atomic<bool>& stop,
                                 SliceReport& report) {
@@ -473,39 +531,8 @@ void Coordinator::attemptRemote(int attempt, const EngineSpec& e, const RemoteWo
     const std::unique_ptr<Transport> t = transportFor(m, log);
     const std::string dir = remoteDir(m);
 
-    // The networks, uploaded by this coordinator once per machine and hash
-    // (a file already there may be a stranger's or cut short: it is
-    // replaced, atomically); those the phase no longer needs go. At the
-    // first contact with a machine, what an earlier coordinator of this run
-    // left there (a crash: networks, jobs, results, parts of uploads) goes
-    // first.
-    std::vector<std::string> remoteNets;
     checkStop();
-    {
-        MachineState& state = machine(e.machine);
-        std::lock_guard<std::mutex> lock(state.mutex);
-        if (!state.contacted) {
-            std::vector<std::string> stale;
-            for (const std::string& name : t->list(dir)) stale.push_back(dir + "/" + name);
-            t->remove(stale);
-            state.contacted = true;
-        }
-        for (const auto& [localPath, hash] : work.networks) {
-            const std::string remoteNet = dir + "/" + netFileName(hash);
-            remoteNets.push_back(remoteNet);
-            if (!state.uploaded.count(remoteNet)) {
-                t->upload(localPath, remoteNet);
-                state.uploaded.insert(remoteNet);
-            }
-        }
-        std::vector<std::string> unused;
-        for (const std::string& net : state.uploaded)
-            if (!state.keep.count(net)) unused.push_back(net);
-        if (!unused.empty()) {
-            t->remove(unused);
-            for (const std::string& net : unused) state.uploaded.erase(net);
-        }
-    }
+    const std::vector<std::string> remoteNets = prepareMachine(e.machine, *t, work.networks);
 
     // The job: exactly what determines the slice's games. The file names
     // carry the attempt, so a straggler of attempt 1 cannot be taken for
@@ -778,6 +805,8 @@ std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath,
                                           const SelfPlayConfig& sp, int games) {
     if (cfg_.selfplayEngines.empty())
         throw std::logic_error("Coordinator::play: selfplay_engines is empty (the default path)");
+    if (cfg_.selfplayAllocation == "dynamic") return playDynamic(g, networkPath, net, sp, games);
+    assignment_.clear();
     const std::vector<Slice> assigned = assignGames(cfg_.selfplayEngines, games);
     const size_t n = assigned.size();
     // Remote slices' work files: this generation's directory, made afresh.
@@ -857,6 +886,582 @@ std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath,
     if (anyRemote) finishWorkDir(workDir, failedSlices_);
     reports_ = std::move(reports);
     return records;
+}
+
+// ---- dynamic allocation -----------------------------------------------------------
+
+// One generation's dynamic self-play: the queue, the engines and their
+// threads, and the merged records. Everything shared is guarded by `mutex`;
+// waiting threads sleep on `wake`, which every change to the queue
+// notifies, and wake up at least every kDynamicPoll seconds, since the
+// handout rule depends on time.
+struct Coordinator::DynamicPhase {
+    static constexpr double kDynamicPoll = 0.5;
+    // How long a session may take to end after `end` (all its games are
+    // back by then: only the end frame and the exit are left).
+    static constexpr double kEndTimeout = 120;
+
+    struct Engine {
+        EngineSpec spec;
+        MachineSettings machine;
+        bool active = false;      // the fallback engine is inactive until it joins
+        int concurrency = 1;
+        SliceReport report;
+        double first = -1, last = 0;   // first handout, last game back (phase seconds)
+        int failedSessions = 0, requeued = 0;
+        std::string why;               // the last failure
+        bool retired = false;
+        std::exception_ptr error;
+    };
+
+    Coordinator& c;
+    const int g, games;
+    const Network& net;
+    const SelfPlayConfig& sp;
+    std::string networkPath, workDir, jobBytes;
+    uint64_t networkHash = 0;
+    std::vector<Engine> engines;   // the queue's engines, in order; the last is the fallback
+    std::mutex mutex;
+    std::condition_variable wake;
+    std::unique_ptr<GameQueue> queue;
+    std::vector<GameRecord> records;
+    std::atomic<bool> stop{false};
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    bool fallbackJoined = false;
+
+    DynamicPhase(Coordinator& coordinator, int generation, int count, const Network& network,
+                 const SelfPlayConfig& config)
+        : c(coordinator), g(generation), games(count), net(network), sp(config),
+          records(static_cast<size_t>(count)) {}
+
+    double now() const {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    }
+
+    // Under the mutex: engine k was handed a game.
+    void handedOut(size_t k) {
+        if (engines[k].first < 0) engines[k].first = now();
+    }
+
+    // Under the mutex: game i of engine k came back, verified.
+    void gameBack(size_t k, int i, GameRecord record) {
+        records[static_cast<size_t>(i)] = std::move(record);
+        queue->finished(static_cast<int>(k), i, now());
+        engines[k].last = now();
+        wake.notify_all();
+    }
+
+    void note(const std::string& text) {
+        if (!c.log_) return;
+        std::lock_guard<std::mutex> lock(c.logMutex_);
+        *c.log_ << "note: generation " << g << ": " << text << "\n";
+    }
+
+    std::string logPath(const Engine& e) const {
+        std::string engineFile = e.spec.name();
+        std::replace(engineFile.begin(), engineFile.end(), '/', '_');
+        return workDir + "/" + engineFile + ".log";
+    }
+
+    // ---- a local engine: a pool of workers taking games from the queue ----
+    class QueueSource : public GameSource {
+    public:
+        QueueSource(DynamicPhase& phase, size_t k) : p_(phase), k_(k) {}
+        int next() override {
+            std::unique_lock<std::mutex> lock(p_.mutex);
+            for (;;) {
+                if (p_.stop) return -1;
+                const int i = p_.queue->take(static_cast<int>(k_), p_.now());
+                if (i >= 0) {
+                    p_.handedOut(k_);
+                    return i;
+                }
+                if (i == GameQueue::kNone) return -1;
+                p_.wake.wait_for(lock, std::chrono::duration<double>(kDynamicPoll));
+            }
+        }
+        void done(int index, GameRecord record, long long) override {
+            std::lock_guard<std::mutex> lock(p_.mutex);
+            p_.gameBack(k_, index, std::move(record));
+        }
+        void stop() override {
+            // A worker failed: the generation fails with it.
+            std::lock_guard<std::mutex> lock(p_.mutex);
+            p_.stop = true;
+            p_.wake.notify_all();
+        }
+    private:
+        DynamicPhase& p_;
+        size_t k_;
+    };
+
+    void runLocal(size_t k) {
+        Engine& e = engines[k];
+        EngineRun run;
+        run.backend = e.spec.backend;
+        run.workers = e.concurrency;
+        run.inferenceBatch = e.machine.inferenceBatch > 0 ? e.machine.inferenceBatch : c.cfg_.inferenceBatch;
+        // The GPU, which sets the pace, waits on a GPU engine's workers: they
+        // keep the default class. CPU engines take the machine's.
+        run.qos = run.backend == "metal" || run.backend == "cuda" ? CpuQos::Default : e.machine.cpuQos;
+        run.cancel = &stop;
+        const double delay = probeDelay(e.spec.name());
+        if (delay > 0) std::this_thread::sleep_for(std::chrono::duration<double>(delay));
+        QueueSource source(*this, k);
+        SliceStats stats;
+        playSelfPlayQueue(net, sp, c.cfg_.seed, g, run, source, &stats);
+        std::lock_guard<std::mutex> lock(mutex);
+        e.report.stats.positions = stats.positions;
+        e.report.stats.evaluations = stats.evaluations;
+    }
+
+    // ---- a remote engine: sessions, retried once, then retired ----
+    void runRemote(size_t k) {
+        Engine& e = engines[k];
+        const std::string log = logPath(e);
+        const std::unique_ptr<Transport> probe = c.transportFor(e.machine, log);
+        MachineState& state = c.machine(e.spec.machine);
+        auto checkReachable = [&] {
+            const bool up = probe->reachable();
+            std::lock_guard<std::mutex> lock(state.mutex);
+            state.suspect = !up;
+            if (!up) state.down = true;
+            return up;
+        };
+        auto logLine = [&](const std::string& text) {
+            std::ofstream out(log, std::ios::app | std::ios::binary);
+            out << "azgo: " << text << "\n";
+        };
+        bool down, suspect;
+        {
+            std::lock_guard<std::mutex> lock(state.mutex);
+            down = state.down;
+            suspect = state.suspect;
+        }
+        std::string reason;
+        if (down || (suspect && !checkReachable())) {
+            reason = e.spec.machine + " unreachable";
+            logLine("stream: " + reason + "; not tried");
+            c.failedSlices_ = true;
+        } else {
+            for (int attempt = 1; attempt <= 2; ++attempt) {
+                try {
+                    session(k, attempt);
+                    return;
+                } catch (const SliceCancelled&) {
+                    throw;
+                } catch (const std::exception& ex) {
+                    reason = ex.what();
+                    c.failedSlices_ = true;
+                    logLine("stream, attempt " + std::to_string(attempt) + " failed: " + reason);
+                    int requeued;
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        ++e.failedSessions;
+                        e.why = reason;
+                        requeued = e.requeued;
+                    }
+                    note(e.spec.name() + "'s stream failed (" + reason + "); its games in flight return to "
+                         "the queue (" + std::to_string(requeued) + " so far)");
+                    if (stop) throw SliceCancelled();
+                    if (!checkReachable()) {
+                        reason = e.spec.machine + " unreachable";
+                        break;
+                    }
+                }
+            }
+        }
+        if (c.cfg_.selfplayFallback == "stop")
+            throw SliceError(e.spec.name() + " failed twice (" + reason + "); selfplay_fallback = stop");
+        // selfplay_fallback = local: the engine sits out the rest of the
+        // generation; the other engines play its games.
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            queue->retire(static_cast<int>(k));
+            e.retired = true;
+            e.why = reason;
+            wake.notify_all();
+        }
+        note(e.spec.name() + " retired for this generation (" + reason +
+             "); the other engines play its games; from here on results differ in the last bits from a "
+             "run without the failure");
+    }
+
+    // One session of remote engine k: start to `end`, or a SliceError after
+    // its games in flight went back to the queue and its files and process
+    // are gone.
+    void session(size_t k, int attempt) {
+        Engine& e = engines[k];
+        const MachineSettings& m = e.machine;
+        const std::string log = logPath(e);
+        const std::unique_ptr<Transport> t = c.transportFor(m, log);
+        const std::string dir = c.remoteDir(m);
+        char base[48];
+        std::snprintf(base, sizeof base, "g%04d_s%zu_a%d", g, k, attempt);
+        const std::string localJob = workDir + "/" + base + ".job";
+        const std::string remoteJob = dir + "/" + base + ".job";
+        const std::string pattern = c.runId_ + "/" + base + ".job";
+        const int failAfter = probeSessionFailure(e.spec.name());
+
+        std::mutex failMutex;
+        std::string failure;   // the first failure of this session
+        std::atomic<bool> failed{false};
+        auto fail = [&](const std::string& why) {
+            std::lock_guard<std::mutex> lock(failMutex);
+            if (!failed) failure = why;
+            failed = true;
+            std::lock_guard<std::mutex> wakeLock(mutex);
+            wake.notify_all();
+        };
+        std::unique_ptr<StreamChannel> channel;
+        std::vector<std::string> remoteNets;
+        try {
+            if (stop) throw SliceCancelled();
+            remoteNets = c.prepareMachine(e.spec.machine, *t, {{networkPath, networkHash}});
+            writeFileAtomically(localJob, jobBytes);
+            if (stop) throw SliceCancelled();
+            t->upload(localJob, remoteJob);
+            std::vector<std::string> args = {"--stream", "--job", remoteJob, "--backend", e.spec.backend,
+                                             "--workers", std::to_string(e.concurrency)};
+            if (m.inferenceBatch > 0) args.insert(args.end(), {"--inference-batch", std::to_string(m.inferenceBatch)});
+            const double delay = probeDelay(e.spec.name());
+            if (delay > 0) std::this_thread::sleep_for(std::chrono::duration<double>(delay));
+            channel = t->openStream(args, log);
+        } catch (const SliceCancelled&) {
+            cleanupSession(*t, pattern, remoteJob, localJob);
+            throw;
+        } catch (const std::exception& ex) {
+            cleanupSession(*t, pattern, remoteJob, localJob);
+            throw SliceError(ex.what());
+        }
+
+        // The reader: frames in, each game verified and kept.
+        std::atomic<bool> helloSeen{false}, endSeen{false}, ended{false};
+        std::thread reader([&] {
+            StreamFrames frames;
+            StreamChecker check(jobBytes, buildId());
+            double lastFrame = now(), endAt = 0;
+            int returned = 0;
+            char buf[1 << 16];
+            while (!failed && !stop) {
+                const long n = channel->receive(buf, sizeof buf, kDynamicPoll);
+                if (n < 0) {
+                    const double t0 = now();
+                    if (ended) {
+                        if (endAt == 0) endAt = t0;
+                        if (t0 - endAt > kEndTimeout) fail("selfplay did not end after `end`");
+                        continue;
+                    }
+                    if (m.timeout > 0 && t0 - lastFrame > m.timeout) {
+                        bool busy;
+                        {
+                            std::lock_guard<std::mutex> lock(mutex);
+                            busy = queue->inFlight(static_cast<int>(k)) > 0;
+                        }
+                        if (busy) fail("no game for " + std::to_string(static_cast<int>(m.timeout)) + " s");
+                    }
+                    continue;
+                }
+                if (n == 0) {
+                    if (!endSeen) fail("selfplay ended before the generation did");
+                    return;
+                }
+                lastFrame = now();
+                frames.feed(buf, static_cast<size_t>(n));
+                try {
+                    char kind;
+                    std::string payload;
+                    while (frames.next(kind, payload)) {
+                        if (kind == 'H') {
+                            const StreamHello h = check.hello(payload);
+                            std::lock_guard<std::mutex> lock(mutex);
+                            e.report.fingerprint = h.fingerprint;
+                            e.report.build = shortOf(h.buildId);
+                            helloSeen = true;
+                            wake.notify_all();
+                        } else if (kind == 'G') {
+                            StreamGame game = check.game(payload);
+                            std::lock_guard<std::mutex> lock(mutex);
+                            const std::vector<int> held = queue->held(static_cast<int>(k));
+                            if (!std::binary_search(held.begin(), held.end(), game.index))
+                                throw SliceError("stream: game " + std::to_string(game.index) +
+                                                 " was not asked of this session");
+                            e.report.stats.positions += game.record.positions();
+                            e.report.stats.evaluations += game.evaluations;
+                            gameBack(k, game.index, std::move(game.record));
+                            ++returned;
+                        } else {
+                            check.end(payload);
+                            endSeen = true;
+                        }
+                        if (failAfter >= 0 && returned >= failAfter && helloSeen)
+                            throw SliceError("the connection dropped (test)");
+                    }
+                } catch (const std::exception& ex) {
+                    fail(ex.what());
+                    return;
+                }
+            }
+        });
+
+        // The feeder (this thread): keeps the session's games in flight at
+        // its concurrency, and says `end` once every game is back.
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            while (!stop && !failed) {
+                if (queue->done()) {
+                    lock.unlock();
+                    if (!channel->send("end\n")) fail("cannot write to selfplay (the connection is gone)");
+                    ended = true;
+                    lock.lock();
+                    break;
+                }
+                std::string commands;
+                if (helloSeen)
+                    for (int i; (i = queue->take(static_cast<int>(k), now())) >= 0;) {
+                        handedOut(k);
+                        commands += "play " + std::to_string(i) + "\n";
+                    }
+                if (!commands.empty()) {
+                    lock.unlock();
+                    if (!channel->send(commands)) fail("cannot write to selfplay (the connection is gone)");
+                    lock.lock();
+                    continue;
+                }
+                wake.wait_for(lock, std::chrono::duration<double>(kDynamicPoll));
+            }
+        }
+        if (!ended || failed || stop) channel->stop();
+        reader.join();
+        const ProcessResult r = channel->wait();
+        if (!failed && !stop && (!endSeen || r.exitCode != 0)) fail("selfplay " + brief(r));
+        if (stop && !failed) {
+            cleanupSession(*t, pattern, remoteJob, localJob);
+            throw SliceCancelled();
+        }
+        if (failed) {
+            // A network the binary refused (damaged on the machine since the
+            // upload): forget it, so the next attempt uploads it again.
+            if (lastLine(log).find("network") != std::string::npos) {
+                MachineState& state = c.machine(e.spec.machine);
+                std::lock_guard<std::mutex> lock(state.mutex);
+                try {
+                    t->remove(remoteNets);
+                } catch (const std::exception&) {
+                }
+                for (const std::string& n : remoteNets) state.uploaded.erase(n);
+            }
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                for (int i : queue->held(static_cast<int>(k))) {
+                    queue->requeue(static_cast<int>(k), i);
+                    ++e.requeued;
+                }
+                wake.notify_all();
+            }
+            cleanupSession(*t, pattern, remoteJob, localJob);
+            throw SliceError(e.spec.machine + ": " + failure);
+        }
+        t->remove({remoteJob});
+        std::filesystem::remove(localJob);
+    }
+
+    void cleanupSession(Transport& t, const std::string& pattern, const std::string& remoteJob,
+                        const std::string& localJob) {
+        try {
+            t.setCommandTimeout(kCleanupTimeout);   // a dead machine must not hold this up
+            t.killJob(pattern);
+            t.remove({remoteJob});
+        } catch (const std::exception&) {
+        }
+        std::error_code ec;
+        std::filesystem::remove(localJob, ec);
+    }
+
+    void runEngine(size_t k) {
+        try {
+            if (engines[k].machine.local()) runLocal(k);
+            else runRemote(k);
+        } catch (...) {
+            std::lock_guard<std::mutex> lock(mutex);
+            engines[k].error = std::current_exception();
+            stop = true;
+            wake.notify_all();
+        }
+    }
+};
+
+std::vector<GameRecord> Coordinator::playDynamic(int g, const std::string& networkPath, const Network& net,
+                                                 const SelfPlayConfig& sp, int games) {
+    DynamicPhase p(*this, g, games, net, sp);
+    p.networkPath = networkPath;
+    const int cores = resolveWorkers(0);
+
+    // The engines: every item with a share, in list order; their default
+    // concurrency follows the share. Then the fallback engine, inactive.
+    for (const Slice& s : assignGames(cfg_.selfplayEngines, games)) {
+        DynamicPhase::Engine e;
+        e.spec = cfg_.selfplayEngines[static_cast<size_t>(s.engine)];
+        e.machine = hosts_.settings(e.spec.machine);
+        e.active = true;
+        e.concurrency = dynamicWorkers(e.machine, e.spec.backend, s.count, games, cores);
+        p.engines.push_back(e);
+    }
+    const size_t listed = p.engines.size();
+    {
+        DynamicPhase::Engine f;
+        f.spec = parseEngineList(fallbackEngine(cfg_.selfplayEngines, cfg_.backend) + ":1")[0];
+        f.machine = hosts_.settings("local");
+        f.concurrency = dynamicWorkers(f.machine, f.spec.backend, games, games, cores);
+        p.engines.push_back(f);
+    }
+    std::vector<int> concurrency;
+    for (size_t k = 0; k < listed; ++k) concurrency.push_back(p.engines[k].concurrency);
+    const std::vector<std::string> forced = probeForced(g);
+    if (!forced.empty()) {
+        if (forced.size() != static_cast<size_t>(games))
+            throw std::logic_error("forceAssignment: " + std::to_string(forced.size()) + " engines for " +
+                                   std::to_string(games) + " games");
+        std::vector<int> engineOf;
+        for (const std::string& name : forced) {
+            size_t k = 0;
+            while (k < listed && p.engines[k].spec.name() != name) ++k;
+            if (k == listed) throw std::logic_error("forceAssignment: no engine " + name);
+            engineOf.push_back(static_cast<int>(k));
+        }
+        p.queue = std::make_unique<GameQueue>(engineOf, concurrency);
+    } else {
+        p.queue = std::make_unique<GameQueue>(games, concurrency);
+    }
+
+    // Remote machines: their state exists before any thread starts; their
+    // work goes through this generation's work directory.
+    char genDir[32];
+    std::snprintf(genDir, sizeof genDir, "gen_%04d", g);
+    p.workDir = (std::filesystem::path(runDir_) / "selfplay-work" / genDir).string();
+    bool anyRemote = false;
+    for (size_t k = 0; k < listed; ++k) anyRemote = anyRemote || !p.engines[k].machine.local();
+    if (anyRemote) {
+        std::filesystem::remove_all(p.workDir);
+        std::filesystem::create_directories(p.workDir);
+        p.networkHash = fileHash(networkPath);
+        SelfPlayJob job;
+        job.seed = cfg_.seed;
+        job.generation = g;
+        job.first = 0;
+        job.count = games;
+        job.boardSize = cfg_.boardSize;
+        job.sp = sp;
+        job.networkFile = netFileName(p.networkHash);
+        job.networkHash = p.networkHash;
+        job.buildId = buildId();
+        job.inferenceBatch = cfg_.inferenceBatch;
+        p.jobBytes = serializeJob(job);
+    }
+    std::map<std::string, std::set<std::string>> keep;
+    for (size_t k = 0; k < listed; ++k) {
+        DynamicPhase::Engine& e = p.engines[k];
+        e.report.planned = e.report.engine = e.spec.name();
+        e.report.dynamic = true;
+        if (e.machine.local()) {
+            if (!fingerprints_.count(e.spec.name())) fingerprints_[e.spec.name()] = engineFingerprint(e.spec.backend);
+            e.report.fingerprint = fingerprints_[e.spec.name()];
+            e.report.build = shortBuildId();
+            continue;
+        }
+        if (!machines_.count(e.spec.machine)) {
+            machines_[e.spec.machine] = std::make_unique<MachineState>();
+            machines_[e.spec.machine]->suspect = unreachable_.count(e.spec.machine) > 0;
+        }
+        machines_[e.spec.machine]->down = false;   // tried afresh every phase
+        keep[e.spec.machine].insert(remoteDir(e.machine) + "/" + netFileName(p.networkHash));
+    }
+    for (auto& [alias, nets] : keep) machines_.at(alias)->keep = nets;
+    // The BLAS backend sets its environment once, with setenv, which is not
+    // thread-safe: do that here, before any engine thread runs.
+    for (const DynamicPhase::Engine& e : p.engines)
+        if (e.machine.local() && e.spec.backend == "blas") {
+            makeBackend("blas", 1);
+            break;
+        }
+    failedSlices_ = false;
+
+    std::vector<std::thread> threads;
+    {
+        std::unique_lock<std::mutex> lock(p.mutex);
+        try {
+            for (size_t k = 0; k < listed; ++k) threads.emplace_back([&p, k] { p.runEngine(k); });
+            // Until every game is back or the generation failed; the
+            // fallback engine joins once every listed engine has retired.
+            while (!p.queue->done() && !p.stop) {
+                bool allRetired = !p.fallbackJoined;
+                for (size_t k = 0; k < listed && allRetired; ++k) allRetired = p.engines[k].retired;
+                if (allRetired) {
+                    DynamicPhase::Engine& f = p.engines[listed];
+                    f.active = true;
+                    f.report.planned = f.report.engine = f.spec.name();
+                    f.report.dynamic = true;
+                    f.report.fingerprint = engineFingerprint(f.spec.backend);
+                    f.report.build = shortBuildId();
+                    if (p.queue->addEngine(f.concurrency) != static_cast<int>(listed))
+                        throw std::logic_error("playDynamic: the fallback engine's number");
+                    p.fallbackJoined = true;
+                    lock.unlock();
+                    p.note("every engine retired; " + f.spec.name() + " plays the remaining games");
+                    threads.emplace_back([&p, listed] { p.runEngine(listed); });
+                    lock.lock();
+                    continue;
+                }
+                p.wake.wait_for(lock, std::chrono::duration<double>(DynamicPhase::kDynamicPoll));
+            }
+        } catch (...) {
+            p.stop = true;   // a thread could not start: stop the others, join them first
+            p.engines[listed].error = std::current_exception();
+        }
+        p.wake.notify_all();
+    }
+    for (std::thread& t : threads) t.join();
+
+    // The failure itself, by engine order, rather than the cancellations it caused.
+    std::exception_ptr firstCancel;
+    for (const DynamicPhase::Engine& e : p.engines) {
+        if (!e.error) continue;
+        try {
+            std::rethrow_exception(e.error);
+        } catch (const SliceCancelled&) {
+            if (!firstCancel) firstCancel = e.error;
+            continue;
+        } catch (...) {
+        }
+        std::rethrow_exception(e.error);
+    }
+    if (firstCancel) std::rethrow_exception(firstCancel);
+    if (!p.queue->done()) throw std::logic_error("playDynamic: games left unplayed");
+
+    // Who played what.
+    std::vector<SliceReport> reports;
+    for (size_t k = 0; k < p.engines.size(); ++k) {
+        DynamicPhase::Engine& e = p.engines[k];
+        if (!e.active) continue;
+        e.report.slice.engine = static_cast<int>(k);
+        e.report.slice.count = p.queue->finishedBy(static_cast<int>(k));
+        e.report.stats.seconds = e.first < 0 ? 0 : e.last - e.first;
+        std::string note;
+        if (e.failedSessions > 0)
+            note = std::to_string(e.failedSessions) + " failed stream" + (e.failedSessions > 1 ? "s" : "") + ", " +
+                   std::to_string(e.requeued) + " games requeued";
+        if (e.retired) note += std::string(note.empty() ? "" : "; ") + "retired";
+        if (!note.empty()) note += ": " + e.why;
+        if (k == listed) note = "fallback: every engine retired";
+        e.report.note = note;
+        reports.push_back(e.report);
+    }
+    assignment_.assign(static_cast<size_t>(games), "");
+    for (int i = 0; i < games; ++i)
+        assignment_[static_cast<size_t>(i)] = p.engines[static_cast<size_t>(p.queue->playedBy(i))].spec.name();
+    if (anyRemote) finishWorkDir(p.workDir, failedSlices_);
+    reports_ = std::move(reports);
+    return std::move(p.records);
 }
 
 void Coordinator::beginArena(int g) {
@@ -1453,9 +2058,24 @@ void pruneArenaManifest(const std::string& runDir, int g) {
 void writeManifest(const std::string& runDir, int g, const std::vector<SliceReport>& reports) {
     std::string out = manifestBefore(manifestPath(runDir), kManifestHeader, g);
     for (const SliceReport& r : reports)
-        out += std::to_string(g) + "," + std::to_string(r.slice.first) + "," +
+        out += std::to_string(g) + "," + (r.dynamic ? std::string() : std::to_string(r.slice.first)) + "," +
                std::to_string(r.slice.count) + "," + reportColumns(r) + "\n";
     writeFileAtomically(manifestPath(runDir), out);
+}
+
+std::string gamesManifestPath(const std::string& runDir) {
+    return (std::filesystem::path(runDir) / "selfplay-games.csv").string();
+}
+
+void writeGamesManifest(const std::string& runDir, int g, const std::vector<std::string>& assignment) {
+    std::string out = manifestBefore(gamesManifestPath(runDir), kGamesManifestHeader, g);
+    for (size_t i = 0; i < assignment.size(); ++i)
+        out += std::to_string(g) + "," + std::to_string(i) + "," + csvField(assignment[i]) + "\n";
+    writeFileAtomically(gamesManifestPath(runDir), out);
+}
+
+void pruneGamesManifest(const std::string& runDir, int g) {
+    pruneManifestFile(gamesManifestPath(runDir), kGamesManifestHeader, g);
 }
 
 void writeArenaManifest(const std::string& runDir, int g, const std::vector<SliceReport>& reports) {
@@ -1497,9 +2117,19 @@ void failSlice(const std::string& engine, int times, Fail mode) {
     std::lock_guard<std::mutex> lock(gProbeMutex);
     gFailures[engine] = {times, mode};
 }
+void failSession(const std::string& engine, int times, int afterGames) {
+    std::lock_guard<std::mutex> lock(gProbeMutex);
+    gSessionFailures[engine] = {times, afterGames};
+}
+void forceAssignment(int g, const std::vector<std::string>& engineOfGame) {
+    std::lock_guard<std::mutex> lock(gProbeMutex);
+    gForced[g] = engineOfGame;
+}
 void reset() {
     std::lock_guard<std::mutex> lock(gProbeMutex);
     gFailures.clear();
+    gSessionFailures.clear();
+    gForced.clear();
     gRemoteBuild.clear();
     gDelays.clear();
     gInProcess = false;

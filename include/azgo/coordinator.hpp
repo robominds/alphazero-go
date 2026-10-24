@@ -51,6 +51,9 @@ struct SliceReport {
     std::string planned, engine, fingerprint, build, note;
     SliceStats stats;
     int wave = 0;   // arena slices only
+    // Dynamic allocation: one report per engine, slice.count the games it
+    // played (which ones: Coordinator::assignment()), slice.first unused.
+    bool dynamic = false;
 };
 
 // ---- transports ----------------------------------------------------------------
@@ -223,7 +226,8 @@ public:
 
     // Generation g's `games` self-play games from `net` (the checkpoint at
     // networkPath), merged in index order. cfg.selfplayEngines must not be
-    // empty. Local slices run in this process, each on its own thread; each
+    // empty. With selfplay_allocation = dynamic, see playDynamic; otherwise
+    // (static) the following. Local slices run in this process, each on its own thread; each
     // remote slice on a thread that uploads the network (unless that
     // machine has it) and the job, runs selfplay there, downloads the
     // result and verifies it (readSliceResult). Work files go to
@@ -233,8 +237,13 @@ public:
     // list order, after every slice has stopped.
     std::vector<GameRecord> play(int g, const std::string& networkPath, const Network& net,
                                  const SelfPlayConfig& sp, int games);
-    // The last play()'s slices, in list order.
+    // The last play()'s slices, in list order. With selfplay_allocation =
+    // dynamic, one report per engine item that had a share (list order),
+    // then the fallback engine's if it played.
     const std::vector<SliceReport>& reports() const { return reports_; }
+    // With selfplay_allocation = dynamic, the engine (its name) that played
+    // each game of the last play(); empty with static.
+    const std::vector<std::string>& assignment() const { return assignment_; }
 
     // Starts generation g's arena: its waves are numbered from 1 and its
     // reports start empty.
@@ -290,6 +299,12 @@ private:
     std::vector<SliceReport> runSlices(int g, std::vector<PhaseSlice>& slices,
                                        const std::vector<EngineSpec>& list, const std::string& workDir,
                                        const std::string& what);
+    // A machine ready for a phase's work: at the first contact, what an
+    // earlier coordinator of this run left in its directory goes; then each
+    // network not there yet is uploaded, and those the phase no longer needs
+    // (MachineState::keep) are removed. Returns the networks' remote paths.
+    std::vector<std::string> prepareMachine(const std::string& alias, Transport& t,
+                                            const std::vector<std::pair<std::string, uint64_t>>& networks);
     // One attempt at a remote slice, start to verified result; fills
     // report. Throws SliceError on a failure, after removing the attempt's
     // files and process, and SliceCancelled once `stop` is set.
@@ -324,6 +339,20 @@ private:
     std::mutex logMutex_;                               // slices' notes, from their threads
     std::atomic<bool> failedSlices_{false};             // this phase: keep the logs
     std::vector<SliceReport> reports_;
+    std::vector<std::string> assignment_;
+    // selfplay_allocation = dynamic: the generation's games in one GameQueue
+    // (azgo/game_queue.hpp). Each engine item with a share keeps
+    // dynamicWorkers() games in flight: a local engine as a pool of workers
+    // (playSelfPlayQueue), a remote one as one selfplay --stream session
+    // (azgo/selfplay_stream.hpp) fed with games as its games come back, each
+    // verified. A failed session's games in flight go back to the queue; it
+    // is retried once, then (selfplay_fallback = local) the engine retires
+    // for the generation, or (stop) the generation throws. When every
+    // listed engine has retired, the fallback engine joins. Records are
+    // merged by index; reports and assignment() say who played what.
+    std::vector<GameRecord> playDynamic(int g, const std::string& networkPath, const Network& net,
+                                        const SelfPlayConfig& sp, int games);
+    struct DynamicPhase;   // its state, in coordinator.cpp
     int arenaGeneration_ = 0, arenaWave_ = 0;
     std::vector<SliceReport> arenaReports_;
 };
@@ -349,10 +378,20 @@ enum class Fail { Exit, Timeout, Corrupt };
 void failSlice(const std::string& engine, int times, Fail mode);
 // Preflight sees this as every remote's build ID ("" = the real one).
 void setRemoteBuildId(const std::string& id);
-// The engine's remote slices wait this long before running selfplay.
+// The engine's remote slices wait this long before running selfplay (with
+// dynamic allocation: its streams before they start, a local engine before
+// it takes its first game).
 void delaySlice(const std::string& engine, double seconds);
 // Machines without ssh run slices with InProcessTransport, not as processes.
 void useInProcessTransport(bool on);
+// Dynamic allocation: the engine's next `times` sessions fail (as a dropped
+// connection: the coordinator stops them) once they have returned
+// `afterGames` games.
+void failSession(const std::string& engine, int times, int afterGames);
+// Dynamic allocation: generation g's games are played as the list says
+// (engine names, one per game; a name stands for the first engine item of
+// that name), to replay a recorded assignment.
+void forceAssignment(int g, const std::vector<std::string>& engineOfGame);
 void reset();
 } // namespace distributed_probe
 
@@ -367,6 +406,18 @@ std::string manifestPath(const std::string& runDir);
 // first, so a redone generation leaves one set of rows. seconds is, like
 // log.csv's timings, not part of a run's byte-identity.
 void writeManifest(const std::string& runDir, int g, const std::vector<SliceReport>& reports);
+
+// runDir/selfplay-games.csv: which engine played each game, written with
+// selfplay_allocation = dynamic.
+std::string gamesManifestPath(const std::string& runDir);
+
+// Rewrites it atomically: its rows of generations before g, then one row
+// per game of generation g, in index order:
+//   generation,game,engine
+void writeGamesManifest(const std::string& runDir, int g, const std::vector<std::string>& assignment);
+
+// Drops its rows of generations g and later, as pruneManifest.
+void pruneGamesManifest(const std::string& runDir, int g);
 
 // Drops the manifest's rows of generations g and later, if it has any (a
 // crash between the manifest and state.bin leaves rows of an uncommitted

@@ -223,10 +223,10 @@ foreach(app arena analyze bench grow gtp selfplay)
   target_include_directories(${app} PRIVATE ${CMAKE_SOURCE_DIR}/apps)
 endforeach()
 
-# test_distributed, test_distributed_arena, test_trainer and
-# test_selfplay_stream run the real selfplay binary (a remote's whole
+# test_distributed, test_distributed_arena, test_trainer,
+# test_selfplay_stream and test_dynamic_selfplay run the real selfplay binary (a remote's whole
 # interface) as a child process, so they need it built and its path.
-foreach(test_name test_distributed test_distributed_arena test_trainer test_selfplay_stream)
+foreach(test_name test_distributed test_distributed_arena test_trainer test_selfplay_stream test_dynamic_selfplay)
   add_dependencies(${test_name} selfplay)
   target_compile_definitions(${test_name} PRIVATE AZGO_SELFPLAY_EXE="$<TARGET_FILE:selfplay>")
 endforeach()
