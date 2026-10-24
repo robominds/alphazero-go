@@ -386,7 +386,10 @@ static std::string fakeHostsFile(const Dir& dir) {
 // Everything a run wrote that must not depend on timing or interruptions:
 // every checkpoint, state.bin, the rating files, the SGFs, log.csv without
 // its timing columns (selfplay_s, train_s, arena_s), and the manifests
-// without their seconds.
+// without their seconds. With dynamic allocation, which engine played
+// which game (and so each engine's count, positions and evaluations)
+// depends on timing too: of its self-play manifests only the generations,
+// game indices and planned engines count.
 static std::string runFingerprint(const Dir& dir, int generations, bool withLog = true) {
     const std::string run = dir.file("run");
     std::string out;
@@ -405,15 +408,22 @@ static std::string runFingerprint(const Dir& dir, int generations, bool withLog 
                 if (i < 9 || i > 11) out += fields[i] + ",";
             out += "\n";
         }
-    for (const char* f : {"selfplay-engines.csv", "selfplay-games.csv", "arena-engines.csv"}) {
+    const bool dynamic = contains(readFile(configPath(run)), "\nselfplay_allocation = dynamic\n");
+    for (const std::string f : {"selfplay-engines.csv", "selfplay-games.csv", "arena-engines.csv"}) {
         const fs::path path = fs::path(run) / f;
         if (!fs::exists(path)) continue;
         for (const std::string& row : splitLines(readFile(path.string()))) {
-            // Drop the seconds column (the 8th of self-play's, 9th of the arena's).
+            // The fields that count: not the seconds (the 8th of self-play's
+            // rows, the 9th of the arena's), nor with dynamic allocation who
+            // played what.
+            auto counts = [&](size_t field) {
+                if (f == "arena-engines.csv") return field != 8;
+                if (f == "selfplay-games.csv") return !dynamic || field != 2;
+                return dynamic ? field == 0 || field == 3 : field != 7;
+            };
             std::string kept;
             bool quoted = false;
             size_t field = 0;
-            const size_t seconds = std::string(f) == "arena-engines.csv" ? 8 : 7;
             for (char ch : row) {
                 if (ch == '"') quoted = !quoted;
                 if (ch == ',' && !quoted) {
@@ -421,7 +431,7 @@ static std::string runFingerprint(const Dir& dir, int generations, bool withLog 
                     kept += '|';
                     continue;
                 }
-                if (field != seconds) kept += ch;
+                if (counts(field)) kept += ch;
             }
             out += kept + "\n";
         }
