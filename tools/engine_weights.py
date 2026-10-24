@@ -35,7 +35,12 @@ manifest has one row per engine and generation (its first column empty, its
 count the games the engine took from the queue); the rates are read the same
 way, an engine that played no game has none, and the weights it suggests
 only set each GPU engine's default concurrency (a quarter of its share):
-the queue itself balances the engines. Standard library only.
+the queue itself balances the engines. With pipeline = on the self-play
+manifest also has the pending generation's rows (written with the commit
+before it), which count like the others, and every rate was measured
+while the other phase (the arena, or the previous generation's training)
+shared the machines: the rates are lower, their ratios hardly. Standard
+library only.
 
 Mark Castelluccio, with assistance from Claude (Anthropic).
 """
