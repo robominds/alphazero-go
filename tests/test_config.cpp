@@ -662,9 +662,9 @@ static void test_metal_backend_and_inference_batch() {
 static void test_config_selfplay_keys() {
     Config d;
     assert(d.selfplayEngines.empty() && d.selfplayFallback == "local");
-    // main's 50 keys, these two, arena_engines, selfplay_allocation and pipeline.
+    // main's 50 keys, these two, arena_engines, selfplay_allocation, pipeline and arena_ladder.
     const std::string text = configToString(d);
-    assert(std::count(text.begin(), text.end(), '\n') == 55);
+    assert(std::count(text.begin(), text.end(), '\n') == 56);
     assert(contains(text, "\ninference_batch = 256\nselfplay_engines = \n"
                           "selfplay_fallback = local\n"));
     // A config.cfg written before the keys existed gets the defaults.
@@ -795,12 +795,45 @@ static void test_config_arena_engines() {
     assert(threw);
 }
 
+// arena_ladder: on (today's round) or off (the gating match alone, AlphaGo
+// Zero's evaluator), after gating_threshold; tunable on resume; off needs
+// gating, or the arena would play nothing.
+static void test_config_arena_ladder() {
+    Config d;
+    assert(d.arenaLadder);
+    assert(contains(configToString(d), "\ngating_threshold = 0.55\narena_ladder = on\nsgf_per_generation = "));
+    // A config.cfg written before the key existed gets the default.
+    assert(parseConfigText("filters = 96\n", "old.cfg").arenaLadder);
+    Config c = parseConfigText("gating = true\narena_ladder = off\n", "t.cfg");
+    assert(!c.arenaLadder);
+    assert(contains(configToString(c), "\narena_ladder = off\n"));
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    checkConsistency(c);
+    assert(contains(errorOf("arena_ladder = false"), "t.cfg:1: arena_ladder: expected on|off"));
+    applyOverride(c, "arena_ladder=on");
+    assert(c.arenaLadder);
+    // Tunable: a resume may change it.
+    Config e;
+    e.arenaLadder = false;
+    assert(architectureDiff(d, e).empty() && resumeLockedDiff(d, e).empty());
+    // Without gating there is no gating match to play.
+    bool threw = false;
+    try {
+        checkConsistency(e);
+    } catch (const ConfigError& err) {
+        threw = contains(err.what(), "arena_ladder = off") && contains(err.what(), "gating = true") &&
+                contains(err.what(), "arena_every = 0");
+    }
+    assert(threw);
+}
+
 int main() {
     test_defaults();
     test_config_selfplay_keys();
     test_config_selfplay_allocation();
     test_config_pipeline();
     test_config_arena_engines();
+    test_config_arena_ladder();
     test_metal_backend_and_inference_batch();
     test_presets_load();
     test_missing_file();

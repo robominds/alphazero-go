@@ -334,6 +334,13 @@ const KeyEntry kKeys[] = {
     {"gating_threshold", false,
      [](Config& c, const std::string& v) { return parseFloat(v, 0.5, 1, c.gatingThreshold); },
      printFloat<&Config::gatingThreshold>},
+    {"arena_ladder", false,
+     [](Config& c, const std::string& v) -> std::string {
+         if (v != "off" && v != "on") return "expected on|off, got " + quoted(v);
+         c.arenaLadder = v == "on";
+         return "";
+     },
+     [](const Config& c) { return std::string(c.arenaLadder ? "on" : "off"); }},
     // output
     {"sgf_per_generation", false, intKey<&Config::sgfPerGeneration, 0, 1000>,
      printInt<&Config::sgfPerGeneration>},
@@ -481,6 +488,11 @@ void checkConsistency(const Config& cfg) {
                               "must add up to exactly games_per_generation (" + games + "), not " +
                               std::to_string(fixed));
     }
+    // arena_ladder = off plays the gating match alone; without gating there
+    // is none, and the arena would play nothing.
+    if (!cfg.arenaLadder && !cfg.gating)
+        throw ConfigError("arena_ladder = off plays only the gating match, so it needs gating = true; "
+                          "for no arena at all, set arena_every = 0");
     // arena_engines: every wave is shared out by weight, since waves differ
     // in size (one opponent, two, a promotion's or a calibration's games).
     for (const EngineSpec& e : cfg.arenaEngines)

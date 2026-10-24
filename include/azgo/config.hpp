@@ -138,6 +138,12 @@ struct Config {
     std::vector<EngineSpec> arenaEngines;
     bool gating = false;
     float gatingThreshold = 0.55f;
+    // The arena round with gating: on, the gating match plus the Elo
+    // ladder's matches (g-1, the strongest reference, arena_opponents more,
+    // calibrations, promotions); off, the gating match alone, as AlphaGo
+    // Zero's evaluator played it. off needs gating (checkConsistency).
+    // Tunable on resume.
+    bool arenaLadder = true;
     // output
     int sgfPerGeneration = 2;
 
