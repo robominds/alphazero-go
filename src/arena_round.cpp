@@ -104,6 +104,23 @@ ArenaRoundResult runArenaRound(int generation, ResultsTable& results, std::vecto
     return runArenaRound(generation, results, references, settings, oneAtATime(play));
 }
 
+ArenaRoundResult runGatingMatch(int generation, ResultsTable& results, const ArenaRoundSettings& settings,
+                                const MatchesFn& play) {
+    if (!settings.bestNetwork)
+        throw std::invalid_argument("runGatingMatch: no best network (the gating match needs gating)");
+    if (generation < 1)
+        throw std::invalid_argument("runGatingMatch: generation must be >= 1, got " +
+                                    std::to_string(generation));
+    const int best = *settings.bestNetwork;
+    const MatchResult r = play({{generation, best, settings.arenaGames,
+                                 deriveSeed(settings.seed, static_cast<uint64_t>(generation), kPhaseArena,
+                                            static_cast<uint64_t>(best))}})[0];
+    results.addMatch(generation, best, r.games, r.scoreA);
+    ArenaRoundResult round;
+    round.matches.push_back({best, r});
+    return round;
+}
+
 std::string opponentSummary(const ArenaRoundResult& round, const std::vector<int>& botSimulations,
                             int referenceNetworks) {
     std::string out = "vs";

@@ -342,6 +342,60 @@ static void test_one_at_a_time_adapter() {
     assert(arena.calls.size() == 2 && arena.calls[1] == std::make_tuple(2, 1, 10, uint64_t{6}));
 }
 
+// arena_ladder = off: the gating match alone, one wave of one match, with
+// the seed and colours the full round gives that match, so its result is
+// the round's gating result. No calibration (the bot below never played
+// generation 0), no other opponent, no promotion; the reference set is
+// not touched.
+static void test_gating_match_alone() {
+    const std::map<int, double> truth = {{-1, 50.0}, {0, 0.0}, {1, 100.0}, {2, 150.0}, {3, 400.0}};
+    WaveArena waves;
+    waves.arena.truth = truth;
+    ArenaRoundSettings s = settings();
+    s.bestNetwork = 1;
+    ResultsTable results;
+    results.addMatch(0, 1, 20, 6.0);
+    results.addMatch(1, 2, 20, 9.0);
+    const std::string before = results.toCsv();
+    ArenaRoundResult round = runGatingMatch(3, results, s, waves.fn());
+    assert(waves.waves.size() == 1 && waves.waves[0].size() == 1);
+    const MatchRequest& m = waves.waves[0][0];
+    assert(m.a == 3 && m.b == 1 && m.games == 20 && m.seed == deriveSeed(7, 3, kPhaseArena, 1));
+    assert(round.matches.size() == 1 && round.matches[0].opponent == 1 && !round.promoted);
+    assert(round.matches[0].result.games == 20);
+    assert(gamesBetween(results, 1, 3) == 20 && gamesBetween(results, -1, 0) == 0);
+    ResultsTable expected = ResultsTable::fromCsv(before);
+    expected.addMatch(3, 1, 20, round.matches[0].result.scoreA);
+    assert(results.toCsv() == expected.toCsv());
+
+    // The full round, gating on, plays that same request and gets that same result.
+    WaveArena full;
+    full.arena.truth = truth;
+    ResultsTable fullResults = ResultsTable::fromCsv(before);
+    std::vector<int> refs{-1, 0};
+    const ArenaRoundResult r = runArenaRound(3, fullResults, refs, s, full.fn());
+    bool same = false;
+    for (const std::vector<MatchRequest>& wave : full.waves)
+        for (const MatchRequest& f : wave)
+            same = same || (f.a == m.a && f.b == m.b && f.games == m.games && f.seed == m.seed);
+    assert(same);
+    for (const ArenaMatch& a : r.matches)
+        if (a.opponent == 1) assert(a.result.scoreA == round.matches[0].result.scoreA);
+
+    // The summary names the best network with the new network's score.
+    assert(opponentSummary(round, {}).rfind("vs 1:", 0) == 0);
+
+    // Without a best network (no gating) there is no gating match.
+    s.bestNetwork.reset();
+    bool threw = false;
+    try {
+        runGatingMatch(3, results, s, waves.fn());
+    } catch (const std::invalid_argument&) {
+        threw = true;
+    }
+    assert(threw && waves.waves.size() == 1);
+}
+
 int main() {
     test_calibration();
     test_round_uses_selection_and_live_seeds();
@@ -354,6 +408,7 @@ int main() {
     test_reference_network_csvs();
     test_round_in_waves_equals_one_at_a_time();
     test_one_at_a_time_adapter();
+    test_gating_match_alone();
     std::printf("test_arena_round: all tests passed\n");
     return 0;
 }

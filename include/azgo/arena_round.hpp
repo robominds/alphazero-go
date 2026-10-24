@@ -88,6 +88,17 @@ ArenaRoundResult runArenaRound(int generation, ResultsTable& results, std::vecto
 ArenaRoundResult runArenaRound(int generation, ResultsTable& results, std::vector<int>& references,
                                const ArenaRoundSettings& settings, const MatchFn& play);
 
+// The gating match alone (arena_ladder = off), as AlphaGo Zero's evaluator
+// played it: generation g >= 1 plays settings.arenaGames games against
+// *settings.bestNetwork with seed deriveSeed(seed, g, kPhaseArena, best),
+// g as player a: the request runArenaRound makes for that match, so the
+// result is the same. One wave of one match, added to `results`. Nothing
+// is calibrated or promoted and the reference set is not involved; the
+// result's `strongest` is unset (0). Throws std::invalid_argument without
+// a best network or for g < 1.
+ArenaRoundResult runGatingMatch(int generation, ResultsTable& results, const ArenaRoundSettings& settings,
+                                const MatchesFn& play);
+
 // The name of fixed player `player` < 0 among botSimulations.size() bots
 // and `referenceNetworks` reference networks, the bots first: bot k
 // (player -k) is named after its simulation count, botSimulations[k - 1],
