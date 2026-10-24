@@ -12,11 +12,18 @@
 // selfplay_engines, a Coordinator plays each generation's games on
 // several engines at once (azgo/coordinator.hpp), and with arena_engines
 // each arena wave's games; without them, self-play and the arena each run
-// on one engine, exactly as before.
+// on one engine, exactly as before. With pipeline = on, a generation's
+// training and arena run beside the next generation's self-play, which
+// plays the best network of the last commit (one generation behind the
+// sequential loop: AlphaGo Zero's evaluator lag, at a generation boundary);
+// each commit then holds the next generation's games (state.bin's pending
+// block), so a run interrupted anywhere still resumes byte for byte.
+#include <atomic>
 #include <iostream>
 #include <memory>
 #include <ostream>
 #include <string>
+#include <utility>
 #include <vector>
 #include "azgo/config.hpp"
 #include "azgo/network.hpp"
@@ -68,7 +75,8 @@ struct TrainerOptions {
 };
 
 // The generation loop: self-play -> (validation loss) -> train -> arena/Elo
-// -> checkpoint + state.
+// -> checkpoint + state; with pipeline = on, (validation loss) -> train ->
+// arena/Elo of generation g beside self-play of g + 1, then one commit.
 class Trainer {
 public:
     // Optional starting material for a new run. initFrom: a checkpoint that
@@ -122,9 +130,11 @@ public:
     // differs from the saved config.cfg, a note that the results' last bits
     // will differ from a run that kept the old one. The same preflight as
     // startNew with selfplay_engines or arena_engines, and the same kind of
-    // note when either differs from the saved config.cfg's. Drops the
+    // note when either differs from the saved config.cfg's, or pipeline
+    // does; with pending games (a pipelined commit), a note naming the
+    // changed self-play keys, which apply a generation later. Drops the
     // manifests' rows of uncommitted generations (pruneManifest,
-    // pruneArenaManifest).
+    // pruneArenaManifest), keeping the self-play rows of pending games.
     static std::unique_ptr<Trainer> resume(const std::string& runDir,
                                            const std::vector<std::string>& overrides,
                                            std::ostream* log = &std::cout,
@@ -133,12 +143,43 @@ public:
 
     int generation() const { return state_.generation; }
     const Config& config() const { return cfg_; }
+    // Trains and commits the next generation. With pipeline = on: first,
+    // when the state has no pending games, the prologue (that generation's
+    // self-play alone, committed); then its validation loss, training and
+    // arena beside the following generation's self-play, committed
+    // together. A failure in either half stops the other and commits
+    // nothing; the Trainer is then not to be used again (resume instead).
     GenerationStats runGeneration();
     void runUntil(int lastGeneration);   // while generation() < lastGeneration
     void setLog(std::ostream* os);   // progress lines; nullptr = silent
 
 private:
     Trainer(const Config& cfg, const std::string& runDir, Network net, TrainingState state);
+    struct RoundOutcome;   // what B of a generation decided (trainer.cpp)
+    // The parts of a generation (trainer.cpp): self-play of generation g
+    // with `net` (generation `network`'s checkpoint, which remote engines
+    // load) at v_resign resignThreshold; processing its games (statistics,
+    // the resignation window and the next v_resign, SGFs); then B: the
+    // validation loss, the buffer, training, the checkpoint and the arena.
+    SelfPlayConfig selfPlayConfig(float resignThreshold) const;
+    PendingSelfPlay playSelfPlay(int g, const Network& net, int network, float resignThreshold,
+                                 const std::atomic<bool>* cancel);
+    void processSelfPlay(int g, const PendingSelfPlay& played, GenerationStats& stats);
+    RoundOutcome trainAndRate(int g, std::vector<GameRecord>& records, GenerationStats& stats,
+                              const std::atomic<bool>* cancel);
+    void printGenerationLine(const GenerationStats& stats, const RoundOutcome& outcome) const;
+    GenerationStats runSequential();
+    // pipeline = on: the prologue (playAhead: a generation's games alone,
+    // committed with the previous generation) when the state has no pending
+    // games, then an iteration (B of g beside self-play of g + 1).
+    GenerationStats runPipelined();
+    void playAhead();
+    void prepareForThreads();
+    // The wall time of generation g's pending self-play: this process's, or
+    // pending-selfplay.txt's from the process that played it, else 0.
+    double pendingSelfPlaySeconds(int g) const;
+    void keepPendingSeconds(int g, double seconds);
+    std::pair<int, double> pendingSeconds_{-1, 0.0};
     Config cfg_;
     std::string runDir_;
     Network net_;
@@ -151,6 +192,29 @@ private:
     // arena_engines is; null on the default path.
     std::unique_ptr<Coordinator> coordinator_;
 };
+
+// Test hooks for pipelined generations; a run's configuration can never
+// reach them. crashAt(point, g) makes the trainer throw a
+// std::runtime_error once, right after `point` of generation g (for
+// SelfPlay, g is the generation being played ahead; for PrologueSelfPlay
+// the prologue's), as a crash there would stop it: what was written
+// before stays, nothing after is written.
+namespace pipeline_probe {
+enum class Point {
+    PrologueSelfPlay,   // the prologue's games are played, not committed
+    Processed,          // an iteration processed its generation's games (SGFs written)
+    SelfPlay,           // the next generation's games are played
+    Validation,         // B: the validation loss
+    Training,           // B: training (the checkpoint not written)
+    Checkpoint,         // B: the checkpoint written
+    Arena,              // B: the arena played, rating files written
+    Manifests,          // the commit's manifests written, not state.bin
+    State,              // state.bin written, not log.csv
+};
+void crashAt(Point point, int generation);
+void reset();
+void crashPoint(Point point, int generation);   // the trainer's call
+} // namespace pipeline_probe
 
 // Re-rates the run in runDir without training it: replays the arena phase of
 // generations 1, 2, ... for as long as their checkpoints exist (and, with a

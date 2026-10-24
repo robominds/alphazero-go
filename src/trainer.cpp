@@ -1,18 +1,23 @@
 #include "azgo/trainer.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 
 #include "azgo/arena.hpp"
@@ -53,11 +58,17 @@ void printDeviceLine(const Config& cfg, std::ostream* log) {
 // inference_batch: self-play's hub (two slots), or an arena wave's hubs (one
 // slot each when there are several; playMatches). Checked before a run
 // writes anything, so a too-large inference_batch fails up front rather than
-// in the first arena.
+// in the first arena. With pipeline = on self-play runs beside the
+// validation loss and the arena, so all of them are checked together.
 void checkBackend(const Config& cfg) {
     checkBackendAvailable(cfg.backend);
 #ifdef AZ_USE_METAL
-    if (cfg.backend == "metal") {
+    if (cfg.backend == "metal" && cfg.pipeline) {
+        std::vector<GpuHubs> groups = {{1, kInferenceSlots, cfg.inferenceBatch},
+                                       {arenaWaveNetworks(cfg), 1, cfg.inferenceBatch}};
+        if (cfg.validationLoss) groups.push_back({1, 1, cfg.batchSize});
+        checkMetalInferenceMemory(cfg.netConfig(), groups);
+    } else if (cfg.backend == "metal") {
         checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, 1, kInferenceSlots);
         checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, arenaWaveNetworks(cfg), 1);
     }
@@ -401,6 +412,38 @@ std::unique_ptr<Coordinator> makeCoordinator(const Config& cfg, const std::strin
     return coordinator;
 }
 
+// The keys that change a generation's self-play games or who plays them,
+// whose values differ between a and b (in config.cfg's order).
+std::vector<std::string> selfPlayKeysChanged(const Config& a, const Config& b) {
+    static const char* const kKeys[] = {
+        "backend", "komi", "max_moves", "games_per_generation", "simulations", "mcts_batch",
+        "selfplay_engines", "selfplay_allocation", "c_puct", "dirichlet_scale", "noise_fraction",
+        "temperature_moves", "mcts_random_symmetry", "resignation", "resign_threshold_initial",
+        "resign_disabled_fraction", "resign_false_positive", "resign_window", "resign_min_games"};
+    std::map<std::string, std::string> va, vb;
+    auto read = [](const Config& c, std::map<std::string, std::string>& out) {
+        std::istringstream in(configToString(c));
+        for (std::string line; std::getline(in, line);) {
+            const size_t eq = line.find(" = ");
+            if (eq != std::string::npos) out[line.substr(0, eq)] = line.substr(eq + 3);
+        }
+    };
+    read(a, va);
+    read(b, vb);
+    std::vector<std::string> changed;
+    for (const auto& [key, value] : va)
+        if (std::find(std::begin(kKeys), std::end(kKeys), key) != std::end(kKeys) && vb[key] != value)
+            changed.push_back(key);
+    // config.cfg's order, not the map's.
+    std::istringstream order(configToString(b));
+    std::vector<std::string> ordered;
+    for (std::string line; std::getline(order, line);) {
+        const std::string key = line.substr(0, line.find(" = "));
+        if (std::find(changed.begin(), changed.end(), key) != changed.end()) ordered.push_back(key);
+    }
+    return ordered;
+}
+
 // The engines a list plays with, for the note on a change: the list, or
 // the default path's one engine.
 std::string describeEngines(const std::vector<EngineSpec>& list, const Config& cfg) {
@@ -633,13 +676,33 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
         *log << "note: arena engines changed from " << describeEngines(saved.arenaEngines, saved) << " to "
              << describeEngines(cfg.arenaEngines, cfg) << "; from here on arena results differ in the\n"
              << "last bits from a run that kept " << describeEngines(saved.arenaEngines, saved) << "\n";
+    if (log && saved.pipeline != cfg.pipeline)
+        *log << "note: pipeline changed from " << (saved.pipeline ? "on" : "off") << " to "
+             << (cfg.pipeline ? "on" : "off")
+             << (cfg.pipeline ? "; from here on self-play plays the best network of the last commit, "
+                                "one generation\nbehind training\n"
+                              : "; from here on self-play plays the best network after each arena\n");
+    // A pipelined commit holds generation g+1's games: what they were played
+    // with is settled, so a changed self-play key applies from g+2.
+    if (log && state.pending) {
+        const std::vector<std::string> changed = selfPlayKeysChanged(saved, cfg);
+        if (!changed.empty()) {
+            std::string keys;
+            for (const std::string& k : changed) keys += (keys.empty() ? "" : ", ") + k;
+            *log << "note: generation " << state.generation + 1
+                 << "'s self-play games were committed before this resume (pipeline); changed self-play keys ("
+                 << keys << ") apply from generation " << state.generation + 2 << "\n";
+        }
+    }
     // Rewritten only after every check passed, so a refused resume leaves the
     // run directory untouched.
     writeFileAtomically(configPath(runDir), configToString(cfg));
     addMissingLogColumns(runDir);
-    // The manifests describe committed generations only (engines on or off).
-    pruneManifest(runDir, state.generation + 1);
-    pruneGamesManifest(runDir, state.generation + 1);
+    // The manifests describe committed generations only (engines on or off),
+    // and the self-play manifests a pipelined commit's pending games too.
+    const int selfPlayAfter = state.generation + (state.pending ? 2 : 1);
+    pruneManifest(runDir, selfPlayAfter);
+    pruneGamesManifest(runDir, selfPlayAfter);
     pruneArenaManifest(runDir, state.generation + 1);
 
     std::unique_ptr<Trainer> trainer(new Trainer(cfg, runDir, std::move(net), std::move(state)));
@@ -648,64 +711,78 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     return trainer;
 }
 
-GenerationStats Trainer::runGeneration() {
-    const int g = state_.generation + 1;
-    const int workers = cfg_.effectiveWorkers();
-    const int n = cfg_.boardSize;
-    GenerationStats stats;
-    stats.generation = g;
+// What B of a generation decided: the best network after its arena, and
+// the arena round for the progress line.
+struct Trainer::RoundOutcome {
+    int newBest = 0;
+    bool arenaThisGeneration = false;
+    ArenaRoundResult round;
+};
 
-    // ---- 1. Self-play -----------------------------------------------------
-    const auto selfPlayStart = Clock::now();
+// ---- one generation, in parts ------------------------------------------------
+//
+// A generation is self-play (SP), then B: the validation loss, the buffer,
+// training, the checkpoint and the arena, then the commit. The sequential
+// loop (pipeline = off) runs them in that order; the pipelined loop
+// (pipeline = on) runs B of generation g beside SP of g + 1 and commits
+// both together. Both loops use the same parts, so a pipelined generation
+// differs from a sequential one only in which network played its games.
+
+SelfPlayConfig Trainer::selfPlayConfig(float resignThreshold) const {
+    SelfPlayConfig sp;
+    sp.mcts.simulations = cfg_.simulations;
+    sp.mcts.batchSize = cfg_.mctsBatch;
+    sp.mcts.cPuct = cfg_.cPuct;
+    sp.mcts.dirichletScale = cfg_.dirichletScale;
+    sp.mcts.noiseFraction = cfg_.noiseFraction;
+    sp.mcts.randomSymmetry = cfg_.mctsRandomSymmetry;
+    sp.temperatureMoves = cfg_.temperatureMoves;
+    sp.komi = cfg_.komi;
+    sp.maxMoves = cfg_.effectiveMaxMoves();
+    // v_resign was calibrated after the previous generation, from earlier
+    // generations' games only, so every game of this one shares it
+    // whichever worker plays it.
+    sp.resignation = cfg_.resignation;
+    sp.resignThreshold = resignThreshold;
+    sp.resignDisabledFraction = cfg_.resignDisabledFraction;
+    return sp;
+}
+
+PendingSelfPlay Trainer::playSelfPlay(int g, const Network& net, int network, float resignThreshold,
+                                      const std::atomic<bool>* cancel) {
+    const SelfPlayConfig sp = selfPlayConfig(resignThreshold);
+    PendingSelfPlay played;
+    played.network = network;
+    played.resignation = sp.resignation;
+    played.resignThreshold = sp.resignThreshold;
+    played.maxMoves = sp.maxMoves;
+    // The whole generation, games [0, G), as one slice
+    // (azgo/selfplay_slice.hpp). One evaluator per worker; the network
+    // itself is shared read-only. naive, blas: a single-threaded backend
+    // and workspace per worker. metal: one batching hub that gathers
+    // every worker's leaves into GPU passes; a position's outputs do not
+    // depend on its batch, so the games are the same either way
+    // (azgo/inference_hub.hpp). Game i's randomness depends only on i,
+    // and its record is stored at index i, so the result does not
+    // depend on which thread played it.
     const int numGames = cfg_.gamesPerGeneration;
-    std::vector<GameRecord> records;
-    {
-        // With gating, games are generated by the best network so far, which
-        // may be older than the one being trained.
-        std::unique_ptr<Network> bestNet;
-        if (cfg_.gating && state_.bestGeneration != state_.generation)
-            bestNet = std::make_unique<Network>(
-                loadNetwork(checkpointPath(runDir_, state_.bestGeneration)));
-        const Network& selfPlayNet = bestNet ? *bestNet : net_;
-
-        SelfPlayConfig sp;
-        sp.mcts.simulations = cfg_.simulations;
-        sp.mcts.batchSize = cfg_.mctsBatch;
-        sp.mcts.cPuct = cfg_.cPuct;
-        sp.mcts.dirichletScale = cfg_.dirichletScale;
-        sp.mcts.noiseFraction = cfg_.noiseFraction;
-        sp.mcts.randomSymmetry = cfg_.mctsRandomSymmetry;
-        sp.temperatureMoves = cfg_.temperatureMoves;
-        sp.komi = cfg_.komi;
-        sp.maxMoves = cfg_.effectiveMaxMoves();
-        // v_resign was calibrated after the previous generation, from earlier
-        // generations' games only, so every game of this one shares it
-        // whichever worker plays it.
-        sp.resignation = cfg_.resignation;
-        sp.resignThreshold = state_.resignThreshold;
-        sp.resignDisabledFraction = cfg_.resignDisabledFraction;
-
-        // The whole generation, games [0, numGames), as one slice
-        // (azgo/selfplay_slice.hpp). One evaluator per worker; the network
-        // itself is shared read-only. naive, blas: a single-threaded backend
-        // and workspace per worker. metal: one batching hub that gathers
-        // every worker's leaves into GPU passes; a position's outputs do not
-        // depend on its batch, so the games are the same either way
-        // (azgo/inference_hub.hpp). Game i's randomness depends only on i,
-        // and its record is stored at index i, so the result does not
-        // depend on which thread played it.
-        if (coordinator_ && !cfg_.selfplayEngines.empty()) {
-            // selfplay_engines: a slice per engine, all at once (static), or
-            // one queue all engines take from (dynamic); merged by index.
-            const int selfPlayGeneration = bestNet ? state_.bestGeneration : state_.generation;
-            const std::string networkPath = checkpointPath(runDir_, selfPlayGeneration);
-            records = coordinator_->play(g, networkPath, selfPlayNet, sp, numGames);
-        } else {
-            const EngineRun run{cfg_.backend, std::min(workers, numGames), cfg_.inferenceBatch};
-            records = playSelfPlayGames(selfPlayNet, sp, cfg_.seed, g, 0, numGames, run);
-        }
+    if (coordinator_ && !cfg_.selfplayEngines.empty()) {
+        // selfplay_engines: a slice per engine, all at once (static), or
+        // one queue all engines take from (dynamic); merged by index.
+        // Remote engines load the network's checkpoint.
+        played.records = coordinator_->play(g, checkpointPath(runDir_, network), net, sp, numGames);
+    } else {
+        EngineRun run{cfg_.backend, std::min(cfg_.effectiveWorkers(), numGames), cfg_.inferenceBatch};
+        run.cancel = cancel;
+        played.records = playSelfPlayGames(net, sp, cfg_.seed, g, 0, numGames, run);
     }
+    return played;
+}
 
+void Trainer::processSelfPlay(int g, const PendingSelfPlay& played, GenerationStats& stats) {
+    const int n = cfg_.boardSize;
+    const std::vector<GameRecord>& records = played.records;
+    const int numGames = static_cast<int>(records.size());
     long long plies = 0, passes = 0;
     int blackWins = 0;
     for (const GameRecord& r : records) {
@@ -722,7 +799,8 @@ GenerationStats Trainer::runGeneration() {
     // Resignation: how often it ended a game, and the disabled games'
     // traces, in game order, for the next calibration (AlphaGo Zero keeps
     // false positives, games the winner would have resigned, below 5%).
-    if (cfg_.resignation) {
+    // The flag and v_resign are the ones the games were played with.
+    if (played.resignation) {
         int enabled = 0, resigned = 0;
         for (const GameRecord& r : records) {
             if (r.resignDisabled) {
@@ -734,11 +812,11 @@ GenerationStats Trainer::runGeneration() {
         }
         trimResignWindow(state_.resignWindow, cfg_.resignWindow);
         stats.resignation = true;
-        stats.resignThreshold = state_.resignThreshold;
+        stats.resignThreshold = played.resignThreshold;
         if (enabled > 0) stats.resignRate = static_cast<double>(resigned) / enabled;
         if (!state_.resignWindow.empty())
             stats.resignFalsePositive =
-                resignFalsePositiveRate(state_.resignWindow, cfg_.resignWindow, state_.resignThreshold);
+                resignFalsePositiveRate(state_.resignWindow, cfg_.resignWindow, played.resignThreshold);
     }
     // The threshold generation g + 1 will use.
     state_.resignThreshold = calibrateResignThreshold(state_.resignWindow, resignCalibration(cfg_));
@@ -756,22 +834,32 @@ GenerationStats Trainer::runGeneration() {
         if (r.resigned) {
             sgf = gameToSgf(n, r.komi, r.moves, r.resultForBlack > 0 ? "B+R" : "W+R", comment);
         } else {
-            Game replay(n, r.komi, cfg_.effectiveMaxMoves());
+            Game replay(n, r.komi, played.maxMoves);
             for (int a : r.moves) replay.play(a);
             sgf = gameToSgf(n, r.komi, r.moves, replay.scoreForBlack(), comment);
         }
         writeFileAtomically(sgfPath(runDir_, g, i), sgf);
     }
+}
+
+Trainer::RoundOutcome Trainer::trainAndRate(int g, std::vector<GameRecord>& records, GenerationStats& stats,
+                                            const std::atomic<bool>* cancel) {
+    auto checkCancel = [&] {
+        if (cancel && *cancel) throw SliceCancelled();
+    };
+    long long plies = 0;
+    for (const GameRecord& r : records) plies += r.positions();
 
     // ---- Validation loss (a measurement; changes nothing) -------------------
     // net_ is generation g-1's network, about to train on these games, and
-    // (without gating) the one that played them. Measured before they join
-    // the buffer, they are data it has never trained on. The buffer, not yet
-    // changed, is its training distribution: the window it trained on at
-    // generation g-1 (a sample of it, at random symmetries, so some of
-    // these positions it drew rarely or never). At generation 1 the buffer
-    // is empty, or with --buffer-from a donor's games that generation 0 (a
-    // fresh network, or --init-from's) never trained on. Inference mode and the identity symmetry, so nothing is drawn from any
+    // (sequentially, without gating) the one that played them. Measured
+    // before they join the buffer, they are data it has never trained on.
+    // The buffer, not yet changed, is its training distribution: the window
+    // it trained on at generation g-1 (a sample of it, at random symmetries,
+    // so some of these positions it drew rarely or never). At generation 1
+    // the buffer is empty, or with --buffer-from a donor's games that
+    // generation 0 (a fresh network, or --init-from's) never trained on.
+    // Inference mode and the identity symmetry, so nothing is drawn from any
     // generator of the run and nothing is written to the network; the
     // buffer sample has its own generator (kPhaseValidation). Its time counts
     // as training time.
@@ -784,9 +872,8 @@ GenerationStats Trainer::runGeneration() {
     // threads exist only while the training phase runs.
     std::unique_ptr<ThreadPool> trainPoolOwner = std::make_unique<ThreadPool>(cfg_.effectiveTrainThreads());
     ThreadPool& trainPool = *trainPoolOwner;
-    double validationSeconds = 0;
+    const auto validationStart = Clock::now();
     if (cfg_.validationLoss) {
-        const auto validationStart = Clock::now();
         // The loss of one batch: on the CPU pool, or with metal the forward
         // pass on the GPU and the loss terms on the CPU (lossFromOutputs).
         std::unique_ptr<Backend> backend;
@@ -828,13 +915,13 @@ GenerationStats Trainer::runGeneration() {
             stats.seenValueLoss = seen.valueLoss;
             stats.seenOwnershipLoss = seen.ownershipLoss;
         }
-        validationSeconds = secondsSince(validationStart);
     }
+    const double validationSeconds = secondsSince(validationStart);
+    pipeline_probe::crashPoint(pipeline_probe::Point::Validation, g);
 
     for (GameRecord& r : records) state_.buffer.add(std::move(r));   // index order
-    stats.selfPlaySeconds = secondsSince(selfPlayStart) - validationSeconds;
 
-    // ---- 2. Train -----------------------------------------------------------
+    // ---- Train ----------------------------------------------------------------
     const auto trainStart = Clock::now();
     const float lr = LrSchedule::parse(cfg_.lrSchedule).at(g);
     {
@@ -848,6 +935,7 @@ GenerationStats Trainer::runGeneration() {
         TrainingBatch batch;
         double policySum = 0, valueSum = 0, ownershipSum = 0;
         for (int s = 0; s < cfg_.trainSteps; ++s) {
+            checkCancel();   // pipelined: self-play failed, nothing will be committed
             state_.buffer.sample(cfg_.batchSize, cfg_.history, rng, batch, &trainPool);
             // The batch always carries ownership targets; only a network
             // with the head learns from them, with weight ownership_weight.
@@ -894,35 +982,38 @@ GenerationStats Trainer::runGeneration() {
     stats.lr = lr;
     stats.replayRatio = plies > 0 ? static_cast<double>(drawn) / plies : 0.0;
     stats.trainSeconds = secondsSince(trainStart) + validationSeconds;
+    pipeline_probe::crashPoint(pipeline_probe::Point::Training, g);
 
-    // ---- 3. Checkpoint ----------------------------------------------------
-    // Written before state.bin (step 5). A crash in between leaves state.bin at
-    // generation g-1; rerunning then reproduces generation g exactly (every
+    // ---- Checkpoint -----------------------------------------------------------
+    // Written before state.bin (the commit). A crash in between leaves state.bin
+    // at generation g-1; rerunning then reproduces generation g exactly (every
     // random stream is derived from the seed) and overwrites this file with
     // identical bytes. The same holds for the SGF, results.csv and elo.csv.
     saveNetwork(net_, checkpointPath(runDir_, g));
+    pipeline_probe::crashPoint(pipeline_probe::Point::Checkpoint, g);
+    checkCancel();
 
-    // ---- 4. Arena and Elo ---------------------------------------------------
+    // ---- Arena and Elo ----------------------------------------------------------
     const auto arenaStart = Clock::now();
-    int newBest = cfg_.gating ? state_.bestGeneration : g;
-    const bool arenaThisGeneration = cfg_.arenaEvery > 0 && g % cfg_.arenaEvery == 0;
-    ArenaRoundResult round;
+    RoundOutcome outcome;
+    outcome.newBest = cfg_.gating ? state_.bestGeneration : g;
+    outcome.arenaThisGeneration = cfg_.arenaEvery > 0 && g % cfg_.arenaEvery == 0;
     // With arena_engines, each wave's games are split across the engines.
     const bool arenaEngines = coordinator_ && !cfg_.arenaEngines.empty();
     if (arenaEngines) coordinator_->beginArena(g);
-    if (arenaThisGeneration) {
+    if (outcome.arenaThisGeneration) {
         const std::optional<int> best =
             cfg_.gating ? std::optional<int>(state_.bestGeneration) : std::nullopt;
-        round = runArenaRound(g, state_.results, state_.references, roundSettings(cfg_, best),
-                              runMatches(cfg_, runDir_, g, &net_, &referenceNets_, coordinator_.get()));
-        for (const ArenaMatch& m : round.matches) {
+        outcome.round = runArenaRound(g, state_.results, state_.references, roundSettings(cfg_, best),
+                                      runMatches(cfg_, runDir_, g, &net_, &referenceNets_, coordinator_.get()));
+        for (const ArenaMatch& m : outcome.round.matches) {
             if (m.opponent == g - 1) {
                 stats.winRateVsPrev = m.result.scoreA / m.result.games;
                 stats.distinctVsPrev = m.result.distinctGames;
             }
             if (best && m.opponent == *best &&
                 passesGate(m.result.scoreA, m.result.games, cfg_.gatingThreshold))
-                newBest = g;
+                outcome.newBest = g;
         }
         // Refit every rating from all results so far: Bradley-Terry does not
         // depend on the order results arrived in, so a resumed run agrees.
@@ -930,17 +1021,108 @@ GenerationStats Trainer::runGeneration() {
     }
     stats.elo = ratingAtOrBefore(state_.results, g);
     stats.arenaSeconds = secondsSince(arenaStart);
+    pipeline_probe::crashPoint(pipeline_probe::Point::Arena, g);
+    return outcome;
+}
+
+void Trainer::printGenerationLine(const GenerationStats& stats, const RoundOutcome& outcome) const {
+    // e.g. "train loss p 1.73 v 0.09 lr 0.002 2.5s", with "o 0.412" after
+    // the value loss when the network has an ownership head.
+    char ownership[32] = "";
+    if (stats.ownershipLoss >= 0) std::snprintf(ownership, sizeof ownership, " o %.3f", stats.ownershipLoss);
+    // With resignation, e.g. "avg 41.2 plies resign -0.87 rate 0.62 fp 0.031 7.1s":
+    // the threshold used, the share of enabled games resigned, the
+    // false-positive rate ("-" where there is none yet).
+    char resign[96] = "";
+    if (stats.resignation) {
+        char rate[16] = "-", falsePositive[16] = "-";
+        if (stats.resignRate >= 0) std::snprintf(rate, sizeof rate, "%.2f", stats.resignRate);
+        if (stats.resignFalsePositive >= 0)
+            std::snprintf(falsePositive, sizeof falsePositive, "%.3f", stats.resignFalsePositive);
+        std::snprintf(resign, sizeof resign, " resign %.2f rate %s fp %s", stats.resignThreshold, rate,
+                      falsePositive);
+    }
+    // With the validation loss, e.g. " val p 1.80 v 0.12 seen p 1.75 v 0.10":
+    // on the fresh games, then on the buffer sample (once there is one).
+    std::string validation;
+    if (stats.valPolicyLoss != -1.0f) {
+        validation = " val p " + formatLoss(stats.valPolicyLoss, 2) + " v " + formatLoss(stats.valValueLoss, 2);
+        if (stats.seenPolicyLoss != -1.0f)
+            validation += " seen p " + formatLoss(stats.seenPolicyLoss, 2) + " v " +
+                          formatLoss(stats.seenValueLoss, 2);
+    }
+    char line[512];
+    std::snprintf(line, sizeof line,
+                  "gen %d | selfplay %d games avg %.1f plies%s %.1fs | "
+                  "train loss p %.2f v %.2f%s lr %g%s %.1fs | ",
+                  stats.generation, stats.games, stats.avgLength, resign, stats.selfPlaySeconds, stats.policyLoss,
+                  stats.valueLoss, ownership, stats.lr, validation.c_str(), stats.trainSeconds);
+    *log_ << line;
+    if (outcome.arenaThisGeneration) {
+        // e.g. "arena elo 512.3 vs 149:0.55 120:0.70 ref1:0.40 (distinct 19/20) promoted 3.2s"
+        char elo[48], tail[64];
+        std::snprintf(elo, sizeof elo, "arena elo %.1f ", stats.elo);
+        std::snprintf(tail, sizeof tail, " (distinct %d/%d)%s %.1fs", stats.distinctVsPrev, cfg_.arenaGames,
+                      outcome.round.promoted ? " promoted" : "", stats.arenaSeconds);
+        *log_ << elo
+              << opponentSummary(outcome.round, cfg_.botSimulations, static_cast<int>(cfg_.referenceNetworks.size()))
+              << tail;
+    } else {
+        char noArena[48];
+        std::snprintf(noArena, sizeof noArena, "no arena, elo %.1f", stats.elo);
+        *log_ << noArena;
+    }
+    if (cfg_.gating) *log_ << " | best " << state_.bestGeneration;
+    *log_ << std::endl;
+}
+
+// ---- the sequential loop (pipeline = off) ---------------------------------------
+
+GenerationStats Trainer::runGeneration() { return cfg_.pipeline ? runPipelined() : runSequential(); }
+
+GenerationStats Trainer::runSequential() {
+    const int g = state_.generation + 1;
+    GenerationStats stats;
+    stats.generation = g;
+
+    // ---- 1. Self-play -----------------------------------------------------
+    // Games are generated by the best network so far with gating, which
+    // may be older than the one being trained, else by the latest. A run
+    // switched from pipeline = on has generation g's games already: they
+    // are committed data, used as they are.
+    const auto selfPlayStart = Clock::now();
+    PendingSelfPlay played;
+    const bool playedNow = !state_.pending;
+    double pendingSeconds = 0;
+    if (!playedNow) {
+        played = std::move(*state_.pending);
+        state_.pending.reset();
+        pendingSeconds = pendingSelfPlaySeconds(g);
+    } else if (cfg_.gating && state_.bestGeneration != state_.generation) {
+        const Network best = loadNetwork(checkpointPath(runDir_, state_.bestGeneration));
+        played = playSelfPlay(g, best, state_.bestGeneration, state_.resignThreshold, nullptr);
+    } else {
+        played = playSelfPlay(g, net_, state_.generation, state_.resignThreshold, nullptr);
+    }
+    processSelfPlay(g, played, stats);
+    stats.selfPlaySeconds = pendingSeconds + secondsSince(selfPlayStart);
+
+    // ---- 2-4. Validation, training, checkpoint, arena -----------------------------
+    const RoundOutcome outcome = trainAndRate(g, played.records, stats, nullptr);
 
     // ---- 5. Training state --------------------------------------------------
-    state_.bestGeneration = newBest;
+    state_.bestGeneration = outcome.newBest;
     state_.generation = g;
     // Who played which slice, written before the commit point: a crash in
-    // between leaves rows of an uncommitted generation, which its redo replaces.
-    if (coordinator_ && !cfg_.selfplayEngines.empty()) {
+    // between leaves rows of an uncommitted generation, which its redo
+    // replaces. Games committed before (pipeline switched off) have theirs.
+    const bool selfplayEngines = playedNow && coordinator_ && !cfg_.selfplayEngines.empty();
+    if (selfplayEngines) {
         writeManifest(runDir_, g, coordinator_->reports());
         // Dynamic allocation: which engine played each game.
         if (!coordinator_->assignment().empty()) writeGamesManifest(runDir_, g, coordinator_->assignment());
     }
+    const bool arenaEngines = coordinator_ && !cfg_.arenaEngines.empty();
     if (arenaEngines) writeArenaManifest(runDir_, g, coordinator_->arenaReports());
     saveTrainingState(statePath(runDir_), state_);
     // log.csv is a human-facing record (it contains timings) and is appended
@@ -949,59 +1131,192 @@ GenerationStats Trainer::runGeneration() {
     appendLogRow(runDir_, stats);
 
     if (log_) {
-        // e.g. "train loss p 1.73 v 0.09 lr 0.002 2.5s", with "o 0.412" after
-        // the value loss when the network has an ownership head.
-        char ownership[32] = "";
-        if (stats.ownershipLoss >= 0)
-            std::snprintf(ownership, sizeof ownership, " o %.3f", stats.ownershipLoss);
-        // With resignation, e.g. "avg 41.2 plies resign -0.87 rate 0.62 fp 0.031 7.1s":
-        // the threshold used, the share of enabled games resigned, the
-        // false-positive rate ("-" where there is none yet).
-        char resign[96] = "";
-        if (stats.resignation) {
-            char rate[16] = "-", falsePositive[16] = "-";
-            if (stats.resignRate >= 0) std::snprintf(rate, sizeof rate, "%.2f", stats.resignRate);
-            if (stats.resignFalsePositive >= 0)
-                std::snprintf(falsePositive, sizeof falsePositive, "%.3f", stats.resignFalsePositive);
-            std::snprintf(resign, sizeof resign, " resign %.2f rate %s fp %s", stats.resignThreshold, rate,
-                          falsePositive);
-        }
-        // With the validation loss, e.g. " val p 1.80 v 0.12 seen p 1.75 v 0.10":
-        // on the fresh games, then on the buffer sample (once there is one).
-        std::string validation;
-        if (stats.valPolicyLoss != -1.0f) {
-            validation = " val p " + formatLoss(stats.valPolicyLoss, 2) + " v " + formatLoss(stats.valValueLoss, 2);
-            if (stats.seenPolicyLoss != -1.0f)
-                validation += " seen p " + formatLoss(stats.seenPolicyLoss, 2) + " v " +
-                              formatLoss(stats.seenValueLoss, 2);
-        }
-        if (coordinator_ && !cfg_.selfplayEngines.empty())
-            *log_ << enginesLine(coordinator_->reports()) << "\n";
+        if (selfplayEngines) *log_ << enginesLine(coordinator_->reports()) << "\n";
         if (arenaEngines) printArenaEngines(*log_, coordinator_->arenaReports());
-        char line[512];
-        std::snprintf(line, sizeof line,
-                      "gen %d | selfplay %d games avg %.1f plies%s %.1fs | "
-                      "train loss p %.2f v %.2f%s lr %g%s %.1fs | ",
-                      g, stats.games, stats.avgLength, resign, stats.selfPlaySeconds, stats.policyLoss,
-                      stats.valueLoss, ownership, stats.lr, validation.c_str(), stats.trainSeconds);
-        *log_ << line;
-        if (arenaThisGeneration) {
-            // e.g. "arena elo 512.3 vs 149:0.55 120:0.70 ref1:0.40 (distinct 19/20) promoted 3.2s"
-            char elo[48], tail[64];
-            std::snprintf(elo, sizeof elo, "arena elo %.1f ", stats.elo);
-            std::snprintf(tail, sizeof tail, " (distinct %d/%d)%s %.1fs", stats.distinctVsPrev,
-                          cfg_.arenaGames, round.promoted ? " promoted" : "", stats.arenaSeconds);
-            *log_ << elo
-                  << opponentSummary(round, cfg_.botSimulations,
-                                     static_cast<int>(cfg_.referenceNetworks.size()))
-                  << tail;
-        } else {
-            char noArena[48];
-            std::snprintf(noArena, sizeof noArena, "no arena, elo %.1f", stats.elo);
-            *log_ << noArena;
+        printGenerationLine(stats, outcome);
+    }
+    return stats;
+}
+
+// ---- the pipelined loop (pipeline = on) -------------------------------------------
+
+namespace {
+
+std::string pendingSecondsPath(const std::string& runDir) {
+    return (fs::path(runDir) / "pending-selfplay.txt").string();
+}
+
+// The failure itself, rather than the cancellation it caused in the other
+// half of an iteration.
+[[noreturn]] void rethrowFailure(std::exception_ptr first, std::exception_ptr second) {
+    for (std::exception_ptr e : {first, second}) {
+        if (!e) continue;
+        try {
+            std::rethrow_exception(e);
+        } catch (const SliceCancelled&) {
+            continue;
+        } catch (...) {
         }
-        if (cfg_.gating) *log_ << " | best " << state_.bestGeneration;
-        *log_ << std::endl;
+        std::rethrow_exception(e);
+    }
+    std::rethrow_exception(first ? first : second);
+}
+
+} // namespace
+
+double Trainer::pendingSelfPlaySeconds(int g) const {
+    if (pendingSeconds_.first == g) return pendingSeconds_.second;
+    // Played by an earlier process: its time, if it left it.
+    std::ifstream in(pendingSecondsPath(runDir_));
+    int generation = -1;
+    double seconds = 0;
+    for (std::string line; std::getline(in, line);) {
+        if (line.rfind("generation = ", 0) == 0) generation = std::atoi(line.c_str() + 13);
+        if (line.rfind("seconds = ", 0) == 0) seconds = std::atof(line.c_str() + 10);
+    }
+    return generation == g && std::isfinite(seconds) && seconds >= 0 ? seconds : 0.0;
+}
+
+void Trainer::keepPendingSeconds(int g, double seconds) {
+    pendingSeconds_ = {g, seconds};
+    char text[96];
+    std::snprintf(text, sizeof text, "generation = %d\nseconds = %.3f\n", g, seconds);
+    writeFileAtomically(pendingSecondsPath(runDir_), text);
+}
+
+void Trainer::prepareForThreads() {
+    // The BLAS backend sets its environment once, with setenv, which is not
+    // thread-safe: that first call happens here, before the two halves of an
+    // iteration run, whenever training or an engine may use BLAS.
+    bool blas = cpuBackendName(cfg_.backend) == "blas";
+    for (const std::vector<EngineSpec>* list : {&cfg_.selfplayEngines, &cfg_.arenaEngines})
+        for (const EngineSpec& e : *list) blas = blas || e.backend == "blas";
+    if (blas) makeBackend("blas", 1);
+}
+
+void Trainer::playAhead() {
+    // The prologue: generation g's games, alone, with the network of the
+    // last commit (as the sequential loop would), committed with
+    // generation g-1 so that an iteration can start from them.
+    const int g = state_.generation + 1;
+    const int network = cfg_.gating ? state_.bestGeneration : state_.generation;
+    const auto start = Clock::now();
+    if (coordinator_) coordinator_->resetCancel();
+    PendingSelfPlay played;
+    if (network != state_.generation) {
+        const Network best = loadNetwork(checkpointPath(runDir_, network));
+        played = playSelfPlay(g, best, network, state_.resignThreshold, nullptr);
+    } else {
+        played = playSelfPlay(g, net_, network, state_.resignThreshold, nullptr);
+    }
+    const double seconds = secondsSince(start);
+    pipeline_probe::crashPoint(pipeline_probe::Point::PrologueSelfPlay, g);
+    const int games = static_cast<int>(played.records.size());
+    state_.pending = std::move(played);
+    const bool selfplayEngines = coordinator_ && !cfg_.selfplayEngines.empty();
+    if (selfplayEngines) {
+        writeManifest(runDir_, g, coordinator_->reports());
+        if (!coordinator_->assignment().empty()) writeGamesManifest(runDir_, g, coordinator_->assignment());
+    }
+    keepPendingSeconds(g, seconds);
+    saveTrainingState(statePath(runDir_), state_);
+    if (log_) {
+        if (selfplayEngines) *log_ << enginesLine(coordinator_->reports(), "selfplay engines (gen " + std::to_string(g) + ")") << "\n";
+        char line[160];
+        std::snprintf(line, sizeof line,
+                      "pipeline: gen %d self-play by network %d, %d games %.1fs, committed with generation %d\n", g,
+                      network, games, seconds, g - 1);
+        *log_ << line << std::flush;
+    }
+}
+
+GenerationStats Trainer::runPipelined() {
+    prepareForThreads();
+    if (!state_.pending) playAhead();
+    const auto iterationStart = Clock::now();
+    const int g = state_.generation + 1;
+    GenerationStats stats;
+    stats.generation = g;
+
+    // ---- 1. Generation g's games, committed with g-1 -----------------------------
+    PendingSelfPlay played = std::move(*state_.pending);
+    state_.pending.reset();
+    stats.selfPlaySeconds = pendingSelfPlaySeconds(g);
+    processSelfPlay(g, played, stats);   // also v_resign for g + 1
+    pipeline_probe::crashPoint(pipeline_probe::Point::Processed, g);
+
+    // ---- 2. Generation g+1's self-play, beside 3 ----------------------------------
+    // By the best network of the last commit (g-1's), with its own copy:
+    // the trainer's network trains in place below.
+    const int network = cfg_.gating ? state_.bestGeneration : state_.generation;
+    const std::unique_ptr<const Network> aheadNet =
+        network == state_.generation ? std::make_unique<const Network>(net_)
+                                     : std::make_unique<const Network>(loadNetwork(checkpointPath(runDir_, network)));
+    const float aheadThreshold = state_.resignThreshold;
+    if (coordinator_) coordinator_->resetCancel();
+    std::atomic<bool> stopAhead{false}, aheadFailed{false};
+    PendingSelfPlay ahead;
+    double aheadSeconds = 0;
+    std::exception_ptr aheadError, roundError;
+    std::thread aheadThread([&] {
+        const auto start = Clock::now();
+        try {
+            ahead = playSelfPlay(g + 1, *aheadNet, network, aheadThreshold, &stopAhead);
+            pipeline_probe::crashPoint(pipeline_probe::Point::SelfPlay, g + 1);
+        } catch (...) {
+            aheadError = std::current_exception();
+            aheadFailed = true;
+            if (coordinator_) coordinator_->cancel();   // the arena, if it is playing
+        }
+        aheadSeconds = secondsSince(start);
+    });
+
+    // ---- 3. Validation, training, checkpoint and arena of generation g -----------
+    RoundOutcome outcome;
+    try {
+        outcome = trainAndRate(g, played.records, stats, &aheadFailed);
+    } catch (...) {
+        roundError = std::current_exception();
+        stopAhead = true;
+        if (coordinator_) coordinator_->cancel();
+    }
+    // ---- 4. The barrier ---------------------------------------------------------
+    aheadThread.join();
+    if (roundError || aheadError) rethrowFailure(roundError, aheadError);
+
+    // ---- 5. Commit generation g with generation g+1's games ----------------------
+    state_.bestGeneration = outcome.newBest;
+    state_.generation = g;
+    const int aheadGames = static_cast<int>(ahead.records.size());
+    state_.pending = std::move(ahead);
+    const bool selfplayEngines = coordinator_ && !cfg_.selfplayEngines.empty();
+    if (selfplayEngines) {
+        writeManifest(runDir_, g + 1, coordinator_->reports());
+        if (!coordinator_->assignment().empty()) writeGamesManifest(runDir_, g + 1, coordinator_->assignment());
+    }
+    const bool arenaEngines = coordinator_ && !cfg_.arenaEngines.empty();
+    if (arenaEngines) writeArenaManifest(runDir_, g, coordinator_->arenaReports());
+    keepPendingSeconds(g + 1, aheadSeconds);
+    pipeline_probe::crashPoint(pipeline_probe::Point::Manifests, g);
+    saveTrainingState(statePath(runDir_), state_);
+    pipeline_probe::crashPoint(pipeline_probe::Point::State, g);
+    appendLogRow(runDir_, stats);
+
+    if (log_) {
+        if (selfplayEngines)
+            *log_ << enginesLine(coordinator_->reports(), "selfplay engines (gen " + std::to_string(g + 1) + ")")
+                  << "\n";
+        if (arenaEngines) printArenaEngines(*log_, coordinator_->arenaReports());
+        printGenerationLine(stats, outcome);
+        // e.g. "pipeline: gen 13 self-play by network 11, 400 games 15402.6s, beside gen 12's training and
+        // arena 8045.7s; generation 12 took 15403.1s"
+        char line[256];
+        std::snprintf(line, sizeof line,
+                      "pipeline: gen %d self-play by network %d, %d games %.1fs, beside gen %d's training and "
+                      "arena %.1fs; generation %d took %.1fs\n",
+                      g + 1, network, aheadGames, aheadSeconds, g, stats.trainSeconds + stats.arenaSeconds, g,
+                      secondsSince(iterationStart));
+        *log_ << line << std::flush;
     }
     return stats;
 }
@@ -1009,6 +1324,43 @@ GenerationStats Trainer::runGeneration() {
 void Trainer::runUntil(int lastGeneration) {
     while (generation() < lastGeneration) runGeneration();
 }
+
+namespace pipeline_probe {
+namespace {
+std::mutex gCrashMutex;
+std::map<Point, int> gCrashes;   // point -> the generation it fires at
+const char* pointName(Point p) {
+    switch (p) {
+    case Point::PrologueSelfPlay: return "the prologue's self-play";
+    case Point::Processed: return "processing self-play";
+    case Point::SelfPlay: return "self-play";
+    case Point::Validation: return "the validation loss";
+    case Point::Training: return "training";
+    case Point::Checkpoint: return "the checkpoint";
+    case Point::Arena: return "the arena";
+    case Point::Manifests: return "the manifests";
+    case Point::State: return "state.bin";
+    }
+    return "?";
+}
+} // namespace
+void crashAt(Point point, int generation) {
+    std::lock_guard<std::mutex> lock(gCrashMutex);
+    gCrashes[point] = generation;
+}
+void reset() {
+    std::lock_guard<std::mutex> lock(gCrashMutex);
+    gCrashes.clear();
+}
+void crashPoint(Point point, int generation) {
+    std::lock_guard<std::mutex> lock(gCrashMutex);
+    auto it = gCrashes.find(point);
+    if (it == gCrashes.end() || it->second != generation) return;
+    gCrashes.erase(it);
+    throw std::runtime_error(std::string("pipeline_probe: crash after ") + pointName(point) + " of generation " +
+                             std::to_string(generation));
+}
+} // namespace pipeline_probe
 
 int rerateRun(const std::string& runDir, const std::vector<std::string>& overrides,
               std::ostream* log) {
