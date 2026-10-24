@@ -18,10 +18,11 @@ again over the played-out games alone. Used for finding 2 of "Next experiments" 
 docs/results/README.md.
 
 Reads only the replay buffer at the start of a run's state.bin, versions 2
-to 5 (the versions `train` has written since the reference set was added;
+to 6 (the versions `train` has written since the reference set was added;
 3 added ownership targets, 4 reference networks, 5 resignation: one
 resigned byte per buffered game, then the threshold and its window after
-the buffer, which is not read). It refuses any other magic or version,
+the buffer, which is not read; 6, a pipelined run's, is 5 with the next
+generation's games after it, also not read: they are not in the buffer yet). It refuses any other magic or version,
 and it never writes: it is safe to run on the state of a finished run. A
 run that is still training rewrites state.bin at the end of every
 generation, so read a copy of it or wait. Standard library only.
@@ -40,8 +41,8 @@ def u64():
 def f32():
     global o;v=struct.unpack_from('<f',d,o)[0];o+=4;return v
 magic=u32();ver=u32();gen=i32();best=i32();st=u64()
-if magic != 0x54535A41 or not 2 <= ver <= 5:
-    sys.exit("%s: not a training state of version 2-5 (magic %#x, version %d)" % (sys.argv[1], magic, ver))
+if magic != 0x54535A41 or not 2 <= ver <= 6:
+    sys.exit("%s: not a training state of version 2-6 (magic %#x, version %d)" % (sys.argv[1], magic, ver))
 cap=u64();tot=u64();ng=u32()
 print("version",ver,"gen",gen,"games",ng)
 H=[];post=[];npos=0;resigned=0;rpos=0;played=[0,0];topk=[];nvis=[];passtop=0;totv=[];maxfrac=[]

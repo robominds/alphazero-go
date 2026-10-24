@@ -6,10 +6,12 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 #include "azgo/elo.hpp"
 #include "azgo/replay_buffer.hpp"
+#include "azgo/selfplay.hpp"
 
 namespace azgo {
 
@@ -19,6 +21,19 @@ namespace azgo {
 struct ReferenceNetwork {
     std::string path;
     uint64_t hash = 0;
+};
+
+// Pipelined generations (pipeline = on): the next generation's self-play
+// games, played before the state was committed and not processed yet (their
+// statistics, the resignation window, SGFs and the replay buffer come when
+// that generation trains), with what processing them needs from the time
+// they were played: a resume may have changed the keys since.
+struct PendingSelfPlay {
+    int network = 0;                  // the generation whose network played them
+    bool resignation = false;         // resignation was on
+    float resignThreshold = -0.9f;    // the v_resign they were played with
+    int maxMoves = 0;                 // the resolved max_moves they were played with
+    std::vector<GameRecord> records;  // in index order, resign flags and lows included
 };
 
 // Everything needed to continue a run exactly, besides the checkpoints and
@@ -48,6 +63,9 @@ struct TrainingState {
     // records it; it is resign_threshold_initial's default until set.
     float resignThreshold = -0.9f;
     std::vector<ResignTrace> resignWindow;
+    // Generation + 1's self-play games when the run is pipelined; empty
+    // otherwise (and then the file is version 5, as before pipelining).
+    std::optional<PendingSelfPlay> pending;
 };
 
 // The reference set of a new run: every fixed player (-numFixed, ..., -1:
@@ -57,9 +75,16 @@ std::vector<int> initialReferences(int numFixed);
 // Binary, magic "AZST" (u32 0x54535A41), version u32 = 5 (the replay buffer
 // stores each game's final ownership and whether it ended by resignation;
 // references, the bot list, the reference networks, then the resignation
-// threshold and window come last). Atomic replace.
+// threshold and window come last), or 6 when the state has pending games:
+// version 5's fields, then i32 network, u8 resignation, f32 v_resign, i32
+// max_moves, u32 count and the games as a self-play result file stores them
+// (the record, the resign-disabled flag, both sides' resign lows). A state
+// without pending games is written as version 5. Atomic replace.
 void saveTrainingState(const std::string& path, const TrainingState& state);
-// Reads versions 5, 4, 3, 2 and 1. Versions 1 to 4 predate resignation and
+// Reads versions 6, 5, 4, 3, 2 and 1. Version 6's pending block is refused
+// when it holds no games, names a network after the committed generation, a
+// v_resign outside [-1, 0] or max_moves below 1, or a game that does not
+// parse. Versions 1 to 4 predate resignation and
 // load with no resigned games, an empty window and the default threshold.
 // A version-5 threshold outside [-1, 0] or window entries that are not
 // record lows (ply >= 1 rising, values in [-1, 1] falling) are refused. Versions 1 to 3 predate reference networks

@@ -17,10 +17,11 @@ middle game ends there if it had no pass before; the resigning side is the
 loser. For version 5 the number of resigned games is printed first.
 
 Reads only the replay buffer at the start of a run's state.bin, versions 2
-to 5 (the versions `train` has written since the reference set was added;
+to 6 (the versions `train` has written since the reference set was added;
 3 added ownership targets, 4 reference networks, 5 resignation: one
 resigned byte per buffered game, then the threshold and its window after
-the buffer, which is not read). It refuses any other magic or version,
+the buffer, which is not read; 6, a pipelined run's, is 5 with the next
+generation's games after it, also not read: they are not in the buffer yet). It refuses any other magic or version,
 and it never writes: it is safe to run on the state of a finished run. A
 run that is still training rewrites state.bin at the end of every
 generation, so read a copy of it or wait. Standard library only.
@@ -32,8 +33,8 @@ d=open(sys.argv[1],'rb').read();o=0
 def rd(fmt):
     global o;v=struct.unpack_from('<'+fmt,d,o);o+=struct.calcsize('<'+fmt);return v
 magic,ver,gen,best,st,cap,tot,ng=rd('IIiiQQQI')
-if magic != 0x54535A41 or not 2 <= ver <= 5:
-    sys.exit("%s: not a training state of version 2-5 (magic %#x, version %d)" % (sys.argv[1], magic, ver))
+if magic != 0x54535A41 or not 2 <= ver <= 6:
+    sys.exit("%s: not a training state of version 2-6 (magic %#x, version %d)" % (sys.argv[1], magic, ver))
 acc=collections.defaultdict(lambda:[0,0.0,0.0,0.0]);resigned=0
 for gi in range(ng):
     n,komi,m=rd('ifI');moves=rd('%di'%m);o+=m*n*n

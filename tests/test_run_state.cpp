@@ -202,7 +202,7 @@ static void test_crash_leftovers() {
 
     // A newer format version.
     std::string newer = bytes;
-    newer[4] = 6;   // version is the u32 after the magic, little-endian
+    newer[4] = 7;   // version is the u32 after the magic, little-endian
     writeBytes(wrong, newer);
     msg = loadError(wrong.string());
     assert(msg.find("version") != std::string::npos);
@@ -387,6 +387,85 @@ static void test_resignation_round_trip() {
     fs::remove_all(dir);
 }
 
+// Pipelined generations: a commit holds the next generation's games,
+// unprocessed. A state with them is version 6 (version 5 and the pending
+// block); a state without them is still version 5, byte for byte, so a
+// sequential run writes what it always wrote.
+static bool sameRecord(const GameRecord& x, const GameRecord& y) {
+    return sameGame(x, y) && x.resignDisabled == y.resignDisabled && x.resignLows[0] == y.resignLows[0] &&
+           x.resignLows[1] == y.resignLows[1];
+}
+
+static void test_pending_selfplay_round_trip() {
+    fs::path dir = freshDir("pending");
+    const std::string path = (dir / "state.bin").string();
+    TrainingState original = makeState();
+    saveTrainingState(path, original);
+    const std::string v5 = readBytes(path);
+    assert(v5[4] == 5 && !loadTrainingState(path).pending);
+
+    PendingSelfPlay p;
+    p.network = 5;
+    p.resignation = true;
+    p.resignThreshold = -0.83f;
+    p.maxMoves = 12;
+    p.records = {original.buffer.game(0), original.buffer.game(1), original.buffer.game(0)};
+    p.records[0].resignDisabled = true;
+    p.records[0].resignLows[0] = {{1, -0.25f}, {3, -0.5f}};
+    p.records[0].resignLows[1] = {{2, 0.5f}};
+    p.records[2].resigned = true;
+    p.records[2].resignLows[1] = {{2, -0.9f}};
+    original.pending = p;
+    saveTrainingState(path, original);
+    const std::string v6 = readBytes(path);
+    assert(v6[4] == 6);
+    // Version 5's bytes, then the block.
+    assert(v6.compare(8, v5.size() - 8, v5, 8, v5.size() - 8) == 0);
+    assert(trainingStateGeneration(path) == 7);
+    const TrainingState loaded = loadTrainingState(path);
+    assertSameState(original, loaded);
+    assert(loaded.pending && loaded.pending->network == 5 && loaded.pending->resignation);
+    assert(loaded.pending->resignThreshold == -0.83f && loaded.pending->maxMoves == 12);
+    assert(loaded.pending->records.size() == 3);
+    for (size_t i = 0; i < 3; ++i) assert(sameRecord(loaded.pending->records[i], p.records[i]));
+    saveTrainingState((dir / "again.bin").string(), loaded);
+    assert(readBytes(dir / "again.bin") == v6);
+
+    // Without the block again: version 5, the original bytes.
+    TrainingState cleared = loaded;
+    cleared.pending.reset();
+    saveTrainingState(path, cleared);
+    assert(readBytes(path) == v5);
+
+    // A damaged block is refused, naming the file: no games, a network
+    // after the committed generation, v_resign outside [-1, 0], max_moves
+    // below 1, a cut or extended file.
+    auto refused = [&](const TrainingState& s) {
+        saveTrainingState(path, s);
+        const std::string msg = loadError(path);
+        return msg.find(path) != std::string::npos && msg.find("pending") != std::string::npos;
+    };
+    for (int v = 0; v < 5; ++v) {
+        TrainingState s = original;
+        if (v == 0) s.pending->records.clear();
+        if (v == 1) s.pending->network = 8;
+        if (v == 2) s.pending->network = -1;
+        if (v == 3) s.pending->resignThreshold = 0.5f;
+        if (v == 4) s.pending->maxMoves = 0;
+        assert(refused(s));
+    }
+    writeBytes(path, v6.substr(0, v6.size() - 3));
+    assert(loadError(path).find(path) != std::string::npos);
+    writeBytes(path, v6 + "x");
+    assert(loadError(path).find("trailing") != std::string::npos);
+    // Version 5 with a block appended is not a version-6 file.
+    std::string mislabeled = v6;
+    mislabeled[4] = 5;
+    writeBytes(path, mislabeled);
+    assert(loadError(path).find("trailing") != std::string::npos);
+    fs::remove_all(dir);
+}
+
 // FNV-1a over a file's bytes: equal bytes hash equally, one changed byte
 // changes the hash, and a missing file is an error naming it.
 static void test_file_hash() {
@@ -447,6 +526,7 @@ int main() {
     test_version2_recomputes_ownership();
     test_reference_networks_round_trip();
     test_resignation_round_trip();
+    test_pending_selfplay_round_trip();
     test_file_hash();
     test_rejects_bad_references();
     test_paths();

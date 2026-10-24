@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <vector>
 #include "azgo/serialize.hpp"
+#include "slice_files.hpp"
 
 namespace azgo {
 
@@ -15,8 +16,11 @@ namespace {
 constexpr uint32_t kStateMagic = 0x54535A41;   // "AZST" read as little-endian bytes
 // 2 added the reference set and bot list, 3 the buffer's ownership targets,
 // 4 the reference networks, 5 resignation (the buffer's resigned flags, the
-// threshold and the window of disabled games).
-constexpr uint32_t kStateVersion = 5;
+// threshold and the window of disabled games), 6 a pipelined run's pending
+// self-play games. 6 is written only when there are pending games, so a
+// run without them writes the version-5 file it always wrote.
+constexpr uint32_t kStateVersion = 6;
+constexpr uint32_t kStateVersionWithoutPending = 5;
 } // namespace
 
 std::vector<int> initialReferences(int numFixed) {
@@ -48,7 +52,7 @@ void saveTrainingState(const std::string& path, const TrainingState& state) {
     std::ostringstream os(std::ios::binary);
     BinaryWriter w(os);
     w.u32(kStateMagic);
-    w.u32(kStateVersion);
+    w.u32(state.pending ? kStateVersion : kStateVersionWithoutPending);
     w.i32(state.generation);
     w.i32(state.bestGeneration);
     w.u64(static_cast<uint64_t>(state.samplesTrained));
@@ -78,6 +82,15 @@ void saveTrainingState(const std::string& path, const TrainingState& state) {
                 w.f32(value);
             }
         }
+    if (state.pending) {
+        const PendingSelfPlay& p = *state.pending;
+        w.i32(p.network);
+        w.u8(p.resignation ? 1 : 0);
+        w.f32(p.resignThreshold);
+        w.i32(p.maxMoves);
+        w.u32(static_cast<uint32_t>(p.records.size()));
+        for (const GameRecord& g : p.records) slice_files::writeSliceRecord(w, g);
+    }
     writeFileAtomically(path, os.str());
 }
 
@@ -171,6 +184,30 @@ TrainingState loadTrainingState(const std::string& path, const std::vector<int>&
                         }
                     }
             }
+        }
+        if (version >= 6) {
+            PendingSelfPlay p;
+            p.network = r.i32();
+            if (p.network < 0 || p.network > state.generation)
+                throw std::runtime_error("invalid pending self-play (network " + std::to_string(p.network) +
+                                         " is not a committed generation)");
+            const uint8_t resignation = r.u8();
+            if (resignation > 1) throw std::runtime_error("invalid pending self-play (resignation flag)");
+            p.resignation = resignation == 1;
+            p.resignThreshold = r.f32();
+            if (!(p.resignThreshold >= -1.0f && p.resignThreshold <= 0.0f))
+                throw std::runtime_error("invalid pending self-play (resignation threshold)");
+            p.maxMoves = r.i32();
+            if (p.maxMoves < 1) throw std::runtime_error("invalid pending self-play (max_moves)");
+            const uint32_t count = r.u32();
+            // Each game is at least a header's worth of bytes.
+            if (count == 0 || count > bytes.size() / 16)
+                throw std::runtime_error("invalid pending self-play (" + std::to_string(count) + " games)");
+            p.records.reserve(count);
+            for (uint32_t i = 0; i < count; ++i)
+                p.records.push_back(
+                    slice_files::readSliceRecord(r, "pending self-play: game " + std::to_string(i)));
+            state.pending = std::move(p);
         }
         if (is.peek() != std::char_traits<char>::eof())
             throw std::runtime_error("unexpected trailing bytes");
