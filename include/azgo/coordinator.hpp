@@ -401,7 +401,7 @@ private:
 // on a GPU engine (bots need none): the calibrations when a run starts
 // (generation 0 and every reference network), or a round (the new network,
 // g-1, the strongest reference, arena_opponents more and, with gating, the
-// best network).
+// best network); with arena_ladder = off, 2 (the new network and the best).
 int arenaWaveNetworks(const Config& cfg);
 
 // How a run is named on remotes: its directory's name (characters outside

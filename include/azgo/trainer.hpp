@@ -42,7 +42,7 @@ struct GenerationStats {
     float lr = 0;
     double replayRatio = 0;     // samples drawn this generation / new positions
     double selfPlaySeconds = 0, trainSeconds = 0, arenaSeconds = 0;
-    double elo = 0;             // after refit; previous value if no arena this generation
+    double elo = 0;             // after refit; previous value if no arena this generation; NaN with arena_ladder = off (no rating)
     double winRateVsPrev = -1;  // -1 when no match vs g-1
     int distinctVsPrev = -1;    // distinct games in that match; -1 when no match vs g-1
     // Resignation, when the config turns it on (the fields below are unset otherwise).

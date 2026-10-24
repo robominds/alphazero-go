@@ -1716,6 +1716,7 @@ std::vector<MatchResult> Coordinator::playArena(const std::vector<ArenaMatchSpec
 }
 
 int arenaWaveNetworks(const Config& cfg) {
+    if (!cfg.arenaLadder) return 2;   // the gating match only: the new network and the best
     const int calibration = 1 + static_cast<int>(cfg.referenceNetworks.size());
     const int round = 3 + cfg.arenaOpponents + (cfg.gating ? 1 : 0);
     return std::max(calibration, round);

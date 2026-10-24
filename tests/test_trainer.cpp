@@ -2764,7 +2764,245 @@ static void test_dynamic_replay_of_assignment() {
     assert(runFingerprint(live, 3) != runFingerprint(other, 3));
 }
 
+// ---- arena_ladder = off: the gating match alone ----------------------------------
+
+// A gated 5x5 run with a bot, whose gate (2 of 4) is passed about half the
+// time and whose promote_threshold (0.5) promotes into the reference set
+// (generation 5 beats the 2-simulation bot), so the ladder plays every
+// kind of match.
+static Config ladderConfig(bool ladder) {
+    Config c = tinyConfig();
+    c.botSimulations = {2};
+    c.gating = true;
+    c.gatingThreshold = 0.5f;
+    c.arenaGames = 4;
+    c.calibrationGames = 4;
+    c.promoteThreshold = 0.5f;
+    c.arenaLadder = ladder;
+    return c;
+}
+
+// The progress lines of a run, by generation: "gen g | ..." -> the line.
+static std::map<int, std::string> progressLines(const std::string& out) {
+    std::map<int, std::string> lines;
+    for (const std::string& line : splitLines(out))
+        if (line.rfind("gen ", 0) == 0) lines[std::stoi(line.substr(4))] = line;
+    return lines;
+}
+
+// The score a progress line gives the new network against `opponent`
+// ("vs 2:0.50 0:0.75 ..."), or "" when it did not play it.
+static std::string scoreAgainst(const std::string& line, int opponent) {
+    const size_t vs = line.find(" vs ");
+    if (vs == std::string::npos) return "";
+    std::istringstream words(line.substr(vs + 4, line.find(" (distinct") - vs - 4));
+    for (std::string w; words >> w;)
+        if (w.rfind(std::to_string(opponent) + ":", 0) == 0) return w.substr(w.find(':') + 1);
+    return "";
+}
+
+// "| best N" at the end of a progress line.
+static int bestOf(const std::string& line) { return std::stoi(line.substr(line.rfind("| best ") + 7)); }
+
+// Every checkpoint and self-play SGF: what training and self-play made,
+// which the arena influences only through the best network.
+static std::string trainingFingerprint(const TempDir& dir, int generations) {
+    std::string out;
+    for (int g = 0; g <= generations; ++g) out += readFile(checkpointPath(dir.str(), g));
+    std::vector<std::string> sgf;
+    for (const auto& e : fs::directory_iterator(dir.file("sgf"))) sgf.push_back(e.path().string());
+    std::sort(sgf.begin(), sgf.end());
+    for (const std::string& f : sgf) out += f.substr(f.rfind('/')) + readFile(f);
+    return out + std::to_string(loadTrainingState(statePath(dir.str())).bestGeneration);
+}
+
+// With the ladder off, each generation plays one match, against the best
+// network, and nothing else: no calibration at start, no other opponent, no
+// promotion into the reference set. Its gating decisions, so its
+// checkpoints, games and best network, are the ladder run's; each gating
+// score is the ladder run's score against the same best network. elo.csv
+// and references.csv stay as the start wrote them; log.csv's elo is empty.
+static void test_ladder_off_plays_only_the_gating_match() {
+    const int last = 6;
+    TempDir on("ladder_on"), off("ladder_off");
+    std::ostringstream onOut, offOut;
+    std::unique_ptr<Trainer> t = startQuiet(ladderConfig(true), on);
+    t->setLog(&onOut);
+    t->runUntil(last);
+    t = startQuiet(ladderConfig(false), off);
+    const std::string startElo = readFile(off.file("elo.csv")), startRefs = readFile(off.file("references.csv"));
+    assert(readFile(off.file("results.csv")) == ResultsTable().toCsv());   // no calibration
+    t->setLog(&offOut);
+    t->runUntil(last);
+    t.reset();
+
+    assert(trainingFingerprint(on, last) == trainingFingerprint(off, last));
+    const std::map<int, std::string> onLines = progressLines(onOut.str()), offLines = progressLines(offOut.str());
+    assert(onLines.size() == static_cast<size_t>(last) && offLines.size() == static_cast<size_t>(last));
+    const std::map<std::pair<int, int>, ResultsTable::Pair> pairs = readResults(off);
+    assert(pairs.size() == static_cast<size_t>(last));
+    int best = 0, promotions = 0;
+    for (int g = 1; g <= last; ++g) {
+        // One pair per generation, (best, g), arena_games games.
+        const ResultsTable::Pair& p = pairs.at({best, g});
+        assert(p.games == 4);
+        const std::string& line = offLines.at(g);
+        assert(line.find("| arena gating vs " + std::to_string(best) + ":") != std::string::npos);
+        assert(line.find("elo") == std::string::npos && line.find(" (distinct ") != std::string::npos);
+        // The ladder run played the same games against the same best network.
+        assert(!scoreAgainst(onLines.at(g), best).empty());
+        assert(scoreAgainst(line, best) == scoreAgainst(onLines.at(g), best));
+        // The decision is the gating match's: 2 of 4 or better.
+        const bool passed = passesGate(4 - p.scoreA, 4, 0.5);
+        if (passed) ++promotions;
+        best = passed ? g : best;
+        assert(bestOf(line) == best && bestOf(onLines.at(g)) == best);
+        // log.csv: no rating; the g-1 columns when the best network was g-1.
+        const std::map<std::string, std::string> row = logRow(off.str(), g - 1);
+        assert(row.at("elo").empty());
+        const bool vsPrev = pairs.count({g - 1, g}) > 0;
+        assert(row.at("winrate_vs_prev").empty() != vsPrev && row.at("distinct_vs_prev").empty() != vsPrev);
+        assert(!logRow(on.str(), g - 1).at("elo").empty());
+    }
+    assert(promotions > 0 && promotions < last);   // both decisions were exercised
+    const TrainingState s = loadTrainingState(statePath(off.str()));
+    assert(s.bestGeneration == best && s.references == initialReferences(1));
+    assert(loadTrainingState(statePath(on.str())).references.back() > 0);   // the ladder promoted
+    assert(readFile(off.file("elo.csv")) == startElo && readFile(off.file("references.csv")) == startRefs);
+
+    // --rerate rebuilds the whole ladder from the checkpoints: the same
+    // files as re-rating the ladder run (same checkpoints).
+    assert(rerateRun(on.str(), {}, nullptr) == last && rerateRun(off.str(), {}, nullptr) == last);
+    for (const char* f : {"results.csv", "elo.csv", "references.csv", "log.csv"})
+        assert(readFile(on.file(std::string("rerate/") + f)) == readFile(off.file(std::string("rerate/") + f)));
+    // Even when asked for the replay only: re-rating always plays the ladder.
+    TempDir again("ladder_off_rerate_set");
+    fs::create_directories(again.path);
+    fs::copy(off.path, again.path, fs::copy_options::recursive | fs::copy_options::overwrite_existing);
+    fs::remove_all(again.file("rerate"));
+    assert(rerateRun(again.str(), {"arena_ladder=off"}, nullptr) == last);
+    assert(readFile(again.file("rerate/results.csv")) == readFile(on.file("rerate/results.csv")));
+}
+
+// A ladder-off run resumed at any commit is the straight run; the key
+// switches either way at a commit, with a note, and checkpoints and
+// decisions never change. Switched on, the ladder calibrates the bot
+// first, with the games a run started with the ladder on played.
+static void test_ladder_off_resume_and_switch() {
+    const int last = 6;
+    TempDir straight("ladder_off_straight");
+    startQuiet(ladderConfig(false), straight)->runUntil(4);
+    for (int stop : {0, 1, 3}) {
+        TempDir dir("ladder_off_stop" + std::to_string(stop));
+        startQuiet(ladderConfig(false), dir)->runUntil(stop);
+        resumeQuiet(dir, {})->runUntil(4);
+        assert(runFingerprint(dir, 4) == runFingerprint(straight, 4));
+    }
+
+    TempDir on("ladder_switch_on"), switched("ladder_switch");
+    startQuiet(ladderConfig(true), on)->runUntil(last);
+    startQuiet(ladderConfig(true), switched)->runUntil(2);
+    std::ostringstream toOff, toOn, same;
+    std::unique_ptr<Trainer> t = Trainer::resume(switched.str(), {"arena_ladder=off"}, &toOff);
+    t->setLog(nullptr);
+    t->runUntil(4);
+    t = Trainer::resume(switched.str(), {"arena_ladder=on"}, &toOn);
+    t->setLog(nullptr);
+    t->runUntil(last);
+    t = Trainer::resume(switched.str(), {}, &same);
+    t.reset();
+    assert(toOff.str().find("note: arena_ladder changed from on to off; from here on the arena plays only the "
+                            "gating match") != std::string::npos);
+    assert(toOn.str().find("note: arena_ladder changed from off to on") != std::string::npos);
+    assert(same.str().find("note: arena_ladder") == std::string::npos);
+    assert(trainingFingerprint(on, last) == trainingFingerprint(switched, last));
+    const std::map<std::pair<int, int>, ResultsTable::Pair> pairs = readResults(switched);
+    for (int g = 1; g <= last; ++g) {
+        int opponents = 0;
+        for (const auto& [key, pair] : pairs) opponents += key.second == g ? 1 : 0;
+        const std::map<std::string, std::string> row = logRow(switched.str(), g - 1);
+        if (g == 3 || g == 4) {
+            assert(opponents == 1 && row.at("elo").empty());
+        } else {
+            assert(pairs.count({g - 1, g}) && opponents >= 2 && !row.at("elo").empty());
+        }
+    }
+
+    // Started off: no calibration until the ladder is switched on, then the
+    // same calibration games as a run that started with it.
+    TempDir late("ladder_late");
+    startQuiet(ladderConfig(false), late)->runUntil(2);
+    assert(!readResults(late).count({-1, 0}));
+    std::ostringstream lateNote;
+    t = Trainer::resume(late.str(), {"arena_ladder=on"}, &lateNote);
+    t->setLog(nullptr);
+    t->runUntil(3);
+    t.reset();
+    const std::map<std::pair<int, int>, ResultsTable::Pair> latePairs = readResults(late), onPairs = readResults(on);
+    assert(latePairs.at({-1, 0}).games == 4 && latePairs.at({-1, 0}).scoreA == onPairs.at({-1, 0}).scoreA);
+    assert(latePairs.count({2, 3}) && !logRow(late.str(), 2).at("elo").empty());
+
+    // Without gating there is no gating match: refused, nothing written.
+    const std::string config = readFile(configPath(straight.str()));
+    assert(configErrorOf([&] { Trainer::resume(straight.str(), {"gating=false"}, nullptr); })
+               .find("arena_ladder = off") != std::string::npos);
+    assert(readFile(configPath(straight.str())) == config);
+    TempDir refused("ladder_off_no_gating");
+    Config c = ladderConfig(false);
+    c.gating = false;
+    assert(configErrorOf([&] { Trainer::startNew(c, refused.str(), {}, nullptr); }).find("gating = true") !=
+           std::string::npos);
+    assert(!fs::exists(refused.path));
+}
+
+// The arena's engines (here and a fake remote) play the one wave of each
+// generation as they play any wave: the plain ladder-off run byte for byte,
+// one wave per generation and no calibration rows. A wave holds two
+// networks. Self-play's dynamic allocation leaves the arena alone.
+static void test_ladder_off_with_engines() {
+    TempDir plain("ladder_off_plain"), arena("ladder_off_arena"), dynamic("ladder_off_dynamic");
+    const Config base = ladderConfig(false);
+    assert(arenaWaveNetworks(base) == 2 && arenaWaveNetworks(ladderConfig(true)) == 6);
+    startQuiet(base, plain)->runUntil(4);
+    startEngines(withArenaEngines(base, "local/naive:1, fake/naive:1"), arena, fakeHosts(arena))->runUntil(4);
+    assert(runFingerprint(plain, 4) == runFingerprint(arena, 4));
+    const std::vector<std::vector<std::string>> rows = arenaRows(arena);
+    assert(rows.size() == 8);   // generations 1-4, two engines each
+    for (size_t i = 0; i < rows.size(); ++i)
+        assert(rows[i][0] == std::to_string(i / 2 + 1) && rows[i][1] == "1" && rows[i][11].empty());
+
+    Config d = ladderConfig(false);
+    applyOverride(d, "selfplay_engines=local/naive:1, fake/naive:1");
+    d.selfplayAllocation = "dynamic";
+    startEngines(withArenaEngines(d, "fake/naive:1"), dynamic, fakeHosts(dynamic))->runUntil(4);
+    assert(runFingerprint(plain, 4) == runFingerprint(dynamic, 4));
+}
+
+// arena_every still applies: the gating match at every k-th generation
+// only, the best network unchanged in between, no rating anywhere.
+static void test_ladder_off_arena_every() {
+    TempDir dir("ladder_off_every");
+    Config c = ladderConfig(false);
+    c.arenaEvery = 2;
+    std::unique_ptr<Trainer> t = startQuiet(c, dir);
+    std::ostringstream out;
+    t->setLog(&out);
+    t->runUntil(4);
+    const std::map<int, std::string> lines = progressLines(out.str());
+    for (int g = 1; g <= 4; ++g) {
+        const std::string& line = lines.at(g);
+        assert((line.find("| no arena | best ") != std::string::npos) == (g % 2 == 1));
+        assert((line.find("| arena gating vs ") != std::string::npos) == (g % 2 == 0));
+        assert(logRow(dir.str(), g - 1).at("elo").empty());
+    }
+    assert(bestOf(lines.at(1)) == 0 && readResults(dir).size() == 2);
+}
+
 int main() {
+    test_ladder_off_plays_only_the_gating_match();
+    test_ladder_off_resume_and_switch();
+    test_ladder_off_with_engines();
+    test_ladder_off_arena_every();
     test_dynamic_equals_default();
     test_dynamic_resume_and_prune();
     test_dynamic_switch_at_resume();

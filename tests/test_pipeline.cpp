@@ -894,6 +894,56 @@ static void test_gpu_memory_checked_together() {
 #endif
 }
 
+// What training and self-play made: every checkpoint, the SGFs and the
+// best network. The arena reaches them only through the gating decision.
+static std::string trainingFingerprint(const Dir& dir, int generations) {
+    const std::string run = dir.file("run");
+    std::string out;
+    for (int g = 0; g <= generations; ++g) out += readFile(checkpointPath(run, g));
+    std::vector<std::string> sgf;
+    for (const auto& e : fs::directory_iterator(fs::path(run) / "sgf")) sgf.push_back(e.path().string());
+    std::sort(sgf.begin(), sgf.end());
+    for (const std::string& f : sgf) out += f.substr(f.rfind('/')) + readFile(f);
+    return out + std::to_string(stateOf(dir).bestGeneration);
+}
+
+// arena_ladder = off, pipelined: stopped at any commit or crashed anywhere
+// and resumed, the straight run byte for byte, also with engines (dynamic
+// self-play, the arena here and on a fake remote). Its checkpoints, games
+// and decisions are the ladder run's, and so after the switch the live
+// 19x19 run makes at one resume: pipeline off and the ladder off.
+static void test_ladder_off() {
+    Config c = pipeConfig();
+    c.arenaLadder = false;
+    test_stops_and_crashes_resume_exactly("ladder_off", c, false);
+    Config e = c;
+    applyOverride(e, "selfplay_engines=local/naive:1, fake/naive:1");
+    applyOverride(e, "arena_engines=local/naive:1, fake/naive:1");
+    e.selfplayAllocation = "dynamic";
+    test_stops_and_crashes_resume_exactly("ladder_off_engines", e, true, false);
+
+    Dir on("ladder_on"), off("ladder_off_run");
+    start(pipeConfig(), on)->runUntil(5);
+    start(c, off)->runUntil(5);
+    assert(trainingFingerprint(on, 5) == trainingFingerprint(off, 5));
+    const std::string results = readFile(off.file("run/results.csv"));
+    assert(std::count(results.begin(), results.end(), '\n') == 1 + 5);   // header, one pair a generation
+
+    Dir a("ladder_switch_a"), b("ladder_switch_b");
+    start(pipeConfig(), a)->runUntil(2);
+    start(pipeConfig(), b)->runUntil(2);
+    resume(a, {"pipeline=off"})->runUntil(5);
+    std::ostringstream notes;
+    resume(b, {"pipeline=off", "arena_ladder=off"}, "", &notes)->runUntil(5);
+    assert(contains(notes.str(), "note: arena_ladder changed from on to off"));
+    assert(contains(notes.str(), "note: pipeline changed from on to off"));
+    assert(trainingFingerprint(a, 5) == trainingFingerprint(b, 5));
+    for (int g = 3; g <= 5; ++g) {
+        const std::vector<std::string> row = splitFields(splitLines(readFile(b.file("run/log.csv")))[static_cast<size_t>(g)]);
+        assert(row[0] == std::to_string(g) && row[12].empty());   // no elo
+    }
+}
+
 int main() {
     test_gpu_memory_checked_together();
     test_two_phases_at_once();
@@ -906,6 +956,7 @@ int main() {
     test_failures();
     test_dynamic_replay_of_assignment();
     test_resume_exactly();
+    test_ladder_off();
     std::printf("test_pipeline: all tests passed\n");
     return 0;
 }

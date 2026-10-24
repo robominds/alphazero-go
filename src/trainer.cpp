@@ -258,6 +258,9 @@ void appendLogRow(const std::string& runDir, const GenerationStats& s) {
     if (s.winRateVsPrev >= 0) std::snprintf(winRate, sizeof winRate, "%.4f", s.winRateVsPrev);
     char distinct[32] = "";
     if (s.distinctVsPrev >= 0) std::snprintf(distinct, sizeof distinct, "%d", s.distinctVsPrev);
+    // No rating with arena_ladder = off: an empty field, not a number.
+    char elo[32] = "";
+    if (!std::isnan(s.elo)) std::snprintf(elo, sizeof elo, "%.1f", s.elo);
     char ownership[32] = "";
     if (s.ownershipLoss >= 0) std::snprintf(ownership, sizeof ownership, "%.5f", s.ownershipLoss);
     // resign_threshold,resign_rate,resign_false_positive: all empty without
@@ -277,10 +280,10 @@ void appendLogRow(const std::string& runDir, const GenerationStats& s) {
     for (float v : validation) validationFields += "," + formatLoss(v, 5);
     char line[512];
     std::snprintf(line, sizeof line,
-                  "%d,%d,%.2f,%.4f,%.4f,%.5f,%.5f,%g,%.3f,%.3f,%.3f,%.3f,%.1f,%s,%s,%s,%s,%s,%s%s\n",
+                  "%d,%d,%.2f,%.4f,%.4f,%.5f,%.5f,%g,%.3f,%.3f,%.3f,%.3f,%s,%s,%s,%s,%s,%s,%s%s\n",
                   s.generation, s.games, s.avgLength, s.passRate, s.blackWinRate,
                   s.policyLoss, s.valueLoss, s.lr, s.replayRatio, s.selfPlaySeconds,
-                  s.trainSeconds, s.arenaSeconds, s.elo, winRate, distinct, ownership,
+                  s.trainSeconds, s.arenaSeconds, elo, winRate, distinct, ownership,
                   threshold, rate, falsePositive, validationFields.c_str());
     std::ofstream out(logPath(runDir), std::ios::app | std::ios::binary);
     out << line;
@@ -565,11 +568,16 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     state.resignThreshold = calibrateResignThreshold(state.resignWindow, resignCalibration(cfg));   // the initial one
     state.references = initialReferences(
         static_cast<int>(cfg.botSimulations.size() + cfg.referenceNetworks.size()));
-    // Each fixed player plays generation 0 now, so it has a rating before it can be chosen.
+    // Each fixed player plays generation 0 now, so it has a rating before it
+    // can be chosen. Only the ladder rates: with arena_ladder = off they
+    // wait for the first round of a ladder switched on (runArenaRound
+    // calibrates first, with these seeds).
     const bool arenaEngines = coordinator && !cfg.arenaEngines.empty();
-    if (arenaEngines) coordinator->beginArena(0);
-    calibrateFixedPlayers(state.results, state.references, roundSettings(cfg, std::nullopt),
-                          runMatches(cfg, runDir, 0, &net, &referenceNets.networks, coordinator.get()));
+    if (cfg.arenaLadder) {
+        if (arenaEngines) coordinator->beginArena(0);
+        calibrateFixedPlayers(state.results, state.references, roundSettings(cfg, std::nullopt),
+                              runMatches(cfg, runDir, 0, &net, &referenceNets.networks, coordinator.get()));
+    }
 
     if (given || donorBuffer)
         writeFileAtomically(
@@ -686,6 +694,15 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
         *log << "note: arena engines changed from " << describeEngines(saved.arenaEngines, saved) << " to "
              << describeEngines(cfg.arenaEngines, cfg) << "; from here on arena results differ in the\n"
              << "last bits from a run that kept " << describeEngines(saved.arenaEngines, saved) << "\n";
+    if (log && saved.arenaLadder != cfg.arenaLadder)
+        *log << "note: arena_ladder changed from " << (saved.arenaLadder ? "on" : "off") << " to "
+             << (cfg.arenaLadder ? "on" : "off")
+             << (cfg.arenaLadder
+                     ? "; from here on the arena plays the full round again (the Elo ladder), its refit\n"
+                       "including the gating games played meanwhile\n"
+                     : "; from here on the arena plays only the gating match (the new network against the\n"
+                       "best), log.csv's elo is empty, and elo.csv and references.csv keep the last round's "
+                       "ratings\n(train --rerate rebuilds the ladder)\n");
     if (log && saved.pipeline != cfg.pipeline)
         *log << "note: pipeline changed from " << (saved.pipeline ? "on" : "off") << " to "
              << (cfg.pipeline ? "on" : "off")
@@ -1016,8 +1033,12 @@ Trainer::RoundOutcome Trainer::trainAndRate(int g, std::vector<GameRecord>& reco
     if (outcome.arenaThisGeneration) {
         const std::optional<int> best =
             cfg_.gating ? std::optional<int>(state_.bestGeneration) : std::nullopt;
-        outcome.round = runArenaRound(g, state_.results, state_.references, roundSettings(cfg_, best),
-                                      runMatches(cfg_, runDir_, g, &net_, &referenceNets_, coordinator_.get()));
+        const MatchesFn play = runMatches(cfg_, runDir_, g, &net_, &referenceNets_, coordinator_.get());
+        // arena_ladder = off (gating is on: checkConsistency): the gating
+        // match alone, the games the full round would play against the best.
+        outcome.round = cfg_.arenaLadder
+                            ? runArenaRound(g, state_.results, state_.references, roundSettings(cfg_, best), play)
+                            : runGatingMatch(g, state_.results, roundSettings(cfg_, best), play);
         for (const ArenaMatch& m : outcome.round.matches) {
             if (m.opponent == g - 1) {
                 stats.winRateVsPrev = m.result.scoreA / m.result.games;
@@ -1029,9 +1050,13 @@ Trainer::RoundOutcome Trainer::trainAndRate(int g, std::vector<GameRecord>& reco
         }
         // Refit every rating from all results so far: Bradley-Terry does not
         // depend on the order results arrived in, so a resumed run agrees.
-        writeRatingFiles(runDir_, state_.results, state_.references, cfg_);
+        // Without the ladder only results.csv: a fit of gating games alone
+        // would chain each generation to the best network, so elo.csv and
+        // references.csv keep the last ladder round's.
+        if (cfg_.arenaLadder) writeRatingFiles(runDir_, state_.results, state_.references, cfg_);
+        else writeFileAtomically(resultsPath(runDir_), state_.results.toCsv());
     }
-    stats.elo = ratingAtOrBefore(state_.results, g);
+    stats.elo = cfg_.arenaLadder ? ratingAtOrBefore(state_.results, g) : std::nan("");
     stats.arenaSeconds = secondsSince(arenaStart);
     pipeline_probe::crashPoint(pipeline_probe::Point::Arena, g);
     return outcome;
@@ -1070,7 +1095,17 @@ void Trainer::printGenerationLine(const GenerationStats& stats, const RoundOutco
                   stats.generation, stats.games, stats.avgLength, resign, stats.selfPlaySeconds, stats.policyLoss,
                   stats.valueLoss, ownership, stats.lr, validation.c_str(), stats.trainSeconds);
     *log_ << line;
-    if (outcome.arenaThisGeneration) {
+    if (outcome.arenaThisGeneration && !cfg_.arenaLadder) {
+        // e.g. "arena gating vs 3:0.55 (distinct 40/40) 812.3s": the one match, no rating.
+        char tail[64];
+        std::snprintf(tail, sizeof tail, " (distinct %d/%d) %.1fs", outcome.round.matches[0].result.distinctGames,
+                      cfg_.arenaGames, stats.arenaSeconds);
+        *log_ << "arena gating "
+              << opponentSummary(outcome.round, cfg_.botSimulations, static_cast<int>(cfg_.referenceNetworks.size()))
+              << tail;
+    } else if (!cfg_.arenaLadder) {
+        *log_ << "no arena";
+    } else if (outcome.arenaThisGeneration) {
         // e.g. "arena elo 512.3 vs 149:0.55 120:0.70 ref1:0.40 (distinct 19/20) promoted 3.2s"
         char elo[48], tail[64];
         std::snprintf(elo, sizeof elo, "arena elo %.1f ", stats.elo);
@@ -1426,6 +1461,9 @@ int rerateRun(const std::string& runDir, const std::vector<std::string>& overrid
         for (const std::string& k : diff) keys += (keys.empty() ? "" : ", ") + k;
         throw ConfigError("cannot change architecture keys when re-rating: " + keys);
     }
+    // Re-rating rebuilds the ladder, whatever arena_ladder says (it ignores
+    // gating too), and checks the GPU memory of the ladder's waves.
+    cfg.arenaLadder = true;
     if (!fs::exists(checkpointPath(runDir, 0)))
         throw std::runtime_error(checkpointPath(runDir, 0) + ": missing");
 
