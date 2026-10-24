@@ -103,7 +103,9 @@ distributed arena, or with `--stream` the games a coordinator names one
 by one (dynamic allocation), described in Distributed self-play below.
 
 **`train`** runs the generation loop (self-play, training, checkpoint,
-arena, commit). A new run copies the config into the run directory:
+arena, commit; with `pipeline = on` a generation's training and arena
+beside the next one's self-play, see Pipelined generations below). A new
+run copies the config into the run directory:
 
 ```
 $ ./build-blas/train --config configs/5x5.cfg --run runs/5x5-seed1
@@ -584,6 +586,114 @@ Generations before the switch are untouched; the next one is the first
 dynamic one, and `--set selfplay_allocation=static` switches back the same
 way. The arena stays static: `arena_engines` keeps its fixed slices,
 since a wave is a small share of a generation's time.
+
+### Pipelined generations
+
+`train` runs a generation as a sequence: self-play on every engine, then
+training on the Studio's CPU while every GPU idles, then the arena's
+waves, then the commit. In the 19×19 run that is about 1,000 s of
+training and 3,800 s of arena per ~15,000 s of self-play. AlphaGo Zero
+ran its three parts at once: self-play with the best network so far,
+training on the latest games, and an evaluator whose promotions reached
+self-play once they were decided. The `pipeline` key does the same,
+reproducibly
+([design](docs/superpowers/specs/2026-10-23-pipelined-generations-design.md),
+[plan](docs/superpowers/plans/2026-10-23-pipelined-generations.md)):
+
+```
+pipeline = on
+```
+
+`off` (the default) is the sequential loop, unchanged: a run with it is
+byte-identical to one from before the key existed, except that its
+`config.cfg` gains the line `pipeline = off`. With `on`, generation g's
+validation loss, training, checkpoint and arena run beside generation
+g+1's self-play, on the same engines (self-play's queue or slices and the
+arena's slices share the machines; the GPUs hold both networks), and one
+commit closes both. It works with or without `selfplay_engines` and
+`arena_engines`, with gating or not.
+
+**Which network plays.** Self-play plays the best network of the *last
+commit before it starts*, a rule on generation numbers rather than on
+which part finishes first. Self-play of g+1 starts right after commit
+g−1, so it plays the best after the arena of g−1 (without gating,
+network g−1): a promotion reaches self-play one generation later than in
+the sequential loop. That is the price, and it is AlphaGo Zero's own
+evaluator lag, fixed to a generation boundary. Nothing else changes:
+candidate g trains from candidate g−1 on the buffer with generation g's
+games, at generation g's learning rate; v_resign for g+1 is calibrated
+from generation g's games before g+1's self-play starts; the arena's
+opponents and the gate are the same. A generation's arena must finish,
+and its promotion be committed, before the self-play after next starts:
+the barrier is the commit.
+
+**What a commit holds.** Commit g holds what a sequential commit of g
+holds plus generation g+1's games, not yet processed: `state.bin` is then
+version 6 (version 5 plus that block; a run without pending games keeps
+writing version 5, and `tools/buf.py`, `pass.py` and `side.py` read
+both). A crash or kill anywhere in an iteration loses that iteration's
+work, both halves, and the redo starts from exactly the committed state,
+so a pipelined run resumes byte for byte like a sequential one (one
+arithmetic, or the recorded dynamic assignment). When the state has no
+pending games (a new run, or the pipeline switched on), the first
+iteration is preceded by a *prologue*: that generation's self-play alone,
+with the committed best network, committed with the previous generation.
+A run stopped by `--generations N` commits N with N+1's games, so that
+continuing it later is the run that never stopped.
+
+**The logs.** The manifests' self-play rows of g+1 are written with commit
+g (they describe its pending games), the arena rows of g with commit g; a
+resume keeps both. `log.csv` keeps one row per generation, appended after
+its commit: row g holds generation g's self-play statistics and time,
+and its training and arena. The three timing columns now overlap (g's
+self-play ran beside g−1's training and arena), so the progress output
+adds a line per iteration with its wall time, in this form:
+
+```
+gen 12 | selfplay 400 games avg 474.9 plies 15361.4s | train loss p 5.83 v 0.52 lr 0.02 ... 1052.3s | arena ... 5013.7s | best 11
+pipeline: gen 13 self-play by network 11, 400 games 15402.6s, beside gen 12's training and arena 6066.0s; generation 12 took 15403.1s
+```
+
+A pending generation's self-play time is kept beside `state.bin` in
+`pending-selfplay.txt` (`state.bin` holds no timings).
+
+**Switching.** The key is tunable at any commit. On: the resume notes
+`note: pipeline changed from off to on; ...` and plays the prologue.
+Off: the pending games are committed data, so the sequential loop trains
+on them, then goes on as before. Because a pipelined commit already
+holds the next generation's games, a self-play key changed on resume
+(`simulations`, `resignation`, `selfplay_engines`, ...) applies one
+generation later, and the resume says so:
+`note: generation 11's self-play games were committed before this resume
+(pipeline); changed self-play keys (resignation) apply from generation 12`.
+To change one at a precise generation, change it at a commit without
+pending games (for instance together with switching the pipeline on). An
+older binary refuses a version-6 `state.bin`; switch the pipeline off and
+let one generation commit to go back.
+
+**Failures.** If either half fails (a non-finite loss, a slice failing
+twice with `selfplay_fallback = stop`), the other is cancelled (the
+coordinator stops the arena's or self-play's slices; training stops at
+its next step) and nothing of the iteration is committed; a resume
+redoes it. Fallbacks to the local engine work as before.
+
+**Training beside self-play.** On the Studio the GPU engine's workers
+mostly wait for the GPU, and training (BLAS on the CPU, saturating at
+about 6 threads) loses under 1% of its speed beside a 36-thread hub,
+whose rate does not measurably change (`docs/results/bench.txt`). So
+`train_threads` and the scheduling class stay as they are.
+
+**What it gains.** The overlap recovers the time the engines spent idle
+during training and the arena's under-filled waves. On one machine with
+idle cores (two CPU engines, 9×9) a generation took 23.9–30.4 s instead
+of 35.7–44.2 s. On the 19×19 cluster the arena is GPU work on the same
+engines, which the overlap moves but cannot remove: the expected gain is
+about 6–7% of a generation (the design's "Expected gain").
+
+**Switching the live run.** Build, sync the remotes with
+`tools/cluster_sync.sh` (the build ID changes), stop the run after a
+commit with `tools/stop_after_generation.sh` (and first any job script
+that would resume it), then resume with `--set pipeline=on`.
 
 ### Batch norm calibration of generation 0
 

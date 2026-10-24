@@ -1758,7 +1758,7 @@ public:
     /* ... every index filled; the work files removed ... */
     return records;
 }</code></pre>
-<span class="src">src/coordinator.cpp:810 — <code>Coordinator::play</code> (abridged)</span>
+<span class="src">src/coordinator.cpp:870 — <code>Coordinator::play</code> (abridged)</span>
 <p>A run with several engines is therefore reproducible given which engine played each game, and it resumes byte for byte. The run's manifest, <code>selfplay-engines.csv</code>, records exactly that: the engine and its fingerprint (chip, OS, shaders) for every slice. Engines with equal fingerprints can split a share without changing a bit. When a remote fails twice, the coordinator plays the slice itself and says so in the manifest. AlphaGo Zero's self-play is unchanged: the same games, seeded the same way, computed in more places. How much that gains depends on the machines. On the Studio, four BLAS workers beside the GPU add about 11% to its 2,930 evaluations per second (19×19, 10×128); each M4 mini adds about 676 more (<code>docs/results/bench.txt</code>).</p>
 <p>The arena's waves can be spread the same way (<code>arena_engines</code>). A wave's games are numbered match by match, each engine plays a contiguous slice, and game j of a match keeps its seed and its colours wherever it is played. A remote slice returns each game's moves and score, and the coordinator replays every game before it counts: each move legal, the game over at its last move, the score the board's. The gating decision and the ratings are then taken from the merged results, as before.</p>
 <p><strong>Or one queue.</strong> Fixed slices have a price: a generation lasts as long as its slowest slice. Weights can set each engine's average, but a mini's 20 games of 19×19 vary in total length by several percent from one generation to the next, the weights are a person's estimate, and a failed remote moves its whole slice to one machine. In the 19×19 run on the Studio, two minis and a PC, 9–12% of each self-play phase was spent waiting for the slowest slice.</p>
@@ -2294,16 +2294,52 @@ A wins 4, B wins 0, draws 0</code></pre>
 </svg>
 </div>
 </div>
-<figcaption>One generation, in <code>Trainer::runGeneration</code>. The steps never overlap. Everything written before step 5 may be left half-done by a crash and is rewritten identically by the rerun; a generation exists once its <code>state.bin</code> is on disk.</figcaption>
+<figcaption>One generation, in <code>Trainer::runGeneration</code>. The steps never overlap (unless <code>pipeline = on</code>, below). Everything written before step 5 may be left half-done by a crash and is rewritten identically by the rerun; a generation exists once its <code>state.bin</code> is on disk.</figcaption>
 </figure>
 <p>It is AlphaGo Zero's loop run synchronously: no step overlaps another. An asynchronous actor/learner design would keep every core busy all the time, but this one reads as a list of plain steps, and it makes two guarantees that are hard to get otherwise: determinism and a clean resume.</p>
+<p><strong>Or pipelined.</strong> AlphaGo Zero itself ran its three parts at once: self-play with the best network so far, training on the latest games, and an evaluator that promoted a checkpoint once it won 55% against the best, after which self-play used it. While the evaluator played, self-play went on with the previous best. <code>pipeline = on</code> (opt-in; the presets leave it off) runs the same overlap without giving up either guarantee: generation g's steps 2–4 run on the trainer's thread while generation g+1's self-play runs on another, on the same engines, and one commit closes both. The overlap is decided by generation numbers, never by which part finishes first: self-play plays the best network <em>of the last commit before it starts</em>. Self-play of g+1 starts right after commit g−1, so it plays the best after the arena of g−1, one generation older than in the sequential loop. That lag is AlphaGo Zero's evaluator lag, moved to a generation boundary. Everything else is the sequential loop's: candidate g trains on the buffer with generation g's games, at generation g's learning rate, and v_resign for g+1 is calibrated from generation g's games before g+1's self-play starts. The commit of g therefore holds g+1's games, unprocessed (<code>state.bin</code> version 6):</p>
+<pre><code>GenerationStats Trainer::runPipelined() {
+    prepareForThreads();
+    if (!state_.pending) playAhead();
+    /* ... */
+    PendingSelfPlay played = std::move(*state_.pending);
+    state_.pending.reset();
+    stats.selfPlaySeconds = pendingSelfPlaySeconds(g);
+    processSelfPlay(g, played, stats);   // also v_resign for g + 1
+    /* ... */
+    // By the best network of the last commit (g-1's), with its own copy:
+    // the trainer's network trains in place below.
+    const int network = cfg_.gating ? state_.bestGeneration : state_.generation;
+    /* ... aheadNet: that network, copied or loaded ... */
+    std::thread aheadThread([&amp;] {
+        /* ... */
+            ahead = playSelfPlay(g + 1, *aheadNet, network, aheadThreshold, &amp;stopAhead);
+        /* ... a failure cancels the other half ... */
+    });
+    /* ... */
+        outcome = trainAndRate(g, played.records, stats, &amp;aheadFailed);
+    /* ... */
+    aheadThread.join();
+    /* ... */
+    state_.bestGeneration = outcome.newBest;
+    state_.generation = g;
+    /* ... */
+    state_.pending = std::move(ahead);
+    /* ... the manifests, pending-selfplay.txt ... */
+    saveTrainingState(statePath(runDir_), state_);
+    /* ... */
+    appendLogRow(runDir_, stats);
+    /* ... */
+}</code></pre>
+<span class="src">src/trainer.cpp:1233 — <code>Trainer::runPipelined</code> (abridged)</span>
+<p>A crash anywhere in an iteration loses that iteration's work, both halves, and the redo starts from exactly the committed state: the same games, the same network for the next self-play, the same v_resign. So a pipelined run interrupted at any moment resumes byte for byte, as the sequential one does (<code>tests/test_pipeline.cpp</code> crashes it at every step and kills it with SIGKILL in <code>tests/integration_smoke.sh</code>). What the overlap saves is the time the engines spent idle while the Studio trained (about 1,000 s per 19×19 generation) and the arena's under-filled waves, about 6–7% of a generation; the arena's games themselves are GPU work that the overlap moves but cannot remove.</p>
 <p><strong>Deterministic threading.</strong> Self-play and arena games run on W worker threads (all cores by default), which finish in an unpredictable order. The output is identical for any W anyway, because of three rules:</p>
 <ul>
   <li>every random stream is seeded from its <em>identity</em>, never from its thread: game i of generation g's self-play uses <code>deriveSeed(seed, g, kPhaseSelfPlay, i)</code>, training uses <code>deriveSeed(seed, g, kPhaseTrain)</code>, the arena <code>deriveSeed(seed, g, kPhaseArena, opponent)</code>;</li>
   <li>results are stored by index, not by completion order;</li>
   <li>the training phase, on threads of its own, cuts its work into chunks fixed by the data's shapes, never by the thread count, so every output value is computed by exactly one chunk with the same sequence of floating-point operations.</li>
 </ul>
-<p><code>Trainer::runGeneration</code> plays generation g's games as one slice, games [0, G), with <code>playSelfPlayGames</code>, which hands the range to <code>playSelfPlayQueue</code> as a source of game indices:</p>
+<p><code>Trainer::playSelfPlay</code> plays generation g's games as one slice, games [0, G), with <code>playSelfPlayGames</code>, which hands the range to <code>playSelfPlayQueue</code> as a source of game indices:</p>
 <pre><code>void playSelfPlayQueue(const Network&amp; net, const SelfPlayConfig&amp; sp, uint64_t seed, int generation,
                        const EngineRun&amp; run, GameSource&amp; source, SliceStats* stats) {
     /* ... */
@@ -2364,7 +2400,7 @@ void gemmColumns(const Backend&amp; be, ThreadPool* pool, bool transA, bool tran
        &lt;(cut -d, -f1-9,13-15 docs/results/passbug/5x5-seed1/log.csv) &amp;&amp; echo identical
 identical</code></pre>
 <p>The final seed-1 run (<code>docs/results/5x5/log.csv</code>) differs from both from generation 1 on — the pass fix changes what search plays — which is the other half of the same point: the output is a function of the seed, the configuration and the code, and of nothing else.</p>
-<p><strong>Crash safety and resume.</strong> A network checkpoint alone is not enough to continue a run exactly; that also needs the optimizer's momentum, the replay buffer, the generation counter, the gating state, the arena table and, with resignation, v_resign and its window of disabled games. All of it goes into one file, <code>state.bin</code>, and <strong><code>state.bin</code> is the commit point</strong>: a generation exists once its <code>state.bin</code> is on disk. Everything written before it (the checkpoint, SGF files, <code>results.csv</code>, <code>elo.csv</code>) may be left half-updated by a crash, and is then simply rewritten by the rerun of the generation with identical bytes — every random stream is derived from the seed, so the rerun is bit-identical. <code>log.csv</code> is appended after the commit; a crash between the two loses one human-facing row, never the run. Every file is replaced with the same routine:</p>
+<p><strong>Crash safety and resume.</strong> A network checkpoint alone is not enough to continue a run exactly; that also needs the optimizer's momentum, the replay buffer, the generation counter, the gating state, the arena table and, with resignation, v_resign and its window of disabled games. All of it goes into one file, <code>state.bin</code>, and <strong><code>state.bin</code> is the commit point</strong>: a generation exists once its <code>state.bin</code> is on disk. Everything written before it (the checkpoint, SGF files, <code>results.csv</code>, <code>elo.csv</code>) may be left half-updated by a crash, and is then simply rewritten by the rerun of the generation with identical bytes — every random stream is derived from the seed, so the rerun is bit-identical. <code>log.csv</code> is appended after the commit; a crash between the two loses one human-facing row, never the run. (Pipelined, the commit of g also holds generation g+1's games, as above.) Every file is replaced with the same routine:</p>
 <pre><code>void writeFileAtomically(const std::string&amp; path, const std::string&amp; contents) {
     const std::string tmp = path + ".tmp";
     // Truncates any leftover .tmp from an earlier crash.
@@ -2511,9 +2547,11 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Wilson intervals</dt>
   <dd><code>wilsonInterval</code> <span class="loc">— src/elo.cpp:184</span></dd>
   <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
-  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:144, 117</span></dd>
+  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:155, 128</span></dd>
   <dt>One generation</dt>
-  <dd><code>Trainer::runGeneration</code> <span class="loc">— src/trainer.cpp:651</span></dd>
+  <dd><code>Trainer::runSequential</code>, <code>Trainer::trainAndRate</code> <span class="loc">— src/trainer.cpp:1083, 845</span></dd>
+  <dt>Pipelined generations</dt>
+  <dd><code>Trainer::runPipelined</code>, <code>Trainer::playAhead</code> <span class="loc">— src/trainer.cpp:1233, 1197</span>; <code>Coordinator::startPhaseOn</code>, <code>Coordinator::prepareMachine</code> <span class="loc">— src/coordinator.cpp:330, 543</span></dd>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
@@ -2523,9 +2561,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
-  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:45</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:549</span></dd>
+  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:49</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:592</span></dd>
   <dt>Self-play on several engines and machines</dt>
-  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:116</span>; <code>Coordinator::play</code>, <code>Coordinator::playDynamic</code> <span class="loc">— src/coordinator.cpp:810, 1307</span></dd>
+  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:116</span>; <code>Coordinator::play</code>, <code>Coordinator::playDynamic</code> <span class="loc">— src/coordinator.cpp:870, 1370</span></dd>
   <dt>Dynamic allocation: one queue per generation</dt>
   <dd><code>GameQueue::take</code>, <code>GameQueue::inTime</code> <span class="loc">— src/game_queue.cpp:85, 57</span>; <code>dynamicWorkers</code> <span class="loc">— src/engines.cpp:352</span>; <code>playSelfPlayQueue</code> <span class="loc">— src/selfplay_slice.cpp:93</span></dd>
   <dt>Inspecting a position</dt>

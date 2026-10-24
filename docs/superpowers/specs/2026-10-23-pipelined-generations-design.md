@@ -259,6 +259,10 @@ from the straight run's), so it is kept beside it in
 written before `state.bin`; a resume uses it when its generation is the
 pending one, and writes `0.000` when it is not there.
 
+The resume itself notes a switch: `note: pipeline changed from off to on;
+from here on self-play plays the best network of the last commit, one
+generation behind training`.
+
 ## Switching
 
 - **On**, at any commit: the resume's first `runGeneration` plays the
@@ -307,7 +311,8 @@ Each kind still runs one phase at a time; what they share changes:
   directory and logs): one flag per phase, not per coordinator.
 - **Fingerprints** cache: under a mutex.
 - **Cancellation**: `Coordinator::cancel()` stops every phase in flight
-  (each phase's slices and sessions see their `stop` flag within 0.1 s);
+  (a static phase's slices within 0.05 s, a dynamic phase's within its
+  0.5 s poll, remote attempts at their next check);
   the trainer calls it when the other half of the iteration fails, so a
   failed arena does not wait hours for self-play to finish, nor the other
   way round. The flag is cleared at the start of an iteration.
@@ -347,30 +352,27 @@ today. Remote machines are not checked up front (as today); a 10×128
 
 Training runs on the CPU (BLAS, `train_threads`) while the Studio's GPU
 engine plays self-play from worker threads that mostly wait for the GPU.
-Measured on the Studio (M5 Max, 6+12 cores) with the live run's
-self-play on its GPU, 19×19 10×128, batch 256 (`bench`):
+Measured on the Studio (M5 Max, 6+12 cores) with `bench`, 19×19 10×128,
+batch 256, a 36-thread hub of batch-8 requests (sharing the GPU with the
+live run, so its rate is ±3% noise), three repetitions:
 
-| training | step alone | step beside a 36-thread GPU hub | hub rate |
-|---|---|---|---|
-| none | — | — | 1,443/s |
-| 18 threads, default QoS | 1.30 s | 2.40 s | 1,413/s |
-| 6 threads, default QoS | 1.31 s | 1.74 s | 1,348/s |
-| 18 threads, utility QoS | 2.84 s | — | 1,368/s |
+| training beside the hub | hub evaluations/s | training step |
+|---|---|---|
+| none | 1,383 1,427 1,416 | — |
+| 18 threads, default QoS | 1,396 1,411 1,394 | 1.32, 1.31 s (alone 1.31, 1.30) |
+| 6 threads, default QoS | 1,357 1,373 1,393 | 1.32, 1.32 s (alone 1.31, 1.31) |
+| 18 threads, utility QoS | 1,331 1,424 1,430 | 2.84 s alone |
 
-(The hub's rate is shared with the live run on the same GPU, so the
-column is noisy at ±5%; the implementation repeats the measurement
-before it is recorded in `docs/results/bench.txt`.)
-
-- Training saturates at about 6 threads (memory and the matrix units,
-  not cores), so more threads only compete with self-play.
+- The GPU engine needs little CPU, and training loses under 1% beside it:
+  neither starves the other.
+- Training saturates at about 6 threads (memory and the matrix units, not
+  cores).
 - The utility class makes training 2.2× slower and does not measurably
   help the hub.
-- Training is not on the critical path: 800 steps at 2.4 s are 1,900 s,
-  far below self-play's ≈15,000 s.
 
-So the design adds no new QoS mechanism; training keeps `train_threads`
-and the default class, and the recommendation for the live run is
-`train_threads = 6` (a tunable key; results do not depend on it).
+So the design adds no QoS mechanism and recommends no change:
+training keeps `train_threads` and the default class. Training is off the
+critical path anyway (800 steps ≈ 1,050 s against self-play's ≈15,000 s).
 
 ## What stays exactly as today
 
@@ -441,11 +443,17 @@ than the 10–15% guessed at first because the arena is mostly real GPU work
 that the pipeline moves but cannot remove. The ceiling of any scheduling
 change is training plus the arena's under-fill plus self-play's own tail.
 
-A real check (implementation, recorded in `docs/results/bench.txt`): a
-small 9×9 run on the Studio with two CPU engines of different speeds
-(`local/naive` with 2 workers and a fake remote with 1), dynamic
-allocation, gating, 5 generations, pipeline off against on, wall time per
-generation from the progress lines.
+A real check (`docs/results/bench.txt`): a small 9×9 run on the Studio
+with two CPU engines of different speeds (`local/naive` with 2 workers
+and a fake remote with 1, self-play dynamic and the arena on both),
+gating, 6 generations, pipeline off against on. No candidate was
+promoted, so both runs played the same games and differ only in
+scheduling: 234.5 s against 190.8 s for the whole run, and per generation
+35.7–44.2 s (self-play, training and arena in sequence) against one
+iteration of 23.9–30.4 s; self-play itself took 4% longer beside the other
+half. With idle cores the training and arena hide entirely behind
+self-play (−31% per generation); on the cluster, where the arena shares
+the engines' GPUs, the expectation above holds.
 
 ## Switching the live run
 
@@ -456,7 +464,7 @@ generation from the progress lines.
    then train after a commit (`tools/stop_after_generation.sh`).
 3. Resume with `--set pipeline=on` (plus, at the generation-10 boundary,
    `resignation=true`, so that SP(11) is the prologue's and plays with
-   resignation), optionally `--set train_threads=6`.
+   resignation).
 
 The resume's first output is the prologue: generation k+1's self-play,
 alone, committed with generation k. Switching back is `--set
@@ -467,7 +475,6 @@ pipeline=off` at any commit.
 | setting | where | default | affects results? |
 |---|---|---|---|
 | `pipeline` | config key, tunable | `off` | yes: self-play networks lag one generation |
-| `train_threads` | config key, tunable | 0 | no |
 
 ## Testing
 
@@ -519,4 +526,4 @@ pipeline=off` at any commit.
 | the lag slows learning | fewer effective generations | one generation, AlphaGo Zero's own lag; switch off at any commit |
 | a self-play key changed on resume applies a generation late | surprise | the resume prints a note; switch at a commit without pending games |
 | an old binary meets a version-6 `state.bin` | it refuses ("unsupported version 6") | switch off and commit once (version 5 again) before going back |
-| training slows the Studio's self-play | longer iterations | measured (above); `train_threads = 6` |
+| training slows the Studio's self-play | longer iterations | measured: under 1% either way |

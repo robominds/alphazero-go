@@ -1877,7 +1877,7 @@ std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath,
     return records;
 }
 ```
-*src/coordinator.cpp:810 — `Coordinator::play` (abridged)*
+*src/coordinator.cpp:870 — `Coordinator::play` (abridged)*
 
 A run with several engines is therefore reproducible given which engine
 played each game, and it resumes byte for byte. The run's manifest,
@@ -2906,6 +2906,73 @@ time, but this one reads as a list of plain steps, and it makes two
 guarantees that are hard to get otherwise: determinism and a clean
 resume.
 
+**Or pipelined.** AlphaGo Zero itself ran its three parts at once:
+self-play with the best network so far, training on the latest games,
+and an evaluator that promoted a checkpoint once it won 55% against the
+best, after which self-play used it. While the evaluator played, self-play
+went on with the previous best. `pipeline = on` (opt-in; the presets
+leave it off) runs the same overlap without giving up either guarantee:
+generation g's steps 2–4 run on the trainer's thread while generation
+g+1's self-play runs on another, on the same engines, and one commit
+closes both. The overlap is decided by generation numbers, never by
+which part finishes first: self-play plays the best network *of the last
+commit before it starts*. Self-play of g+1 starts right after commit
+g−1, so it plays the best after the arena of g−1, one generation older
+than in the sequential loop. That lag is AlphaGo Zero's evaluator lag,
+moved to a generation boundary. Everything else is the sequential loop's:
+candidate g trains on the buffer with generation g's games, at
+generation g's learning rate, and v_resign for g+1 is calibrated from
+generation g's games before g+1's self-play starts. The commit of g
+therefore holds g+1's games, unprocessed (`state.bin` version 6):
+
+```cpp
+GenerationStats Trainer::runPipelined() {
+    prepareForThreads();
+    if (!state_.pending) playAhead();
+    /* ... */
+    PendingSelfPlay played = std::move(*state_.pending);
+    state_.pending.reset();
+    stats.selfPlaySeconds = pendingSelfPlaySeconds(g);
+    processSelfPlay(g, played, stats);   // also v_resign for g + 1
+    /* ... */
+    // By the best network of the last commit (g-1's), with its own copy:
+    // the trainer's network trains in place below.
+    const int network = cfg_.gating ? state_.bestGeneration : state_.generation;
+    /* ... aheadNet: that network, copied or loaded ... */
+    std::thread aheadThread([&] {
+        /* ... */
+            ahead = playSelfPlay(g + 1, *aheadNet, network, aheadThreshold, &stopAhead);
+        /* ... a failure cancels the other half ... */
+    });
+    /* ... */
+        outcome = trainAndRate(g, played.records, stats, &aheadFailed);
+    /* ... */
+    aheadThread.join();
+    /* ... */
+    state_.bestGeneration = outcome.newBest;
+    state_.generation = g;
+    /* ... */
+    state_.pending = std::move(ahead);
+    /* ... the manifests, pending-selfplay.txt ... */
+    saveTrainingState(statePath(runDir_), state_);
+    /* ... */
+    appendLogRow(runDir_, stats);
+    /* ... */
+}
+```
+*src/trainer.cpp:1233 — `Trainer::runPipelined` (abridged)*
+
+A crash anywhere in an iteration loses that iteration's work, both
+halves, and the redo starts from exactly the committed state: the same
+games, the same network for the next self-play, the same v_resign. So a
+pipelined run interrupted at any moment resumes byte for byte, as the
+sequential one does (`tests/test_pipeline.cpp` crashes it at every step
+and kills it with SIGKILL in `tests/integration_smoke.sh`). What the
+overlap saves is the time the engines spent idle while the Studio
+trained (about 1,000 s per 19×19 generation) and the arena's under-filled
+waves, about 6–7% of a generation; the arena's games themselves are GPU
+work that the overlap moves but cannot remove.
+
 **Deterministic threading.** Self-play and arena games run on W worker
 threads (all cores by default), which finish in an unpredictable order.
 The output is identical for any W anyway, because of three rules:
@@ -2921,7 +2988,7 @@ The output is identical for any W anyway, because of three rules:
   value is computed by exactly one chunk with the same sequence of
   floating-point operations.
 
-`Trainer::runGeneration` plays generation g's games as one slice, games
+`Trainer::playSelfPlay` plays generation g's games as one slice, games
 [0, G), with `playSelfPlayGames`, which hands the range to
 `playSelfPlayQueue` as a source of game indices:
 
@@ -3064,7 +3131,8 @@ Everything written before it (the checkpoint, SGF files, `results.csv`,
 `elo.csv`) may be left half-updated by a crash, and is then simply
 rewritten by the rerun of the generation with identical bytes — every
 random stream is derived from the seed, so the rerun is bit-identical. `log.csv` is appended after the commit; a crash between
-the two loses one human-facing row, never the run. Every file is
+the two loses one human-facing row, never the run. (Pipelined, the commit
+of g also holds generation g+1's games, as above.) Every file is
 replaced with the same routine:
 
 ```cpp
@@ -3252,14 +3320,15 @@ see again in place.
 | Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:31, 54` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:144, 117` |
-| One generation | `Trainer::runGeneration` — `src/trainer.cpp:651` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:155, 128` |
+| One generation | `Trainer::runSequential`, `Trainer::trainAndRate` — `src/trainer.cpp:1083, 845` |
+| Pipelined generations | `Trainer::runPipelined`, `Trainer::playAhead` — `src/trainer.cpp:1233, 1197`; `Coordinator::startPhaseOn`, `Coordinator::prepareMachine` — `src/coordinator.cpp:330, 543` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
 | Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:226` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:45`; `Trainer::resume` — `src/trainer.cpp:549` |
-| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:116`; `Coordinator::play`, `Coordinator::playDynamic` — `src/coordinator.cpp:810, 1307` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:49`; `Trainer::resume` — `src/trainer.cpp:592` |
+| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:116`; `Coordinator::play`, `Coordinator::playDynamic` — `src/coordinator.cpp:870, 1370` |
 | Dynamic allocation: one queue per generation | `GameQueue::take`, `GameQueue::inTime` — `src/game_queue.cpp:85, 57`; `dynamicWorkers` — `src/engines.cpp:352`; `playSelfPlayQueue` — `src/selfplay_slice.cpp:93` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |
 

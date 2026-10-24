@@ -717,3 +717,55 @@ size   blocks x filters  backend   batch  threads  train-step ms  speedup
 # measured 9-12%), dynamic with the default concurrency 26/5/64 7.9%, with
 # 36/4/128 and the handout rule 4.6% (plain queue 7.5%); wrong weights cost
 # static 18-119% and dynamic nothing with tuned concurrency.
+# =============================================================================
+# Pipelined generations (pipeline = on), checks and timings (2026-10-23)
+# =============================================================================
+# Branch pipelined-generations (spec docs/superpowers/specs/2026-10-23-pipelined-generations-design.md).
+# Studio (M5 Max, 6+12 cores) builds niced (-j6) while the 19x19 run trained;
+# small runs only.
+#
+# Old against new train, pipeline absent (off): main 71fae71 and the branch,
+# 2 generations plus a resume to 3 (5x5) or 2 generations (9x9 6x96 with
+# resignation): 5x5 and 9x9 on naive, blas and metal; 5x5 with
+# selfplay_engines = local/naive:1, local/blas:1; with a fake remote in both
+# lists (static); with a fake remote, dynamic allocation and gating; 9x9
+# metal with local/metal and fake/metal in both lists and gating. Every
+# checkpoint, state.bin (version 5), rating file, SGF and log.csv without
+# timings byte-identical (10 of 10 configurations, 13-18 files each);
+# config.cfg differs only by "pipeline = off", the progress output only by
+# that line, timings and rates, the manifests only by build and seconds; in
+# the dynamic configuration selfplay-games.csv also by which engine played
+# which game (timing, as between two runs of main; the counts per engine
+# matched). naive and blas differ, blas and metal differ in 9x9's state.bin
+# (resign lows), so the comparisons are not vacuous.
+#
+# Training beside the GPU hub (bench, 19x19 10x128 random network, batch 256;
+# the hub with 36 threads of batch-8 requests, sharing the GPU with the live
+# run, so its rate is +-3% noise), three repetitions:
+#   training beside the hub            hub evals/s          train step
+#   none                               1383 1427 1416       -
+#   train_threads 18, default QoS      1396 1411 1394       1318, 1308 ms (alone 1312, 1300)
+#   train_threads 6, default QoS       1357 1373 1393       1320, 1320 ms (alone 1305, 1311)
+#   train_threads 18, utility QoS      1331 1424 1430       2836 ms alone
+# The Studio's GPU engine waits on the GPU and needs little CPU; training
+# saturates at ~6 threads (Accelerate's matrix units) and loses <1% beside
+# the hub. Neither starves the other; the utility class only slows training
+# 2.2x. Training keeps train_threads and the default class.
+#
+# Wall time on one machine, two CPU engines of different speeds: 9x9 (2x32
+# network, naive, 48 simulations, 72 games, 100 steps of 128 on 2 train
+# threads, 16 arena games of 48 simulations, gating, resignation), self-play
+# and arena on local/naive (cpu_workers=2) and a fake remote (cpu_workers=1),
+# dynamic allocation, 6 generations; no candidate was promoted, so both runs
+# played the same games (network 0) and differ only in scheduling:
+#   pipeline   whole run    per generation (2-6)                 self-play 2-6
+#   off        234.5 s      35.7-44.2 s (self-play+train+arena)  127.1 s
+#   on         190.8 s      23.9-30.4 s (one iteration)           132.3 s (+4%)
+# (on: the prologue, 28.8 s, then 6 iterations, which also played generation
+# 7's games.) With idle cores the training and arena hide entirely behind
+# self-play: -31% per generation. On the 19x19 cluster the arena is GPU work
+# on the same engines, so the expected gain is training plus the arena's
+# under-fill, ~6-7% (the spec's "Expected gain").
+#
+# test_pipeline under ThreadSanitizer (a naive build): no report;
+# test_dynamic_selfplay and test_distributed_arena likewise.
