@@ -569,7 +569,11 @@ pc     ssh=<user>@<address> ... cuda_workers=128 cpu_workers=8
 ```
 
 These keys also cap the same machines' arena slices, which already hold
-fewer games than that. Then stop the run after a commit and resume it:
+fewer games than that, and their static self-play slices: before switching
+back to `static`, remove them (with `metal_workers=4`, a mini's 20-game
+slice would play 4 games at a time), and likewise a `timeout` chosen for
+dynamic mode, which static mode takes as a slice's total time. Then stop
+the run after a commit and resume it:
 
 ```
 $ tools/stop_after_generation.sh RUN_DIR PID

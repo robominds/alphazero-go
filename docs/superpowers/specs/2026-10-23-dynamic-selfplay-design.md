@@ -474,7 +474,9 @@ apart, the queue having found the 32:8 split itself. All three runs'
    "Measuring the gain"): `local metal_workers=36`, `mini1` and `mini2`
    `metal_workers=4`, `pc cuda_workers=128`. These keys also cap arena
    slices on those machines (worker threads), which already play fewer
-   games than that (the minis 2–4 per wave).
+   games than that (the minis 2–4 per wave), and static self-play slices:
+   they (and a `timeout` set for dynamic mode, which static mode takes as
+   a slice's total time) must go before switching back to `static`.
 3. Stop after a commit (`tools/stop_after_generation.sh`) and resume with
    `--set selfplay_allocation=dynamic`.
 
