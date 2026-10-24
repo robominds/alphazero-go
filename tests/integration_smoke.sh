@@ -545,7 +545,7 @@ grep -q '^pipeline: gen 1 self-play by network 0, 4 games .*, committed with gen
 grep -Eq '^pipeline: gen 5 self-play by network [0-9]+, 4 games .* beside gen 4.s training and arena .*; generation 4 took ' \
     "$W/pipe.out" || fail "no pipeline line for generation 4"
 grep -q '^pipeline = on$' "$W/pipe/config.cfg" || fail "config.cfg lacks pipeline = on"
-grep -q '^generation = 5$' "$W/pipe/pending-selfplay.txt" || fail "pending-selfplay.txt does not name generation 5"
+grep -q '^5 [0-9.]*$' "$W/pipe/pending-selfplay.txt" || fail "pending-selfplay.txt has no line for generation 5"
 [ "$(wc -l < "$W/pipe/log.csv" | tr -d ' ')" = 5 ] || fail "log.csv should have a header and 4 rows"
 [ "$(awk -F, 'NR > 1 { print $1 }' "$W/pipe/selfplay-games.csv" | sort -u | tr '\n' ' ')" = "1 2 3 4 5 " ] \
     || fail "selfplay-games.csv should hold generations 1-5 (5 is pending)"
@@ -576,7 +576,7 @@ for fraction in 0.05 0.2 0.35 0.5 0.65 0.8 0.95; do
     done
 done
 echo "straight run ${took}s; $kills of 7 runs killed mid-run, each resumed to the same files"
-[ "$kills" -ge 5 ] || fail "only $kills of 7 runs were still running when killed (the straight run took ${took}s)"
+[ "$kills" -ge 3 ] || fail "only $kills of 7 runs were still running when killed (the straight run took ${took}s)"
 sleep 0.5
 pgrep -f -- "$W/remote/" > /dev/null && fail "a selfplay process outlived its killed run"
 

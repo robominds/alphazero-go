@@ -148,7 +148,8 @@ public:
     // self-play alone, committed); then its validation loss, training and
     // arena beside the following generation's self-play, committed
     // together. A failure in either half stops the other and commits
-    // nothing; the Trainer is then not to be used again (resume instead).
+    // nothing; this Trainer then refuses to run another (std::logic_error):
+    // resume the run instead.
     GenerationStats runGeneration();
     void runUntil(int lastGeneration);   // while generation() < lastGeneration
     void setLog(std::ostream* os);   // progress lines; nullptr = silent
@@ -180,6 +181,7 @@ private:
     double pendingSelfPlaySeconds(int g) const;
     void keepPendingSeconds(int g, double seconds);
     std::pair<int, double> pendingSeconds_{-1, 0.0};
+    bool failed_ = false;   // a generation threw: runGeneration refuses (resume instead)
     Config cfg_;
     std::string runDir_;
     Network net_;
@@ -202,6 +204,7 @@ private:
 namespace pipeline_probe {
 enum class Point {
     PrologueSelfPlay,   // the prologue's games are played, not committed
+    PrologueManifests,  // the prologue's manifests and pending-selfplay.txt written, not state.bin
     Processed,          // an iteration processed its generation's games (SGFs written)
     SelfPlay,           // the next generation's games are played
     Validation,         // B: the validation loss

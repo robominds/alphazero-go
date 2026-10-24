@@ -655,17 +655,20 @@ pipeline: gen 13 self-play by network 11, 400 games 15402.6s, beside gen 12's tr
 ```
 
 A pending generation's self-play time is kept beside `state.bin` in
-`pending-selfplay.txt` (`state.bin` holds no timings).
+`pending-selfplay.txt`, one `generation seconds` line each (`state.bin`
+holds no timings).
 
 **Switching.** The key is tunable at any commit. On: the resume notes
 `note: pipeline changed from off to on; ...` and plays the prologue.
 Off: the pending games are committed data, so the sequential loop trains
 on them, then goes on as before. Because a pipelined commit already
 holds the next generation's games, a self-play key changed on resume
-(`simulations`, `resignation`, `selfplay_engines`, ...) applies one
-generation later, and the resume says so:
+(`simulations`, `resignation`, `selfplay_engines`, ...) reaches self-play
+one generation later (what else the key drives, such as training's
+backend or the arena's search, changes at once), and the resume says so:
 `note: generation 11's self-play games were committed before this resume
-(pipeline); changed self-play keys (resignation) apply from generation 12`.
+(pipeline), played with the earlier values of the changed self-play keys
+(resignation); their new values apply to self-play from generation 12`.
 To change one at a precise generation, change it at a commit without
 pending games (for instance together with switching the pipeline on). An
 older binary refuses a version-6 `state.bin`; switch the pipeline off and
@@ -674,8 +677,10 @@ let one generation commit to go back.
 **Failures.** If either half fails (a non-finite loss, a slice failing
 twice with `selfplay_fallback = stop`), the other is cancelled (the
 coordinator stops the arena's or self-play's slices; training stops at
-its next step) and nothing of the iteration is committed; a resume
-redoes it. Fallbacks to the local engine work as before.
+its next step; the validation loss and an arena without `arena_engines`
+run to their end) and nothing of the iteration is committed; the process
+then refuses to train on, and a resume redoes the iteration. Fallbacks to
+the local engine work as before.
 
 **Training beside self-play.** On the Studio the GPU engine's workers
 mostly wait for the GPU, and training (BLAS on the CPU, saturating at

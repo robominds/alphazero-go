@@ -1877,7 +1877,7 @@ std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath,
     return records;
 }
 ```
-*src/coordinator.cpp:870 — `Coordinator::play` (abridged)*
+*src/coordinator.cpp:884 — `Coordinator::play` (abridged)*
 
 A run with several engines is therefore reproducible given which engine
 played each game, and it resumes byte for byte. The run's manifest,
@@ -2960,7 +2960,7 @@ GenerationStats Trainer::runPipelined() {
     /* ... */
 }
 ```
-*src/trainer.cpp:1233 — `Trainer::runPipelined` (abridged)*
+*src/trainer.cpp:1283 — `Trainer::runPipelined` (abridged)*
 
 A crash anywhere in an iteration loses that iteration's work, both
 halves, and the redo starts from exactly the committed state: the same
@@ -3320,15 +3320,15 @@ see again in place.
 | Arena rounds: calibration, promotion | `calibrateFixedPlayers`, `runArenaRound` — `src/arena_round.cpp:31, 54` |
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
-| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:155, 128` |
-| One generation | `Trainer::runSequential`, `Trainer::trainAndRate` — `src/trainer.cpp:1083, 845` |
-| Pipelined generations | `Trainer::runPipelined`, `Trainer::playAhead` — `src/trainer.cpp:1233, 1197`; `Coordinator::startPhaseOn`, `Coordinator::prepareMachine` — `src/coordinator.cpp:330, 543` |
+| `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:162, 135` |
+| One generation | `Trainer::runSequential`, `Trainer::trainAndRate` — `src/trainer.cpp:1107, 857` |
+| Pipelined generations | `Trainer::runPipelined`, `Trainer::playAhead` — `src/trainer.cpp:1283, 1245`; `Coordinator::startPhaseOn`, `Coordinator::prepareMachine` — `src/coordinator.cpp:332, 562` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
 | Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:226` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:49`; `Trainer::resume` — `src/trainer.cpp:592` |
-| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:116`; `Coordinator::play`, `Coordinator::playDynamic` — `src/coordinator.cpp:870, 1370` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:49`; `Trainer::resume` — `src/trainer.cpp:599` |
+| Self-play on several engines and machines | `assignGames` — `src/engines.cpp:116`; `Coordinator::play`, `Coordinator::playDynamic` — `src/coordinator.cpp:884, 1376` |
 | Dynamic allocation: one queue per generation | `GameQueue::take`, `GameQueue::inTime` — `src/game_queue.cpp:85, 57`; `dynamicWorkers` — `src/engines.cpp:352`; `playSelfPlayQueue` — `src/selfplay_slice.cpp:93` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |
 

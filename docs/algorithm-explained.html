@@ -1758,7 +1758,7 @@ public:
     /* ... every index filled; the work files removed ... */
     return records;
 }</code></pre>
-<span class="src">src/coordinator.cpp:870 — <code>Coordinator::play</code> (abridged)</span>
+<span class="src">src/coordinator.cpp:884 — <code>Coordinator::play</code> (abridged)</span>
 <p>A run with several engines is therefore reproducible given which engine played each game, and it resumes byte for byte. The run's manifest, <code>selfplay-engines.csv</code>, records exactly that: the engine and its fingerprint (chip, OS, shaders) for every slice. Engines with equal fingerprints can split a share without changing a bit. When a remote fails twice, the coordinator plays the slice itself and says so in the manifest. AlphaGo Zero's self-play is unchanged: the same games, seeded the same way, computed in more places. How much that gains depends on the machines. On the Studio, four BLAS workers beside the GPU add about 11% to its 2,930 evaluations per second (19×19, 10×128); each M4 mini adds about 676 more (<code>docs/results/bench.txt</code>).</p>
 <p>The arena's waves can be spread the same way (<code>arena_engines</code>). A wave's games are numbered match by match, each engine plays a contiguous slice, and game j of a match keeps its seed and its colours wherever it is played. A remote slice returns each game's moves and score, and the coordinator replays every game before it counts: each move legal, the game over at its last move, the score the board's. The gating decision and the ratings are then taken from the merged results, as before.</p>
 <p><strong>Or one queue.</strong> Fixed slices have a price: a generation lasts as long as its slowest slice. Weights can set each engine's average, but a mini's 20 games of 19×19 vary in total length by several percent from one generation to the next, the weights are a person's estimate, and a failed remote moves its whole slice to one machine. In the 19×19 run on the Studio, two minis and a PC, 9–12% of each self-play phase was spent waiting for the slowest slice.</p>
@@ -2331,7 +2331,7 @@ A wins 4, B wins 0, draws 0</code></pre>
     appendLogRow(runDir_, stats);
     /* ... */
 }</code></pre>
-<span class="src">src/trainer.cpp:1233 — <code>Trainer::runPipelined</code> (abridged)</span>
+<span class="src">src/trainer.cpp:1283 — <code>Trainer::runPipelined</code> (abridged)</span>
 <p>A crash anywhere in an iteration loses that iteration's work, both halves, and the redo starts from exactly the committed state: the same games, the same network for the next self-play, the same v_resign. So a pipelined run interrupted at any moment resumes byte for byte, as the sequential one does (<code>tests/test_pipeline.cpp</code> crashes it at every step and kills it with SIGKILL in <code>tests/integration_smoke.sh</code>). What the overlap saves is the time the engines spent idle while the Studio trained (about 1,000 s per 19×19 generation) and the arena's under-filled waves, about 6–7% of a generation; the arena's games themselves are GPU work that the overlap moves but cannot remove.</p>
 <p><strong>Deterministic threading.</strong> Self-play and arena games run on W worker threads (all cores by default), which finish in an unpredictable order. The output is identical for any W anyway, because of three rules:</p>
 <ul>
@@ -2547,11 +2547,11 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Wilson intervals</dt>
   <dd><code>wilsonInterval</code> <span class="loc">— src/elo.cpp:184</span></dd>
   <dt><code>log.csv</code> rating vs. the <code>elo.csv</code> refit</dt>
-  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:155, 128</span></dd>
+  <dd><code>ratingAtOrBefore</code>, <code>eloCsv</code> <span class="loc">— src/trainer.cpp:162, 135</span></dd>
   <dt>One generation</dt>
-  <dd><code>Trainer::runSequential</code>, <code>Trainer::trainAndRate</code> <span class="loc">— src/trainer.cpp:1083, 845</span></dd>
+  <dd><code>Trainer::runSequential</code>, <code>Trainer::trainAndRate</code> <span class="loc">— src/trainer.cpp:1107, 857</span></dd>
   <dt>Pipelined generations</dt>
-  <dd><code>Trainer::runPipelined</code>, <code>Trainer::playAhead</code> <span class="loc">— src/trainer.cpp:1233, 1197</span>; <code>Coordinator::startPhaseOn</code>, <code>Coordinator::prepareMachine</code> <span class="loc">— src/coordinator.cpp:330, 543</span></dd>
+  <dd><code>Trainer::runPipelined</code>, <code>Trainer::playAhead</code> <span class="loc">— src/trainer.cpp:1283, 1245</span>; <code>Coordinator::startPhaseOn</code>, <code>Coordinator::prepareMachine</code> <span class="loc">— src/coordinator.cpp:332, 562</span></dd>
   <dt>Seed derivation</dt>
   <dd><code>deriveSeed</code> <span class="loc">— src/rng.cpp:27</span></dd>
   <dt>Work sharing by index</dt>
@@ -2561,9 +2561,9 @@ done: generation 60 in runs/5x5-seed1</code></pre>
   <dt>Atomic, durable writes</dt>
   <dd><code>writeFileAtomically</code>, <code>syncFd</code> <span class="loc">— src/serialize.cpp:180, 169</span></dd>
   <dt>Training state and resume</dt>
-  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:49</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:592</span></dd>
+  <dd><code>saveTrainingState</code> <span class="loc">— src/run_state.cpp:49</span>; <code>Trainer::resume</code> <span class="loc">— src/trainer.cpp:599</span></dd>
   <dt>Self-play on several engines and machines</dt>
-  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:116</span>; <code>Coordinator::play</code>, <code>Coordinator::playDynamic</code> <span class="loc">— src/coordinator.cpp:870, 1370</span></dd>
+  <dd><code>assignGames</code> <span class="loc">— src/engines.cpp:116</span>; <code>Coordinator::play</code>, <code>Coordinator::playDynamic</code> <span class="loc">— src/coordinator.cpp:884, 1376</span></dd>
   <dt>Dynamic allocation: one queue per generation</dt>
   <dd><code>GameQueue::take</code>, <code>GameQueue::inTime</code> <span class="loc">— src/game_queue.cpp:85, 57</span>; <code>dynamicWorkers</code> <span class="loc">— src/engines.cpp:352</span>; <code>playSelfPlayQueue</code> <span class="loc">— src/selfplay_slice.cpp:93</span></dd>
   <dt>Inspecting a position</dt>

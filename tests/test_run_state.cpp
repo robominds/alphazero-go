@@ -445,13 +445,24 @@ static void test_pending_selfplay_round_trip() {
         const std::string msg = loadError(path);
         return msg.find(path) != std::string::npos && msg.find("pending") != std::string::npos;
     };
-    for (int v = 0; v < 5; ++v) {
+    for (int v = 0; v < 8; ++v) {
         TrainingState s = original;
         if (v == 0) s.pending->records.clear();
         if (v == 1) s.pending->network = 8;
         if (v == 2) s.pending->network = -1;
         if (v == 3) s.pending->resignThreshold = 0.5f;
         if (v == 4) s.pending->maxMoves = 0;
+        if (v == 5) s.pending->records[0].resignLows[0] = {{3, -0.5f}, {2, -0.6f}};   // plies not rising
+        if (v == 6) s.pending->records[0].resignLows[1] = {{1, -1.5f}};
+        if (v == 7) {   // another board size than the buffer's
+            UniformEvaluator eval(7, 2, 0.0f, 8);
+            SelfPlayConfig sp;
+            sp.mcts.simulations = 4;
+            sp.mcts.batchSize = 4;
+            sp.maxMoves = 6;
+            Rng rng(3);
+            s.pending->records[1] = playSelfPlayGame(eval, sp, rng);
+        }
         assert(refused(s));
     }
     writeBytes(path, v6.substr(0, v6.size() - 3));

@@ -59,15 +59,22 @@ void printDeviceLine(const Config& cfg, std::ostream* log) {
 // slot each when there are several; playMatches). Checked before a run
 // writes anything, so a too-large inference_batch fails up front rather than
 // in the first arena. With pipeline = on self-play runs beside the
-// validation loss and the arena, so all of them are checked together.
+// validation loss and then beside the arena, so each of those is checked
+// together with self-play's hub (the trainer's own: with selfplay_engines
+// or arena_engines the coordinator's preflight checks the engines' hubs).
 void checkBackend(const Config& cfg) {
     checkBackendAvailable(cfg.backend);
 #ifdef AZ_USE_METAL
     if (cfg.backend == "metal" && cfg.pipeline) {
-        std::vector<GpuHubs> groups = {{1, kInferenceSlots, cfg.inferenceBatch},
-                                       {arenaWaveNetworks(cfg), 1, cfg.inferenceBatch}};
-        if (cfg.validationLoss) groups.push_back({1, 1, cfg.batchSize});
-        checkMetalInferenceMemory(cfg.netConfig(), groups);
+        std::vector<GpuHubs> selfplay, others[2];
+        if (cfg.selfplayEngines.empty()) selfplay.push_back({1, kInferenceSlots, cfg.inferenceBatch});
+        if (cfg.arenaEngines.empty()) others[0].push_back({arenaWaveNetworks(cfg), 1, cfg.inferenceBatch});
+        if (cfg.validationLoss) others[1].push_back({1, 1, cfg.batchSize});
+        for (const std::vector<GpuHubs>& other : others) {
+            std::vector<GpuHubs> groups = selfplay;
+            groups.insert(groups.end(), other.begin(), other.end());
+            if (!groups.empty()) checkMetalInferenceMemory(cfg.netConfig(), groups);
+        }
     } else if (cfg.backend == "metal") {
         checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, 1, kInferenceSlots);
         checkMetalInferenceMemory(cfg.netConfig(), cfg.inferenceBatch, arenaWaveNetworks(cfg), 1);
@@ -630,6 +637,9 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
                           joinStrings(cfg.referenceNetworks));
     ReferenceNetworks referenceNets = loadReferenceNetworks(cfg);
     checkReferenceHashes(referenceNets, state.referenceNetworks);
+    if (state.pending && state.pending->records.front().boardSize != cfg.boardSize)
+        throw std::runtime_error(statePath(runDir) + ": its pending self-play games are not " +
+                                 std::to_string(cfg.boardSize) + "x" + std::to_string(cfg.boardSize));
     const std::string ckpt = checkpointPath(runDir, state.generation);
     Network net = loadNetwork(ckpt);
     if (net.config() != cfg.netConfig())
@@ -690,8 +700,10 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
             std::string keys;
             for (const std::string& k : changed) keys += (keys.empty() ? "" : ", ") + k;
             *log << "note: generation " << state.generation + 1
-                 << "'s self-play games were committed before this resume (pipeline); changed self-play keys ("
-                 << keys << ") apply from generation " << state.generation + 2 << "\n";
+                 << "'s self-play games were committed before this resume (pipeline), played with the earlier "
+                    "values of the changed\nself-play keys ("
+                 << keys << "); their new values apply to self-play from generation " << state.generation + 2
+                 << "\n";
         }
     }
     // Rewritten only after every check passed, so a refused resume leaves the
@@ -1078,7 +1090,19 @@ void Trainer::printGenerationLine(const GenerationStats& stats, const RoundOutco
 
 // ---- the sequential loop (pipeline = off) ---------------------------------------
 
-GenerationStats Trainer::runGeneration() { return cfg_.pipeline ? runPipelined() : runSequential(); }
+GenerationStats Trainer::runGeneration() {
+    // A generation that failed may have changed the state in memory (the
+    // buffer, the resignation window, a pipelined state's pending games)
+    // without committing it: only a resume continues correctly from there.
+    if (failed_)
+        throw std::logic_error("a generation of this run failed in this process; resume it (train --resume)");
+    try {
+        return cfg_.pipeline ? runPipelined() : runSequential();
+    } catch (...) {
+        failed_ = true;
+        throw;
+    }
+}
 
 GenerationStats Trainer::runSequential() {
     const int g = state_.generation + 1;
@@ -1164,23 +1188,47 @@ std::string pendingSecondsPath(const std::string& runDir) {
 
 } // namespace
 
+namespace {
+
+// pending-selfplay.txt: "<generation> <seconds>" per line, the generations
+// whose self-play a commit holds or is about to hold.
+std::map<int, double> readPendingSeconds(const std::string& runDir) {
+    std::map<int, double> out;
+    std::ifstream in(pendingSecondsPath(runDir));
+    for (std::string line; std::getline(in, line);) {
+        if (line.empty() || line[0] == '#') continue;
+        std::istringstream fields(line);
+        int g = -1;
+        double seconds = -1;
+        if (fields >> g >> seconds && std::isfinite(seconds) && seconds >= 0) out[g] = seconds;
+    }
+    return out;
+}
+
+} // namespace
+
 double Trainer::pendingSelfPlaySeconds(int g) const {
     if (pendingSeconds_.first == g) return pendingSeconds_.second;
     // Played by an earlier process: its time, if it left it.
-    std::ifstream in(pendingSecondsPath(runDir_));
-    int generation = -1;
-    double seconds = 0;
-    for (std::string line; std::getline(in, line);) {
-        if (line.rfind("generation = ", 0) == 0) generation = std::atoi(line.c_str() + 13);
-        if (line.rfind("seconds = ", 0) == 0) seconds = std::atof(line.c_str() + 10);
-    }
-    return generation == g && std::isfinite(seconds) && seconds >= 0 ? seconds : 0.0;
+    const std::map<int, double> recorded = readPendingSeconds(runDir_);
+    auto it = recorded.find(g);
+    return it == recorded.end() ? 0.0 : it->second;
 }
 
 void Trainer::keepPendingSeconds(int g, double seconds) {
     pendingSeconds_ = {g, seconds};
-    char text[96];
-    std::snprintf(text, sizeof text, "generation = %d\nseconds = %.3f\n", g, seconds);
+    // Written before state.bin, and keeping generation g-1's line: a crash
+    // between the two leaves state.bin's pending generation g-1, whose time
+    // is still here.
+    std::map<int, double> recorded = readPendingSeconds(runDir_);
+    std::string text = "# generation seconds: the wall time of each pending generation's self-play\n";
+    recorded[g] = seconds;
+    for (const auto& [generation, s] : recorded) {
+        if (generation < g - 1) continue;
+        char line[64];
+        std::snprintf(line, sizeof line, "%d %.3f\n", generation, s);
+        text += line;
+    }
     writeFileAtomically(pendingSecondsPath(runDir_), text);
 }
 
@@ -1219,9 +1267,11 @@ void Trainer::playAhead() {
         if (!coordinator_->assignment().empty()) writeGamesManifest(runDir_, g, coordinator_->assignment());
     }
     keepPendingSeconds(g, seconds);
+    pipeline_probe::crashPoint(pipeline_probe::Point::PrologueManifests, g);
     saveTrainingState(statePath(runDir_), state_);
     if (log_) {
-        if (selfplayEngines) *log_ << enginesLine(coordinator_->reports(), "selfplay engines (gen " + std::to_string(g) + ")") << "\n";
+        if (selfplayEngines)
+            *log_ << enginesLine(coordinator_->reports(), "selfplay engines (gen " + std::to_string(g) + ")") << "\n";
         char line[160];
         std::snprintf(line, sizeof line,
                       "pipeline: gen %d self-play by network %d, %d games %.1fs, committed with generation %d\n", g,
@@ -1332,6 +1382,7 @@ std::map<Point, int> gCrashes;   // point -> the generation it fires at
 const char* pointName(Point p) {
     switch (p) {
     case Point::PrologueSelfPlay: return "the prologue's self-play";
+    case Point::PrologueManifests: return "the prologue's manifests";
     case Point::Processed: return "processing self-play";
     case Point::SelfPlay: return "self-play";
     case Point::Validation: return "the validation loss";
@@ -1393,8 +1444,11 @@ int rerateRun(const std::string& runDir, const std::vector<std::string>& overrid
         }
     }
 
-    // Fail on an unavailable backend before anything is written.
-    checkBackend(cfg);
+    // Fail on an unavailable backend before anything is written. Re-rating
+    // plays no self-play, so a pipelined run's combined check does not apply.
+    Config sequential = cfg;
+    sequential.pipeline = false;
+    checkBackend(sequential);
     printDeviceLine(cfg, log);
 
     // Each reference network is read once. When the replay uses the run's

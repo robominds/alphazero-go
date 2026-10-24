@@ -252,15 +252,17 @@ with that wall time:
 
 ```
 gen 12 | selfplay 400 games avg 474.9 plies 15361.4s | train loss p 5.83 v 0.52 lr 0.02 2032.0s | arena ... 6013.7s | best 11
-pipeline: gen 13 self-play by network 11, 15402.6s beside gen 12's training and arena 8045.7s; generation 12 took 15403.1s
+pipeline: gen 13 self-play by network 11, 400 games 15402.6s, beside gen 12's training and arena 8045.7s; generation 12 took 15403.1s
 ```
 
 `selfplay_s` of the pending generation is measured by the process that
 played it. `state.bin` must not hold timings (a resumed run's would differ
 from the straight run's), so it is kept beside it in
-`pending-selfplay.txt` (`generation = 13`, `seconds = 15402.583`),
-written before `state.bin`; a resume uses it when its generation is the
-pending one, and writes `0.000` when it is not there.
+`pending-selfplay.txt` (lines `12 15361.357` and `13 15402.583`: the
+pending generation and the one before, so that a crash between this file
+and `state.bin` still finds the committed pending generation's time),
+written before `state.bin`; a resume reads the line of its pending
+generation, and writes `0.000` when there is none.
 
 The resume itself notes a switch: `note: pipeline changed from off to on;
 from here on self-play plays the best network of the last commit, one
@@ -277,11 +279,13 @@ generation behind training`.
 - **Other keys changed on resume** take effect, as today, from the first
   work not yet committed. With pending games, the self-play of k+1 is
   committed, so a change of a self-play key (`simulations`, `komi`,
-  `resignation`, `selfplay_engines`, ...) applies from k+2; the resume
-  says so:
+  `resignation`, `selfplay_engines`, ...) reaches self-play from k+2
+  (what else it drives, such as training's backend or the arena's search,
+  changes at once); the resume says so:
 
   ```
-  note: generation 11's self-play games were committed before this resume (pipeline); changed self-play keys (resignation) apply from generation 12
+  note: generation 11's self-play games were committed before this resume (pipeline), played with the earlier values of the changed
+  self-play keys (resignation); their new values apply to self-play from generation 12
   ```
 
   A switch that must take effect at k+1 (the 19×19 plan turns
@@ -305,7 +309,12 @@ Each kind still runs one phase at a time; what they share changes:
   meets a machine; now every lookup and insertion holds a mutex. The
   per-machine fields stay under the machine's own mutex, which now also
   covers `down` and `keep` when a phase starts (today set while no thread
-  runs).
+  runs). `down` (found unreachable this phase) is kept per kind, so a
+  phase starting does not clear what the other, still running, found.
+- **A network a remote refused** (damaged there) is forgotten, not
+  removed: the next phase that needs it uploads it again, replacing the
+  file atomically, while the other phase may be starting a process on it;
+  the coordinator removes it when it goes.
 - **Networks kept on a machine**: `keep` becomes one set per phase kind
   (self-play, arena). A phase removes only networks neither kind needs,
   so the arena never deletes self-play's network on a machine both use,
@@ -339,11 +348,14 @@ A local GPU now holds self-play's hubs and the arena's at once (and, with
 `pipeline = on` the up-front checks add them up instead of checking each
 phase alone:
 
-- the trainer (`backend = metal`): self-play's hub (two slots) plus the
-  larger of the arena's hubs (`arenaWaveNetworks`, one slot each) and the
-  validation runner (one slot at `batch_size`);
-- the coordinator's preflight, per local GPU backend: self-play engines'
-  hubs plus arena engines' hubs.
+- the trainer (`backend = metal`): self-play's hub (two slots, when
+  `selfplay_engines` is empty) with the arena's hubs (`arenaWaveNetworks`,
+  one slot each, when `arena_engines` is empty), and separately with the
+  validation runner (one slot at `batch_size`), which runs before the arena;
+- the coordinator's preflight, per local GPU backend: self-play's hubs
+  (the engines', and the trainer's own when its list is empty) with the
+  arena's, and with the validation runner. Re-rating keeps the sequential
+  checks (it plays no self-play).
 
 `checkMetalInferenceMemory` (and its CUDA twin) gain an overload taking a
 list of (hubs, slots, batch) groups. Each hub's allocation is still
@@ -399,7 +411,9 @@ critical path anyway (800 steps ≈ 1,050 s against self-play's ≈15,000 s).
 - **Self-play fails** (a local engine throws, or `selfplay_fallback =
   stop`): the trainer cancels B(g) (the coordinator's arena phase, and
   training at its next step), waits for it, and throws the self-play
-  error. Nothing of the iteration is committed; a resume redoes it.
+  error. Nothing of the iteration is committed; a resume redoes it. The
+  Trainer refuses to run another generation in that process (its state in
+  memory is no longer the committed one).
 - **B(g) fails** (non-finite loss, an arena slice with `stop`): the
   trainer cancels SP(g+1), waits for it, throws B(g)'s error ("last good
   state kept"). The default path's arena (`playMatches`) cannot be

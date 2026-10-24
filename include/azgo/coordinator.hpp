@@ -215,7 +215,10 @@ public:
     //  - local engines: checkBackendAvailable; for metal (cuda)
     //    checkMetalInferenceMemory (checkCudaInferenceMemory) for one
     //    two-slot hub per self-play item, and for arenaWaveNetworks(cfg)
-    //    one-slot hubs per arena item;
+    //    one-slot hubs per arena item; with pipeline = on, self-play's hubs
+    //    together with the arena's, and together with the validation loss's
+    //    runner (the trainer's own hubs included when a list is empty and
+    //    the run's backend is that GPU's);
     //  - remote machines: every alias must be in the hosts file (else
     //    ConfigError); `selfplay --version` there must report this binary's
     //    build ID (else ConfigError naming the alias and both IDs), and
@@ -331,13 +334,18 @@ private:
     // selfplay_fallback = local the fallback engine plays it (report.engine,
     // fingerprint and note say so, and a note goes to the log), with stop a
     // SliceError.
-    void playRemote(int g, PhaseSlice& slice, const std::string& fallback, const std::string& workDir,
+    void playRemote(int g, PhaseKind kind, PhaseSlice& slice, const std::string& fallback,
+                    const std::string& workDir,
                     const std::atomic<bool>& stop, const std::string& what, SliceReport& report,
                     std::atomic<bool>& failed);
     // A remote machine's state for a phase about to start: made at the first
     // phase that meets the machine, its `down` cleared (tried afresh every
     // phase) and the networks this kind of phase needs there recorded.
     void startPhaseOn(const std::string& alias, PhaseKind kind, const std::set<std::string>& networks);
+    // A machine's networks that a selfplay refused (damaged there): no
+    // longer counted as uploaded, so the next phase that needs them uploads
+    // them again; removed when the coordinator goes.
+    void forgetNetworks(const std::string& alias, const std::vector<std::string>& remoteNets);
     // The engine's fingerprint, measured here once for a local engine.
     std::string fingerprintOf(const EngineSpec& e);
     Config cfg_;
@@ -358,8 +366,12 @@ private:
         bool contacted = false;        // stale files of an earlier coordinator cleared
         std::set<std::string> uploaded;   // network paths uploaded there
         std::set<std::string> keep[2];    // those each kind's current phase needs (PhaseKind)
+        std::set<std::string> forgotten;  // refused there (forgetNetworks), removed at the end
         bool suspect = false;          // unreachable at preflight or in an earlier phase
-        bool down = false;             // found unreachable this phase: its slices fall back
+        // Found unreachable in the current phase of each kind (PhaseKind):
+        // that phase's later slices fall back. Per kind, so a phase starting
+        // does not clear what the other, still running, found.
+        bool down[2] = {false, false};
     };
     MachineState& machine(const std::string& alias);   // must exist (startPhaseOn made it)
     std::mutex machinesMutex_;

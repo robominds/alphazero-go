@@ -302,12 +302,14 @@ Coordinator::Coordinator(const Config& cfg, const std::string& runDir, HostsFile
 
 Coordinator::~Coordinator() {
     for (const auto& [alias, state] : machines_) {
-        if (state->uploaded.empty()) continue;
+        std::set<std::string> files = state->uploaded;
+        files.insert(state->forgotten.begin(), state->forgotten.end());
+        if (files.empty()) continue;
         try {
             const MachineSettings m = hosts_.settings(alias);
             const std::unique_ptr<Transport> t = transportFor(m, "");
             t->setCommandTimeout(kCleanupTimeout);
-            t->remove(std::vector<std::string>(state->uploaded.begin(), state->uploaded.end()));
+            t->remove(std::vector<std::string>(files.begin(), files.end()));
             t->removeDirIfEmpty(remoteDir(m));   // the run's directory, now empty
         } catch (const std::exception&) {
         }
@@ -339,8 +341,17 @@ void Coordinator::startPhaseOn(const std::string& alias, PhaseKind kind, const s
         state = entry.get();
     }
     std::lock_guard<std::mutex> lock(state->mutex);
-    state->down = false;   // tried afresh every phase
+    state->down[kind] = false;   // tried afresh every phase of this kind
     state->keep[kind] = networks;
+}
+
+void Coordinator::forgetNetworks(const std::string& alias, const std::vector<std::string>& remoteNets) {
+    MachineState& state = machine(alias);
+    std::lock_guard<std::mutex> lock(state.mutex);
+    for (const std::string& net : remoteNets) {
+        state.uploaded.erase(net);
+        state.forgotten.insert(net);
+    }
 }
 
 std::string Coordinator::fingerprintOf(const EngineSpec& e) {
@@ -414,23 +425,31 @@ void Coordinator::preflight() {
     if (batch < cfg_.mctsBatch)
         throw ConfigError("hosts file: local inference_batch (" + std::to_string(batch) +
                           ") is below mcts_batch (" + std::to_string(cfg_.mctsBatch) + ")");
-    // The groups a pipelined run holds at once on this machine's GPU of
-    // `backend`: the engines' hubs, and the trainer's own for a phase with
-    // an empty list (the trainer's backend is metal at most).
-    auto together = [&](const std::string& backend, int selfplay, int arena) {
-        std::vector<GpuHubs> groups;
-        if (selfplay > 0) groups.push_back({selfplay, kInferenceSlots, batch});
-        if (arena > 0) groups.push_back({arena, 1, batch});
-        if (cfg_.backend == backend && cfg_.selfplayEngines.empty())
-            groups.push_back({1, kInferenceSlots, cfg_.inferenceBatch});
-        if (cfg_.backend == backend && cfg_.arenaEngines.empty())
-            groups.push_back({arenaWaveNetworks(cfg_), 1, cfg_.inferenceBatch});
-        return groups;
+    // What a pipelined run holds at once on this machine's GPU of
+    // `backend`: self-play's hubs (the engines', or the trainer's own when
+    // selfplay_engines is empty and the run's backend is this one) beside
+    // the arena's (likewise), and beside the validation loss's runner, which
+    // the trainer runs before the arena on its thread. Each pair must fit.
+    auto checkTogether = [&](const std::string& backend, int selfplay, int arena,
+                             const std::function<void(const std::vector<GpuHubs>&)>& check) {
+        const bool own = cfg_.backend == backend;
+        std::vector<GpuHubs> sp, rest[2];
+        if (selfplay > 0) sp.push_back({selfplay, kInferenceSlots, batch});
+        if (own && cfg_.selfplayEngines.empty()) sp.push_back({1, kInferenceSlots, cfg_.inferenceBatch});
+        if (arena > 0) rest[0].push_back({arena, 1, batch});
+        if (own && cfg_.arenaEngines.empty()) rest[0].push_back({arenaWaveNetworks(cfg_), 1, cfg_.inferenceBatch});
+        if (own && cfg_.validationLoss) rest[1].push_back({1, 1, cfg_.batchSize});
+        if (selfplay + arena == 0) return;   // the trainer checks its own hubs (checkBackend)
+        for (const std::vector<GpuHubs>& other : rest) {
+            std::vector<GpuHubs> groups = sp;
+            groups.insert(groups.end(), other.begin(), other.end());
+            if (!groups.empty()) check(groups);
+        }
     };
 #ifdef AZ_USE_METAL
     if (cfg_.pipeline) {
-        const std::vector<GpuHubs> groups = together("metal", metalHubs, metalArena);
-        if (metalHubs + metalArena > 0) checkMetalInferenceMemory(cfg_.netConfig(), groups);
+        checkTogether("metal", metalHubs, metalArena,
+                      [&](const std::vector<GpuHubs>& g) { checkMetalInferenceMemory(cfg_.netConfig(), g); });
     } else {
         if (metalHubs > 0) checkMetalInferenceMemory(cfg_.netConfig(), batch, metalHubs, kInferenceSlots);
         if (metalArena > 0) checkMetalInferenceMemory(cfg_.netConfig(), batch, metalArena, 1);
@@ -441,8 +460,8 @@ void Coordinator::preflight() {
 #endif
 #ifdef AZ_USE_CUDA
     if (cfg_.pipeline) {
-        const std::vector<GpuHubs> groups = together("cuda", cudaHubs, cudaArena);
-        if (cudaHubs + cudaArena > 0) checkCudaInferenceMemory(cfg_.netConfig(), groups);
+        checkTogether("cuda", cudaHubs, cudaArena,
+                      [&](const std::vector<GpuHubs>& g) { checkCudaInferenceMemory(cfg_.netConfig(), g); });
     } else {
         if (cudaHubs > 0) checkCudaInferenceMemory(cfg_.netConfig(), batch, cudaHubs, kInferenceSlots);
         if (cudaArena > 0) checkCudaInferenceMemory(cfg_.netConfig(), batch, cudaArena, 1);
@@ -451,7 +470,7 @@ void Coordinator::preflight() {
     (void)cudaHubs;
     (void)cudaArena;
 #endif
-    (void)together;
+    (void)checkTogether;
 
     // Remote machines: reachable, this build, and every engine's backend usable.
     if (!remotes.empty() && buildId() == "unknown")
@@ -639,17 +658,12 @@ void Coordinator::attemptRemote(int attempt, const EngineSpec& e, const RemoteWo
         if (r.exitCode != 0) {
             const std::string line = lastLine(log);
             // A network the binary refused (damaged on the machine since the
-            // upload): remove and forget the slice's networks, so the next
-            // attempt uploads them again and none is left behind.
-            if (line.find("network") != std::string::npos) {
-                MachineState& state = machine(e.machine);
-                std::lock_guard<std::mutex> lock(state.mutex);
-                try {
-                    t->remove(remoteNets);
-                } catch (const std::exception&) {   // best effort: a dead machine
-                }
-                for (const std::string& net : remoteNets) state.uploaded.erase(net);
-            }
+            // upload): forget the slice's networks, so the next attempt
+            // uploads them again (replacing the file atomically). They are
+            // not removed: the other kind of phase may be starting a process
+            // on the same file (pipeline = on); the coordinator removes them
+            // when it goes.
+            if (line.find("network") != std::string::npos) forgetNetworks(e.machine, remoteNets);
             // No log line in the message: selfplay's own words can hold the
             // machine's paths; the log keeps them.
             throw SliceError(e.machine + ": selfplay " + brief(r));
@@ -680,7 +694,7 @@ void Coordinator::attemptRemote(int attempt, const EngineSpec& e, const RemoteWo
     }
 }
 
-void Coordinator::playRemote(int g, PhaseSlice& slice, const std::string& fallback,
+void Coordinator::playRemote(int g, PhaseKind kind, PhaseSlice& slice, const std::string& fallback,
                              const std::string& workDir, const std::atomic<bool>& stop,
                              const std::string& what, SliceReport& report, std::atomic<bool>& failed) {
     // Two attempts on the planned engine: a transient failure costs time,
@@ -698,13 +712,13 @@ void Coordinator::playRemote(int g, PhaseSlice& slice, const std::string& fallba
     MachineState& state = machine(e.machine);
     auto isDown = [&] {
         std::lock_guard<std::mutex> lock(state.mutex);
-        return state.down;
+        return state.down[kind];
     };
     auto checkReachable = [&] {
         const bool up = probe->reachable();
         std::lock_guard<std::mutex> lock(state.mutex);
         state.suspect = !up;
-        if (!up) state.down = true;
+        if (!up) state.down[kind] = true;
         return up;
     };
     auto logLine = [&](const std::string& text) {
@@ -836,7 +850,7 @@ std::vector<SliceReport> Coordinator::runSlices(int g, PhaseKind kind, std::vect
                     if (slices[k].engine.machine == "local")
                         slices[k].playLocal(runs[k], &reports[k].stats);
                     else
-                        playRemote(g, slices[k], fallback, workDir, stop, what, reports[k], failed);
+                        playRemote(g, kind, slices[k], fallback, workDir, stop, what, reports[k], failed);
                 } catch (...) {
                     errors[k] = std::current_exception();
                     stop = true;
@@ -1091,7 +1105,7 @@ struct Coordinator::DynamicPhase {
             const bool up = probe->reachable();
             std::lock_guard<std::mutex> lock(state.mutex);
             state.suspect = !up;
-            if (!up) state.down = true;
+            if (!up) state.down[kSelfPlayPhase] = true;
             return up;
         };
         auto logLine = [&](const std::string& text) {
@@ -1101,7 +1115,7 @@ struct Coordinator::DynamicPhase {
         bool down, suspect;
         {
             std::lock_guard<std::mutex> lock(state.mutex);
-            down = state.down;
+            down = state.down[kSelfPlayPhase];
             suspect = state.suspect;
         }
         std::string reason;
@@ -1318,15 +1332,7 @@ struct Coordinator::DynamicPhase {
         if (failed) {
             // A network the binary refused (damaged on the machine since the
             // upload): forget it, so the next attempt uploads it again.
-            if (lastLine(log).find("network") != std::string::npos) {
-                MachineState& state = c.machine(e.spec.machine);
-                std::lock_guard<std::mutex> lock(state.mutex);
-                try {
-                    t->remove(remoteNets);
-                } catch (const std::exception&) {
-                }
-                for (const std::string& n : remoteNets) state.uploaded.erase(n);
-            }
+            if (lastLine(log).find("network") != std::string::npos) c.forgetNetworks(e.spec.machine, remoteNets);
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 for (int i : queue->held(static_cast<int>(k))) {

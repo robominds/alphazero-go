@@ -184,6 +184,11 @@ static void test_two_phases_at_once() {
         saveNetwork(net, netPath);
         const std::vector<GameRecord> expected =
             playSelfPlayGames(net, sp, cfg.seed, 4, 0, 8, EngineRun{"naive", 1});
+        // A wave that also plays the self-play network: saved from memory,
+        // the same bytes as its file, so both phases use one remote file
+        // (as a run without gating does: g against g-1, which self-play plays).
+        const std::vector<ArenaMatchSpec> shared = {{ArenaPlayer::network(net), ArenaPlayer::network(a), 6, 704}};
+        const MatchResult expectedShared = playMatches(shared, acfg, 3, "naive", 64)[0];
 
         std::ostringstream log;
         Coordinator coordinator(cfg, dir.file("run"), fakeHosts(dir), &log);
@@ -207,6 +212,7 @@ static void test_two_phases_at_once() {
         coordinator.beginArena(3);
         const std::vector<MatchResult> first = coordinator.playArena(wave, acfg);
         const std::vector<MatchResult> second = coordinator.playArena({wave[2]}, acfg);
+        const std::vector<MatchResult> third = coordinator.playArena(shared, acfg);
         selfplay.join();
         distributed_probe::reset();
         if (error) std::rethrow_exception(error);
@@ -214,6 +220,7 @@ static void test_two_phases_at_once() {
         assert(sameRecords(records, expected));
         for (size_t i = 0; i < wave.size(); ++i) assert(sameResult(first[i], expectedArena[i]));
         assert(sameResult(second[0], expectedSecond[0]));
+        assert(sameResult(third[0], expectedShared));
         // No attempt failed: the work directories are gone, no note.
         assert(!fs::exists(dir.file("run/selfplay-work/gen_0004")));
         assert(!fs::exists(dir.file("run/arena-work")));
@@ -485,7 +492,9 @@ static void test_pipelined_run_files() {
     assert(s.generation == 3 && s.pending && s.pending->records.size() == 8);
     assert(s.pending->resignation && s.pending->maxMoves == pipeConfig().effectiveMaxMoves());
     assert(splitLines(readFile(on.file("run/log.csv"))).size() == 4);
-    assert(contains(readFile(on.file("run/pending-selfplay.txt")), "generation = 4\nseconds = "));
+    // Generations 3 and 4: state.bin's pending generation and the one before.
+    const std::vector<std::string> times = splitLines(readFile(on.file("run/pending-selfplay.txt")));
+    assert(times.size() == 3 && times[1].rfind("3 ", 0) == 0 && times[2].rfind("4 ", 0) == 0);
     assert(contains(readFile(configPath(on.file("run"))), "\npipeline = on\n"));
     // SGFs of the trained generations only: generation 4's games are not processed yet.
     assert(fs::exists(on.file("run/sgf/gen_0003_game_01.sgf")) && !fs::exists(on.file("run/sgf/gen_0004_game_00.sgf")));
@@ -576,7 +585,7 @@ static void test_stops_and_crashes_resume_exactly(const std::string& name, const
         P point;
         int generation;
     };
-    const Crash crashes[] = {{P::PrologueSelfPlay, 1}, {P::Processed, 1}, {P::SelfPlay, 2}, {P::Validation, 2},
+    const Crash crashes[] = {{P::PrologueSelfPlay, 1}, {P::PrologueManifests, 1}, {P::Processed, 1}, {P::SelfPlay, 2}, {P::Validation, 2},
                              {P::Training, 1},         {P::Checkpoint, 2}, {P::Arena, 1},   {P::Manifests, 2},
                              {P::State, 1},            {P::SelfPlay, 4}, {P::Arena, 3}};
     for (const Crash& crash : crashes) {
@@ -683,8 +692,9 @@ static void test_changed_keys_on_resume() {
     assert(!contains(same.str(), "note:"));
     std::unique_ptr<Trainer> t = resume(dir, {"simulations=6", "resign_false_positive=0.5"}, "", &changed);
     assert(contains(changed.str(), "note: generation 3's self-play games were committed before this resume "
-                                   "(pipeline); changed self-play keys (simulations, resign_false_positive) "
-                                   "apply from generation 4\n"));
+                                   "(pipeline), played with the earlier values of the changed\nself-play keys "
+                                   "(simulations, resign_false_positive); their new values apply to self-play from "
+                                   "generation 4\n"));
     t->runUntil(3);
     char want[32];
     std::snprintf(want, sizeof want, "%.2f", used);
@@ -714,6 +724,15 @@ static void test_failures() {
         assert(threw);
         assert(readFile(statePath(dir.file("run"))) == committed);
         assert(!fs::exists(checkpointPath(dir.file("run"), 2)));
+        // That Trainer's state in memory is no longer the committed one: it
+        // refuses to go on (a resume does).
+        bool refused = false;
+        try {
+            broken->runGeneration();
+        } catch (const std::logic_error& e) {
+            refused = contains(e.what(), "resume");
+        }
+        assert(refused && readFile(statePath(dir.file("run"))) == committed);
     }
     Config c = pipeConfig();
     applyOverride(c, "selfplay_engines=local/naive:1, fake/naive:1");

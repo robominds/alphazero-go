@@ -204,9 +204,25 @@ TrainingState loadTrainingState(const std::string& path, const std::vector<int>&
             if (count == 0 || count > bytes.size() / 16)
                 throw std::runtime_error("invalid pending self-play (" + std::to_string(count) + " games)");
             p.records.reserve(count);
-            for (uint32_t i = 0; i < count; ++i)
-                p.records.push_back(
-                    slice_files::readSliceRecord(r, "pending self-play: game " + std::to_string(i)));
+            for (uint32_t i = 0; i < count; ++i) {
+                const std::string what = "pending self-play: game " + std::to_string(i);
+                GameRecord g = slice_files::readSliceRecord(r, what);
+                // One board size, the buffer's; resign lows that are record
+                // lows, as the window's (they join it when processed).
+                const int size = p.records.empty() ? (state.buffer.games() > 0 ? state.buffer.game(0).boardSize : g.boardSize)
+                                                   : p.records.front().boardSize;
+                if (g.boardSize != size)
+                    throw std::runtime_error("invalid " + what + " (board size " + std::to_string(g.boardSize) +
+                                             ", expected " + std::to_string(size) + ")");
+                for (const ResignLows& lows : g.resignLows)
+                    for (size_t k = 0; k < lows.size(); ++k) {
+                        const auto& [ply, value] = lows[k];
+                        const bool ok = ply >= 1 && ply <= 1000000 && value >= -1.0f && value <= 1.0f &&
+                                        (k == 0 || (ply > lows[k - 1].first && value < lows[k - 1].second));
+                        if (!ok) throw std::runtime_error("invalid " + what + " (resign lows)");
+                    }
+                p.records.push_back(std::move(g));
+            }
             state.pending = std::move(p);
         }
         if (is.peek() != std::char_traits<char>::eof())
