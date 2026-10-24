@@ -28,9 +28,14 @@ engine's proportional to its arena rate (arena waves differ in size, so
 the key takes no fixed counts). G is then the games of one wave (default:
 the average wave of the window), for the predicted times only.
 
-Choosing weights is a person's decision: the run never rebalances itself,
-because an assignment that depends on timings would make its games depend
-on them. Standard library only.
+Choosing weights is a person's decision: with selfplay_allocation =
+static the run never rebalances itself, because an assignment that depends
+on timings would make its games depend on them. With dynamic allocation the
+manifest has one row per engine and generation (its first column empty, its
+count the games the engine took from the queue); the rates are read the same
+way, an engine that played no game has none, and the weights it suggests
+only set each GPU engine's default concurrency (a quarter of its share):
+the queue itself balances the engines. Standard library only.
 
 Mark Castelluccio, with assistance from Claude (Anthropic).
 """
@@ -120,11 +125,14 @@ def main():
     fallbacks = {}   # (planned, engine) -> games played as a fallback
     planned_engines = []
     total_evals = total_games = 0
+    dynamic = any(r["first"] == "" for r in window)
     for r in window:
         total_evals += int(r["evaluations"])
         total_games += int(r["count"])
         if r["planned"] not in planned_engines:
             planned_engines.append(r["planned"])
+        if int(r["count"]) == 0 or int(r["evaluations"]) == 0:
+            continue   # an engine that played no game (dynamic allocation) has no rate there
         if r["planned"] != r["engine"] or r["note"]:
             key = (r["planned"], r["engine"])
             fallbacks[key] = fallbacks.get(key, 0) + int(r["count"])
@@ -136,11 +144,19 @@ def main():
         evaluations[name] += int(r["evaluations"])
         seconds[name] += max(float(r["seconds"]), MIN_SECONDS)
     for (planned, engine), n in fallbacks.items():
-        print(f"note: {n} games planned for {planned} were played by {engine} as a fallback "
-              "(not counted in any rate)")
+        if dynamic:
+            print(f"note: {n} games of {engine} were played in generations with a failure "
+                  "(not counted in any rate)")
+        else:
+            print(f"note: {n} games planned for {planned} were played by {engine} as a fallback "
+                  "(not counted in any rate)")
+    if dynamic:
+        print("note: dynamic allocation: the weights below set each GPU engine's default concurrency "
+              "(a quarter of its share); the queue balances the engines")
     missing = [e for e in planned_engines if e not in order]
     for e in missing:
-        print(f"warning: {e} only ran as a fallback in these generations: it has no rate and is "
+        why = "played no game without a failure" if dynamic else "only ran as a fallback"
+        print(f"warning: {e} {why} in these generations: it has no rate and is "
               "left out of the suggestion; check the machine, or measure over more generations",
               file=sys.stderr)
     if not order:

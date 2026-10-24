@@ -8,6 +8,8 @@
 # and the GTP engine: a scripted session and a two-game match through tools/gtp_match.py,
 # and distributed self-play: selfplay's version and fingerprint, a run with a fake remote
 # (the subprocess transport) resumed and compared with the default run, AZGO_HOSTS, a refused alias,
+# and dynamic allocation: a run whose games a local engine and a fake remote take from one queue,
+# resumed, its games manifest, and a remote stream killed mid-generation,
 # and the distributed arena: a run whose arena games a fake remote shares, resumed and compared with
 # the default run, its manifest and summary lines.
 #
@@ -452,6 +454,52 @@ out="$("$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/unknown" "${TINY
 [ "$status" -eq 1 ] || fail "an unknown alias exited $status, expected 1"
 grep -q "machine 'nowhere' is not defined in the hosts file" <<<"$out" || fail "unexpected refusal: $out"
 test ! -e "$W/unknown/config.cfg" || fail "a refused run wrote config.cfg"
+
+echo "== dynamic allocation: one queue for a local engine and a fake remote, resumed, a stream killed =="
+YRUN="$W/dynamic"
+YENGINES="selfplay_engines=local/naive:1,fake/naive:1"
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$YRUN" "${TINY[@]}" --hosts "$HOSTS" --set "$YENGINES" \
+    --set selfplay_allocation=dynamic --generations 2 > "$W/dynamic.out"
+grep -Eq '^selfplay engines: local/naive [0-9]+ .* \| fake/naive [0-9]+ ' "$W/dynamic.out" \
+    || fail "no selfplay engines line for the dynamic run"
+"$BUILD/train" --run "$YRUN" --resume --hosts "$HOSTS" --generations 3 > /dev/null
+grep -q '^selfplay_allocation = dynamic$' "$YRUN/config.cfg" || fail "config.cfg lacks selfplay_allocation = dynamic"
+GAMES="$(sed -n 's/^games_per_generation = //p' "$YRUN/config.cfg")"
+for g in 1 2 3; do
+    # Each index exactly once, in order, each played by a listed engine.
+    awk -F, -v g="$g" -v n="$GAMES" 'NR > 1 && $1 == g { if ($2 != k++ || ($3 != "local/naive" && $3 != "fake/naive")) bad = 1 }
+        END { exit (bad || k != n) }' "$YRUN/selfplay-games.csv" || fail "selfplay-games.csv: generation $g is not each game once"
+    [ "$(grep -c "^$g,," "$YRUN/selfplay-engines.csv")" = 2 ] || fail "selfplay-engines.csv: generation $g needs 2 dynamic rows"
+done
+# One arithmetic on both engines: the default run, whoever played what.
+cmp -s "$W/plain/state.bin" "$YRUN/state.bin" || fail "the dynamic run differs from the default run"
+# The suggestion tool reads dynamic rows (an empty first column).
+python3 -I "$SRC/tools/engine_weights.py" "$YRUN" --last 3 --hosts "$HOSTS" | grep -q '^selfplay_engines = ' \
+    || fail "engine_weights.py printed no suggestion for the dynamic run"
+# A remote stream killed mid-generation: its games return to the queue, a
+# new stream plays on, and the run equals the default run of the same settings.
+# The remote takes most games (4 workers against the local engine's 1), so
+# its stream lives through the generation.
+KHOSTS="$W/hosts-killed"
+printf '%s\n' "local cpu_workers=1" "fake exe=$BUILD/selfplay workdir=$W/remote cpu_workers=4" > "$KHOSTS"
+SLOW=(--set simulations=96 --set games_per_generation=16)
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/killed" "${TINY[@]}" "${SLOW[@]}" --hosts "$KHOSTS" \
+    --set "$YENGINES" --set selfplay_allocation=dynamic --generations 1 > "$W/killed.out" 2>&1 &
+TRAIN_PID=$!
+killed=0
+for _ in $(seq 1 2000); do
+    if pkill -f -- "--stream --job $W/remote/" 2>/dev/null; then killed=1; break; fi
+    kill -0 "$TRAIN_PID" 2>/dev/null || break
+    sleep 0.01
+done
+wait "$TRAIN_PID" || fail "the run whose stream was killed failed: $(tail -3 "$W/killed.out")"
+[ "$killed" = 1 ] || fail "no selfplay --stream process to kill"
+grep -q "fake/naive's stream failed" "$W/killed.out" || fail "the killed stream was not noted: $(cat "$W/killed.out")"
+grep -q '^1,,[0-9]*,fake/naive,fake/naive,.*1 failed stream' "$W/killed/selfplay-engines.csv" \
+    || fail "the manifest does not record the failed stream"
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/killed-plain" "${TINY[@]}" "${SLOW[@]}" --generations 1 > /dev/null
+cmp -s "$W/killed-plain/state.bin" "$W/killed/state.bin" || fail "the run with a killed stream differs from the default run"
+pgrep -f -- "--stream --job $W/remote/" > /dev/null && fail "a selfplay --stream process outlived its run"
 
 echo "== distributed arena: a fake remote plays arena slices, resumed =="
 ARUN="$W/arena-engines"
