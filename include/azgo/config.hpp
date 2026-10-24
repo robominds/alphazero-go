@@ -48,6 +48,13 @@ struct Config {
     // on the GPU through batching hubs; training and everything else on the
     // CPU with BLAS. Parsed in every build; a run checks it is available.
     std::string backend = "naive";
+    // Pipelined generations: each generation's training and arena run
+    // beside the next generation's self-play, which plays the best network
+    // of the last commit (one generation older than the sequential loop's;
+    // AlphaGo Zero's evaluator lag, fixed to a generation boundary). Each
+    // commit then also holds the next generation's games. Off: the
+    // sequential loop, self-play -> training -> arena -> commit.
+    bool pipeline = false;
     // game
     int boardSize = 9;
     float komi = 7.5f;

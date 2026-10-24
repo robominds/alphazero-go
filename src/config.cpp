@@ -190,6 +190,13 @@ const KeyEntry kKeys[] = {
          return "";
      },
      [](const Config& c) { return c.backend; }},
+    {"pipeline", false,
+     [](Config& c, const std::string& v) -> std::string {
+         if (v != "off" && v != "on") return "expected off|on, got " + quoted(v);
+         c.pipeline = v == "on";
+         return "";
+     },
+     [](const Config& c) { return std::string(c.pipeline ? "on" : "off"); }},
     // game
     {"board_size", true, intKey<&Config::boardSize, kMinBoardSize, kMaxBoardSize>, printInt<&Config::boardSize>},
     {"komi", false, [](Config& c, const std::string& v) { return parseFloat(v, -500, 500, c.komi); },

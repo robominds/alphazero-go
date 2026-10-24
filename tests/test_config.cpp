@@ -662,9 +662,9 @@ static void test_metal_backend_and_inference_batch() {
 static void test_config_selfplay_keys() {
     Config d;
     assert(d.selfplayEngines.empty() && d.selfplayFallback == "local");
-    // main's 50 keys, these two, arena_engines and selfplay_allocation.
+    // main's 50 keys, these two, arena_engines, selfplay_allocation and pipeline.
     const std::string text = configToString(d);
-    assert(std::count(text.begin(), text.end(), '\n') == 54);
+    assert(std::count(text.begin(), text.end(), '\n') == 55);
     assert(contains(text, "\ninference_batch = 256\nselfplay_engines = \n"
                           "selfplay_fallback = local\n"));
     // A config.cfg written before the keys existed gets the defaults.
@@ -737,6 +737,28 @@ static void test_config_selfplay_allocation() {
     assert(architectureDiff(d, e).empty() && resumeLockedDiff(d, e).empty());
 }
 
+// Pipelined generations: pipeline (off | on), after backend. off, the
+// default, is the sequential loop; the key is tunable, so a running run
+// can switch at a commit.
+static void test_config_pipeline() {
+    Config d;
+    assert(!d.pipeline);
+    assert(contains(configToString(d), "\nbackend = naive\npipeline = off\n"));
+    // A config.cfg written before the key existed gets the default.
+    assert(!parseConfigText("filters = 96\n", "old.cfg").pipeline);
+    Config c = parseConfigText("pipeline = on\n", "t.cfg");
+    assert(c.pipeline);
+    assert(contains(configToString(c), "\npipeline = on\n"));
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    assert(contains(errorOf("pipeline = true"), "expected off|on"));
+    assert(contains(errorOf("pipeline = "), "pipeline"));
+    applyOverride(c, "pipeline=off");
+    assert(!c.pipeline);
+    Config e;
+    e.pipeline = true;
+    assert(architectureDiff(d, e).empty() && resumeLockedDiff(d, e).empty());
+}
+
 // Distributed arena: arena_engines, the same list as selfplay_engines
 // (empty: today's arena), after arena_random_symmetry. Arena waves differ
 // in size, so it takes weights only.
@@ -777,6 +799,7 @@ int main() {
     test_defaults();
     test_config_selfplay_keys();
     test_config_selfplay_allocation();
+    test_config_pipeline();
     test_config_arena_engines();
     test_metal_backend_and_inference_batch();
     test_presets_load();
