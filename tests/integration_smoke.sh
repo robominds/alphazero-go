@@ -13,7 +13,7 @@
 # and the distributed arena: a run whose arena games a fake remote shares, resumed and compared with
 # the default run, its manifest and summary lines,
 # and pipelined generations: a run with both on a fake remote, killed with SIGKILL at several moments
-# and resumed, compared with the run never killed.
+# and resumed, compared with the run never killed, and one on a remote whose every first attempt fails.
 #
 # and backend = metal: with metal=ON a run on the GPU (start, resume, re-rate) and arena
 # matches on it; with metal=OFF the refusals, which write nothing.
@@ -579,6 +579,28 @@ echo "straight run ${took}s; $kills of 7 runs killed mid-run, each resumed to th
 [ "$kills" -ge 3 ] || fail "only $kills of 7 runs were still running when killed (the straight run took ${took}s)"
 sleep 0.5
 pgrep -f -- "$W/remote/" > /dev/null && fail "a selfplay process outlived its killed run"
+# Both phases on one remote whose every first attempt fails naming the
+# network (self-play's streams and the arena's slices, often at once): each
+# forgets the network there while the other may be using it, uploads it
+# again, and plays the second attempt. The run is the straight one; the
+# failed attempts' logs stay; the remote is left empty and nothing runs on.
+cat > "$W/flaky-selfplay" <<EOF
+#!/bin/bash
+for a in "\$@"; do case "\$a" in *_a1.job) echo "selfplay: cannot read the network (test)" >&2; exit 1 ;; esac; done
+exec "$BUILD/selfplay" "\$@"
+EOF
+chmod +x "$W/flaky-selfplay"
+echo "fake exe=$W/flaky-selfplay workdir=$W/flaky-remote" > "$W/flaky-hosts"
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/pipe-flaky" "${TINY[@]}" --hosts "$W/flaky-hosts" \
+    --set "$YENGINES" --set selfplay_allocation=dynamic --set "$AENGINES" --set gating=true --set pipeline=on \
+    --set bot_simulations=8 --generations 4 > "$W/pipe-flaky.out"
+for f in state.bin results.csv elo.csv checkpoints/gen_0004.azn sgf/gen_0004_game_00.sgf; do
+    cmp -s "$W/pipe/$f" "$W/pipe-flaky/$f" || fail "with failed first attempts in both phases, $f differs"
+done
+grep -rqs "attempt 1 failed" "$W/pipe-flaky/arena-work" || fail "no arena attempt failed (the test is vacuous)"
+grep -rqs "stream, attempt 1 failed" "$W/pipe-flaky/selfplay-work" || fail "no stream failed (the test is vacuous)"
+[ -z "$(ls -A "$W/flaky-remote" 2>/dev/null)" ] || fail "files left on the flaky remote: $(ls -R "$W/flaky-remote")"
+pgrep -f -- "$W/flaky-remote/" > /dev/null && fail "a selfplay process outlived its run on the flaky remote"
 
 # nohup: a train started with SIGHUP ignored keeps ignoring it.
 ( trap '' HUP; exec "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/nohup" "${TINY[@]}" --generations 3 \
