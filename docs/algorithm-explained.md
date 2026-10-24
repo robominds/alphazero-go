@@ -2788,6 +2788,24 @@ games, a score of 11/20 clears the 55% bar with a 95% interval of
 0.34–0.74, so the gate would mostly be flipping coins. AlphaGo Zero's
 400 games shrink that interval to roughly ±5 percentage points.
 
+**The gate alone.** With gating on, the arena round is two things at
+once: AlphaGo Zero's evaluator (the match against the best network,
+which decides promotion) and this project's Elo ladder (g − 1, the
+strongest reference, the extra references, calibrations and promotion
+games), which decides nothing for training. AlphaGo Zero's evaluator
+played only the first; its Elo curves came from separate evaluation
+games. `arena_ladder = off` (with `gating = on`; tunable on resume) plays
+only that match: generation g against the best, `arena_games` games, with
+the seed and colours the full round gives it, so the gate decides
+exactly as it would with the ladder. Self-play and training read nothing
+else from the arena, so a run's checkpoints and games are the same with
+the ladder on, off, or switched in between; what it gives up is the
+running curve. `log.csv`'s `elo` stays empty, `elo.csv` keeps the last
+ladder round's fit rather than chaining each generation to the best
+network through 40 games, and `train --rerate` rebuilds the full ladder
+from the checkpoints afterwards. On the 19×19 run this halves the
+arena's GPU work or better (80 or 120 games per generation become 40).
+
 **When the yardstick misleads: the 9×9 runs.** An Elo curve anchored on
 generation 0 measures one thing precisely: how well each generation
 beats generation 0. On 9×9 that went wrong twice, in two different ways,
@@ -2960,7 +2978,7 @@ GenerationStats Trainer::runPipelined() {
     /* ... */
 }
 ```
-*src/trainer.cpp:1283 — `Trainer::runPipelined` (abridged)*
+*src/trainer.cpp:1318 — `Trainer::runPipelined` (abridged)*
 
 A crash anywhere in an iteration loses that iteration's work, both
 halves, and the redo starts from exactly the committed state: the same
@@ -3321,13 +3339,13 @@ see again in place.
 | Bradley-Terry Elo with a virtual draw | `fitBradleyTerry` — `src/elo.cpp:113` |
 | Wilson intervals | `wilsonInterval` — `src/elo.cpp:184` |
 | `log.csv` rating vs. the `elo.csv` refit | `ratingAtOrBefore`, `eloCsv` — `src/trainer.cpp:162, 135` |
-| One generation | `Trainer::runSequential`, `Trainer::trainAndRate` — `src/trainer.cpp:1107, 857` |
-| Pipelined generations | `Trainer::runPipelined`, `Trainer::playAhead` — `src/trainer.cpp:1283, 1245`; `Coordinator::startPhaseOn`, `Coordinator::prepareMachine` — `src/coordinator.cpp:332, 562` |
+| One generation | `Trainer::runSequential`, `Trainer::trainAndRate` — `src/trainer.cpp:1142, 874` |
+| Pipelined generations | `Trainer::runPipelined`, `Trainer::playAhead` — `src/trainer.cpp:1318, 1280`; `Coordinator::startPhaseOn`, `Coordinator::prepareMachine` — `src/coordinator.cpp:332, 562` |
 | Seed derivation | `deriveSeed` — `src/rng.cpp:27` |
 | Work sharing by index | `parallelFor` — `src/parallel.cpp:14` |
 | Training on a thread pool, bit for bit | `ThreadPool::run`, `parallelRanges` — `src/parallel.cpp:147, 195`; `gemmColumnBlock` — `src/backend.cpp:226` |
 | Atomic, durable writes | `writeFileAtomically`, `syncFd` — `src/serialize.cpp:180, 169` |
-| Training state and resume | `saveTrainingState` — `src/run_state.cpp:49`; `Trainer::resume` — `src/trainer.cpp:599` |
+| Training state and resume | `saveTrainingState` — `src/run_state.cpp:49`; `Trainer::resume` — `src/trainer.cpp:607` |
 | Self-play on several engines and machines | `assignGames` — `src/engines.cpp:116`; `Coordinator::play`, `Coordinator::playDynamic` — `src/coordinator.cpp:884, 1376` |
 | Dynamic allocation: one queue per generation | `GameQueue::take`, `GameQueue::inTime` — `src/game_queue.cpp:85, 57`; `dynamicWorkers` — `src/engines.cpp:352`; `playSelfPlayQueue` — `src/selfplay_slice.cpp:93` |
 | Inspecting a position | `printHeatMap` and `main` — `apps/analyze.cpp:81, 121` |

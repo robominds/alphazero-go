@@ -700,6 +700,72 @@ about 6–7% of a generation (the design's "Expected gain").
 commit with `tools/stop_after_generation.sh` (and first any job script
 that would resume it), then resume with `--set pipeline=on`.
 
+### The gating-only arena
+
+With `gating = true`, a generation's arena round is AlphaGo Zero's
+evaluator, the match against the best network that decides promotion,
+plus this project's Elo ladder: g−1, the strongest reference,
+`arena_opponents` more, the fixed players' calibrations and, after a
+promotion into the reference set, `calibration_games` more. Only the
+first decides anything for training. AlphaGo Zero's evaluator played
+only that match. `arena_ladder` does the same
+([design](docs/superpowers/specs/2026-10-24-gating-only-arena-design.md)):
+
+```
+gating = true
+arena_ladder = off
+```
+
+`on` (the default) is today's round: a run with it is byte-identical to
+one from before the key existed, except that its `config.cfg` gains the
+line `arena_ladder = on`. With `off`, each arena generation plays one
+match: g against the best network, `arena_games` games, with the seed
+and colours the full round gives that match, so every game is the one
+the ladder would have played and the gate (`gating_threshold`) decides
+the same. Nothing else is played: no calibrations at the start, no other
+opponent, no promotion into the reference set. `off` needs gating; without
+it there is no gating match, and a run that wants no arena sets
+`arena_every = 0`.
+
+Self-play and training read nothing from the arena but the best network,
+so a run's checkpoints and self-play games are identical with the ladder
+on, off, or switched in between. What changes is what the arena writes:
+
+- `results.csv` and `state.bin` get the gating games, as the pair (best, g);
+- `elo.csv` and `references.csv` are not rewritten: they keep the last
+  ladder round's fit. A fit of gating games alone would chain every
+  generation to the best network through 40 games each, a curve not worth
+  printing;
+- `log.csv`'s `elo` is empty; `winrate_vs_prev` and `distinct_vs_prev`
+  are filled when the best network is g−1 (after a promotion), as their
+  names say;
+- the progress line reads `arena gating vs 3:0.55 (distinct 40/40)
+  1850.2s | best 5`, and a generation without an arena `no arena | best 3`;
+- with `arena_engines`, each generation has one wave, split by weight as
+  any wave, and a wave holds two networks (the GPU memory check counts two).
+
+The key is tunable at any commit, either way, with a note
+(`note: arena_ladder changed from on to off; ...`), with the pipeline on
+or off and with static or dynamic self-play. Switched back on, the round
+runs as before on a results table that also holds the gating games;
+fixed players not yet calibrated (a run started with the ladder off) are
+calibrated first, with the same games a run that kept the ladder played.
+`train --rerate` rebuilds the full ladder from the checkpoints whatever
+the key says, so a run trained with the ladder off can be rated
+afterwards; its `rerate/` files are those of the same run with the
+ladder on, since the checkpoints are the same.
+
+On the live 19×19 run (`arena_games = 40`, `arena_opponents = 0`) the
+ladder doubled the arena: generations 2–4 played 80 games in
+3,650–3,830 s, against 1,856 s for generation 1's 40 (where g−1 was the
+best network), and a promoted generation can play 120 or 200. With the
+ladder off every generation plays 40: about 30 minutes saved a generation.
+
+**Switching the live run.** Build, sync the remotes with
+`tools/cluster_sync.sh` (the build ID changes), stop the run after a
+commit with `tools/stop_after_generation.sh` (and first any job script
+that would resume it), then resume with `--set arena_ladder=off`.
+
 ### Batch norm calibration of generation 0
 
 A new run's generation 0 is a randomly initialized network, and

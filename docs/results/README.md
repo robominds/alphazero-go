@@ -4893,6 +4893,30 @@ Generation 2 took more than twice as long as generation 1. Its self-play
 games were 2.5 times longer (364.5 plies on average; the cap is 722).
 Two generations say nothing about strength, and none is claimed.
 
+### The 19×19 gated run: what the arena's ladder costs
+
+The gated 19×19 run (10×128, 400 games of 800 simulations,
+`arena_games = 40`, `arena_opponents = 0`, no fixed players) logged its
+first five generations' arenas as follows (its `log.csv` and progress
+lines; the run's files are not copied here). Every arena game is 800
+simulations a move on the same engines, so the time goes with the games.
+
+| generation | opponents (score) | games | gating match | arena | best after |
+|---|---|---|---|---|---|
+| 1 | 0 (0.28) | 40 | vs 0 | 1,856 s | 0 |
+| 2 | 1 (0.62), 0 (0.65) | 80 | vs 0 | 3,651 s | 2 |
+| 3 | 2 (0.55), 0 (0.50) | 80 | vs 2 | 3,826 s | 3 |
+| 4 | 3 (0.47), 0 (0.60) | 80 | vs 3 | 3,626 s | 3 |
+| 5 | 4 (0.42), 0 (0.68), 3 (0.55) | 120 | vs 3 | 14,838 s (pipelined, beside self-play) | 5 |
+
+Only the gating match decided anything. Generation 1, whose only
+opponent was also the best network, is what `arena_ladder = off` (see the
+main README) plays every generation: 40 games, about 1,850 s on the
+sequential loop, where generations 2–4 took 3,650–3,830 s. That is about
+30 minutes a generation, roughly half the arena; more after a
+generation that plays three opponents, and 80 games more after a
+promotion into the reference set, which none of these five generations had.
+
 ### GPU inference with `backend = metal`
 
 Task A9 of the [Metal plan](../superpowers/plans/2026-10-09-metal-gpu-backend.md),
