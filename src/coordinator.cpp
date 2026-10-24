@@ -1057,6 +1057,9 @@ struct Coordinator::DynamicPhase {
                     int requeued;
                     {
                         std::lock_guard<std::mutex> lock(mutex);
+                        // Every game is back and verified: what failed was
+                        // only the stream's ending, which changes nothing.
+                        if (queue->done()) return;
                         ++e.failedSessions;
                         e.why = reason;
                         requeued = e.requeued;
