@@ -729,13 +729,13 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
         }
     }
     // Rewritten only after every check passed, so a refused resume leaves the
-    // run directory untouched.
-    writeFileAtomically(configPath(runDir), configToString(cfg));
-    // Switched off, the ladder's files are never rewritten again until it is
-    // back on; a crash after the last round's rating files and before its
-    // commit would leave that uncommitted round in them. Rewrite them from
-    // the commit: the same bytes when there was no crash.
+    // run directory untouched. Switched off, the ladder's files are never
+    // rewritten until it is back on, so a round that crashed before its
+    // commit would stay in them: rewrite them from the commit (the same bytes
+    // after a clean stop) before config.cfg records the switch, so a stop in
+    // between leaves the next resume to do it.
     if (saved.arenaLadder && !cfg.arenaLadder) writeRatingFiles(runDir, state.results, state.references, cfg);
+    writeFileAtomically(configPath(runDir), configToString(cfg));
     addMissingLogColumns(runDir);
     // The manifests describe committed generations only (engines on or off),
     // and the self-play manifests a pipelined commit's pending games too.
