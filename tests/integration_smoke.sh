@@ -11,7 +11,9 @@
 # and dynamic allocation: a run whose games a local engine and a fake remote take from one queue,
 # resumed, its games manifest, and a remote stream killed mid-generation,
 # and the distributed arena: a run whose arena games a fake remote shares, resumed and compared with
-# the default run, its manifest and summary lines.
+# the default run, its manifest and summary lines,
+# and pipelined generations: a run with both on a fake remote, killed with SIGKILL at several moments
+# and resumed, compared with the run never killed.
 #
 # and backend = metal: with metal=ON a run on the GPU (start, resume, re-rate) and arena
 # matches on it; with metal=OFF the refusals, which write nothing.
@@ -525,6 +527,58 @@ grep -q '^arena_engines = local/naive:1, fake/naive:1$' "$ARUN/config.cfg" || fa
 for f in state.bin results.csv elo.csv checkpoints/gen_0003.azn; do
     cmp -s "$W/plain/$f" "$ARUN/$f" || fail "the run with arena engines differs from the default run in $f"
 done
+
+echo "== pipelined generations: killed at several moments and resumed, equal to the run never killed =="
+# Self-play on this machine and a fake remote (dynamic), the arena on both,
+# gating: each generation's training and arena beside the next one's
+# self-play. A SIGKILL anywhere (the prologue, an iteration, a commit)
+# loses only uncommitted work; resumed until done, the run is the straight
+# run's files, byte for byte (one arithmetic).
+PIPE=(--hosts "$HOSTS" --set "$YENGINES" --set selfplay_allocation=dynamic --set "$AENGINES"
+      --set gating=true --set pipeline=on --set bot_simulations=8)
+now() { python3 -I -c 'import time; print(time.time())'; }
+t0="$(now)"
+"$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/pipe" "${TINY[@]}" "${PIPE[@]}" --generations 4 > "$W/pipe.out"
+took="$(python3 -I -c "print($(now) - $t0)")"
+grep -q '^pipeline: gen 1 self-play by network 0, 4 games .*, committed with generation 0$' "$W/pipe.out" \
+    || fail "no prologue line: $(cat "$W/pipe.out")"
+grep -Eq '^pipeline: gen 5 self-play by network [0-9]+, 4 games .* beside gen 4.s training and arena .*; generation 4 took ' \
+    "$W/pipe.out" || fail "no pipeline line for generation 4"
+grep -q '^pipeline = on$' "$W/pipe/config.cfg" || fail "config.cfg lacks pipeline = on"
+grep -q '^generation = 5$' "$W/pipe/pending-selfplay.txt" || fail "pending-selfplay.txt does not name generation 5"
+[ "$(wc -l < "$W/pipe/log.csv" | tr -d ' ')" = 5 ] || fail "log.csv should have a header and 4 rows"
+[ "$(awk -F, 'NR > 1 { print $1 }' "$W/pipe/selfplay-games.csv" | sort -u | tr '\n' ' ')" = "1 2 3 4 5 " ] \
+    || fail "selfplay-games.csv should hold generations 1-5 (5 is pending)"
+python3 -I "$SRC/tools/buf.py" "$W/pipe/state.bin" | grep -q '^version 6 gen 4 ' || fail "buf.py cannot read version 6"
+# Kills spread over the straight run's duration (the prologue, iterations, commits).
+kills=0
+for fraction in 0.05 0.2 0.35 0.5 0.65 0.8 0.95; do
+    delay="$(python3 -I -c "print(round($took * $fraction, 3))")"
+    R="$W/pipe-killed-$fraction"
+    "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$R" "${TINY[@]}" "${PIPE[@]}" --generations 4 \
+        > "$R.out" 2>&1 &
+    pid=$!
+    sleep "$delay"
+    kill -KILL "$pid" 2>/dev/null && kills=$((kills + 1))
+    wait "$pid" 2>/dev/null || true
+    for attempt in 1 2 3; do
+        if [ -e "$R/state.bin" ]; then
+            "$BUILD/train" --run "$R" --resume --hosts "$HOSTS" --generations 4 >> "$R.out" 2>&1 && break
+        else
+            # Killed before the run existed: start it again.
+            "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$R" "${TINY[@]}" "${PIPE[@]}" --generations 4 \
+                >> "$R.out" 2>&1 && break
+        fi
+    done
+    for f in state.bin results.csv elo.csv references.csv checkpoints/gen_0004.azn checkpoints/gen_0003.azn \
+             sgf/gen_0004_game_00.sgf; do
+        cmp -s "$W/pipe/$f" "$R/$f" || fail "killed after ${delay}s and resumed: $f differs from the straight run"
+    done
+done
+echo "straight run ${took}s; $kills of 7 runs killed mid-run, each resumed to the same files"
+[ "$kills" -ge 5 ] || fail "only $kills of 7 runs were still running when killed (the straight run took ${took}s)"
+sleep 0.5
+pgrep -f -- "$W/remote/" > /dev/null && fail "a selfplay process outlived its killed run"
 
 # nohup: a train started with SIGHUP ignored keeps ignoring it.
 ( trap '' HUP; exec "$BUILD/train" --config "$SRC/configs/5x5.cfg" --run "$W/nohup" "${TINY[@]}" --generations 3 \
