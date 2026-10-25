@@ -166,9 +166,9 @@ generation 7, 512 positions) gave bitwise identical outputs.
   preset from 9×9 6×64 up and both live networks run entirely on the
   device (`test_coreml`, on the Studio and a mini).
 - **The batch-independence check.** The same first load of a shape then
-  runs eight fixed positions each alone and all together, through every
-  compiled size, and refuses the network unless every output is bitwise
-  equal ("ane: a position's outputs differ alone and among others at batch
+  runs eight fixed positions each alone and all together, spread over the
+  rows of one chunk of every compiled size up to its last row, and
+  refuses the network unless every output is bitwise equal ("ane: a position's outputs differ alone and among others at batch
   32: ane is not batch-independent on this machine"). The contract below
   rests on Core ML's behaviour, so every process checks it on its own
   device rather than trusting a test run elsewhere.
@@ -176,6 +176,16 @@ generation 7, 512 positions) gave bitwise identical outputs.
   under `$TMPDIR/azgo-coreml-<pid>`, removed when it exits; the first use
   also removes the directories of processes that no longer exist (killed
   ones never ran their exit handler).
+- **Core ML's compiler cache.** Core ML keeps what it compiles for a
+  device in `~/Library/Caches/<process name>/com.apple.e5rt.e5bundlecache`,
+  keyed by the compiled model's path. Every process compiles at paths of
+  its own, so an entry is never found again and Core ML never removes
+  one: the first 19×19 network a process loads adds about 20 MB per
+  engine (measured), gigabytes within days on a remote that runs two
+  processes a generation. A process's first Core ML use therefore removes
+  the entries older than a day. Removing one is harmless even under a
+  process that loaded it (measured: later loads there compile again and
+  give the same bits).
 - **The cache.** Models are kept per (network hash, backend) while a hub
   uses them; the four most recently used stay loaded after that, so an
   arena that builds a hub for the same network wave after wave compiles it

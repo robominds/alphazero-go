@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -682,6 +683,29 @@ std::vector<Case> cases(int perCase) {
     return out;
 }
 
+// Core ML's compiler cache: named for this program, and its entries older
+// than the age removed (with OS build directories left empty), newer ones
+// kept.
+void test_compiler_cache() {
+    const std::string dir = coreml_probe::compilerCacheDirectory();
+    const std::string tail = "/Library/Caches/test_coreml/com.apple.e5rt.e5bundlecache";
+    assert(dir.size() > tail.size() && dir.compare(dir.size() - tail.size(), tail.size(), tail) == 0);
+    const fs::path root = fs::temp_directory_path() / ("azgo_test_coreml_cache_" + std::to_string(getpid()));
+    fs::remove_all(root);
+    for (const char* d : {"26A434/old", "26A434/new/inner", "25B100/old"}) fs::create_directories(root / d);
+    std::ofstream(root / "26A434/new/inner/file") << "x";
+    const auto twoDays = std::chrono::duration_cast<fs::file_time_type::duration>(std::chrono::hours(48));
+    for (const char* d : {"26A434/old", "25B100/old"})
+        fs::last_write_time(root / d, fs::file_time_type::clock::now() - twoDays);
+    assert(coreml_probe::pruneCompilerCache(root.string(), 24 * 3600) == 2);
+    assert(!fs::exists(root / "26A434/old") && !fs::exists(root / "25B100"));
+    assert(fs::exists(root / "26A434/new/inner/file"));
+    assert(coreml_probe::pruneCompilerCache(root.string(), 24 * 3600) == 0);
+    assert(coreml_probe::pruneCompilerCache((root / "absent").string(), 0) == 0);
+    fs::remove_all(root);
+    std::printf("compiler cache pruning: ok\n");
+}
+
 bool usable(const std::string& backend) {
     std::string why;
     if (coremlAvailable(backend, &why)) return true;
@@ -1154,6 +1178,7 @@ int main() {
     int ran = 0;
     const int perCase = std::getenv("AZGO_COREML_POSITIONS") ? std::max(8, std::atoi(std::getenv("AZGO_COREML_POSITIONS"))) : 128;
     const std::vector<Case> cs = cases(perCase);
+    test_compiler_cache();
     for (const std::string backend : {"ane", "coreml_gpu"}) {
         if (!usable(backend)) continue;
         ++ran;

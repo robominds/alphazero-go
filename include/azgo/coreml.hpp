@@ -34,7 +34,7 @@
 // batch sizes and the model format hash), never of the positions it shares
 // a pass with; test_coreml checks that per device. Against the 32-bit CPU
 // they agree within the float16 tier of tolerance (logits within 5e-3 of
-// the largest logit's magnitude, values within 2e-2), not bitwise.
+// the largest logit's magnitude, values within 3e-2), not bitwise.
 //
 // The writer and the "not built" answers are portable C++17, compiled in
 // every build; the runtime exists only with -DAZ_USE_COREML=ON (macOS 15
@@ -193,6 +193,14 @@ void setMemoryLimit(size_t bytes);
 long long modelsLoaded();
 // Predictions (chunks) this process has run so far.
 long long predictions();
+// Core ML's compiler cache for this program
+// (~/Library/Caches/<process name>/com.apple.e5rt.e5bundlecache), which
+// gains an entry for every model a process compiles and never finds it
+// again: a process's first Core ML use removes its entries older than a
+// day. pruneCompilerCache does that to `dir` (<dir>/<OS build>/<entry>)
+// for entries older than maxAgeSeconds and returns how many it removed.
+std::string compilerCacheDirectory();
+int pruneCompilerCache(const std::string& dir, double maxAgeSeconds);
 
 } // namespace coreml_probe
 

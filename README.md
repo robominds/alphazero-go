@@ -659,7 +659,7 @@ Core ML's observed behaviour, not this program's construction, so
 companions, at every row, permuted, through each compiled size, and
 through the hub under chaos. It held on the M5 Max and on an M4. Every
 process also checks it when a network shape first loads (fixed positions
-alone and together, through every compiled size) and refuses the engine
+alone and together, spread to the last row, through every compiled size) and refuses the engine
 on a mismatch, so a Mac where it fails cannot play. Core ML's
 GPU gives different bits at different batch sizes, which is why
 `coreml_gpu` uses one: a pass of 8 then costs a pass of 64, and batch 64
@@ -752,8 +752,9 @@ line's other keys):
 
    The run's `backend = metal` stays: the validation loss keeps the
    32-bit Metal pass, which runs between phases, never beside self-play.
-   Each engine's first slice prints a fingerprint-changed note, and the
-   manifests record the new engines.
+   The preflight prints each engine's line (`engine local/ane: ...`);
+   the engines are new names, so no fingerprint-changed note appears, and
+   the manifests record them from their first slice on.
 
 The weights follow the rates measured above. In dynamic mode they only
 set the default concurrency, which the hosts file's keys override. Expect

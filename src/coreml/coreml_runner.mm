@@ -113,11 +113,65 @@ void removeTree(const std::string& path) {
     }
 }
 
+// Core ML's compiler cache for this program:
+// ~/Library/Caches/<process name>/com.apple.e5rt.e5bundlecache, one
+// directory per OS build, one entry per model compiled for a device. An
+// entry is keyed by the compiled model's path, and every process compiles
+// at paths of its own, so nothing is ever found there again and nothing
+// removes it: each process that loads a 19x19 network adds about 20 MB,
+// which on a remote that runs two processes a generation is gigabytes
+// within days. "" when the directory cannot be named.
+std::string compilerCacheDirectory() {
+    @autoreleasepool {
+        NSArray<NSString*>* caches =
+            NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
+        NSString* owner = [NSBundle mainBundle].bundleIdentifier ?: [NSProcessInfo processInfo].processName;
+        if (caches.count == 0 || owner.length == 0) return "";
+        return str(caches.firstObject) + "/" + str(owner) + "/com.apple.e5rt.e5bundlecache";
+    }
+}
+
+// Removes the entries of `dir` (a compiler cache: <dir>/<OS build>/<entry>)
+// last written more than maxAge seconds ago, and OS build directories left
+// empty. Removing an entry is harmless even under a process that loaded it
+// (measured: later loads there compile again and give the same bits). The
+// number of entries removed; never throws.
+int pruneCache(const std::string& dir, double maxAge) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (dir.empty() || !fs::is_directory(dir, ec)) return 0;
+    const auto cutoff = fs::file_time_type::clock::now() -
+                        std::chrono::duration_cast<fs::file_time_type::duration>(std::chrono::duration<double>(maxAge));
+    int removed = 0;
+    for (const fs::directory_entry& build : fs::directory_iterator(dir, ec)) {
+        std::error_code e;
+        if (!build.is_directory(e)) continue;
+        bool empty = true;
+        for (const fs::directory_entry& entry : fs::directory_iterator(build.path(), e)) {
+            std::error_code t;
+            const auto written = fs::last_write_time(entry.path(), t);
+            if (!t && written < cutoff) {
+                std::error_code rm;
+                fs::remove_all(entry.path(), rm);
+                if (!rm) {
+                    ++removed;
+                    continue;
+                }
+            }
+            empty = false;
+        }
+        if (empty && !e) fs::remove(build.path(), e);
+    }
+    return removed;
+}
+
+constexpr double kCompilerCacheAge = 24 * 3600;   // seconds: far longer than a slice or a generation
+
 // The process's scratch directory for packages and compiled models,
 // <tmp>/azgo-coreml-<pid>, removed when the process exits. The first call
 // also removes the directories of processes that no longer exist (killed
-// ones never ran their exit handler). Each call returns a new
-// subdirectory of it.
+// ones never ran their exit handler) and the compiler cache's entries
+// older than a day. Each call returns a new subdirectory of it.
 std::string processDirectory();
 
 void removeProcessDirectory() {
@@ -145,6 +199,7 @@ std::string processDirectory() {
             std::error_code rm;
             std::filesystem::remove_all(e.path(), rm);
         }
+        pruneCache(compilerCacheDirectory(), kCompilerCacheAge);
         const std::string* mine = new std::string(tmp + prefix + std::to_string(::getpid()));
         std::atexit(removeProcessDirectory);
         return mine;
@@ -416,9 +471,11 @@ std::string runPass(const LoadedNetwork& ln, float* input, int B, float* logits,
 
 // What the contract rests on, checked on this machine when a shape first
 // loads: eight fixed positions give the same bits each alone (its chunk
-// padded) as all together, through every compiled size. Core ML's
-// behaviour, not this program's construction, so a device or OS whose
-// Neural Engine or GPU computes otherwise is refused, not used.
+// padded) as all together in one chunk of every compiled size, spread
+// over its rows to the last one (at size 32: rows 3, 7, ..., 31; zero rows
+// between). Core ML's behaviour, not this program's construction, so a
+// device or OS whose Neural Engine or GPU computes otherwise is refused,
+// not used.
 void checkBatchIndependence(const LoadedNetwork& ln) {
     const NetConfig& cfg = ln.cfg;
     const size_t per = static_cast<size_t>(cfg.planes()) * cfg.area(), L = static_cast<size_t>(cfg.actions());
@@ -432,7 +489,8 @@ void checkBatchIndependence(const LoadedNetwork& ln) {
         v = static_cast<float>((x >> 7) & 1u);
     }
     const int room = ln.sizes.back() + count;
-    std::vector<float> in(static_cast<size_t>(room) * per), refL(count * L), refV(count), l(count * L), v(count);
+    std::vector<float> in(static_cast<size_t>(room) * per), refL(count * L), refV(count);
+    std::vector<float> l(static_cast<size_t>(room) * L), v(room);
     LoadedNetwork one;   // a view of one size; it owns nothing on disk
     one.cfg = cfg;
     one.backend = ln.backend;
@@ -447,12 +505,19 @@ void checkBatchIndependence(const LoadedNetwork& ln) {
                 err = runPass(one, in.data(), 1, refL.data() + i * L, refV.data() + i);
             }
         } else {
-            std::copy(positions.begin(), positions.end(), in.begin());
-            err = runPass(one, in.data(), count, l.data(), v.data());
-            if (err.empty() && (std::memcmp(l.data(), refL.data(), l.size() * 4) != 0 ||
-                                std::memcmp(v.data(), refV.data(), v.size() * 4) != 0))
-                err = "a position's outputs differ alone and among others at batch " + std::to_string(size) +
-                      ": " + ln.backend + " is not batch-independent on this machine";
+            // Position i at row (i + 1) * step - 1 of one full chunk.
+            const int rows = std::max(size, count), step = rows / count;
+            std::fill(in.begin(), in.begin() + static_cast<size_t>(rows) * per, 0.0f);
+            for (int i = 0; i < count; ++i)
+                std::copy_n(positions.data() + i * per, per, in.data() + static_cast<size_t>((i + 1) * step - 1) * per);
+            err = runPass(one, in.data(), rows, l.data(), v.data());
+            for (int i = 0; i < count && err.empty(); ++i) {
+                const size_t row = static_cast<size_t>((i + 1) * step - 1);
+                if (std::memcmp(l.data() + row * L, refL.data() + i * L, L * 4) != 0 ||
+                    std::memcmp(v.data() + row, refV.data() + i, 4) != 0)
+                    err = "a position's outputs differ alone and among others at batch " + std::to_string(size) +
+                          ": " + ln.backend + " is not batch-independent on this machine";
+            }
         }
         if (!err.empty()) throw std::runtime_error(ln.backend + ": " + err);
     }
@@ -656,13 +721,15 @@ const Probe& probeOnce(const std::string& backend) {
 // (unified memory either way; this is a sanity bound, not an allocator).
 double budget(const std::string& backend) {
     if (gMemoryLimit.load() > 0) return static_cast<double>(gMemoryLimit.load());
-    if (@available(macOS 15.0, *)) {
-        if (backend == "coreml_gpu")
-            for (id<MLComputeDeviceProtocol> d in MLAllComputeDevices())
-                if ([(NSObject*)d isKindOfClass:[MLGPUComputeDevice class]])
-                    return static_cast<double>(((MLGPUComputeDevice*)d).metalDevice.recommendedMaxWorkingSetSize);
+    @autoreleasepool {   // called on the coordinator's long-lived threads, once per hub
+        if (@available(macOS 15.0, *)) {
+            if (backend == "coreml_gpu")
+                for (id<MLComputeDeviceProtocol> d in MLAllComputeDevices())
+                    if ([(NSObject*)d isKindOfClass:[MLGPUComputeDevice class]])
+                        return static_cast<double>(((MLGPUComputeDevice*)d).metalDevice.recommendedMaxWorkingSetSize);
+        }
+        return static_cast<double>([NSProcessInfo processInfo].physicalMemory) / 4;
     }
-    return static_cast<double>([NSProcessInfo processInfo].physicalMemory) / 4;
 }
 
 // What one hub holds: every compiled model (float16 weights and three
@@ -818,6 +885,8 @@ void failPassesAfter(int n) { gFailAfter = n > 0 ? n + 1 : 0; }
 void setMemoryLimit(size_t bytes) { gMemoryLimit = bytes; }
 long long modelsLoaded() { return gModelsLoaded.load(); }
 long long predictions() { return gPredictions.load(); }
+std::string compilerCacheDirectory() { return azgo::compilerCacheDirectory(); }
+int pruneCompilerCache(const std::string& dir, double maxAgeSeconds) { return pruneCache(dir, maxAgeSeconds); }
 
 } // namespace coreml_probe
 
