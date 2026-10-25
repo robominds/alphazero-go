@@ -274,13 +274,11 @@ __global__ void __launch_bounds__(kConvThreads) conv16(Conv16Args a) {
 }
 
 template <class T, int NI> void launchTile(const Conv16Args& a, cudaStream_t s) {
+    // Every tile fits the 48 KB of dynamic shared memory a block may take
+    // without opting in (cudaFuncSetAttribute), 40 KB at most.
+    static_assert(kStages * (kTilePixels + 16 * NI) * kRowHalves * kHalfBytes <= 48 * 1024,
+                  "a conv16 block's shared memory must fit the default 48 KB");
     const size_t bytes = conv16SharedBytes(NI);
-    // Once per instantiation, thread-safely (a function-local static): the
-    // shared memory a block may ask for beyond the default 48 KB. A failure
-    // shows as the launch's error.
-    static const cudaError_t configured =
-        cudaFuncSetAttribute(conv16<T, NI>, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(bytes));
-    (void)configured;
     const int N = a.batch * a.n * a.n;
     const dim3 grid((N + kTilePixels - 1) / kTilePixels, a.coutPadded / (16 * NI));
     conv16<T, NI><<<grid, kConvThreads, bytes, s>>>(a);

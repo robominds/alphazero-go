@@ -616,9 +616,17 @@ int main(int argc, char** argv) {
         for (const std::string& g : gpus) std::printf("gpu: %s\n\n", gpuDescription(g).c_str());
 #endif
         // The raw-pass table's batches (--batches, default 8,144,256).
-        const std::vector<int> batches = parseThreadList(args->get("batches", "8,144,256"), "batches");
-        for (int b : batches)
-            if (b < 1) throw std::invalid_argument("--batches: a batch must be in 1..256");
+        std::vector<int> batches;
+        {
+            std::stringstream in(args->get("batches", "8,144,256"));
+            for (std::string item; std::getline(in, item, ',');) {
+                char* end = nullptr;
+                const long b = std::strtol(item.c_str(), &end, 10);
+                if (item.empty() || *end != '\0' || b < 1 || b > 4096)
+                    throw std::invalid_argument("--batches: '" + item + "' is not a batch in 1..4096");
+                batches.push_back(static_cast<int>(b));
+            }
+        }
 
         std::printf("%-6s %-17s %-8s %12s %14s\n", "size", "blocks x filters", "backend", "evals/s",
                     "train-step ms");

@@ -147,13 +147,15 @@ contiguous in memory, so every load is a 16-byte `cp.async` and every
 fragment one `ldmatrix`.
 
 - **Tiles.** A block of 256 threads (8 warps, 4 along pixels × 2 along
-  channels) computes 128 pixels × BN channels. BN = 16 · NI with NI ∈ {8, 6,
+  channels) computes 128 pixels × BN channels, with two k steps of shared
+  memory (40 KB at 128 channels, so two blocks share an SM; three or four
+  steps were 20–25% slower). BN = 16 · NI with NI ∈ {8, 6,
   4, 2} (128, 96, 64, 32 channels), chosen from `Cp` alone by a fixed rule
   (the largest that divides it). A warp computes 32 × 8·NI with
   `mma.sync.aligned.m16n8k16.row.col.f32.{f16,bf16}`.
 - **K.** Walked from 0 to 9 · Cp in steps of 32 (one tap, 32 channels per
   step), two mma k-steps each, always in order, never split, through a
-  shared-memory ring of `kStages` steps filled by `cp.async`. An off-board
+  shared-memory ring of two steps filled by `cp.async`. An off-board
   tap or a pixel past the end loads zeros (`cp.async` with source size 0).
 - **Epilogue, in fp32**, per output: `v = scale[c] · acc + shift[c]`
   (`__fmul_rn`, `__fadd_rn`), `v = v + skip` (skip read as 16-bit and
@@ -204,19 +206,29 @@ double precision:
 
 ### The tolerance tier
 
-Set from those measurements with a factor of two for unseen positions, and
-held by `test_cuda16` on the presets' shapes with random weights (whose
-activations are larger than trained ones') against double precision:
+Measured on real positions (`docs/results/cuda16.txt`): 1,024 positions of
+the 13×13 run's latest games with its generation 100, and 600 of the 19×19
+run's with its generation 7. fp16 was 2.1e-3 and 2.6e-3 from double in the
+logits (max |Δ| / max |ref| per position), 2.7e-3 and 3.0e-3 in the value,
+with argmax agreement 100% and mean KL 9e-7 and 3e-8. bf16 was 7–10× further
+(1.4e-2 and 1.8e-2 in the logits, argmax 99.3% and 99.7%), so the backend
+ships fp16. Its largest trunk activation was 28.8, far inside fp16's range.
+The 32-bit CPU is within 1e-5 of double, so the tier holds against it too.
+
+The tier, with about a factor of two over those measurements:
 
 | output | tier (cuda16) | cuda (fp32) |
 |---|---|---|
-| logits, max|Δ| / max|ref| per batch | ≤ 5e-3 (to be confirmed in the results) | ≤ 5e-5 |
-| value, max |Δ| | ≤ 5e-3 | ≤ 5e-5 |
+| logits, max |Δ| / max |ref| per batch | ≤ 5e-3 | ≤ 5e-5 |
+| value, max |Δ| | ≤ 1e-2 | ≤ 5e-5 |
 | ownership, max |Δ| | ≤ 1e-2 | ≤ 5e-5 |
 
-The numbers in this table are confirmed or replaced by the measured ones in
-`docs/results/cuda16.txt` before the backend is used; the test holds the
-measured tier.
+`test_cuda16` holds the presets' shapes to it with random weights whose
+batch norms are calibrated on positions, as a run's generation 0 is
+(`bn_calibrate`); those measured 1.3e-3 to 2.4e-3 in the logits. Without
+calibration a random 19×19 10×128 network's activations grow block by
+block and its value is 3e-2 from double in 16 bits; no trained network
+behaves so.
 
 ## The runner and the public interface
 
@@ -279,10 +291,12 @@ valid, as switching backends is; the manifest records it.
 `tests/test_cuda16.cpp` (skips with 77 like `test_cuda`):
 
 1. Availability and description shape; the architecture check.
-2. `conv16` against a double reference computed from the same 16-bit
-   operands: |Δ| ≤ 2⁻²⁰ · Σ|products| + 1e-6, on stem and block shapes, 5×5
-   to 19×19, with and without skip, fp32 and 16-bit outputs; every channel
-   tile shape gives equal bits.
+2. The conversion to fp16 is round to nearest even (known cases). `conv16`
+   against a double reference computed from the same 16-bit operands:
+   |Δ| ≤ 2⁻¹⁸ · (|scale| · Σ|products| + |shift| + |skip|) (measured 2⁻²¹),
+   on stem and block shapes, padded channel counts, 5×5 to 19×19, with and
+   without skip; the 16-bit output is the fp32 output rounded; every channel
+   tile shape gives equal bits; fp16 saturates at 65,504.
 3. Batch independence: `conv16` and the whole network, B = 1, 8, 144, 256,
    first/middle/last slot, random companions, permuted batches, repeats, a
    second upload: bitwise.

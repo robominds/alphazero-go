@@ -245,7 +245,21 @@ std::vector<double> conv16Reference(const Conv2d& conv, const BatchNorm2d& bn, c
     return y;
 }
 
-// conv16 within 2^-16 of the scale of its rounding (the tensor core's
+// The GPU's conversion to fp16 is IEEE round to nearest even, checked on
+// values whose fp16 rounding is known exactly: the tests' references
+// round their operands through it.
+void test_round_to_fp16() {
+    const float e = std::ldexp(1.0f, -11);   // half of fp16's spacing at 1
+    std::vector<float> x = {1.0f + e,          1.0f + 3 * e,   -(1.0f + e),        65504.0f, 65519.0f,
+                            65520.0f,          std::ldexp(1.0f, -24), std::ldexp(1.0f, -25), std::ldexp(3.0f, -25),
+                            0.1f,              -0.0f};
+    const std::vector<float> want = {1.0f, 1.0f + 4 * e, -1.0f, 65504.0f, 65504.0f, INFINITY,
+                                     std::ldexp(1.0f, -24), 0.0f, std::ldexp(2.0f, -24), 0.0999755859375f, -0.0f};
+    cuda16_probe::roundTo16(x.data(), x.size());
+    assert(bitwiseEqual(x.data(), want.data(), x.size()));
+}
+
+// conv16 within 2^-18 of the scale of its rounding (it measured 2^-21) (the tensor core's
 // accumulation, the epilogue's two roundings and the skip's addition), on
 // stem and block shapes, padded channel counts and every board size; and its
 // 16-bit output is its fp32 output rounded to 16 bits, bitwise.
@@ -269,7 +283,7 @@ void test_conv16_matches_double() {
             for (size_t i = 0; i < y.size(); ++i) {
                 const double e = std::fabs(y[i] - ref[i]) / (bound[i] + 1e-30);
                 worst = std::max(worst, e);
-                if (!(e <= std::ldexp(1.0, -16))) {
+                if (!(e <= std::ldexp(1.0, -18))) {
                     std::printf("test_cuda16: conv16 %d->%d %dx%d: y %.9g, double %.9g (scale %.3g)\n", s.cin, s.cout,
                                 s.n, s.n, y[i], ref[i], bound[i]);
                     std::fflush(stdout);
@@ -278,7 +292,7 @@ void test_conv16_matches_double() {
             }
             assert(bitwiseEqual(y16.data(), rounded(y).data(), y.size()));
         }
-    std::printf("test_cuda16: conv16 vs double on 16-bit operands: worst %.2e of the rounding scale (bound 2^-16)\n",
+    std::printf("test_cuda16: conv16 vs double on 16-bit operands: worst %.2e of the rounding scale (bound 2^-18)\n",
                 worst);
 }
 
@@ -1202,6 +1216,7 @@ int main() {
 #ifdef AZ_USE_CUDA
     checkBackendAvailable("cuda16");
     test_available_and_description();
+    test_round_to_fp16();
     test_conv16_matches_double();
     test_conv16_tiles_agree();
     test_conv16_batch_independent();

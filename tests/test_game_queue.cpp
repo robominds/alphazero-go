@@ -242,6 +242,7 @@ static void test_dynamic_workers() {
     assert(dynamicWorkers(remote, "metal", 20, 400, 18) == 5);
     assert(dynamicWorkers(remote, "cuda", 256, 400, 18) == 64);
     assert(dynamicWorkers(remote, "cuda", 1023, 2000, 18) == 256);   // at most 256
+    assert(dynamicWorkers(remote, "cuda16", 256, 400, 18) == 64);    // the 16-bit engine as cuda
     assert(dynamicWorkers(local, "metal", 1, 400, 18) == 1 && dynamicWorkers(local, "metal", 0, 400, 18) == 1);
     assert(dynamicWorkers(local, "metal", 400, 3, 18) == 3);         // at most the games
     // CPU engines: the rule, capped by the games, not the share.
@@ -251,6 +252,7 @@ static void test_dynamic_workers() {
     remote.cpuWorkers = 6;
     assert(dynamicWorkers(local, "metal", 104, 400, 18) == 36);
     assert(dynamicWorkers(remote, "cuda", 256, 400, 18) == 128);
+    assert(dynamicWorkers(remote, "cuda16", 256, 400, 18) == 128);   // cuda_workers sets both
     assert(dynamicWorkers(remote, "blas", 1, 400, 18) == 6);
     assert(dynamicWorkers(local, "metal", 104, 20, 18) == 20);
 }

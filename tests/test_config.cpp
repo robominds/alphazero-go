@@ -619,6 +619,7 @@ static void test_metal_backend_and_inference_batch() {
     // cuda is an engine only (a remote's GPU): the run's own backend
     // (training, arena, validation) cannot be it.
     assert(contains(errorOf("backend = cuda"), "selfplay_engines"));
+    assert(contains(errorOf("backend = cuda16"), "selfplay_engines"));   // the 16-bit engine likewise
     Config d;
     assert(d.inferenceBatch == 256);
     // Printed after mcts_batch.

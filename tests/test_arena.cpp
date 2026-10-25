@@ -847,6 +847,7 @@ static void test_arena_workers() {
     // cuda, the other GPU backend, as metal.
     assert(arenaWorkers(0, "cuda", 80) == 80 && arenaWorkers(0, "cuda", 1000) == kMaxArenaWorkers);
     assert(arenaWorkers(5, "cuda", 80) == 5);
+    assert(arenaWorkers(0, "cuda16", 80) == 80 && arenaWorkers(5, "cuda16", 80) == 5);   // and cuda16
 }
 
 int main() {

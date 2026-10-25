@@ -33,6 +33,7 @@
 #include "azgo/config.hpp"
 #include "azgo/coordinator.hpp"
 #include "azgo/cuda.hpp"
+#include "azgo/cuda16.hpp"
 #include "azgo/engines.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/network.hpp"
@@ -122,7 +123,11 @@ static void test_engine_list_parse_print() {
     assert(withCuda.size() == 3 && withCuda[1].machine == "pc" && withCuda[1].backend == "cuda" &&
            withCuda[1].weight == 60 && withCuda[1].name() == "pc/cuda");
     assert(printEngineList(withCuda) == "local/metal:40, pc/cuda:60, pc/blas=2");
-    assert(contains(parseError("pc/gpu:1"), "naive|blas|metal|cuda"));
+    assert(contains(parseError("pc/gpu:1"), "naive|blas|metal|cuda|cuda16"));
+    // The 16-bit CUDA engine (azgo/cuda16.hpp): another name for the same machine.
+    const std::vector<EngineSpec> with16 = parseEngineList("pc/cuda16:60, pc/blas=2");
+    assert(with16.size() == 2 && with16[0].backend == "cuda16" && with16[0].name() == "pc/cuda16");
+    assert(printEngineList(with16) == "pc/cuda16:60, pc/blas=2");
     assert(printEngineList({}).empty());
     // A repeated engine is two items, each with its own slice.
     const std::vector<EngineSpec> twice = parseEngineList("local/naive:1,local/naive:1");
@@ -421,6 +426,10 @@ static void test_engine_workers() {
     assert(sliceWorkers("cuda", 0, 296, 16) == 256);
     assert(sliceWorkers("cuda", 0, 52, 16) == 52);
     assert(sliceWorkers("cuda", 9, 52, 16) == 9);
+    // cuda16 runs on the same GPU and takes the same setting.
+    assert(engineWorkers(pc, "cuda16", 100, 16) == 48 && engineWorkers(remote, "cuda16", 300, 16) == 256);
+    assert(sliceWorkers("cuda16", 0, 296, 16) == 256 && sliceWorkers("cuda16", 9, 52, 16) == 9);
+    assert(cpuBackendName("cuda16") == "blas");
     // What selfplay uses on a remote: --workers, else the remote rule.
     assert(sliceWorkers("blas", 0, 12, 10) == 2);
     assert(sliceWorkers("naive", 0, 12, 3) == 1);
@@ -453,7 +462,7 @@ static void test_fingerprint() {
     char host[256] = "";
     gethostname(host, sizeof host - 1);
     const std::string hostName = host;
-    for (const std::string backend : {"naive", "blas", "metal", "cuda"}) {
+    for (const std::string backend : {"naive", "blas", "metal", "cuda", "cuda16"}) {
         bool available = true;
         std::string why;
         try {
@@ -491,13 +500,15 @@ static void test_fingerprint() {
         // The distribution (its C library and packages) and the kernel.
         assert(osPart.find("Linux ") != std::string::npos);
 #endif
-        const bool gpu = backend == "metal" || backend == "cuda";
+        const bool gpu = backend == "metal" || backend == "cuda" || backend == "cuda16";
         const std::string head = gpu ? f.substr(0, osEnd) : f;
         assert(head.find(',') == std::string::npos);
         if (backend == "metal") {
             assert(osEnd != std::string::npos && f.substr(osEnd + 2) == metalDescription());
         } else if (backend == "cuda") {
             assert(osEnd != std::string::npos && f.substr(osEnd + 2) == cudaDescription());
+        } else if (backend == "cuda16") {
+            assert(osEnd != std::string::npos && f.substr(osEnd + 2) == cuda16Description());
         } else if (backend == "blas" && !blasDescription().empty()) {
             // A BLAS the OS version does not pin (OpenBLAS): its own build,
             // tidied as every part is (no separators, no outer blanks).

@@ -180,12 +180,21 @@ private:
     std::thread completion_;
 };
 
-// GPU memory of one hub: a workspace per slot, the fp32 weights, and the
-// 16-bit trunk weights (at most half the fp32 ones, plus padding: counted
-// as the fp32 size again).
+// The 16-bit trunk weights of a network shaped cfg, with their padding,
+// and each layer's padded scale and shift (Conv16Weights).
+double trunkBytes(const NetConfig& cfg) {
+    const double coutP = cuda16::paddedChannels(cfg.filters);
+    auto layer = [&](int cin) {
+        return coutP * 9 * cuda16::paddedChannels(cin) * cuda16::kHalfBytes + 2 * coutP * sizeof(float);
+    };
+    return layer(cfg.planes()) + 2.0 * cfg.blocks * layer(cfg.filters);
+}
+
+// GPU memory of one hub: a workspace per slot, the fp32 weights and the
+// 16-bit trunk.
 double hubBytes(const NetConfig& cfg, size_t weightFloats, int maxBatch, int slots) {
     return static_cast<double>(slots) * cuda16::Cuda16Workspace::bytesFor(cfg, maxBatch) +
-           2.0 * static_cast<double>(weightFloats) * sizeof(float);
+           static_cast<double>(weightFloats) * sizeof(float) + trunkBytes(cfg);
 }
 
 void checkFits(double need, int maxBatch, int hubs) {
