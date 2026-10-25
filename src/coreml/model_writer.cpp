@@ -332,12 +332,17 @@ std::string uuidFrom(uint64_t a, uint64_t b) {
     return s;
 }
 
-uint64_t fnv(const std::string& bytes, uint64_t hash = 0xcbf29ce484222325ull) {
-    for (char c : bytes) {
-        hash ^= static_cast<unsigned char>(c);
+uint64_t fnv(const void* data, size_t size, uint64_t hash = 0xcbf29ce484222325ull) {
+    const unsigned char* p = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= p[i];
         hash *= 0x100000001b3ull;
     }
     return hash;
+}
+
+uint64_t fnv(const std::string& bytes, uint64_t hash = 0xcbf29ce484222325ull) {
+    return fnv(bytes.data(), bytes.size(), hash);
 }
 
 } // namespace
@@ -546,8 +551,8 @@ uint64_t coremlNetworkHash(const Network& net) {
         shape.append(reinterpret_cast<const char*>(&v), sizeof v);
     uint64_t h = fnv(shape);
     Network& n = const_cast<Network&>(net);
-    for (const ParamView& p : n.params()) h = fnv(std::string(reinterpret_cast<const char*>(p.value), p.size * 4), fnv(p.name, h));
-    for (const BufferView& b : n.buffers()) h = fnv(std::string(reinterpret_cast<const char*>(b.value), b.size * 4), fnv(b.name, h));
+    for (const ParamView& p : n.params()) h = fnv(p.value, p.size * sizeof(float), fnv(p.name, h));
+    for (const BufferView& b : n.buffers()) h = fnv(b.value, b.size * sizeof(float), fnv(b.name, h));
     return h;
 }
 
@@ -558,7 +563,15 @@ std::string coremlModelFormatHash() {
     cfg.blocks = 1;
     cfg.filters = 8;
     cfg.valueHidden = 8;
-    const Network net(cfg, 20261024);
+    // Every tensor from a fixed formula, not from the initializer: a change
+    // to Network's initialization or to Rng must not move the hash.
+    Network net(cfg, 0);
+    int k = 0;
+    for (const ParamView& p : net.params())
+        for (size_t i = 0; i < p.size; ++i) p.value[i] = static_cast<float>(((i * 37 + 11 * ++k) % 97) / 97.0 - 0.5);
+    for (const BufferView& b : net.buffers())
+        for (size_t i = 0; i < b.size; ++i)
+            b.value[i] = static_cast<float>(((i * 13 + 7 * ++k) % 89) / 89.0 + (b.name.find("runVar") != std::string::npos ? 0.5 : -0.5));
     const CoreMLModelFiles f = buildCoreMLModel(net, 2);
     char hex[17];
     std::snprintf(hex, sizeof hex, "%016llx",
@@ -583,16 +596,11 @@ std::vector<int> coremlChunks(const std::vector<int>& sizes, int B) {
     std::vector<int> chunks;
     int left = B;
     while (left > 0) {
-        int pick = sizes[0];   // nothing fits what is left: the smallest, padded
+        // The largest size that fits; once less than the smallest is left,
+        // that rest is one chunk of the smallest size, padded.
+        int pick = sizes[0];
         for (int s : sizes)
             if (s <= left) pick = s;
-        if (pick > left) {     // the last chunk: the smallest size that holds the rest
-            for (int s : sizes)
-                if (s >= left) {
-                    pick = s;
-                    break;
-                }
-        }
         chunks.push_back(pick);
         left -= pick;
     }

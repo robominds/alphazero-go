@@ -39,8 +39,9 @@ const char* const kUsage =
     "             [--inference-batch 256]\n"
     "\n"
     "Colors alternate: A plays Black in even-numbered games. --workers 0 uses every core\n"
-    "(twice as many threads with --backend metal).\n"
-    "--backend is naive, blas or metal. metal evaluates every worker's positions together on the\n"
+    "(twice as many threads with a hub backend: metal, cuda, ane, coreml_gpu).\n"
+    "--backend is naive, blas, metal, cuda, ane or coreml_gpu; the last four are the hub backends.\n"
+    "metal evaluates every worker's positions together on the\n"
     "GPU, at most --inference-batch (1-1024, at least each side's mcts batch) per pass; it needs a\n"
     "build with -DAZ_USE_METAL=ON. Results do not depend on --workers or --inference-batch.\n"
     "--b-bot SIMS makes B a uniform bot: MCTS with equal priors and value 0, searching\n"
@@ -225,7 +226,7 @@ int main(int argc, char** argv) {
 
         const azgo::MatchResult r =
             azgo::playMatch(playerA, playerB, cfg, static_cast<uint64_t>(seed),
-                            azgo::resolveWorkers(workers, backend == "metal"), backend, inferenceBatch);
+                            azgo::resolveWorkers(workers, azgo::hubBackend(backend)), backend, inferenceBatch);
         const std::pair<double, double> ci = azgo::wilsonInterval(r.scoreA, r.games);
         std::printf("A %s vs B %s: A scored %g/%d = %.3f (95%% CI %.3f-%.3f), distinct games %d\n",
                     labelA.c_str(), nameB.c_str(), r.scoreA, r.games, r.scoreA / r.games,

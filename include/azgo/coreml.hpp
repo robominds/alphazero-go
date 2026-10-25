@@ -71,7 +71,7 @@ bool coremlAvailable(const std::string& backend, std::string* why = nullptr);
 
 // What determines the engine's arithmetic beside the CPU and OS of the
 // engine fingerprint (engineFingerprint), e.g.
-//   Core ML 3600.25.2, Neural Engine 16 cores, cpuAndNeuralEngine, float16, batches 8/32/128, model 0cdf0b9f
+//   Core ML 3600.25.2, Neural Engine 16 cores, cpuAndNeuralEngine, float16, batches 8/32/128, model ecc217a1
 // Without a usable device it is coremlAvailable's reason.
 std::string coremlDescription(const std::string& backend);
 
@@ -83,8 +83,8 @@ std::vector<int> coremlBatchSizes(const std::string& backend);
 
 // How a pass of B >= 1 positions runs on models of the given sizes
 // (ascending, distinct, each >= 1): chunks of the largest size that fits
-// what is left, the last chunk the smallest size that holds the rest
-// (padded). Their sizes in order; their sum is at least B and less than B +
+// what is left, and once less than the smallest size is left, one chunk of
+// the smallest size for the rest (padded). Their sizes in order; their sum is at least B and less than B +
 // sizes[0]. std::invalid_argument for B < 1 or bad sizes.
 std::vector<int> coremlChunks(const std::vector<int>& sizes, int B);
 

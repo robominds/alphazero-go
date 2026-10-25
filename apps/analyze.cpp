@@ -225,7 +225,8 @@ int main(int argc, char** argv) {
             // directly (the GPU pass above already did); it answers for the
             // side to move, the map is Black's.
             if (backendName != "metal") {
-                std::unique_ptr<azgo::Backend> backend = azgo::makeBackend(backendName, 1);
+                // The CPU for the other hub backends (cuda, ane, coreml_gpu).
+                std::unique_ptr<azgo::Backend> backend = azgo::makeBackend(azgo::cpuBackendName(backendName), 1);
                 azgo::Workspace ws(nc, 1, *backend);
                 std::vector<float> headLogits(static_cast<size_t>(actions));
                 float headValue = 0;

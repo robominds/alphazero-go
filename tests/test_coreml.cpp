@@ -719,9 +719,13 @@ void test_placement(const std::string& backend, const std::vector<Case>& cs) {
     }
     // 5x5, history 1, 1 block of 8: Core ML's cost model keeps it on the CPU.
     const Network tiny(netConfig(5, 1, 1, 8), 3);
-    const coreml_probe::Placement p = coreml_probe::placement(tiny, backend, coremlBatchSizes(backend)[0]);
+    // The runner checks every compiled size: refused if any is off the device.
     bool elsewhere = false;
-    for (const auto& [device, count] : p.devices) elsewhere = elsewhere || (device != want && count > 0);
+    coreml_probe::Placement p;
+    for (int size : coremlBatchSizes(backend)) {
+        p = coreml_probe::placement(tiny, backend, size);
+        for (const auto& [device, count] : p.devices) elsewhere = elsewhere || (device != want && count > 0);
+    }
     bool threw = false;
     try {
         makeCoreMLRunner(tiny, backend, 8);

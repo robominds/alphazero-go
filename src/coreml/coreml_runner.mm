@@ -26,11 +26,18 @@
 #import <CoreML/CoreML.h>
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#include <signal.h>
 #include <unistd.h>
+
+#include <cerrno>
+#include <cstdlib>
+#include <filesystem>
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -106,22 +113,54 @@ void removeTree(const std::string& path) {
     }
 }
 
-// A process-private scratch directory for packages and compiled models.
+// The process's scratch directory for packages and compiled models,
+// <tmp>/azgo-coreml-<pid>, removed when the process exits. The first call
+// also removes the directories of processes that no longer exist (killed
+// ones never ran their exit handler). Each call returns a new
+// subdirectory of it.
+std::string processDirectory();
+
+void removeProcessDirectory() {
+    std::error_code ec;
+    std::filesystem::remove_all(processDirectory(), ec);
+}
+
+std::string processDirectory() {
+    // Never destroyed: the exit handler reads it after static destructors ran.
+    static const std::string* dir = [] {
+        std::string tmp;
+        @autoreleasepool {
+            tmp = str(NSTemporaryDirectory());
+        }
+        if (tmp.empty()) tmp = "/tmp/";
+        if (tmp.back() != '/') tmp += '/';
+        const std::string prefix = "azgo-coreml-";
+        std::error_code ec;
+        for (const auto& e : std::filesystem::directory_iterator(tmp, ec)) {
+            const std::string name = e.path().filename().string();
+            if (name.compare(0, prefix.size(), prefix) != 0) continue;
+            const long pid = std::strtol(name.c_str() + prefix.size(), nullptr, 10);
+            if (pid <= 0 || pid == ::getpid()) continue;
+            if (::kill(static_cast<pid_t>(pid), 0) == 0 || errno != ESRCH) continue;   // alive, or not ours to judge
+            std::error_code rm;
+            std::filesystem::remove_all(e.path(), rm);
+        }
+        const std::string* mine = new std::string(tmp + prefix + std::to_string(::getpid()));
+        std::atexit(removeProcessDirectory);
+        return mine;
+    }();
+    return *dir;
+}
+
 std::string scratchDirectory() {
     static std::mutex m;
     static long counter = 0;
     std::lock_guard<std::mutex> lock(m);
-    @autoreleasepool {
-        NSString* base = NSTemporaryDirectory();
-        const std::string dir = str(base) + "azgo-coreml-" + std::to_string(::getpid()) + "-" + std::to_string(++counter);
-        NSError* err = nil;
-        if (![[NSFileManager defaultManager] createDirectoryAtPath:[NSString stringWithUTF8String:dir.c_str()]
-                                       withIntermediateDirectories:YES
-                                                        attributes:nil
-                                                             error:&err])
-            throw std::runtime_error("coreml: cannot create " + dir + ": " + errorText(err));
-        return dir;
-    }
+    const std::string dir = processDirectory() + "/" + std::to_string(++counter);
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) throw std::runtime_error("coreml: cannot create " + dir + ": " + ec.message());
+    return dir;
 }
 
 // The compute plan's placement of a compiled model's operations.
@@ -238,6 +277,10 @@ MLModel* compileAndLoad(const Network& net, const std::string& backend, int size
     return model;
 }
 
+std::string runPass(const LoadedNetwork& ln, float* input, int B, float* logits, float* values)
+    API_AVAILABLE(macos(15.0));
+void checkBatchIndependence(const LoadedNetwork& ln) API_AVAILABLE(macos(15.0));
+
 // The models of the networks in use, and of the last few used.
 class ModelCache {
 public:
@@ -246,10 +289,12 @@ public:
         return *cache;
     }
 
-    // checkPlacement: the first load of each shape checks it (the probe's
-    // own small network does not: where Core ML puts a small network is
-    // its cost model's choice, and the CPU may win).
-    std::shared_ptr<LoadedNetwork> get(const Network& net, const std::string& backend, bool checkPlacement = true)
+    // check: the first load of each shape checks the placement of every
+    // size and that the sizes and a pass's companions change no bit
+    // (checkBatchIndependence). The probe's own small network does not:
+    // where Core ML puts a small network is its cost model's choice, and
+    // the CPU may win.
+    std::shared_ptr<LoadedNetwork> get(const Network& net, const std::string& backend, bool check = true)
         API_AVAILABLE(macos(15.0)) {
         const auto key = std::make_pair(coremlNetworkHash(net), backend);
         std::lock_guard<std::mutex> lock(mutex_);
@@ -263,14 +308,22 @@ public:
         loaded->backend = backend;
         loaded->sizes = coremlBatchSizes(backend);
         loaded->dir = scratchDirectory();
+        const auto shape = std::make_pair(backend, configKey(net.config()));
+        const bool first = check && !checked_.count(shape);
+        // An exception must not leave an autorelease pool (ARC would not
+        // drain it): it is carried out and rethrown after.
+        std::exception_ptr failure;
         @autoreleasepool {
-            for (int size : loaded->sizes) {
-                const auto shape = std::make_tuple(backend, configKey(net.config()), size);
-                const bool check = checkPlacement && !placed_.count(shape);
-                loaded->models.push_back({size, compileAndLoad(net, backend, size, loaded->dir, check)});
-                if (check) placed_.insert(shape);
+            try {
+                for (int size : loaded->sizes)
+                    loaded->models.push_back({size, compileAndLoad(net, backend, size, loaded->dir, first)});
+                if (first) checkBatchIndependence(*loaded);
+            } catch (...) {
+                failure = std::current_exception();
             }
         }
+        if (failure) std::rethrow_exception(failure);
+        if (first) checked_.insert(shape);
         live_[key] = loaded;
         remember(loaded);
         return loaded;
@@ -291,7 +344,7 @@ private:
     std::mutex mutex_;
     std::map<std::pair<uint64_t, std::string>, std::weak_ptr<LoadedNetwork>> live_;
     std::deque<std::shared_ptr<LoadedNetwork>> recent_;
-    std::set<std::tuple<std::string, std::string, int>> placed_;
+    std::set<std::pair<std::string, std::string>> checked_;   // (backend, shape) checked once
 };
 
 // One pass: B positions of `input` (which has room for the padded chunks;
@@ -321,7 +374,18 @@ std::string runPass(const LoadedNetwork& ln, float* input, int B, float* logits,
             MLDictionaryFeatureProvider* features =
                 [[MLDictionaryFeatureProvider alloc] initWithDictionary:@{@"planes" : in} error:&err];
             if (!features) return "coreml: input features: " + errorText(err);
-            id<MLFeatureProvider> out = [ln.modelFor(size) predictionFromFeatures:features error:&err];
+            // A failed prediction is tried twice more: one was seen to fail
+            // once, transiently, on the Neural Engine while another process
+            // loaded models, and the same input gives the same bits.
+            id<MLFeatureProvider> out = nil;
+            for (int attempt = 0; attempt < 3 && !out; ++attempt) {
+                if (attempt > 0) std::this_thread::sleep_for(std::chrono::milliseconds(20 * attempt));
+                err = nil;
+                out = [ln.modelFor(size) predictionFromFeatures:features error:&err];
+                if (!out && attempt < 2)
+                    std::fprintf(stderr, "%s: a prediction failed (%s); trying again\n", ln.backend.c_str(),
+                                 errorText(err).c_str());
+            }
             if (!out) return "coreml: prediction failed: " + errorText(err);
             ++gPredictions;
             MLMultiArray* L = [out featureValueForName:@"logits"].multiArrayValue;
@@ -350,6 +414,50 @@ std::string runPass(const LoadedNetwork& ln, float* input, int B, float* logits,
     return "";
 }
 
+// What the contract rests on, checked on this machine when a shape first
+// loads: eight fixed positions give the same bits each alone (its chunk
+// padded) as all together, through every compiled size. Core ML's
+// behaviour, not this program's construction, so a device or OS whose
+// Neural Engine or GPU computes otherwise is refused, not used.
+void checkBatchIndependence(const LoadedNetwork& ln) {
+    const NetConfig& cfg = ln.cfg;
+    const size_t per = static_cast<size_t>(cfg.planes()) * cfg.area(), L = static_cast<size_t>(cfg.actions());
+    const int count = 8;
+    std::vector<float> positions(count * per);
+    uint32_t x = 2463534242u;   // xorshift: binary planes, fixed for every machine
+    for (float& v : positions) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        v = static_cast<float>((x >> 7) & 1u);
+    }
+    const int room = ln.sizes.back() + count;
+    std::vector<float> in(static_cast<size_t>(room) * per), refL(count * L), refV(count), l(count * L), v(count);
+    LoadedNetwork one;   // a view of one size; it owns nothing on disk
+    one.cfg = cfg;
+    one.backend = ln.backend;
+    for (int k = -1; k < static_cast<int>(ln.sizes.size()); ++k) {
+        const int size = ln.sizes[k < 0 ? 0 : k];
+        one.sizes = {size};
+        one.models = {{size, ln.modelFor(size)}};
+        std::string err;
+        if (k < 0) {   // the reference: each position alone at the smallest size
+            for (int i = 0; i < count && err.empty(); ++i) {
+                std::copy_n(positions.data() + i * per, per, in.data());
+                err = runPass(one, in.data(), 1, refL.data() + i * L, refV.data() + i);
+            }
+        } else {
+            std::copy(positions.begin(), positions.end(), in.begin());
+            err = runPass(one, in.data(), count, l.data(), v.data());
+            if (err.empty() && (std::memcmp(l.data(), refL.data(), l.size() * 4) != 0 ||
+                                std::memcmp(v.data(), refV.data(), v.size() * 4) != 0))
+                err = "a position's outputs differ alone and among others at batch " + std::to_string(size) +
+                      ": " + ln.backend + " is not batch-independent on this machine";
+        }
+        if (!err.empty()) throw std::runtime_error(ln.backend + ": " + err);
+    }
+}
+
 // ---- the runner --------------------------------------------------------------
 
 class CoreMLBatchRunner : public BatchRunner {
@@ -365,19 +473,15 @@ public:
             slot->values.assign(static_cast<size_t>(maxBatch), 0.0f);
             slots_.push_back(std::move(slot));
         }
-        for (int s = 0; s < slots; ++s) slots_[s]->thread = std::thread([this, s] { loop(s); });
+        try {
+            for (int s = 0; s < slots; ++s) slots_[s]->thread = std::thread([this, s] { loop(s); });
+        } catch (...) {
+            stopAndJoin();   // a thread that could not start: the started ones must not be left joinable
+            throw;
+        }
     }
 
-    ~CoreMLBatchRunner() override {
-        for (auto& slot : slots_) {
-            {
-                std::lock_guard<std::mutex> lock(slot->mutex);
-                slot->stop = true;
-            }
-            slot->wake.notify_one();
-        }
-        for (auto& slot : slots_) slot->thread.join();
-    }
+    ~CoreMLBatchRunner() override { stopAndJoin(); }
 
     int slots() const override { return static_cast<int>(slots_.size()); }
     int maxBatch() const override { return maxBatch_; }
@@ -399,6 +503,19 @@ public:
     }
 
 private:
+    // Lets each slot thread finish its pass in flight, then joins it.
+    void stopAndJoin() {
+        for (auto& slot : slots_) {
+            {
+                std::lock_guard<std::mutex> lock(slot->mutex);
+                slot->stop = true;
+            }
+            slot->wake.notify_one();
+        }
+        for (auto& slot : slots_)
+            if (slot->thread.joinable()) slot->thread.join();
+    }
+
     struct Slot {
         std::vector<float> input, logits, values;
         std::mutex mutex;
@@ -427,6 +544,8 @@ private:
                 else error = "coreml: needs macOS 15";
             } catch (const std::exception& e) {
                 error = std::string("coreml: ") + e.what();
+            } catch (...) {   // in Objective-C++ this catches an NSException too
+                error = "coreml: unknown exception";
             }
             {
                 std::lock_guard<std::mutex> lock(s.mutex);
@@ -505,6 +624,9 @@ Probe probe(const std::string& backend) {
             } catch (const std::exception& e) {
                 p.why = e.what();
                 return p;
+            } catch (...) {   // an NSException too
+                p.why = "unknown exception";
+                return p;
             }
             std::string sizes;
             for (int s : coremlBatchSizes(backend)) sizes += (sizes.empty() ? "" : "/") + std::to_string(s);
@@ -544,11 +666,15 @@ double budget(const std::string& backend) {
 }
 
 // What one hub holds: every compiled model (float16 weights and three
-// activation tensors of its size) and the slots' float32 staging.
+// activation tensors of its size) and the slots' float32 staging. A
+// coarse, conservative estimate: hubs of one network share its models but
+// are each charged in full (which more than covers the few networks the
+// cache keeps loaded after use), and Core ML's own overhead is not known.
 double hubBytes(const NetConfig& cfg, const std::string& backend, int maxBatch, int slots) {
-    Network shape(cfg, 0);
-    double weights = 0;
-    for (const ParamView& p : shape.params()) weights += static_cast<double>(p.size);
+    const double F = cfg.filters, A = cfg.area(), V = cfg.valueHidden;
+    const double weights = cfg.planes() * F * 9 + cfg.blocks * 2.0 * F * F * 9 + 3 * F   // convolutions
+                           + 2 * (F + 2.0 * cfg.blocks * F + 3)                          // folded biases
+                           + 2 * A * cfg.actions() + cfg.actions() + A * V + 2 * V + 1;  // linear layers
     const std::vector<int> sizes = coremlBatchSizes(backend);
     double models = 0;
     for (int s : sizes)
