@@ -39,6 +39,7 @@
 #include "azgo/engines.hpp"
 #include "azgo/game.hpp"
 #include "azgo/inference_hub.hpp"
+#include "azgo/metal.hpp"
 #include "azgo/network.hpp"
 #include "azgo/rng.hpp"
 #include "azgo/run_state.hpp"
@@ -1116,6 +1117,15 @@ void test_runs(const std::string& backend) {
     applyOverride(c, "arena_engines=local/blas:1");
     runOnce(c, m, "", 2);
     assert(runFingerprint(m, 2) != reference);
+    // metal beside coreml_gpu on one Mac: a note at start (Metal starves Core ML's GPU).
+    if (backend == "coreml_gpu" && metalBuilt() && metalAvailable()) {
+        RunDir d("note_" + backend);
+        Config both = engineRunConfig(backend);
+        applyOverride(both, "selfplay_engines=local/metal:1, local/coreml_gpu:1");
+        std::ostringstream startup;
+        Trainer::startNew(both, d.str(), {}, &startup);
+        assert(contains(startup.str(), "note: local/metal and local/coreml_gpu share one GPU"));
+    }
     std::printf("%s runs: independent of workers, batching and chaos; resumed byte for byte\n", backend.c_str());
 }
 

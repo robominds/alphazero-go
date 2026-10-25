@@ -397,6 +397,22 @@ void Coordinator::preflight() {
     // Every engine of both lists, self-play's first.
     std::vector<EngineSpec> all = cfg_.selfplayEngines;
     all.insert(all.end(), cfg_.arenaEngines.begin(), cfg_.arenaEngines.end());
+    // metal and coreml_gpu on one Mac share its GPU, where Metal's passes
+    // starve Core ML's (spec 2026-10-24, "Measured"): say so once per machine.
+    if (log_) {
+        std::vector<std::string> warned;
+        for (const EngineSpec& e : all) {
+            if (e.backend != "metal" || std::find(warned.begin(), warned.end(), e.machine) != warned.end()) continue;
+            for (const EngineSpec& f : all)
+                if (f.machine == e.machine && f.backend == "coreml_gpu") {
+                    *log_ << "note: " << e.machine << "/metal and " << e.machine
+                          << "/coreml_gpu share one GPU, where Metal's passes starve Core ML's; "
+                             "use coreml_gpu in place of metal\n";
+                    warned.push_back(e.machine);
+                    break;
+                }
+        }
+    }
     // Local engines: the backend runs here, and the GPU hubs fit.
     std::vector<std::string> remotes;   // aliases, in list order
     for (const EngineSpec& e : all) {
