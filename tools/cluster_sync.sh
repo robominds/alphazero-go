@@ -13,8 +13,12 @@
 # (a Mac's GPU), -DAZ_USE_CUDA=ON when one is "cuda" (an NVIDIA GPU on
 # Linux; it implies BLAS, so the binary serves machine/cuda and
 # machine/blas), -DAZ_USE_BLAS=ON when one is "blas" (Accelerate, or
-# OpenBLAS on Linux), none of them otherwise
-# (set explicitly, so a kept CMake cache cannot hold an old choice). The
+# OpenBLAS on Linux), none of them otherwise, and in addition
+# -DAZ_USE_COREML=ON when one word is "coreml" (the Core ML engines ane and
+# coreml_gpu, macOS; it implies BLAS): build-metal-coreml has Metal and
+# Core ML, build-coreml Core ML alone, build-metal still Metal alone
+# (every option set explicitly, so a kept CMake cache cannot hold an old
+# choice). The
 # name must start with "build", so it can never be one of the tree's own
 # directories. Its --version must then equal this repository's commit. The
 # remote may run macOS or Linux.
@@ -40,7 +44,8 @@ Syncs every machine with ssh= in the hosts file (default: $AZGO_HOSTS, else
 configured with -DAZ_USE_METAL=ON, one with "cuda" with -DAZ_USE_CUDA=ON
 (Linux; nvcc from the remote's PATH, else /usr/local/cuda/bin/nvcc), one
 with "blas" with -DAZ_USE_BLAS=ON (OpenBLAS on Linux), others with none:
-build-nometal gets none. Checks
+build-nometal gets none. The word "coreml" adds -DAZ_USE_COREML=ON (macOS:
+the ane and coreml_gpu engines), e.g. build-metal-coreml. Checks
 that each machine's selfplay --version reports HEAD. --dry-run prints the
 commands instead of running them. Refuses a tree with uncommitted changes.
 <repo> is replaced wholesale: it must be a dedicated copy (e.g.
@@ -116,13 +121,14 @@ sync_machine() {
     # The name's words, not substrings: build-metal and build_metal_2 are
     # metal; build-nometal and build-metal2 are not. metal, then cuda, win
     # over blas (a Metal or CUDA build has BLAS too).
-    local words word flavour=""
+    local words word flavour="" coreml=OFF
     IFS='-_.' read -r -a words <<<"$build"
     for word in "${words[@]}"; do
         case "$word" in
             metal) flavour=metal ;;
             cuda) [ "$flavour" = metal ] || flavour=cuda ;;
             blas) [ -n "$flavour" ] || flavour=blas ;;
+            coreml) coreml=ON ;;
         esac
     done
     # Every option is set explicitly, so a kept CMake cache cannot hold an
@@ -135,6 +141,7 @@ sync_machine() {
         blas) options="-DAZ_USE_METAL=OFF -DAZ_USE_CUDA=OFF -DAZ_USE_BLAS=ON" ;;
         *) options="-DAZ_USE_METAL=OFF -DAZ_USE_CUDA=OFF -DAZ_USE_BLAS=OFF" ;;
     esac
+    options="$options -DAZ_USE_COREML=$coreml"
     echo "== $alias: $COMMIT -> $repo ($build)"
     local ssh_=(ssh -o BatchMode=yes -o ConnectTimeout=10 "$target")
     # The repository is replaced wholesale, so it must be a copy this script

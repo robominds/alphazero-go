@@ -636,7 +636,9 @@ if command -v git > /dev/null; then
                   "word ssh=u@h5 exe=~/c/build_metal_2/selfplay workdir=~/w" \
                   "sub  ssh=u@h6 exe=~/c/build-nometal/selfplay workdir=~/w" \
                   "pc   ssh=u@h7 exe=~/c/build-cuda/selfplay workdir=~/w" \
-                  "nocu ssh=u@h8 exe=~/c/build-nocuda/selfplay workdir=~/w" > "$W/sync-hosts"
+                  "nocu ssh=u@h8 exe=~/c/build-nocuda/selfplay workdir=~/w" \
+                  "mc   ssh=u@h9 exe=~/c/build-metal-coreml/selfplay workdir=~/w" \
+                  "cml  ssh=u@h10 exe=~/c/build-coreml/selfplay workdir=~/w" > "$W/sync-hosts"
     out="$(cd "$SYNC" && "$SRC/tools/cluster_sync.sh" --hosts "$W/sync-hosts" --dry-run)"
     cmake_line() { grep "u@h$1 cmake" <<<"$out"; }
     cmake_line 1 | grep -q 'c/build-metal.*-DAZ_USE_METAL=ON' || fail "cluster_sync.sh: metal build: $out"
@@ -652,7 +654,14 @@ if command -v git > /dev/null; then
         || fail "cluster_sync.sh: cuda build: $out"
     cmake_line 8 | grep -q 'c/build-nocuda.*-DAZ_USE_CUDA=OFF' || fail "cluster_sync.sh: build-nocuda took cuda: $out"
     cmake_line 1 | grep -q 'AZ_USE_CUDA=OFF' || fail "cluster_sync.sh: a metal build may keep a cached CUDA: $out"
-    [ "$(grep -c '_NPROCESSORS_ONLN' <<<"$out")" = 7 ] || fail "cluster_sync.sh: no portable core count: $out"
+    # coreml: Core ML on top of the flavour; off (explicitly) everywhere else.
+    cmake_line 9 | grep -q 'c/build-metal-coreml.*-DAZ_USE_METAL=ON.*-DAZ_USE_COREML=ON' \
+        || fail "cluster_sync.sh: metal-coreml build: $out"
+    cmake_line 10 | grep -q 'c/build-coreml.*-DAZ_USE_METAL=OFF.*-DAZ_USE_COREML=ON' || fail "cluster_sync.sh: coreml build: $out"
+    for h in 1 2 3 5 6 7 8; do
+        cmake_line $h | grep -q 'AZ_USE_COREML=OFF' || fail "cluster_sync.sh: machine $h may keep a cached Core ML: $out"
+    done
+    [ "$(grep -c '_NPROCESSORS_ONLN' <<<"$out")" = 9 ] || fail "cluster_sync.sh: no portable core count: $out"
     printf '%s\n' "odd ssh=u@h4 exe=~/c/src/selfplay workdir=~/w" > "$W/sync-hosts"
     status=0
     out="$(cd "$SYNC" && "$SRC/tools/cluster_sync.sh" --hosts "$W/sync-hosts" --dry-run 2>&1)" || status=$?

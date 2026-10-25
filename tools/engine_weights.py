@@ -12,7 +12,8 @@ of G games (default: the run's games_per_generation) is proportional to
 its rate.
 
 The suggestion follows the spec's sizing rules. GPU engines (metal, cuda,
-cuda16) play every game of their slice at once and get weights proportional to their
+cuda16, and the Core ML engines ane and coreml_gpu) play every game of their slice
+at once and get weights proportional to their
 rates; CPU engines (naive, blas) play in waves of their worker count and
 get fixed counts rounded to a multiple of it (the workers come from the
 hosts file's cpu_workers, else the default rule: min(4, cores / 3) on
@@ -170,7 +171,7 @@ def main():
     per_game = total_evals / max(1, total_games)
     total_rate = sum(rate.values())
 
-    gpu = [e for e in order if e.endswith(("/metal", "/cuda", "/cuda16"))]
+    gpu = [e for e in order if e.endswith(("/metal", "/cuda", "/cuda16", "/ane", "/coreml_gpu"))]
     weighted = gpu if gpu else [max(order, key=lambda e: rate[e])]
     if args.arena:
         weighted = list(order)   # arena_engines takes weights only
