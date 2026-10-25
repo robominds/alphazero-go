@@ -5,7 +5,7 @@
 // job to a machine, runs this there, and downloads and verifies the result.
 // The job's first bytes say which kind it is. It needs no run directory.
 //
-//   selfplay --job JOB --out OUT --backend naive|blas|metal|cuda [--workers N] [--inference-batch N]
+//   selfplay --job JOB --out OUT --backend naive|blas|metal|cuda|cuda16 [--workers N] [--inference-batch N]
 //            [--exit-on-stdin-eof]
 //   selfplay --stream --job JOB --backend B [--workers N] [--inference-batch N]
 //   selfplay --version
@@ -43,7 +43,7 @@ namespace {
 
 const char* const kUsage =
     "usage:\n"
-    "  selfplay --job JOB --out OUT --backend naive|blas|metal|cuda [--workers N] [--inference-batch N]\n"
+    "  selfplay --job JOB --out OUT --backend naive|blas|metal|cuda|cuda16 [--workers N] [--inference-batch N]\n"
     "           [--exit-on-stdin-eof]\n"
     "  selfplay --stream --job JOB --backend B [--workers N] [--inference-batch N]\n"
     "  selfplay --version\n"
@@ -54,7 +54,8 @@ const char* const kUsage =
     "lie in JOB's directory and match the job's hashes, and writes the result to OUT\n"
     "(replaced atomically).\n"
     "The job's build ID must be this binary's. --workers: threads (default: every game\n"
-    "at once with metal and cuda, max(1, min(2, cores - 2)) with naive and blas, the remote\n"
+    "at once with metal, cuda and cuda16, max(1, min(2, cores - 2)) with naive and blas, the\n"
+    "remote "
     "rule of the hosts file); --inference-batch: most positions per GPU pass (default:\n"
     "the job's). Neither changes a result. --exit-on-stdin-eof stops at once when\n"
     "stdin reaches its end: the coordinator holds it open while it waits.\n"
@@ -65,7 +66,7 @@ const char* const kUsage =
     "stops it at once.\n"
     "--version prints the build ID, short and full, and the strongest backend built.\n"
     "--fingerprint checks that backend B can run here and prints what determines its\n"
-    "arithmetic (backend, CPU, OS, and with metal or cuda the GPU and kernels).\n"
+    "arithmetic (backend, CPU, OS, and with metal, cuda or cuda16 the GPU and kernels).\n"
     "Exit status: 0 success, 1 error, 2 usage error.\n";
 
 int usageError(const std::string& message) {

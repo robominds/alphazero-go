@@ -11,6 +11,7 @@
 #include "azgo/arena.hpp"
 #include "azgo/backend.hpp"
 #include "azgo/cuda.hpp"
+#include "azgo/cuda16.hpp"
 #include "azgo/metal.hpp"
 #ifdef __APPLE__
 #include <sys/sysctl.h>
@@ -57,9 +58,10 @@ EngineSpec parseItem(const std::string& item) {
     if (!validAlias(e.machine))
         throw std::invalid_argument("bad machine alias '" + e.machine +
                                     "' (expected [a-z][a-z0-9_-]{0,31})");
-    if (e.backend != "naive" && e.backend != "blas" && e.backend != "metal" && e.backend != "cuda")
+    if (e.backend != "naive" && e.backend != "blas" && e.backend != "metal" && e.backend != "cuda" &&
+        e.backend != "cuda16")
         throw std::invalid_argument("unknown backend '" + e.backend +
-                                    "' (expected naive|blas|metal|cuda)");
+                                    "' (expected naive|blas|metal|cuda|cuda16)");
     if (item[sep] == ':') {
         const std::string reason = parseShare(number, 1, kMaxShare, e.weight);
         if (!reason.empty()) throw std::invalid_argument("weight: " + reason);
@@ -334,7 +336,7 @@ int engineWorkers(const MachineSettings& machine, const std::string& backend, in
     int workers;
     if (backend == "metal") {
         workers = machine.metalWorkers > 0 ? machine.metalWorkers : kMaxArenaWorkers;
-    } else if (backend == "cuda") {
+    } else if (backend == "cuda" || backend == "cuda16") {   // one GPU, one setting
         workers = machine.cudaWorkers > 0 ? machine.cudaWorkers : kMaxArenaWorkers;
     } else if (machine.cpuWorkers > 0) {
         workers = machine.cpuWorkers;
@@ -351,9 +353,9 @@ int engineWorkers(const MachineSettings& machine, const std::string& backend, in
 
 int dynamicWorkers(const MachineSettings& machine, const std::string& backend, int share, int games,
                    int cores) {
-    const bool gpu = backend == "metal" || backend == "cuda";
+    const bool gpu = backend == "metal" || backend == "cuda" || backend == "cuda16";
     const int set = backend == "metal" ? machine.metalWorkers
-                    : backend == "cuda" ? machine.cudaWorkers
+                    : backend == "cuda" || backend == "cuda16" ? machine.cudaWorkers
                                         : machine.cpuWorkers;
     if (!gpu || set > 0) return engineWorkers(machine, backend, games, cores);
     // A quarter of the share: enough games in flight to fill the GPU
@@ -470,6 +472,7 @@ std::string engineFingerprint(const std::string& backend) {
     std::string f = backend + "; " + cpuModel() + "; " + osVersion();
     if (backend == "metal") f += "; " + metalDescription();
     if (backend == "cuda") f += "; " + cudaDescription();
+    if (backend == "cuda16") f += "; " + cuda16Description();
     if (backend == "blas" && !blasDescription().empty()) f += "; " + tidy(blasDescription());
     return f;
 }

@@ -181,6 +181,9 @@ const KeyEntry kKeys[] = {
     {"train_threads", false, intKey<&Config::trainThreads, 0, 256>, printInt<&Config::trainThreads>},
     {"backend", false,
      [](Config& c, const std::string& v) -> std::string {
+         if (v == "cuda16")
+             return "cuda16 is an engine only, not a run's backend: use selfplay_engines or "
+                    "arena_engines (e.g. selfplay_engines = local/metal:40, pc/cuda16:60)";
          if (v == "cuda")
              return "cuda is an engine only, not a run's backend: use selfplay_engines or "
                     "arena_engines (e.g. selfplay_engines = local/metal:40, pc/cuda:60)";

@@ -72,4 +72,24 @@ function(azgo_cuda_configure_target)
        CONTENT "#define AZGO_CUDA_KERNEL_HASH \"${AZGO_CUDA_HASH}\"\n#define AZGO_CUDA_ARCHITECTURES \"${AZGO_CUDA_ARCH_TEXT}\"\n")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${AZGO_CUDA_HASHED})
   message(STATUS "CUDA: architectures ${AZ_CUDA_ARCHITECTURES}, nvcc ${CMAKE_CUDA_COMPILER_VERSION}, kernels ${AZGO_CUDA_HASH}")
+
+  # The 16-bit backend's hash (backend = cuda16, "fp16 kernels 1a2b3c4d"):
+  # the same inputs plus src/cuda/fp16, every source a cuda16 pass runs. The
+  # cuda hash above does not see src/cuda/fp16, so cuda16 changes leave the
+  # cuda engine's fingerprint alone, while a change to src/cuda changes both.
+  file(GLOB AZGO_CUDA16_HASHED CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/fp16/*.cu
+       ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/fp16/*.cuh)
+  list(SORT AZGO_CUDA16_HASHED)
+  set(AZGO_CUDA16_HASH_INPUT "${AZGO_CUDA_HASH_INPUT}")
+  foreach(f IN LISTS AZGO_CUDA16_HASHED)
+    file(SHA256 ${f} h)
+    get_filename_component(name ${f} NAME)
+    string(APPEND AZGO_CUDA16_HASH_INPUT "fp16/${name} ${h}\n")
+  endforeach()
+  string(SHA256 AZGO_CUDA16_HASH "${AZGO_CUDA16_HASH_INPUT}")
+  string(SUBSTRING "${AZGO_CUDA16_HASH}" 0 8 AZGO_CUDA16_HASH)
+  file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/generated/azgo_cuda16_info.inc
+       CONTENT "#define AZGO_CUDA16_KERNEL_HASH \"${AZGO_CUDA16_HASH}\"\n")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${AZGO_CUDA16_HASHED})
+  message(STATUS "CUDA: 16-bit kernels ${AZGO_CUDA16_HASH}")
 endfunction()

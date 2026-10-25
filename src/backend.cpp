@@ -1,5 +1,6 @@
 #include "azgo/backend.hpp"
 #include "azgo/cuda.hpp"
+#include "azgo/cuda16.hpp"
 #include "azgo/metal.hpp"
 #include "azgo/parallel.hpp"
 #include <algorithm>
@@ -289,16 +290,25 @@ std::unique_ptr<Backend> makeBackend(const std::string& name, int threads) {
         throw std::invalid_argument("backend 'blas' not available: rebuild with -DAZ_USE_BLAS=ON");
 #endif
     }
-    if (name == "metal" || name == "cuda")
+    if (name == "metal" || name == "cuda" || name == "cuda16")
         throw std::invalid_argument("backend '" + name + "' is not a per-operation backend; use WorkerEvaluators");
-    throw std::invalid_argument("unknown backend '" + name + "' (expected naive, blas, metal or cuda)");
+    throw std::invalid_argument("unknown backend '" + name + "' (expected naive, blas, metal, cuda or cuda16)");
 }
 
 std::string cpuBackendName(const std::string& name) {
-    return name == "metal" || name == "cuda" ? "blas" : name;
+    return name == "metal" || name == "cuda" || name == "cuda16" ? "blas" : name;
 }
 
 void checkBackendAvailable(const std::string& name) {
+    if (name == "cuda16") {   // the 16-bit CUDA backend (azgo/cuda16.hpp)
+        std::string why;
+        if (!cudaBuilt())
+            throw std::invalid_argument(
+                "backend 'cuda16' not available: rebuild with -DAZ_USE_CUDA=ON (Linux, NVIDIA GPU)");
+        if (!cuda16Available(&why))
+            throw std::invalid_argument("backend 'cuda16': no usable CUDA GPU (" + why + ")");
+        return;
+    }
     if (name == "cuda") {
         std::string why;
         if (!cudaBuilt())

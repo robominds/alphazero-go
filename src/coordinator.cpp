@@ -21,6 +21,7 @@
 #include "azgo/build_info.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/cuda.hpp"
+#include "azgo/cuda16.hpp"
 #include "azgo/game_queue.hpp"
 #include "azgo/game.hpp"
 #include "azgo/inference_hub.hpp"
@@ -420,6 +421,10 @@ void Coordinator::preflight() {
     const int metalHubs = hubs(cfg_.selfplayEngines, "metal"), cudaHubs = hubs(cfg_.selfplayEngines, "cuda");
     const int metalArena = hubs(cfg_.arenaEngines, "metal") * arenaWaveNetworks(cfg_);
     const int cudaArena = hubs(cfg_.arenaEngines, "cuda") * arenaWaveNetworks(cfg_);
+    // cuda16 hubs are checked on their own (a local/cuda beside a
+    // local/cuda16 on one GPU is not a case this checks together).
+    const int cuda16Hubs = hubs(cfg_.selfplayEngines, "cuda16");
+    const int cuda16Arena = hubs(cfg_.arenaEngines, "cuda16") * arenaWaveNetworks(cfg_);
     const MachineSettings local = hosts_.settings("local");
     const int batch = local.inferenceBatch > 0 ? local.inferenceBatch : cfg_.inferenceBatch;
     if (batch < cfg_.mctsBatch)
@@ -466,9 +471,18 @@ void Coordinator::preflight() {
         if (cudaHubs > 0) checkCudaInferenceMemory(cfg_.netConfig(), batch, cudaHubs, kInferenceSlots);
         if (cudaArena > 0) checkCudaInferenceMemory(cfg_.netConfig(), batch, cudaArena, 1);
     }
+    if (cfg_.pipeline) {
+        checkTogether("cuda16", cuda16Hubs, cuda16Arena,
+                      [&](const std::vector<GpuHubs>& g) { checkCuda16InferenceMemory(cfg_.netConfig(), g); });
+    } else {
+        if (cuda16Hubs > 0) checkCuda16InferenceMemory(cfg_.netConfig(), batch, cuda16Hubs, kInferenceSlots);
+        if (cuda16Arena > 0) checkCuda16InferenceMemory(cfg_.netConfig(), batch, cuda16Arena, 1);
+    }
 #else
     (void)cudaHubs;
     (void)cudaArena;
+    (void)cuda16Hubs;
+    (void)cuda16Arena;
 #endif
     (void)checkTogether;
 
@@ -634,7 +648,7 @@ void Coordinator::attemptRemote(int attempt, const EngineSpec& e, const RemoteWo
                                          "--exit-on-stdin-eof"};
         // Worker counts the hosts file sets; otherwise the remote's own rule.
         const int workers = e.backend == "metal"  ? m.metalWorkers
-                            : e.backend == "cuda" ? m.cudaWorkers
+                            : e.backend == "cuda" || e.backend == "cuda16" ? m.cudaWorkers
                                                   : m.cpuWorkers;
         if (workers > 0) args.insert(args.end(), {"--workers", std::to_string(workers)});
         if (m.inferenceBatch > 0)
@@ -766,7 +780,7 @@ void Coordinator::playRemote(int g, PhaseKind kind, PhaseSlice& slice, const std
     run.backend = backend;
     run.workers = engineWorkers(local, backend, slice.slice.count, resolveWorkers(0));
     run.inferenceBatch = local.inferenceBatch > 0 ? local.inferenceBatch : cfg_.inferenceBatch;
-    run.qos = backend == "metal" || backend == "cuda" ? CpuQos::Default : local.cpuQos;
+    run.qos = backend == "metal" || backend == "cuda" || backend == "cuda16" ? CpuQos::Default : local.cpuQos;
     run.cancel = &stop;
     report.engine = fallback;
     report.fingerprint = engineFingerprint(backend);
@@ -809,7 +823,8 @@ std::vector<SliceReport> Coordinator::runSlices(int g, PhaseKind kind, std::vect
         // The GPU, which sets the pace, waits on a GPU engine's workers
         // (metal, cuda): they keep the default class. CPU engines take the
         // machine's.
-        runs[k].qos = e.backend == "metal" || e.backend == "cuda" ? CpuQos::Default : m.cpuQos;
+        runs[k].qos =
+            e.backend == "metal" || e.backend == "cuda" || e.backend == "cuda16" ? CpuQos::Default : m.cpuQos;
         reports[k].fingerprint = fingerprintOf(e);
         reports[k].build = shortBuildId();
     }
@@ -1083,7 +1098,8 @@ struct Coordinator::DynamicPhase {
         run.inferenceBatch = e.machine.inferenceBatch > 0 ? e.machine.inferenceBatch : c.cfg_.inferenceBatch;
         // The GPU, which sets the pace, waits on a GPU engine's workers: they
         // keep the default class. CPU engines take the machine's.
-        run.qos = run.backend == "metal" || run.backend == "cuda" ? CpuQos::Default : e.machine.cpuQos;
+        run.qos = run.backend == "metal" || run.backend == "cuda" || run.backend == "cuda16" ? CpuQos::Default
+                                                                                             : e.machine.cpuQos;
         run.cancel = &stop;
         const double delay = probeDelay(e.spec.name());
         if (delay > 0) std::this_thread::sleep_for(std::chrono::duration<double>(delay));

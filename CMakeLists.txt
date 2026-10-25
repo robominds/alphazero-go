@@ -89,9 +89,15 @@ endif()
 # CUDA sources src/cuda/*.cu only with AZ_USE_CUDA.
 file(GLOB AZGO_CUDA_PORTABLE CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/*.cpp)
 list(APPEND AZGO_SOURCES ${AZGO_CUDA_PORTABLE})
+# The 16-bit backend (cuda16) lives in src/cuda/fp16, outside the cuda
+# backend's kernel hash (cmake/azgo_cuda.cmake), with the same split.
+file(GLOB AZGO_CUDA16_PORTABLE CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/fp16/*.cpp)
+list(APPEND AZGO_SOURCES ${AZGO_CUDA16_PORTABLE})
 if(AZ_USE_CUDA)
   file(GLOB AZGO_CUDA_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/*.cu)
   list(APPEND AZGO_SOURCES ${AZGO_CUDA_SOURCES})
+  file(GLOB AZGO_CUDA16_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/fp16/*.cu)
+  list(APPEND AZGO_SOURCES ${AZGO_CUDA16_SOURCES})
 endif()
 
 add_library(azgo STATIC ${AZGO_SOURCES})
@@ -184,6 +190,10 @@ set_tests_properties(test_metal PROPERTIES SKIP_RETURN_CODE 77)
 set_tests_properties(test_cuda PROPERTIES SKIP_RETURN_CODE 77)
 set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda.cpp PROPERTIES
                             COMPILE_OPTIONS -ffp-contract=off)
+# And for test_cuda16, the 16-bit backend's tests.
+set_tests_properties(test_cuda16 PROPERTIES SKIP_RETURN_CODE 77)
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda16.cpp PROPERTIES
+                            COMPILE_OPTIONS -ffp-contract=off)
 
 # ---- Apps ------------------------------------------------------------------
 
@@ -192,6 +202,15 @@ set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda.cpp PROP
 # than in include/azgo, so test_cli (created by the test glob above) needs
 # apps/ on its include path.
 target_include_directories(test_cli PRIVATE ${CMAKE_SOURCE_DIR}/apps)
+
+# The 16-bit backend's measurement tools (tools/cuda_bench): built on
+# request only (cmake --build <dir> --target cuda16_accuracy cuda16_match).
+if(AZ_USE_CUDA)
+  add_executable(cuda16_accuracy EXCLUDE_FROM_ALL tools/cuda_bench/accuracy.cpp)
+  target_link_libraries(cuda16_accuracy PRIVATE azgo)
+  add_executable(cuda16_match EXCLUDE_FROM_ALL tools/cuda_bench/match.cpp)
+  target_link_libraries(cuda16_match PRIVATE azgo)
+endif()
 
 add_executable(train apps/train.cpp)
 target_link_libraries(train PRIVATE azgo)
