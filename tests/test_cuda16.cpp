@@ -561,15 +561,10 @@ void test_network_presets_vs_double() {
     }
 }
 
-// What the inference hub rests on, for the whole network: a position's
-// logits, value and ownership are the same bits alone, in batches of 8, 144
-// and 256, at the first or the last slot, among random companions and with
-// the batch permuted.
-void test_network_batch_independent() {
-    const NetConfig cfg = netConfig(13, 6, 96, true, 64);
-    const Network net = randomNetwork(cfg, 602);
+void test_network_batch_independent_on(const NetConfig& cfg, uint64_t seed) {
+    const Network net = randomNetwork(cfg, seed);
     Cuda16Inference gpu(net, 256);
-    Rng rng(603);
+    Rng rng(seed + 1);
     const int full = 256;
     const size_t planeFloats = static_cast<size_t>(cfg.planes()) * cfg.area();
     const std::vector<float> pool = randomPositions(rng, cfg, full);
@@ -586,7 +581,7 @@ void test_network_batch_independent() {
         const size_t L = cfg.actions(), Ar = cfg.area();
         return bitwiseEqual(o.logits.data() + slot * L, a.logits.data(), L) &&
                bitwiseEqual(o.values.data() + slot, a.values.data(), 1) &&
-               bitwiseEqual(o.ownership.data() + slot * Ar, a.ownership.data(), Ar);
+               (!cfg.ownership || bitwiseEqual(o.ownership.data() + slot * Ar, a.ownership.data(), Ar));
     };
     std::vector<int> all(full);
     for (int i = 0; i < full; ++i) all[i] = i;
@@ -608,6 +603,16 @@ void test_network_batch_independent() {
             }
         }
     }
+}
+
+// What the inference hub rests on, for the whole network: a position's
+// logits, value and ownership are the same bits alone, in batches of 8, 144
+// and 256, at the first or the last slot, among random companions and with
+// the batch permuted. On 13x13 6x96 with the ownership head, and on the
+// live 19x19 run's shape (10x128, value_hidden 256, no ownership head).
+void test_network_batch_independent() {
+    test_network_batch_independent_on(netConfig(13, 6, 96, true, 64), 602);
+    test_network_batch_independent_on(netConfig(19, 10, 128, false, 256), 608);
 }
 
 void test_network_repeatable() {
