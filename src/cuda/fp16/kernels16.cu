@@ -49,7 +49,7 @@ namespace cuda16 {
 namespace {
 
 // The shared-memory ring of k steps. Two (40 KB a block with 128 channels)
-// let two blocks share an SM; three or four were 20-25% slower on the RTX
+// let two blocks share an SM; three or four were 26-27% slower on the RTX
 // 4070 Ti SUPER (docs/results/cuda16.txt).
 constexpr int kStages = 2;
 constexpr int kRowHalves = kStepK + 8;   // a staged row: 32 values and 8 of padding (80 bytes, no bank conflicts)

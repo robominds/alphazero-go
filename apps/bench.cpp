@@ -626,6 +626,7 @@ int main(int argc, char** argv) {
                     throw std::invalid_argument("--batches: '" + item + "' is not a batch in 1..4096");
                 batches.push_back(static_cast<int>(b));
             }
+            if (batches.empty()) throw std::invalid_argument("--batches is empty");
         }
 
         std::printf("%-6s %-17s %-8s %12s %14s\n", "size", "blocks x filters", "backend", "evals/s",

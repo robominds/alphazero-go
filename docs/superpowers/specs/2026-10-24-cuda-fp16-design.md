@@ -149,7 +149,7 @@ fragment one `ldmatrix`.
 - **Tiles.** A block of 256 threads (8 warps, 4 along pixels × 2 along
   channels) computes 128 pixels × BN channels, with two k steps of shared
   memory (40 KB at 128 channels, so two blocks share an SM; three or four
-  steps were 20–25% slower). BN = 16 · NI with NI ∈ {8, 6,
+  steps were 26–27% slower). BN = 16 · NI with NI ∈ {8, 6,
   4, 2} (128, 96, 64, 32 channels), chosen from `Cp` alone by a fixed rule
   (the largest that divides it). A warp computes 32 × 8·NI with
   `mma.sync.aligned.m16n8k16.row.col.f32.{f16,bf16}`.
