@@ -1122,8 +1122,15 @@ void test_runs(const std::string& backend) {
         RunDir d("note_" + backend);
         Config both = engineRunConfig(backend);
         applyOverride(both, "selfplay_engines=local/metal:1, local/coreml_gpu:1");
+        fs::create_directories(d.path);
+        {
+            std::ofstream out(d.file("hosts"));   // its own hosts file, never the machine's
+            out << "local\n";
+        }
+        TrainerOptions opts;
+        opts.hostsFile = d.file("hosts");
         std::ostringstream startup;
-        Trainer::startNew(both, d.str(), {}, &startup);
+        Trainer::startNew(both, d.str(), {}, &startup, opts);
         assert(contains(startup.str(), "note: local/metal and local/coreml_gpu share one GPU"));
     }
     std::printf("%s runs: independent of workers, batching and chaos; resumed byte for byte\n", backend.c_str());
