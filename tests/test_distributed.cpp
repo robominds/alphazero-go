@@ -32,6 +32,7 @@
 #include "azgo/checkpoint.hpp"
 #include "azgo/config.hpp"
 #include "azgo/coordinator.hpp"
+#include "azgo/coreml.hpp"
 #include "azgo/cuda.hpp"
 #include "azgo/cuda16.hpp"
 #include "azgo/engines.hpp"
@@ -73,13 +74,17 @@ static void test_build_id_shape() {
 // The CPU work of a run (training, bots) never runs on a GPU backend.
 static void test_cpu_backend_name() {
     assert(cpuBackendName("metal") == "blas" && cpuBackendName("cuda") == "blas");
+    assert(cpuBackendName("ane") == "blas" && cpuBackendName("coreml_gpu") == "blas");
+    for (const char* hub : {"metal", "cuda", "cuda16", "ane", "coreml_gpu"}) assert(hubBackend(hub));
+    for (const char* cpu : {"naive", "blas", "gpu", ""}) assert(!hubBackend(cpu));
     assert(cpuBackendName("naive") == "naive" && cpuBackendName("blas") == "blas");
 }
 
 static void test_build_options() {
     const std::string options = buildOptions();
-    if (metalBuilt()) assert(options == "metal");
+    if (metalBuilt()) assert(options == (coremlBuilt() ? "metal+coreml" : "metal"));
     else if (cudaBuilt()) assert(options == "cuda");
+    else if (coremlBuilt()) assert(options == "coreml");
     else if (blasAvailable()) assert(options == "blas");
     else assert(options == "naive");
 }
@@ -123,11 +128,16 @@ static void test_engine_list_parse_print() {
     assert(withCuda.size() == 3 && withCuda[1].machine == "pc" && withCuda[1].backend == "cuda" &&
            withCuda[1].weight == 60 && withCuda[1].name() == "pc/cuda");
     assert(printEngineList(withCuda) == "local/metal:40, pc/cuda:60, pc/blas=2");
-    assert(contains(parseError("pc/gpu:1"), "naive|blas|metal|cuda|cuda16"));
+    assert(contains(parseError("pc/gpu:1"), "naive|blas|metal|cuda|cuda16|ane|coreml_gpu"));
     // The 16-bit CUDA engine (azgo/cuda16.hpp): another name for the same machine.
     const std::vector<EngineSpec> with16 = parseEngineList("pc/cuda16:60, pc/blas=2");
     assert(with16.size() == 2 && with16[0].backend == "cuda16" && with16[0].name() == "pc/cuda16");
     assert(printEngineList(with16) == "pc/cuda16:60, pc/blas=2");
+    // The Core ML engines (a Core ML build on the Mac): names like any other.
+    const std::vector<EngineSpec> withCoreML = parseEngineList("local/ane:30, local/coreml_gpu:40, mini1/ane=5");
+    assert(withCoreML.size() == 3 && withCoreML[0].backend == "ane" && withCoreML[1].backend == "coreml_gpu" &&
+           withCoreML[2].name() == "mini1/ane" && withCoreML[2].games == 5);
+    assert(printEngineList(withCoreML) == "local/ane:30, local/coreml_gpu:40, mini1/ane=5");
     assert(printEngineList({}).empty());
     // A repeated engine is two items, each with its own slice.
     const std::vector<EngineSpec> twice = parseEngineList("local/naive:1,local/naive:1");
@@ -430,6 +440,15 @@ static void test_engine_workers() {
     assert(engineWorkers(pc, "cuda16", 100, 16) == 48 && engineWorkers(remote, "cuda16", 300, 16) == 256);
     assert(sliceWorkers("cuda16", 0, 296, 16) == 256 && sliceWorkers("cuda16", 9, 52, 16) == 9);
     assert(cpuBackendName("cuda16") == "blas");
+    // ane and coreml_gpu, as metal: their own keys, or every game at once.
+    const MachineSettings mac = parseHostsText("m exe=/a workdir=/w ane_workers=12 coreml_gpu_workers=40 metal_workers=7\n", "h")
+                                    .settings("m");
+    assert(mac.aneWorkers == 12 && mac.coremlGpuWorkers == 40);
+    assert(hostsWorkers(mac, "ane") == 12 && hostsWorkers(mac, "coreml_gpu") == 40 && hostsWorkers(mac, "metal") == 7);
+    assert(engineWorkers(mac, "ane", 100, 10) == 12 && engineWorkers(mac, "coreml_gpu", 100, 10) == 40);
+    assert(engineWorkers(mac, "ane", 5, 10) == 5);
+    assert(engineWorkers(remote, "ane", 300, 10) == 256 && engineWorkers(remote, "coreml_gpu", 52, 10) == 52);
+    assert(sliceWorkers("ane", 0, 296, 10) == 256 && sliceWorkers("coreml_gpu", 3, 52, 10) == 3);
     // What selfplay uses on a remote: --workers, else the remote rule.
     assert(sliceWorkers("blas", 0, 12, 10) == 2);
     assert(sliceWorkers("naive", 0, 12, 3) == 1);
@@ -462,7 +481,7 @@ static void test_fingerprint() {
     char host[256] = "";
     gethostname(host, sizeof host - 1);
     const std::string hostName = host;
-    for (const std::string backend : {"naive", "blas", "metal", "cuda", "cuda16"}) {
+    for (const std::string backend : {"naive", "blas", "metal", "cuda", "cuda16", "ane", "coreml_gpu"}) {
         bool available = true;
         std::string why;
         try {
@@ -500,7 +519,7 @@ static void test_fingerprint() {
         // The distribution (its C library and packages) and the kernel.
         assert(osPart.find("Linux ") != std::string::npos);
 #endif
-        const bool gpu = backend == "metal" || backend == "cuda" || backend == "cuda16";
+        const bool gpu = hubBackend(backend);
         const std::string head = gpu ? f.substr(0, osEnd) : f;
         assert(head.find(',') == std::string::npos);
         if (backend == "metal") {
@@ -509,6 +528,9 @@ static void test_fingerprint() {
             assert(osEnd != std::string::npos && f.substr(osEnd + 2) == cudaDescription());
         } else if (backend == "cuda16") {
             assert(osEnd != std::string::npos && f.substr(osEnd + 2) == cuda16Description());
+        } else if (coremlBackend(backend)) {
+            assert(osEnd != std::string::npos && f.substr(osEnd + 2) == coremlDescription(backend));
+            assert(f.find("; ", osEnd + 2) == std::string::npos);   // no separator inside it
         } else if (backend == "blas" && !blasDescription().empty()) {
             // A BLAS the OS version does not pin (OpenBLAS): its own build,
             // tidied as every part is (no separators, no outer blanks).

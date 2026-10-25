@@ -255,6 +255,12 @@ static void test_dynamic_workers() {
     assert(dynamicWorkers(remote, "cuda16", 256, 400, 18) == 128);   // cuda_workers sets both
     assert(dynamicWorkers(remote, "blas", 1, 400, 18) == 6);
     assert(dynamicWorkers(local, "metal", 104, 20, 18) == 20);
+    // The Core ML engines as the GPU ones: a quarter of the share, or their keys.
+    assert(dynamicWorkers(local, "ane", 104, 400, 18) == 26 && dynamicWorkers(remote, "coreml_gpu", 20, 400, 18) == 5);
+    local.aneWorkers = 12;
+    remote.coremlGpuWorkers = 40;
+    assert(dynamicWorkers(local, "ane", 104, 400, 18) == 12 && dynamicWorkers(remote, "coreml_gpu", 20, 400, 18) == 40);
+    assert(dynamicWorkers(local, "coreml_gpu", 104, 400, 18) == 26);   // ane_workers is not its key
 }
 
 // ---- the simulation ---------------------------------------------------------

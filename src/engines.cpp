@@ -10,6 +10,7 @@
 #include <sys/utsname.h>
 #include "azgo/arena.hpp"
 #include "azgo/backend.hpp"
+#include "azgo/coreml.hpp"
 #include "azgo/cuda.hpp"
 #include "azgo/cuda16.hpp"
 #include "azgo/metal.hpp"
@@ -58,10 +59,9 @@ EngineSpec parseItem(const std::string& item) {
     if (!validAlias(e.machine))
         throw std::invalid_argument("bad machine alias '" + e.machine +
                                     "' (expected [a-z][a-z0-9_-]{0,31})");
-    if (e.backend != "naive" && e.backend != "blas" && e.backend != "metal" && e.backend != "cuda" &&
-        e.backend != "cuda16")
+    if (e.backend != "naive" && e.backend != "blas" && !hubBackend(e.backend))
         throw std::invalid_argument("unknown backend '" + e.backend +
-                                    "' (expected naive|blas|metal|cuda|cuda16)");
+                                    "' (expected naive|blas|metal|cuda|cuda16|ane|coreml_gpu)");
     if (item[sep] == ':') {
         const std::string reason = parseShare(number, 1, kMaxShare, e.weight);
         if (!reason.empty()) throw std::invalid_argument("weight: " + reason);
@@ -207,6 +207,8 @@ std::string applyHostsKey(MachineSettings& m, const std::string& key, const std:
     }
     if (key == "metal_workers") return hostsInt(value, 0, kMaxArenaWorkers, m.metalWorkers);
     if (key == "cuda_workers") return hostsInt(value, 0, kMaxArenaWorkers, m.cudaWorkers);
+    if (key == "ane_workers") return hostsInt(value, 0, kMaxArenaWorkers, m.aneWorkers);
+    if (key == "coreml_gpu_workers") return hostsInt(value, 0, kMaxArenaWorkers, m.coremlGpuWorkers);
     if (key == "cpu_workers") return hostsInt(value, 0, 256, m.cpuWorkers);
     if (key == "inference_batch") return hostsInt(value, 0, 1024, m.inferenceBatch);
     if (key == "nice") return hostsInt(value, 0, 19, m.nice);
@@ -230,9 +232,9 @@ std::string applyHostsKey(MachineSettings& m, const std::string& key, const std:
     return "?";   // unknown keys are refused before this is called
 }
 
-const char* const kHostsKeys[] = {"ssh",          "exe",         "workdir",         "metal_workers",
-                                  "cuda_workers", "cpu_workers", "inference_batch", "cpu_qos",
-                                  "nice",         "timeout"};
+const char* const kHostsKeys[] = {"ssh",          "exe",         "workdir",            "metal_workers",
+                                  "cuda_workers", "ane_workers", "coreml_gpu_workers", "cpu_workers",
+                                  "inference_batch", "cpu_qos",  "nice",               "timeout"};
 
 } // namespace
 
@@ -331,13 +333,20 @@ std::string resolveHostsPath(const std::string& cli) {
     return "";
 }
 
+int hostsWorkers(const MachineSettings& machine, const std::string& backend) {
+    if (backend == "metal") return machine.metalWorkers;
+    if (backend == "cuda" || backend == "cuda16") return machine.cudaWorkers;   // one GPU, one setting
+    if (backend == "ane") return machine.aneWorkers;
+    if (backend == "coreml_gpu") return machine.coremlGpuWorkers;
+    return machine.cpuWorkers;
+}
+
 int engineWorkers(const MachineSettings& machine, const std::string& backend, int sliceGames,
                   int cores) {
     int workers;
-    if (backend == "metal") {
-        workers = machine.metalWorkers > 0 ? machine.metalWorkers : kMaxArenaWorkers;
-    } else if (backend == "cuda" || backend == "cuda16") {   // one GPU, one setting
-        workers = machine.cudaWorkers > 0 ? machine.cudaWorkers : kMaxArenaWorkers;
+    if (hubBackend(backend)) {
+        const int set = hostsWorkers(machine, backend);
+        workers = set > 0 ? set : kMaxArenaWorkers;
     } else if (machine.cpuWorkers > 0) {
         workers = machine.cpuWorkers;
     } else {
@@ -353,11 +362,8 @@ int engineWorkers(const MachineSettings& machine, const std::string& backend, in
 
 int dynamicWorkers(const MachineSettings& machine, const std::string& backend, int share, int games,
                    int cores) {
-    const bool gpu = backend == "metal" || backend == "cuda" || backend == "cuda16";
-    const int set = backend == "metal" ? machine.metalWorkers
-                    : backend == "cuda" || backend == "cuda16" ? machine.cudaWorkers
-                                        : machine.cpuWorkers;
-    if (!gpu || set > 0) return engineWorkers(machine, backend, games, cores);
+    if (!hubBackend(backend) || hostsWorkers(machine, backend) > 0)
+        return engineWorkers(machine, backend, games, cores);
     // A quarter of the share: enough games in flight to fill the GPU
     // (Apple GPUs fill with a few games, the CUDA hub with 64-128), few
     // enough that the engine plays about four rolling waves, so the queue
@@ -473,6 +479,7 @@ std::string engineFingerprint(const std::string& backend) {
     if (backend == "metal") f += "; " + metalDescription();
     if (backend == "cuda") f += "; " + cudaDescription();
     if (backend == "cuda16") f += "; " + cuda16Description();
+    if (coremlBackend(backend)) f += "; " + coremlDescription(backend);
     if (backend == "blas" && !blasDescription().empty()) f += "; " + tidy(blasDescription());
     return f;
 }

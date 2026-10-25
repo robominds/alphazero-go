@@ -18,7 +18,7 @@
 // workers alone. That is the number engine weights need, since a CPU engine
 // beside a busy hub is not the CPU engine alone.
 //
-//   bench [--sizes 5,9,19] [--backend naive|blas|metal|cuda|all] [--seconds 2] [--configs configs]
+//   bench [--sizes 5,9,19] [--backend naive|blas|metal|cuda|ane|coreml_gpu|all] [--seconds 2] [--configs configs]
 //         [--train-threads 1,2,4,8] [--train-batch 256] [--hub-workers 18,36,72]
 //   bench --mixed [--sizes 19] [--hub-backend metal|cuda] [--hub-workers N] [--cpu-workers 0,2,4,6,8,12]
 //         [--qos default|utility] [--seconds 10] [--net CKPT]
@@ -41,6 +41,7 @@
 #include "azgo/backend.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/config.hpp"
+#include "azgo/coreml.hpp"
 #include "azgo/cuda.hpp"
 #include "azgo/cuda16.hpp"
 #include "azgo/game.hpp"
@@ -56,7 +57,7 @@
 namespace {
 
 const char* const kUsage =
-    "usage: bench [--sizes 5,9,19] [--backend naive|blas|metal|cuda|cuda16|all] [--seconds 2] [--configs DIR]\n"
+    "usage: bench [--sizes 5,9,19] [--backend naive|blas|metal|cuda|cuda16|ane|coreml_gpu|all] [--seconds 2] [--configs DIR]\n"
     "             [--train-threads 1,2,4,8] [--train-batch 256] [--hub-workers 18,36,72]\n"
     "             [--batches 8,144,256]\n"
     "\n"
@@ -489,6 +490,26 @@ double measureInference(const azgo::NetConfig& nc, const std::string& backendNam
 #ifdef AZGO_BENCH_GPU
     if (gpuBackend(backendName)) return measureGpuSync(backendName, nc, kInferBatch, seconds);
 #endif
+#ifdef AZ_USE_COREML
+    // A Core ML engine (only with --backend ane or coreml_gpu): synchronous
+    // passes of kInferBatch, as the GPU rows; 0 when Core ML places the
+    // network off the engine's device (a small preset), which refuses it.
+    if (azgo::coremlBackend(backendName)) {
+        const azgo::Network net(nc, 1);
+        azgo::Rng rng(7);
+        const std::vector<float> input = randomInput(nc, kInferBatch, rng);
+        std::vector<float> logits(static_cast<size_t>(kInferBatch) * nc.actions()), values(kInferBatch);
+        try {
+            azgo::CoreMLInference engine(net, backendName, kInferBatch);
+            return kInferBatch * callsPerSecond(
+                                     [&] { engine.infer(input.data(), kInferBatch, logits.data(), values.data()); },
+                                     seconds);
+        } catch (const std::runtime_error& e) {
+            std::fprintf(stderr, "%s\n", e.what());
+            return 0;
+        }
+    }
+#endif
     std::unique_ptr<azgo::Backend> backend = azgo::makeBackend(backendName, 1);
     const azgo::Network net(nc, 1);
     azgo::Workspace ws(nc, kInferBatch, *backend);
@@ -646,8 +667,8 @@ int main(int argc, char** argv) {
                 char shape[32], size[16], step[32];
                 std::snprintf(shape, sizeof shape, "%d x %d", nc.blocks, nc.filters);
                 std::snprintf(size, sizeof size, "%dx%d", n, n);
-                // Training stays on the CPU with metal and cuda: no GPU step to time.
-                if (b == "metal" || b == "cuda" || b == "cuda16") std::snprintf(step, sizeof step, "-");
+                // Training stays on the CPU with the hub backends: no GPU step to time.
+                if (azgo::hubBackend(b)) std::snprintf(step, sizeof step, "-");
                 else std::snprintf(step, sizeof step, "%.1f", measureTrainStep(nc, b, kTrainBatch, 0, seconds));
                 std::printf("%-6s %-17s %-8s %12.0f %14s\n", size, shape, b.c_str(), evals, step);
                 std::fflush(stdout);
@@ -698,7 +719,7 @@ int main(int argc, char** argv) {
                         "threads", "train-step ms", "speedup");
             for (const azgo::NetConfig& nc : shapes) {
                 for (const std::string& b : backends) {
-                    if (b == "metal" || b == "cuda" || b == "cuda16") continue;   // training stays on the CPU
+                    if (azgo::hubBackend(b)) continue;   // training stays on the CPU
                     double first = 0;
                     for (int t : threadCounts) {
                         const double stepMs = measureTrainStep(nc, b, trainBatch, t, seconds);

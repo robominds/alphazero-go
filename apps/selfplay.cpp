@@ -5,7 +5,7 @@
 // job to a machine, runs this there, and downloads and verifies the result.
 // The job's first bytes say which kind it is. It needs no run directory.
 //
-//   selfplay --job JOB --out OUT --backend naive|blas|metal|cuda|cuda16 [--workers N] [--inference-batch N]
+//   selfplay --job JOB --out OUT --backend naive|blas|metal|cuda|cuda16|ane|coreml_gpu [--workers N] [--inference-batch N]
 //            [--exit-on-stdin-eof]
 //   selfplay --stream --job JOB --backend B [--workers N] [--inference-batch N]
 //   selfplay --version
@@ -43,7 +43,7 @@ namespace {
 
 const char* const kUsage =
     "usage:\n"
-    "  selfplay --job JOB --out OUT --backend naive|blas|metal|cuda|cuda16 [--workers N] [--inference-batch N]\n"
+    "  selfplay --job JOB --out OUT --backend naive|blas|metal|cuda|cuda16|ane|coreml_gpu [--workers N] [--inference-batch N]\n"
     "           [--exit-on-stdin-eof]\n"
     "  selfplay --stream --job JOB --backend B [--workers N] [--inference-batch N]\n"
     "  selfplay --version\n"
@@ -66,7 +66,8 @@ const char* const kUsage =
     "stops it at once.\n"
     "--version prints the build ID, short and full, and the strongest backend built.\n"
     "--fingerprint checks that backend B can run here and prints what determines its\n"
-    "arithmetic (backend, CPU, OS, and with metal, cuda or cuda16 the GPU and kernels).\n"
+    "arithmetic (backend, CPU, OS, and with metal, cuda or cuda16 the GPU and kernels,\n"
+    "with ane or coreml_gpu Core ML, the device and the model format).\n"
     "Exit status: 0 success, 1 error, 2 usage error.\n";
 
 int usageError(const std::string& message) {

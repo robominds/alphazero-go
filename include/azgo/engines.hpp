@@ -37,7 +37,7 @@ bool validAlias(const std::string& alias);
 // ignored. An empty or blank text is the empty list. Throws
 // std::invalid_argument("engine 2: ...") naming the item and the reason: an
 // empty item (so a trailing comma), a bad alias, a backend other than
-// naive, blas or metal, or a bad number.
+// naive, blas, metal, cuda, ane or coreml_gpu, or a bad number.
 std::vector<EngineSpec> parseEngineList(const std::string& text);
 // The canonical form: items joined by ", ", each machine/backend:weight or
 // machine/backend=games. parseEngineList(printEngineList(x)) == x.
@@ -65,12 +65,14 @@ std::vector<Slice> assignGames(const std::vector<EngineSpec>& engines, int games
 // One machine's line of the hosts file. Remotes need exe and workdir; one
 // without ssh is run on this machine as a separate process (the subprocess
 // transport: tests, or a niced CPU engine). The numbers are 0 for "the
-// default": every game of the slice at once for metal_workers and
-// cuda_workers, the rule of engineWorkers for cpu_workers, the run's
+// default": every game of the slice at once for metal_workers,
+// cuda_workers, ane_workers and coreml_gpu_workers, the rule of
+// engineWorkers for cpu_workers, the run's
 // inference_batch, nice 0, no timeout. cpu_qos defaults to utility on local and default elsewhere.
 struct MachineSettings {
     std::string alias, ssh, exe, workdir;
-    int metalWorkers = 0, cudaWorkers = 0, cpuWorkers = 0, inferenceBatch = 0, nice = 0;
+    int metalWorkers = 0, cudaWorkers = 0, aneWorkers = 0, coremlGpuWorkers = 0, cpuWorkers = 0,
+        inferenceBatch = 0, nice = 0;
     CpuQos cpuQos = CpuQos::Default;
     double timeout = 0;   // seconds; 0 = none
     bool local() const { return alias == "local"; }
@@ -86,8 +88,9 @@ struct HostsFile {
 
 // Parses the hosts file's text: per line an alias, then key=value pairs
 // separated by whitespace; '#' starts a comment; blank lines are ignored.
-// Keys: ssh, exe, workdir, metal_workers, cuda_workers, cpu_workers, inference_batch,
-// cpu_qos (default|utility), nice, timeout. Refuses, with ConfigError
+// Keys: ssh, exe, workdir, metal_workers, cuda_workers, ane_workers,
+// coreml_gpu_workers, cpu_workers, inference_batch, cpu_qos
+// (default|utility), nice, timeout. Refuses, with ConfigError
 // "<source>:<line>: <reason>", a bad alias, an alias or key repeated, an
 // unknown key, a pair without '=', an empty value, one starting with '-'
 // or one with a character outside [A-Za-z0-9_./~@:+-], a bad number, ssh
@@ -102,8 +105,15 @@ HostsFile loadHostsFile(const std::string& path);
 // HOME is not set either).
 std::string resolveHostsPath(const std::string& cli);
 
+// The hosts file's worker count for `backend` on the machine:
+// metal_workers, cuda_workers (for cuda and cuda16), ane_workers or
+// coreml_gpu_workers for those backends, cpu_workers for naive and blas
+// (0: the default rule).
+int hostsWorkers(const MachineSettings& machine, const std::string& backend);
+
 // Worker threads for an engine on `machine` with a slice of sliceGames
-// games, on a machine with `cores` cores. cuda: cuda_workers, else as metal.
+// games, on a machine with `cores` cores. cuda, ane, coreml_gpu: their
+// hosts key (hostsWorkers), else as metal.
 // metal: metal_workers, or with 0
 // every game of the slice at once (at most kMaxArenaWorkers, 256): a waiting
 // worker costs only a stack, and a GPU engine with fewer workers than games
@@ -119,10 +129,10 @@ int engineWorkers(const MachineSettings& machine, const std::string& backend, in
                   int cores);
 // Dynamic allocation: the games an engine keeps in flight (its worker
 // threads, one game each) when its share of the generation (assignGames'
-// count for its item) is `share` of `games`. A positive metal_workers,
-// cuda_workers or cpu_workers of the machine, else: for metal and cuda a
-// quarter of the share, rounded up (at least 1, at most 256), for naive and
-// blas engineWorkers' CPU rule. Always at most `games`.
+// count for its item) is `share` of `games`. A positive hostsWorkers of
+// the machine for the backend, else: for the hub backends (metal, cuda,
+// ane, coreml_gpu) a quarter of the share, rounded up (at least 1, at most
+// 256), for naive and blas engineWorkers' CPU rule. Always at most `games`.
 int dynamicWorkers(const MachineSettings& machine, const std::string& backend, int share, int games,
                    int cores);
 // The selfplay app's worker threads on a machine with `cores` cores:
@@ -132,8 +142,11 @@ int dynamicWorkers(const MachineSettings& machine, const std::string& backend, i
 int sliceWorkers(const std::string& backend, int requested, int sliceGames, int cores);
 
 // What determines the arithmetic of `backend` on this machine, as one line:
-// the backend, the CPU model, the OS version and build, and with metal the
-// GPU, OS and shader hash of metalDescription(), e.g.
+// the backend, the CPU model, the OS version and build, with metal the
+// GPU, OS and shader hash of metalDescription(), with cuda
+// cudaDescription(), with ane and coreml_gpu coremlDescription() (Core ML's
+// version, the device, compute units, precision, batch sizes and model
+// format), e.g.
 //   metal; Apple M5 Max; macOS 27.0.1 (27A123); Apple M5 Max, macOS 27.0.1, shaders b7b31a09
 // On Linux the OS part is the distribution with the kernel, and blas adds
 // the OpenBLAS build (blasDescription()), which no OS version pins:

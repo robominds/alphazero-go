@@ -59,7 +59,7 @@ ArenaGameResult playArenaGame(Seat& a, Seat& b, const ArenaConfig& cfg, int n, u
 // several hubs share it, the others' passes keep it busy, and one pass in
 // flight per hub lets each pass take everything that waits: fewer, larger
 // passes (docs/results/bench.txt). Which positions share a pass changes no
-// result. cuda, the other GPU backend, works the same way. With naive and blas, each
+// result. cuda and the Core ML engines (ane, coreml_gpu) work the same way. With naive and blas, each
 // worker has one single-threaded backend and one workspace, sized for the
 // largest request, and a LocalEvaluator per network on that workspace: a
 // worker plays one game at a time and only the side to move searches, so it
@@ -71,7 +71,7 @@ public:
     RoundEvaluators(const std::vector<const Network*>& nets, const std::vector<int>& maxRequest,
                     const std::string& backend, int workers, int inferenceBatch) {
         if (nets.empty()) return;
-        if (backend == "metal" || backend == "cuda" || backend == "cuda16") {
+        if (hubBackend(backend)) {
             const int slots = nets.size() > 1 ? 1 : kInferenceSlots;
             for (size_t k = 0; k < nets.size(); ++k)
                 hubs_.push_back(std::make_unique<WorkerEvaluators>(*nets[k], backend, workers, maxRequest[k],
@@ -105,7 +105,7 @@ public:
     }
 
 private:
-    std::vector<std::unique_ptr<WorkerEvaluators>> hubs_;   // metal, cuda: one per network
+    std::vector<std::unique_ptr<WorkerEvaluators>> hubs_;   // hub backends: one per network
     std::vector<std::unique_ptr<Backend>> backends_;        // naive, blas: one per worker
     std::vector<std::unique_ptr<Workspace>> workspaces_;    // one per worker
     std::vector<std::vector<std::unique_ptr<LocalEvaluator>>> local_;   // [network][worker]
@@ -211,7 +211,7 @@ int arenaWorkers(int workers, const std::string& backendName, int games) {
     // With metal, every game of the wave at once: a worker waiting for the
     // GPU costs no CPU, and an arena game has only one search in flight, so
     // the games in flight are what fills the passes.
-    const bool gpu = backendName == "metal" || backendName == "cuda" || backendName == "cuda16";
+    const bool gpu = hubBackend(backendName);
     if (workers <= 0 && gpu) workers = kMaxArenaWorkers;
     return std::max(1, std::min(resolveWorkers(workers, gpu), games));
 }

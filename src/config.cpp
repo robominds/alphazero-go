@@ -187,6 +187,9 @@ const KeyEntry kKeys[] = {
          if (v == "cuda")
              return "cuda is an engine only, not a run's backend: use selfplay_engines or "
                     "arena_engines (e.g. selfplay_engines = local/metal:40, pc/cuda:60)";
+         if (v == "ane" || v == "coreml_gpu")
+             return v + " is an engine only, not a run's backend: use selfplay_engines or "
+                        "arena_engines (e.g. selfplay_engines = local/" + v + ":40, mini1/ane:20)";
          if (v != "naive" && v != "blas" && v != "metal")
              return "expected naive|blas|metal, got " + quoted(v);
          c.backend = v;

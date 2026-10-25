@@ -20,6 +20,7 @@
 #include "azgo/backend.hpp"
 #include "azgo/build_info.hpp"
 #include "azgo/checkpoint.hpp"
+#include "azgo/coreml.hpp"
 #include "azgo/cuda.hpp"
 #include "azgo/cuda16.hpp"
 #include "azgo/game_queue.hpp"
@@ -484,6 +485,22 @@ void Coordinator::preflight() {
     (void)cuda16Hubs;
     (void)cuda16Arena;
 #endif
+    // The Core ML engines: each backend's hubs on its own device (the
+    // Neural Engine, or the GPU through Core ML). The run's own backend is
+    // never one of them, so only the engines' hubs count.
+#ifdef AZ_USE_COREML
+    for (const char* backend : {"ane", "coreml_gpu"}) {
+        const int sp = hubs(cfg_.selfplayEngines, backend), arena = hubs(cfg_.arenaEngines, backend) * arenaWaveNetworks(cfg_);
+        std::vector<GpuHubs> together;
+        if (sp > 0) together.push_back({sp, kInferenceSlots, batch});
+        if (arena > 0) together.push_back({arena, 1, batch});
+        if (cfg_.pipeline) {
+            if (!together.empty()) checkCoreMLInferenceMemory(cfg_.netConfig(), backend, together);
+        } else {
+            for (const GpuHubs& g : together) checkCoreMLInferenceMemory(cfg_.netConfig(), backend, {g});
+        }
+    }
+#endif
     (void)checkTogether;
 
     // Remote machines: reachable, this build, and every engine's backend usable.
@@ -647,9 +664,7 @@ void Coordinator::attemptRemote(int attempt, const EngineSpec& e, const RemoteWo
                                          remoteResult, "--backend", e.backend,
                                          "--exit-on-stdin-eof"};
         // Worker counts the hosts file sets; otherwise the remote's own rule.
-        const int workers = e.backend == "metal"  ? m.metalWorkers
-                            : e.backend == "cuda" || e.backend == "cuda16" ? m.cudaWorkers
-                                                  : m.cpuWorkers;
+        const int workers = hostsWorkers(m, e.backend);
         if (workers > 0) args.insert(args.end(), {"--workers", std::to_string(workers)});
         if (m.inferenceBatch > 0)
             args.insert(args.end(), {"--inference-batch", std::to_string(m.inferenceBatch)});
@@ -780,7 +795,7 @@ void Coordinator::playRemote(int g, PhaseKind kind, PhaseSlice& slice, const std
     run.backend = backend;
     run.workers = engineWorkers(local, backend, slice.slice.count, resolveWorkers(0));
     run.inferenceBatch = local.inferenceBatch > 0 ? local.inferenceBatch : cfg_.inferenceBatch;
-    run.qos = backend == "metal" || backend == "cuda" || backend == "cuda16" ? CpuQos::Default : local.cpuQos;
+    run.qos = hubBackend(backend) ? CpuQos::Default : local.cpuQos;
     run.cancel = &stop;
     report.engine = fallback;
     report.fingerprint = engineFingerprint(backend);
@@ -821,10 +836,9 @@ std::vector<SliceReport> Coordinator::runSlices(int g, PhaseKind kind, std::vect
         runs[k].workers = engineWorkers(m, e.backend, slices[k].slice.count, cores);
         runs[k].inferenceBatch = m.inferenceBatch > 0 ? m.inferenceBatch : cfg_.inferenceBatch;
         // The GPU, which sets the pace, waits on a GPU engine's workers
-        // (metal, cuda): they keep the default class. CPU engines take the
-        // machine's.
-        runs[k].qos =
-            e.backend == "metal" || e.backend == "cuda" || e.backend == "cuda16" ? CpuQos::Default : m.cpuQos;
+        // (metal, cuda; the Neural Engine likewise): they keep the default
+        // class. CPU engines take the machine's.
+        runs[k].qos = hubBackend(e.backend) ? CpuQos::Default : m.cpuQos;
         reports[k].fingerprint = fingerprintOf(e);
         reports[k].build = shortBuildId();
     }
@@ -1098,8 +1112,7 @@ struct Coordinator::DynamicPhase {
         run.inferenceBatch = e.machine.inferenceBatch > 0 ? e.machine.inferenceBatch : c.cfg_.inferenceBatch;
         // The GPU, which sets the pace, waits on a GPU engine's workers: they
         // keep the default class. CPU engines take the machine's.
-        run.qos = run.backend == "metal" || run.backend == "cuda" || run.backend == "cuda16" ? CpuQos::Default
-                                                                                             : e.machine.cpuQos;
+        run.qos = hubBackend(run.backend) ? CpuQos::Default : e.machine.cpuQos;
         run.cancel = &stop;
         const double delay = probeDelay(e.spec.name());
         if (delay > 0) std::this_thread::sleep_for(std::chrono::duration<double>(delay));

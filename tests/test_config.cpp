@@ -620,6 +620,12 @@ static void test_metal_backend_and_inference_batch() {
     // (training, arena, validation) cannot be it.
     assert(contains(errorOf("backend = cuda"), "selfplay_engines"));
     assert(contains(errorOf("backend = cuda16"), "selfplay_engines"));   // the 16-bit engine likewise
+    // So are the Core ML engines (the Neural Engine, Core ML's GPU path).
+    assert(contains(errorOf("backend = ane"), "ane is an engine only") && contains(errorOf("backend = ane"), "selfplay_engines"));
+    assert(contains(errorOf("backend = coreml_gpu"), "coreml_gpu is an engine only"));
+    Config engines = parseConfigText("selfplay_engines = local/ane:30, mini1/ane:10, local/coreml_gpu:40\n"
+                                     "arena_engines = local/ane:1\n", "t.cfg");
+    assert(engines.selfplayEngines.size() == 3 && engines.arenaEngines[0].backend == "ane");
     Config d;
     assert(d.inferenceBatch == 256);
     // Printed after mcts_batch.

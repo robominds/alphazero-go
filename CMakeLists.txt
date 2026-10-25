@@ -12,6 +12,7 @@ endif()
 option(AZ_USE_METAL "GPU inference and training with Metal (macOS; implies AZ_USE_BLAS)" OFF)
 option(AZ_USE_BLAS "Use BLAS for gemm (Accelerate on macOS, OpenBLAS elsewhere)" OFF)
 option(AZ_USE_CUDA "GPU inference with CUDA (Linux, NVIDIA; implies AZ_USE_BLAS)" OFF)
+option(AZ_USE_COREML "Core ML engines ane and coreml_gpu (macOS 15+; implies AZ_USE_BLAS)" OFF)
 
 # Metal runs the network on the Apple GPU. The network work that stays on the
 # CPU with backend = metal (training, in Phase A) uses BLAS, which on macOS is
@@ -25,6 +26,24 @@ if(AZ_USE_METAL)
   endif()
   if(NOT AZ_USE_BLAS)
     message(STATUS "AZ_USE_METAL=ON turns AZ_USE_BLAS on (CPU work uses Accelerate)")
+    set(AZ_USE_BLAS ON)
+  endif()
+  enable_language(OBJCXX)
+  set(CMAKE_OBJCXX_STANDARD 17)
+  set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+  set(CMAKE_OBJCXX_EXTENSIONS OFF)
+endif()
+
+# Core ML runs the engines ane (the Neural Engine) and coreml_gpu (Core
+# ML's float16 GPU path) on a Mac. It is independent of Metal: a build may
+# have either or both. Like Metal it turns BLAS on for the CPU work, so the
+# binary also serves machine/blas.
+if(AZ_USE_COREML)
+  if(NOT APPLE)
+    message(FATAL_ERROR "AZ_USE_COREML=ON needs macOS (Core ML is Apple's)")
+  endif()
+  if(NOT AZ_USE_BLAS)
+    message(STATUS "AZ_USE_COREML=ON turns AZ_USE_BLAS on (CPU work uses Accelerate)")
     set(AZ_USE_BLAS ON)
   endif()
   enable_language(OBJCXX)
@@ -85,6 +104,15 @@ if(AZ_USE_METAL)
   file(GLOB AZGO_METAL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/*.mm)
   list(APPEND AZGO_SOURCES ${AZGO_METAL_SOURCES})
 endif()
+# The same for Core ML: src/coreml/*.cpp (the model writer and the
+# not-built answers) always, the Objective-C++ runtime only with
+# AZ_USE_COREML.
+file(GLOB AZGO_COREML_PORTABLE CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/coreml/*.cpp)
+list(APPEND AZGO_SOURCES ${AZGO_COREML_PORTABLE})
+if(AZ_USE_COREML)
+  file(GLOB AZGO_COREML_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/coreml/*.mm)
+  list(APPEND AZGO_SOURCES ${AZGO_COREML_SOURCES})
+endif()
 # The same for CUDA: src/cuda/*.cpp always (the not-built answers), the
 # CUDA sources src/cuda/*.cu only with AZ_USE_CUDA.
 file(GLOB AZGO_CUDA_PORTABLE CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/cuda/*.cpp)
@@ -143,6 +171,15 @@ if(AZ_USE_METAL)
   target_compile_definitions(azgo PUBLIC AZ_USE_METAL)
 endif()
 
+if(AZ_USE_COREML)
+  # -fobjc-arc for every Objective-C++ file (Metal's included, which sets
+  # it too: the flag given twice is harmless).
+  target_compile_options(azgo PRIVATE $<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>)
+  # Metal's headers only (the GPU device Core ML reports): no Metal link.
+  target_link_libraries(azgo PUBLIC "-framework CoreML" "-framework Foundation")
+  target_compile_definitions(azgo PUBLIC AZ_USE_COREML)
+endif()
+
 if(AZ_USE_CUDA)
   azgo_cuda_configure_target()
 endif()
@@ -188,6 +225,8 @@ set_tests_properties(test_metal PROPERTIES SKIP_RETURN_CODE 77)
 # The same for test_cuda where CUDA is not built or no usable GPU is present.
 # Its exact CPU references must not be contracted to fma by the compiler.
 set_tests_properties(test_cuda PROPERTIES SKIP_RETURN_CODE 77)
+# The same for test_coreml where Core ML is not built or has no usable device.
+set_tests_properties(test_coreml PROPERTIES SKIP_RETURN_CODE 77)
 set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cuda.cpp PROPERTIES
                             COMPILE_OPTIONS -ffp-contract=off)
 # And for test_cuda16, the 16-bit backend's tests.

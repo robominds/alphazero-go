@@ -1,5 +1,6 @@
 #include "azgo/build_info.hpp"
 #include "azgo/backend.hpp"
+#include "azgo/coreml.hpp"
 #include "azgo/cuda.hpp"
 #include "azgo/metal.hpp"
 // Generated at build time into the build directory: #define AZGO_BUILD_ID "...".
@@ -17,8 +18,10 @@ std::string shortBuildId() {
 }
 
 std::string buildOptions() {
-    if (metalBuilt()) return "metal";
+    const std::string coreml = coremlBuilt() ? "coreml" : "";
+    if (metalBuilt()) return coreml.empty() ? "metal" : "metal+" + coreml;
     if (cudaBuilt()) return "cuda";
+    if (!coreml.empty()) return coreml;
     if (blasAvailable()) return "blas";
     return "naive";
 }

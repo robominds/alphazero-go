@@ -82,12 +82,18 @@ std::string blasDescription();
 // "naive" or "blas". threads applies to naive only; BLAS is kept
 // single-threaded (our worker threads supply the parallelism).
 // Throws std::invalid_argument for an unknown name or unavailable BLAS, and
-// for "metal", "cuda" and "cuda16", which run whole forward passes on the GPU
-// (WorkerEvaluators, azgo/inference_hub.hpp), not one operation at a time.
+// for the hub backends (hubBackend), which run whole forward passes on a
+// GPU or the Neural Engine (WorkerEvaluators, azgo/inference_hub.hpp), not
+// one operation at a time.
 std::unique_ptr<Backend> makeBackend(const std::string& name, int threads = 1);
 
-// The backend for the work that stays on the CPU: "blas" for "metal", "cuda"
-// and "cuda16" (training, the bots, grow), any other name unchanged.
+// True for the backends that evaluate behind an inference hub: "metal",
+// "cuda", "cuda16" and the Core ML engines "ane" and "coreml_gpu" (azgo/coreml.hpp).
+// Their workers wait on a device, not the CPU.
+bool hubBackend(const std::string& name);
+
+// The backend for the work that stays on the CPU: "blas" for the hub
+// backends (training, the bots, grow), any other name unchanged.
 std::string cpuBackendName(const std::string& name);
 
 // Throws std::invalid_argument unless `name` can run in this build on this
@@ -95,10 +101,13 @@ std::string cpuBackendName(const std::string& name);
 // "backend 'metal' not available: rebuild with -DAZ_USE_METAL=ON (macOS
 // only)", "backend 'metal': no usable Metal GPU (<reason>)", "backend 'cuda'
 // not available: rebuild with -DAZ_USE_CUDA=ON (Linux, NVIDIA GPU)" or
-// "backend 'cuda': no usable CUDA GPU (<reason>)", and the same two for
-// "cuda16" (azgo/cuda16.hpp). For metal and cuda it
-// creates the GPU context (Metal compiles its shaders), so a run can refuse
-// before it writes anything.
+// "backend 'cuda': no usable CUDA GPU (<reason>)", the same two for "cuda16"
+// (azgo/cuda16.hpp), "backend 'ane' not available: rebuild with
+// -DAZ_USE_COREML=ON (macOS only)" or "backend 'ane': Core ML cannot run it
+// here (<reason>)" (coreml_gpu likewise). For metal and cuda it creates the
+// GPU context (Metal compiles its shaders), for ane and coreml_gpu it runs
+// Core ML's probe (coremlAvailable), so a run can refuse before it writes
+// anything.
 void checkBackendAvailable(const std::string& name);
 
 // How a convolution's gemms are spread over a ThreadPool. The forward

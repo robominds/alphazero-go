@@ -1,4 +1,5 @@
 #include "azgo/backend.hpp"
+#include "azgo/coreml.hpp"
 #include "azgo/cuda.hpp"
 #include "azgo/cuda16.hpp"
 #include "azgo/metal.hpp"
@@ -290,16 +291,30 @@ std::unique_ptr<Backend> makeBackend(const std::string& name, int threads) {
         throw std::invalid_argument("backend 'blas' not available: rebuild with -DAZ_USE_BLAS=ON");
 #endif
     }
-    if (name == "metal" || name == "cuda" || name == "cuda16")
+    if (hubBackend(name))
         throw std::invalid_argument("backend '" + name + "' is not a per-operation backend; use WorkerEvaluators");
-    throw std::invalid_argument("unknown backend '" + name + "' (expected naive, blas, metal, cuda or cuda16)");
+    throw std::invalid_argument("unknown backend '" + name +
+                                "' (expected naive, blas, metal, cuda, cuda16, ane or coreml_gpu)");
+}
+
+bool hubBackend(const std::string& name) {
+    return name == "metal" || name == "cuda" || name == "cuda16" || coremlBackend(name);
 }
 
 std::string cpuBackendName(const std::string& name) {
-    return name == "metal" || name == "cuda" || name == "cuda16" ? "blas" : name;
+    return hubBackend(name) ? "blas" : name;
 }
 
 void checkBackendAvailable(const std::string& name) {
+    if (coremlBackend(name)) {
+        std::string why;
+        if (!coremlBuilt())
+            throw std::invalid_argument("backend '" + name +
+                                        "' not available: rebuild with -DAZ_USE_COREML=ON (macOS only)");
+        if (!coremlAvailable(name, &why))
+            throw std::invalid_argument("backend '" + name + "': Core ML cannot run it here (" + why + ")");
+        return;
+    }
     if (name == "cuda16") {   // the 16-bit CUDA backend (azgo/cuda16.hpp)
         std::string why;
         if (!cudaBuilt())

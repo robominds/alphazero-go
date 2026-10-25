@@ -14,6 +14,7 @@
 #include <cstring>
 #include <stdexcept>
 
+#include "azgo/coreml.hpp"
 #include "azgo/cuda.hpp"
 #include "azgo/cuda16.hpp"
 #include "azgo/metal.hpp"
@@ -298,6 +299,22 @@ WorkerEvaluators::WorkerEvaluators(const Network& net, const std::string& backen
         (void)slots;
         throw std::invalid_argument(
             "backend 'cuda16' not available: rebuild with -DAZ_USE_CUDA=ON (Linux, NVIDIA GPU)");
+#endif
+        return;
+    }
+    if (coremlBackend(backend)) {
+#ifdef AZ_USE_COREML
+        InferenceHubOptions options;
+        options.maxBatch = inferenceBatch;
+        options.chaosSeed = coreml_probe::hubChaosSeed();   // a test hook; 0 in every run
+        hub_ = std::make_unique<InferenceHub>(makeCoreMLRunner(net, backend, inferenceBatch, slots), net.config(),
+                                              options);
+        for (int w = 0; w < workers; ++w) evaluators_.push_back(hub_->makeEvaluator(maxRequest));
+#else
+        (void)inferenceBatch;
+        (void)slots;
+        throw std::invalid_argument("backend '" + backend +
+                                    "' not available: rebuild with -DAZ_USE_COREML=ON (macOS only)");
 #endif
         return;
     }

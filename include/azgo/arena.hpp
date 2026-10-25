@@ -169,7 +169,8 @@ std::vector<ArenaGameRange> waveSlice(const std::vector<ArenaMatchSpec>& wave, i
 // The worker threads for `games` arena games, never more than games: an
 // explicit count (> 0) as given; otherwise, with metal, every game at once
 // (up to kMaxArenaWorkers), and with naive and blas resolveWorkers(0), one
-// per core. cuda, the other GPU backend, as metal. Results do not depend on it.
+// per core. cuda and the Core ML engines (ane, coreml_gpu) as metal. Results
+// do not depend on it.
 constexpr int kMaxArenaWorkers = 256;   // the most the workers key allows
 int arenaWorkers(int workers, const std::string& backendName, int games);
 
