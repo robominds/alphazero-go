@@ -75,15 +75,33 @@ build for another architecture refuses to run, with the setting to use
 **Extending to the GPU**). Neither `cuda` nor `cuda16` is ever a run's own
 `backend`: training, the arena and the tools stay on the CPU or Metal.
 
-Each build has 38 component tests plus an integration smoke test and a
-check of the build ID script (40 in ctest; `ctest -N | tail -1` prints
-`Total Tests: 40`). The GPU tests,
+On a Mac with macOS 15 or later, the network can also be evaluated in
+16-bit floating point by Core ML, on the Neural Engine or the GPU, as the
+self-play and arena engines `ane` and `coreml_gpu` (**The Core ML
+engines**, below). That build turns BLAS on too, and is usually combined
+with Metal:
+
+```bash
+cmake -S . -B build-metal-coreml -DCMAKE_BUILD_TYPE=Release -DAZ_USE_METAL=ON -DAZ_USE_COREML=ON
+cmake --build build-metal-coreml -j
+ctest --test-dir build-metal-coreml --output-on-failure
+```
+
+It too needs only the Command Line Tools: the program writes the Core ML
+model itself and macOS compiles it at run time, with no Python and no
+converter.
+
+Each build has 39 component tests plus an integration smoke test and a
+check of the build ID script (41 in ctest; `ctest -N | tail -1` prints
+`Total Tests: 41`). The GPU tests,
 `test_metal`, run only in a build configured with `-DAZ_USE_METAL=ON` on a
-Mac with a usable GPU, and `test_cuda` and `test_cuda16` only in one
+Mac with a usable GPU, `test_cuda` and `test_cuda16` only in one
 configured with `-DAZ_USE_CUDA=ON` on Linux with an NVIDIA GPU (sm_80 or
-newer for `test_cuda16`); elsewhere ctest reports them as Skipped
-(`test_cuda` fails instead when a GPU is present but the build's
-architecture is not its). The smoke test checks `backend = metal`
+newer for `test_cuda16`), and `test_coreml`'s device checks only in one
+configured with `-DAZ_USE_COREML=ON` on a Mac whose Neural Engine or GPU
+Core ML can use (its model-writer checks run in every build); elsewhere
+ctest reports them as Skipped (`test_cuda` fails instead when a GPU is
+present but the build's architecture is not its). The smoke test checks `backend = metal`
 end to end in a Metal build and its refusal in the others, and a cuda
 engine likewise in a CUDA build. It also runs `tools/gtp_match.py`, so it needs `python3` on
 the path.
@@ -389,9 +407,11 @@ pc     ssh=<user>@<address> exe=<repo>/build-cuda/selfplay workdir=<repo-work> c
 with, for example, `selfplay_engines = local/metal:74, mini1/metal:13,
 mini2/metal:13, pc/cuda:150, pc/blas=4`: `pc` is a Linux machine whose
 one binary serves both its GPU (`pc/cuda`) and its CPU (`pc/blas`). Other
-keys are `metal_workers` and `cuda_workers` (0, the default: every game of
-the slice at once, which a GPU engine needs to fill its passes; it also
-sets the 16-bit engine `pc/cuda16`'s workers, on the same GPU),
+keys are `metal_workers`, `cuda_workers`, `ane_workers` and
+`coreml_gpu_workers` (0, the default: every game of
+the slice at once, which a GPU engine needs to fill its passes;
+`cuda_workers` also sets the 16-bit engine `pc/cuda16`'s workers, on the
+same GPU),
 `inference_batch`, `nice` and `timeout`; they apply to a machine's arena
 slices as well as its self-play slices. A CPU engine uses
 `min(4, cores / 3)` workers on `local` and 2 on a remote by default,
@@ -498,10 +518,11 @@ with `selfplay_engines` set. It is tunable on resume, and a change prints
 **What the weights mean.** The list's weights and counts still go through
 `assignGames`, but in dynamic mode an engine's share no longer fixes which
 games it plays; it sets only its default concurrency. For a GPU engine
-(`metal`, `cuda`) that is a quarter of its share, rounded up, at most
+(`metal`, `cuda`, `ane`, `coreml_gpu`) that is a quarter of its share, rounded up, at most
 256: enough games to keep its passes full, few enough that it plays
 several rolling waves, so the queue can still move games between engines.
-A positive `metal_workers`, `cuda_workers` or `cpu_workers` in the hosts
+A positive `metal_workers`, `cuda_workers`, `ane_workers`,
+`coreml_gpu_workers` or `cpu_workers` in the hosts
 file overrides it for that machine. A CPU engine keeps the worker rule
 above (`min(4, cores / 3)` on `local`, 2 on a remote). Since the queue
 balances the engines, wrong weights cost little; `tools/engine_weights.py`
@@ -589,6 +610,159 @@ Generations before the switch are untouched; the next one is the first
 dynamic one, and `--set selfplay_allocation=static` switches back the same
 way. The arena stays static: `arena_engines` keeps its fixed slices,
 since a wave is a small share of a generation's time.
+
+### The Core ML engines (16-bit, Neural Engine and GPU)
+
+A Mac has two more processors that can evaluate the network: the Apple
+Neural Engine and, through Core ML's float16 path, its GPU. The engines
+`ane` and `coreml_gpu` use them
+([design](docs/superpowers/specs/2026-10-24-coreml-engines-design.md)).
+They are engines only, like `cuda`: they appear in `selfplay_engines` and
+`arena_engines`, statically or dynamically allocated, locally or on a
+remote Mac, never as a run's `backend`. Training, the validation loss and
+the outside ratings stay 32-bit, and the Macs' CPUs keep `blas`: Core ML's
+CPU path was slower and less accurate.
+
+```
+selfplay_engines = local/ane:21, local/coreml_gpu:32, mini1/ane:13, mini2/ane:13, pc/cuda:20
+```
+
+**How it works.** The program writes the Core ML model itself: the
+network becomes an ML Program (Core ML's typed operation graph), every
+batch norm folded into the convolution before it and the weights rounded
+to float16. It writes the protobuf by hand, so the project needs no Python,
+coremltools or protobuf library (`src/coreml/model_writer.cpp`). Each Mac
+compiles and loads the models of the network it receives, once per process,
+for a few fixed batch sizes: flexible shapes would run on the CPU.
+
+- `ane` compiles batches 8, 32 and 128 and splits a pass into chunks of
+  them.
+- `coreml_gpu` compiles 64 only, for the contract below.
+
+The first load of each shape asks Core ML's compute plan where every
+operation runs and refuses the network unless all are on the engine's
+device. Core ML keeps very small networks (a 5×5 test net, say) on the
+CPU; every preset from 9×9 6×64 up runs entirely on the device.
+
+**What stays exact.** The outputs are reproducible given the engine
+fingerprint, which names the backend, the chip, the OS build, Core ML's
+version, the compute units, the batch sizes and a hash of the model format:
+
+```
+ane; Apple M5 Max; macOS 27.0.1 (26A434); Core ML 3600.25.2, Neural Engine 16 cores, cpuAndNeuralEngine, float16, batches 8/32/128, model ecc217a1
+```
+
+A position's outputs do not depend on the positions it shares a pass
+with, its row, the chunking, the workers or the hub's timing. This is
+Core ML's observed behaviour, not this program's construction, so
+`test_coreml` checks it on every device it runs on: alone, among random
+companions, at every row, permuted, through each compiled size, and
+through the hub under chaos. It held on the M5 Max and on an M4. Every
+process also checks it when a network shape first loads (fixed positions
+alone and together, through every compiled size) and refuses the engine
+on a mismatch, so a Mac where it fails cannot play. Core ML's
+GPU gives different bits at different batch sizes, which is why
+`coreml_gpu` uses one: a pass of 8 then costs a pass of 64, and batch 64
+runs at about 90% of batch 256's speed. So the determinism contract holds
+as for `metal`: the same files for any workers, `inference_batch` or
+chaos, and a byte-identical resume (`test_coreml` runs whole runs both
+ways). Results differ across chips and OS builds, as the fingerprint says,
+and the manifests record it per slice.
+
+**Tolerance.** Against the network in double precision the Core ML
+engines are a second, float16 tier: the logits within 5e-3 of the largest
+logit's magnitude, the value within 3e-2, the softmax within 1e-2 in
+total variation, and the same best move wherever the reference's two best
+moves differ by 0.05 or more. Measured worst on real 13×13 and 19×19
+checkpoints: `ane` 2.5e-3 on the logits and 1.6e-2 on the value,
+`coreml_gpu` 1.8e-3 and 3.3e-3; the 32-bit engines stay within 1e-5. The
+Neural Engine's values are also biased slightly upward, by 1.6e-3 on
+average, where the GPU's are not; the bias is already in the value
+convolution's float16 output.
+
+**Speed.** Real self-play on 19×19 10×128 at 800 simulations, evaluations
+per second:
+
+| machine | metal | ane | coreml_gpu | ane + coreml_gpu |
+|---|---|---|---|---|
+| Studio (M5 Max) | 1,450 | 7,130 (16 workers) | 11,700 (64) / 13,100 (128) | 7,135 + 10,750 |
+| mini (M4) | 260 | 4,430 (8) | ≈1,060 (alone, study) | 4,490 + 520 (beside metal) |
+
+The CPU is not the limit: search costs about 70 µs of one core per
+evaluation, the Neural Engine is full with 4 workers, and the Studio's
+pair of engines uses about one core. Core ML's GPU path must replace
+`metal` on a Mac rather than join it: with both on one GPU, Metal's long
+command buffers starve Core ML's (250 evals/s instead of 11,700), and
+`train` prints a note when a machine's engines include both. The Neural
+Engine works beside either. The hosts file's `ane_workers` and
+`coreml_gpu_workers` set the games in flight (0: every game of a slice,
+or a quarter of the share in dynamic mode), as `metal_workers` does.
+
+**Strength.** The 13×13 generation-100 network (6×96) played itself at
+800 simulations, one side's evaluations on a Core ML engine and the
+other's on the 32-bit Metal engine, colours alternating, games seeded
+by index, eight opening plies sampled, random symmetry on both sides
+(the scratch harness of the design's evidence):
+
+| side A | games | A's score | 95% interval | Elo |
+|---|---|---|---|---|
+| ane vs metal | 636 | 49.4% | 45.5–53.3% | −4 (−31 to +23) |
+| coreml_gpu vs metal | 300 | 55.0% | 49.3–60.5% | +35 (−5 to +74) |
+| ane vs ane (control) | 249 | 53.0% | 46.8–59.1% | +21 (−22 to +64) |
+
+No loss of strength shows at this resolution: both intervals contain
+50%, and the 16-bit side scored at least 45.5% in each.
+
+**Building the remotes.** `tools/cluster_sync.sh` adds Core ML when the
+build directory's name has the word `coreml` (`build-metal-coreml`:
+Metal and Core ML; `build-coreml`: Core ML alone). `build-metal` stays
+Metal only, so a Mac switches to Core ML when its `exe` points at a
+`build-metal-coreml` directory.
+
+**Switching a running run to the Core ML engines** (the live 19×19 run's
+steps, with the Studio, two minis and the PC; `...` stands for each
+line's other keys):
+
+1. Build the coordinator from the merged commit with Metal and Core ML,
+   e.g. `build-metal-coreml`, run its `ctest`, and copy `train` and
+   `selfplay` where the run's binary lives.
+2. Stop the run after a commit: `tools/stop_after_generation.sh RUN_DIR PID`.
+   Only now change the minis' builds: a sync replaces their trees, and a
+   running slice would lose its binary.
+3. In the hosts file, point the minis at the Core ML build and set the
+   games in flight:
+
+   ```
+   local  ane_workers=16 coreml_gpu_workers=64
+   mini1  ssh=<user>@<address> exe=~/azgo-cluster/build-metal-coreml/selfplay ... ane_workers=8
+   mini2  ssh=<user>@<address> exe=~/azgo-cluster/build-metal-coreml/selfplay ... ane_workers=8
+   pc     ssh=<user>@<address> ... cuda_workers=128
+   ```
+
+4. `tools/cluster_sync.sh` (the PC's `build-cuda` is rebuilt with Core ML
+   off, as before), then `selfplay --fingerprint --backend ane` on a mini
+   to see its Neural Engine come up.
+5. Resume with the new binary, Metal replaced on every Mac:
+
+   ```
+   train --run RUN_DIR --resume \
+     --set "selfplay_engines=local/ane:21, local/coreml_gpu:32, mini1/ane:13, mini2/ane:13, pc/cuda:20" \
+     --set "arena_engines=local/ane:21, local/coreml_gpu:32, mini1/ane:13, mini2/ane:13, pc/cuda:20"
+   ```
+
+   The run's `backend = metal` stays: the validation loss keeps the
+   32-bit Metal pass, which runs between phases, never beside self-play.
+   Each engine's first slice prints a fingerprint-changed note, and the
+   manifests record the new engines.
+
+The weights follow the rates measured above. In dynamic mode they only
+set the default concurrency, which the hosts file's keys override. Expect
+about 33,000 evaluations per second across the cluster instead of 8,700:
+a 19×19 generation's self-play in a little over an hour instead of about
+four and a half. With the PC on `pc/cuda16` as well (its hub reaches
+27,500 per second, **Extending to the GPU**), up to about 54,000: replace
+`pc/cuda:20` by `pc/cuda16:80` in both lists, the weight in proportion to
+its rate.
 
 ### Pipelined generations
 
@@ -1879,6 +2053,12 @@ playing itself with one side on each engine scored 54.5% ± 5.8% for
 `cuda16` over 288 games at 800 simulations. It is the same contract with a
 looser tolerance, so it gets its own fingerprint (`fp16 kernels …`), and
 `cuda` stays as it was.
+
+A Mac's Neural Engine and Core ML's float16 GPU path are the engines `ane`
+and `coreml_gpu` (**The Core ML engines**, above). Unlike the hand-written
+kernels, they trade the 32-bit contract for a second, float16 tier of
+tolerance, and in exchange run the 19×19 network 5–9× faster than `metal`
+on the Studio and 17× faster on a mini.
 
 ## Authorship
 

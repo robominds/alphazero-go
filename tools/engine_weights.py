@@ -12,9 +12,8 @@ of G games (default: the run's games_per_generation) is proportional to
 its rate.
 
 The suggestion follows the spec's sizing rules. GPU engines (metal, cuda,
-cuda16, and the Core ML engines ane and coreml_gpu) play every game of their slice
-at once and get weights proportional to their
-rates; CPU engines (naive, blas) play in waves of their worker count and
+cuda16, and the Core ML engines ane and coreml_gpu) play every game of
+their slice at once and get weights proportional to their rates; CPU engines (naive, blas) play in waves of their worker count and
 get fixed counts rounded to a multiple of it (the workers come from the
 hosts file's cpu_workers, else the default rule: min(4, cores / 3) on
 local, 2 on a remote). Without a GPU engine the fastest engine takes the
