@@ -42,4 +42,22 @@ Options: `--seconds S` is the minimum time per measurement (default 0.5).
 
 The results and their analysis are in `docs/results/cuda-bench.txt`.
 
+## The 16-bit backend (cuda16)
+
+Three more programs measure `backend = cuda16`
+(`docs/superpowers/specs/2026-10-24-cuda-fp16-design.md`); their results
+are in `docs/results/cuda16.txt`.
+
+| program | what it measures |
+|---|---|
+| `half_bench.cu` | The tensor-core convolution of `src/cuda/fp16/kernels16.cu`, compiled in as it is, beside the `cuda` backend's fp32 fused kernel: ms and TFLOP/s per trunk convolution for fp16 and bf16 at batches 8 to 256 (`speed`), its error against double on its own 16-bit operands (`accuracy`), and bitwise batch independence and tile agreement (`det`). Built by `build.sh`. |
+| `accuracy.cpp` | A checkpoint on real positions (the run's SGF games): double precision, blas, cuda and cuda16 with fp16 and bf16; logits, policy (argmax, KL) and value against double and against the fp32 CPU. |
+| `match.cpp` | One network against itself, one side on cuda16 and the other on cuda (or blas), colours alternating, with the arena's search; the score with a 95% interval. |
+
+The last two link the library; in a CUDA build tree:
+
+    cmake --build build-cuda --target cuda16_accuracy cuda16_match
+    build-cuda/cuda16_accuracy --checkpoint gen_0100.azn --sgf-dir RUN/sgf --every 3 --max 1024
+    build-cuda/cuda16_match --checkpoint gen_0100.azn --games 400 --simulations 800 --workers 48
+
 Mark Castelluccio, with assistance from Claude (Anthropic).

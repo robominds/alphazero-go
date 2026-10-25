@@ -70,18 +70,20 @@ It builds machine code for one GPU architecture only, `AZ_CUDA_ARCHITECTURES`
 (default `89-real`, the RTX 40 series), and no PTX, so a driver never
 recompiles the kernels (`src/cuda/kernels.cu`) and changes their bits. A
 build for another architecture refuses to run, with the setting to use
-(e.g. `-DAZ_CUDA_ARCHITECTURES=86-real` for an RTX 30). `cuda` is never a
-run's own `backend`: training, the arena and the tools stay on the CPU or
-Metal.
+(e.g. `-DAZ_CUDA_ARCHITECTURES=86-real` for an RTX 30). The same build has
+`cuda16`, the 16-bit engine on the tensor cores (sm_80 or newer; see
+**Extending to the GPU**). Neither `cuda` nor `cuda16` is ever a run's own
+`backend`: training, the arena and the tools stay on the CPU or Metal.
 
-Each build has 32 component tests plus an integration smoke test and a
-check of the build ID script (34 in ctest; `ctest -N | tail -1` prints
-`Total Tests: 34`). The GPU tests,
+Each build has 38 component tests plus an integration smoke test and a
+check of the build ID script (40 in ctest; `ctest -N | tail -1` prints
+`Total Tests: 40`). The GPU tests,
 `test_metal`, run only in a build configured with `-DAZ_USE_METAL=ON` on a
-Mac with a usable GPU, and `test_cuda` only in one configured with
-`-DAZ_USE_CUDA=ON` on Linux with an NVIDIA GPU; elsewhere ctest reports
-them as Skipped (`test_cuda` fails instead when a GPU is present but the
-build's architecture is not its). The smoke test checks `backend = metal`
+Mac with a usable GPU, and `test_cuda` and `test_cuda16` only in one
+configured with `-DAZ_USE_CUDA=ON` on Linux with an NVIDIA GPU (sm_80 or
+newer for `test_cuda16`); elsewhere ctest reports them as Skipped
+(`test_cuda` fails instead when a GPU is present but the build's
+architecture is not its). The smoke test checks `backend = metal`
 end to end in a Metal build and its refusal in the others, and a cuda
 engine likewise in a CUDA build. It also runs `tools/gtp_match.py`, so it needs `python3` on
 the path.
@@ -388,7 +390,8 @@ with, for example, `selfplay_engines = local/metal:74, mini1/metal:13,
 mini2/metal:13, pc/cuda:150, pc/blas=4`: `pc` is a Linux machine whose
 one binary serves both its GPU (`pc/cuda`) and its CPU (`pc/blas`). Other
 keys are `metal_workers` and `cuda_workers` (0, the default: every game of
-the slice at once, which a GPU engine needs to fill its passes),
+the slice at once, which a GPU engine needs to fill its passes; it also
+sets the 16-bit engine `pc/cuda16`'s workers, on the same GPU),
 `inference_batch`, `nice` and `timeout`; they apply to a machine's arena
 slices as well as its self-play slices. A CPU engine uses
 `min(4, cores / 3)` workers on `local` and 2 on a remote by default,
@@ -1852,6 +1855,30 @@ at 31,000 positions per second on 13×13 6×96, 60,600 on 9×9 6×96 and
 6,900 on 19×19 10×128. That is 2.1–2.5× the M5 Max's Metal hub. A real
 13×13 slice of 256 games ran at 30,000 per second with the whole process
 under one CPU core.
+
+**16-bit CUDA.** `cuda16` is a second CUDA engine (`pc/cuda16`) whose
+residual trunk runs on the GPU's tensor cores
+([design](docs/superpowers/specs/2026-10-24-cuda-fp16-design.md),
+[plan](docs/superpowers/plans/2026-10-24-cuda-fp16.md)). Each 3×3
+convolution is still one implicit GEMM, but with the pixels as its rows,
+so the activations (stored as fp16, channels last) and the weights
+(converted once per upload) both arrive with k contiguous, ready for
+`mma.sync` with fp32 accumulation. Batch norm, the skip and ReLU stay
+fp32, and so do the heads, on `cuda`'s kernels. Every output is still one
+chain of steps in k order that sees only its own row and column, so a
+position's outputs remain independent of its batch, which the tests check
+bitwise. What changes is the distance from the exact network: on real
+positions of the 13×13 and 19×19 runs' checkpoints, fp16 logits are within
+2.6e-3 of the largest logit and values within 3.0e-3, with the same best
+move in every position (bf16 was 7–10× further, so the engine is fp16).
+On the RTX 4070 Ti SUPER (`docs/results/cuda16.txt`) the hub runs at
+27,500 positions per second on 19×19 10×128 and 124,700 on 13×13 6×96,
+4.3× and 4.2× `cuda`; a trunk convolution reaches 65 TFLOP/s, about three
+quarters of the tensor cores' fp32-accumulate peak. The same network
+playing itself with one side on each engine scored 54.5% ± 5.8% for
+`cuda16` over 288 games at 800 simulations. It is the same contract with a
+looser tolerance, so it gets its own fingerprint (`fp16 kernels …`), and
+`cuda` stays as it was.
 
 ## Authorship
 

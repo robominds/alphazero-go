@@ -1,0 +1,309 @@
+# 16-bit CUDA inference (backend = cuda16) on the RTX 4070 Ti SUPER (2026-10-24)
+#
+# Design: docs/superpowers/specs/2026-10-24-cuda-fp16-design.md. Branch
+# cuda-fp16. Machine: the PC of docs/results/cuda-bench.txt (AMD Ryzen 7
+# 7700X, RTX 4070 Ti SUPER sm_89, WSL2 Ubuntu 24.04, CUDA 12.8, driver API
+# 13.3). Release builds, AZ_CUDA_ARCHITECTURES 89-real.
+#
+# The PC was the live 19x19 run's largest engine (pc/cuda, a selfplay
+# --stream process with 128 games in flight) during every measurement
+# here unless a section says otherwise: its GPU was at 100% before we
+# started. Rates measured beside it are therefore shared-GPU rates. The
+# comparisons that matter (cuda16 against cuda, fp16 against bf16) were
+# measured back to back in the same conditions, so their ratios hold; the
+# absolute rates are lower bounds.
+#
+# ======================================================================
+# Summary
+# ======================================================================
+#
+# 1. Speed. cuda16 is 4.3x cuda on 19x19 10x128 and 4.6x on 13x13 6x96 at
+#    batch 256 (raw two-slot passes, shared GPU, same conditions), and the hub keeps
+#    the ratio. Per trunk convolution the tensor-core kernel is 4.3-4.7x
+#    the fp32 fused kernel at batch 256. fp16 and bf16 run at the same
+#    speed (fp32 accumulation runs at one rate on Ada).
+#    On the idle GPU (the live run's training phase, 20:03-20:05), raw
+#    two-slot passes at batch 256: 19x19 10x128 27,726 evals/s against
+#    cuda's 6,488 (4.3x); 13x13 6x96 125,587 against 29,998 (4.2x). The
+#    hub at 128-256 threads: 27,500 and 124,700 (cuda 6,470 and 29,660).
+#    One 19x19 trunk convolution runs at 64.8 TFLOP/s, about 74% of the
+#    GPU's ~88 TFLOP/s for fp16 with fp32 accumulation, against 14.5 for
+#    the fp32 kernel. A real 19x19 slice ran at 27.2k evals/s.
+#
+# 2. Accuracy, on real positions of real checkpoints against the network
+#    in double precision:
+#
+#                        positions  logits rel  value max  argmax   KL mean
+#    13x13 gen 100 fp16       1024     2.1e-3     2.7e-3   100.00%  8.8e-7
+#    13x13 gen 100 bf16       1024     1.4e-2     2.8e-2    99.32%  5.4e-5
+#    19x19 gen 7   fp16        600     2.6e-3     3.0e-3   100.00%  2.9e-8
+#    19x19 gen 7   bf16        600     1.8e-2     2.9e-2    99.67%  1.7e-6
+#    (cuda and blas, fp32: <= 3.1e-6 and 4.2e-6, argmax 100%)
+#
+#    "logits rel" is the worst position's max |d| / max |ref|; value
+#    signs agreed in every position with |ref| > 0.05 for all engines.
+#    fp16 is 7-10x closer than bf16, and its range is ample: the largest
+#    trunk activation was 20.5 (13x13) and 28.8 (19x19) against 65,504.
+#    So the backend ships fp16. The tier (the design's "Accuracy"): logits
+#    5e-3, value and ownership 1e-2, about twice the measurements.
+#
+# 3. Batch independence. The convolution is bitwise the same for a
+#    position alone and at the first, a middle and the last place of
+#    batches of 8, 144 and 256, among random companions, for every channel
+#    tile and on repeat (half_bench det; test_cuda16), as is the whole pass
+#    (test_cuda16: batches of 1 to 256, permuted, repeated, a second
+#    upload), the runner, the hub under chaos, self-play slices and arena
+#    waves for any workers and batch cap, and a run across resume.
+#
+# 4. Strength. The 13x13 run's generation 100 playing itself at 800
+#    simulations, one side on cuda16, the other on cuda, colours
+#    alternating: cuda16 scored 157 of 288 = 54.5% +- 5.8% (95%), i.e.
+#    +31 +- 40 Elo. 50% is inside the interval: no loss of strength shows
+#    at this sample size (it would reveal a deficit of about 40 Elo).
+#
+# 5. The CPU side. A real self-play slice (train with selfplay_engines =
+#    local/cuda16:1, the 19x19 run's settings and generation 7, 128 games
+#    in flight, 800 simulations, capped at 12 plies) ran at 27.2k evals/s
+#    on the idle GPU with the whole process at 1.64 cores (44.3 s user +
+#    16.6 s system over 37 s, startup included) of the PC's 16 threads,
+#    and at 10.0k evals/s and 0.66 of a core on the shared GPU. The tree
+#    search feeds the faster GPU with most of the CPU to spare; the hub's
+#    passes stay full (mean 248 of 256 at 128 threads).
+#
+# 6. Nothing else changed: the cuda backend's kernel hash is 176be8be on
+#    main and on the branch (the live run's fingerprint); the identity runs
+#    of main against the branch (naive and BLAS builds) are byte-identical
+#    (below); every ctest passes on the PC's CUDA build (test_metal
+#    Skipped) and the Studio's BLAS and Metal builds (the CUDA tests
+#    Skipped).
+#
+# ======================================================================
+# The convolution alone (tools/cuda_bench/half_bench, shared GPU)
+# ======================================================================
+#
+# One trunk convolution with its skip (K = 9 x filters), 16-bit output;
+# fp32 is the cuda backend's fused kernel on the same shape, measured in
+# the same process. "trunk evals/s" multiplies by the trunk's 2 x blocks +
+# 1 convolutions (the stem counted as a block's).
+#
+# Pipeline depth, 19x19 10x128 at batch 256 (ms per convolution, fp16):
+#   2 stages (40 KB, two blocks an SM)   1.185 / 1.190
+#   3 stages                             1.496 / 1.508
+#   4 stages                             1.507 / 1.525
+#   3 stages, cp.async.ca (L1)           1.411 / 1.405
+#   2 stages, cp.async.ca                1.203 / 1.207
+# (fp32 in the same runs: 5.09-5.22 ms.) Two stages, cp.async.cg.
+#
+#   net            type   batch    ms/conv    TFLOP/s    trunk evals/s
+#   13x13 6x96     fp32       8     0.4991        0.4             1233
+#   13x13 6x96     fp16       8     0.0888        2.5             6930
+#   13x13 6x96     fp32      64     0.5985        3.0             8225
+#   13x13 6x96     fp16      64     0.1662       10.8            29629
+#   13x13 6x96     fp32     256     1.8528        3.9            10628
+#   13x13 6x96     fp16     256     0.3988       18.0            49378
+#   19x19 10x128   fp32       8     0.5928        1.4              643
+#   19x19 10x128   fp16       8     0.1670        5.1             2281
+#   19x19 10x128   fp32      64     1.6457        4.1             1852
+#   19x19 10x128   fp16      64     0.3845       17.7             7927
+#   19x19 10x128   fp32     256     5.0913        5.4             2394
+#   19x19 10x128   fp16     256     1.1955       22.8            10197
+# bf16 within 2% of fp16 at every shape (3-stage build: 13x13 256 0.4874
+# against 0.4886 ms, 19x19 256 1.4962 against 1.4871 ms).
+#
+# Accuracy of the convolution against double on its own 16-bit operands
+# (half_bench's measure, with skip: |err| / (|scale| sum|products| +
+# |shift|)): fp16 1.0e-6 to 1.2e-6, bf16 2.4e-6 to 3.6e-6 (13x13 shapes).
+# test_cuda16's measure adds |skip| to the scale; over its eight shapes,
+# with and without skip, fp16's worst was
+#   test_cuda16: conv16 vs double on 16-bit operands: worst 4.59e-07 of the rounding scale (bound 2^-18)
+# (4.59e-7 is 2^-21.1). It holds it to 2^-18.
+#
+# ======================================================================
+# The pass, the runner and the hub (bench, shared GPU)
+# ======================================================================
+#
+# bench --backend B --sizes 13,19 --configs <the runs' configs> --batches
+# 8,32,64,128,256 --hub-workers 64,128,256 --seconds 0.7; cuda16 then cuda,
+# back to back. Random networks of the runs' shapes (13x13 6x96 value_hidden
+# 64; 19x19 10x128 value_hidden 256).
+#
+#   size   batch   cuda16 sync  2-slot   ms/pass |  cuda sync  2-slot   ms/pass | ratio
+#   13x13      8         4535     4535      1.76 |       1196    1202      6.69 | 3.8x
+#   13x13     32        17854    17951      1.79 |       4720    4699      6.78 | 3.8x
+#   13x13     64        32108    31708      1.99 |       8130    8101      7.87 | 3.9x
+#   13x13    128        41792    41686      3.06 |      10282   10247     12.45 | 4.1x
+#   13x13    256        49706    49946      5.15 |      10852   10883     23.59 | 4.6x
+#   19x19      8         2071     2068      3.86 |        662     661     12.08 | 3.1x
+#   19x19     32         5529     5514      5.79 |       1769    1769     18.09 | 3.1x
+#   19x19     64         7765     7766      8.24 |       1847    1845     34.65 | 4.2x
+#   19x19    128         8926     8957     14.34 |       2345    2361     54.58 | 3.8x
+#   19x19    256        10081    10347     25.39 |       2412    2411    106.14 | 4.3x
+#
+#   hub (threads x batch-8 requests)   cuda16 evals/s  mean pass |  cuda evals/s  mean pass
+#   13x13   64                                 46095      168.9 |         9844      163.8
+#   13x13  128                                 49308      250.9 |        10637      242.3
+#   13x13  256                                 49337      250.4 |        10644      243.4
+#   19x19   64                                  9372      165.3 |         2350      149.7
+#   19x19  128                                 10140      242.4 |         2379      220.7
+#   19x19  256                                 10095      243.2 |         2375      227.5
+#
+# Workspace per slot at batch 256: 13x13 48.9 MB (cuda 57.5), 19x19
+# 134.1 MB (cuda 158.5).
+#
+# ---- the same, on the idle GPU (the live run between phases) ----
+# Built from branch e3143e5 (fp16 kernels b39552b5; the final a23ff1a,
+# 49ce91fd, differs from it in a comment of kernels16.cu only).
+#
+#   size   batch   cuda16 sync  2-slot   ms/pass |  cuda sync  2-slot   ms/pass | ratio
+#   13x13      8        11653    12405      0.69 |       3101    3225      2.58 | 3.8x
+#   13x13     32        45567    29904      0.70 |      12346   12893      2.59 | 2.3x (a)
+#   13x13     64        68448    59158      0.94 |      20882   21811      3.06 | 2.7x
+#   13x13    128        98572   108010      1.30 |      27650   28220      4.63 | 3.8x
+#   13x13    256       117457   125587      2.18 |      29416   29998      8.70 | 4.2x
+#   19x19      8         5239     5823      1.53 |       1695    1744      4.72 | 3.3x
+#   19x19     32        15066    15889      2.12 |       4817    4878      6.64 | 3.3x
+#   19x19     64        21083    21353      3.04 |       5918    5968     10.81 | 3.6x
+#   19x19    128        23515    24283      5.44 |       6572    6623     19.48 | 3.7x
+#   19x19    256        26918    27726      9.51 |       6464    6488     39.60 | 4.3x
+#   (a) small passes are launch-bound (~30 launches a pass under WSL2):
+#       the two-slot rate at batches 32-64 is noisy; the sync rate is
+#       3.7x and 3.3x cuda's.
+#
+#   hub (threads x batch-8 requests)   cuda16 evals/s  mean pass  slots |  cuda evals/s  mean pass
+#   13x13   64                                114410      169.5    88% |        25872      166.6
+#   13x13  128                                124724      251.5    86% |        29658      249.6
+#   13x13  256                                123794      249.5    86% |        29601      248.0
+#   19x19   64                                 25909      167.5    95% |         6396      163.5
+#   19x19  128                                 27506      248.0    94% |         6466      232.3
+#   19x19  256                                 27414      248.3    94% |         6422      238.5
+#
+#   half_bench, one trunk convolution, idle GPU:
+#   net            type   batch    ms/conv    TFLOP/s
+#   13x13 6x96     fp32     256     0.6621       10.8
+#   13x13 6x96     fp16     256     0.1376       52.2
+#   13x13 6x96     bf16     256     0.1343       53.4
+#   19x19 10x128   fp32       8     0.2144        4.0
+#   19x19 10x128   fp16       8     0.0507       16.8
+#   19x19 10x128   fp32      64     0.4967       13.7
+#   19x19 10x128   fp16      64     0.1227       55.5
+#   19x19 10x128   fp32     256     1.8801       14.5
+#   19x19 10x128   fp16     256     0.4206       64.8
+#   19x19 10x128   bf16     256     0.4207       64.8
+#
+# ======================================================================
+# Accuracy on real positions (tools/cuda_bench/accuracy.cpp)
+# ======================================================================
+#
+# cuda16_accuracy --checkpoint <ckpt> --sgf-dir <the run's sgf> --every 3
+# (every third ply of the latest games first, identity symmetry). Copies of
+# the checkpoints and SGFs, read-only.
+#
+# ---- 13x13-agz gen_0100, 1024 positions ----
+#   largest trunk activation (double): 20.5 (fp16 max 65504)
+#   against the network in double precision:
+#   blas (fp32)  logits max 9.79e-06 mean 6.86e-07 rel 1.56e-06 | argmax 100.00% KL mean 1.06e-12 max 8.62e-12 | value max 2.24e-06 mean 2.44e-07 sign 100.00% (955)
+#   cuda (fp32)  logits max 1.55e-05 mean 8.28e-07 rel 1.97e-06 | argmax 100.00% KL mean 1.31e-12 max 1.27e-11 | value max 4.16e-06 mean 3.15e-07 sign 100.00% (955)
+#   cuda16 fp16  logits max 1.50e-02 mean 7.05e-04 rel 2.12e-03 | argmax 100.00% KL mean 8.75e-07 max 6.65e-06 | value max 2.67e-03 mean 4.10e-04 sign 100.00% (955)
+#   cuda16 bf16  logits max 9.50e-02 mean 5.46e-03 rel 1.41e-02 | argmax  99.32% KL mean 5.38e-05 max 3.79e-04 | value max 2.82e-02 mean 2.15e-03 sign 100.00% (955)
+#   against the CPU in fp32 (blas):
+#   cuda (fp32)  logits max 1.14e-05 mean 8.18e-07 rel 1.89e-06 | argmax 100.00% KL mean 9.44e-13 max 1.32e-11 | value max 3.46e-06 mean 3.01e-07 sign 100.00% (955)
+#   cuda16 fp16  logits max 1.50e-02 mean 7.05e-04 rel 2.12e-03 | argmax 100.00% KL mean 8.75e-07 max 6.65e-06 | value max 2.67e-03 mean 4.09e-04 sign 100.00% (955)
+#   cuda16 bf16  logits max 9.50e-02 mean 5.46e-03 rel 1.41e-02 | argmax  99.32% KL mean 5.38e-05 max 3.79e-04 | value max 2.82e-02 mean 2.15e-03 sign 100.00% (955)
+#
+# ---- 19x19-agz gen_0007, 600 positions ----
+#   largest trunk activation (double): 28.8 (fp16 max 65504)
+#   against the network in double precision:
+#   blas (fp32)  logits max 2.98e-06 mean 1.35e-07 rel 2.04e-06 | argmax 100.00% KL mean 2.13e-14 max 2.10e-13 | value max 1.74e-06 mean 2.54e-07 sign 100.00% (579)
+#   cuda (fp32)  logits max 3.00e-06 mean 1.86e-07 rel 3.07e-06 | argmax 100.00% KL mean 4.45e-14 max 4.75e-13 | value max 3.17e-06 mean 5.00e-07 sign 100.00% (579)
+#   cuda16 fp16  logits max 3.12e-03 mean 1.59e-04 rel 2.63e-03 | argmax 100.00% KL mean 2.90e-08 max 1.68e-07 | value max 3.03e-03 mean 3.61e-04 sign 100.00% (579)
+#   cuda16 bf16  logits max 2.20e-02 mean 1.24e-03 rel 1.80e-02 | argmax  99.67% KL mean 1.73e-06 max 1.20e-05 | value max 2.94e-02 mean 3.06e-03 sign 100.00% (579)
+#   against the CPU in fp32 (blas):
+#   cuda (fp32)  logits max 3.28e-06 mean 1.93e-07 rel 2.83e-06 | argmax 100.00% KL mean 4.64e-14 max 4.71e-13 | value max 3.37e-06 mean 5.29e-07 sign 100.00% (579)
+#   cuda16 fp16  logits max 3.11e-03 mean 1.59e-04 rel 2.63e-03 | argmax 100.00% KL mean 2.90e-08 max 1.68e-07 | value max 3.03e-03 mean 3.61e-04 sign 100.00% (579)
+#   cuda16 bf16  logits max 2.20e-02 mean 1.24e-03 rel 1.80e-02 | argmax  99.67% KL mean 1.73e-06 max 1.20e-05 | value max 2.94e-02 mean 3.06e-03 sign 100.00% (579)
+#
+# ---- test_cuda16, the presets' shapes, random weights, batch norms calibrated ----
+#    5x5   3x32  vs double: logits 1.3e-03 (cuda 8.9e-07), values 1.6e-03 (cuda 1.3e-06)
+#    9x9   6x64  vs double: logits 1.8e-03 (cuda 1.6e-06), values 1.7e-03 (cuda 1.8e-06)
+#    9x9   6x96  vs double: logits 2.0e-03 (cuda 2.3e-06), values 2.7e-03 (cuda 2.4e-06)
+#   13x13  6x96  vs double: logits 1.7e-03 (cuda 2.5e-06), values 1.2e-03 (cuda 1.9e-06)
+#   19x19 10x128 vs double: logits 2.4e-03 (cuda 3.2e-06), values 2.4e-03 (cuda 4.4e-06)
+#   19x19  2x128 vs double: logits 1.5e-03 (cuda 1.6e-06), values 9.3e-04 (cuda 1.1e-06), ownership checked
+# Uncalibrated (the cuda tests' random networks), the 19x19 10x128 value
+# was 3.3e-2 from double: activations that grow block by block, which no
+# trained network has.
+#
+# ======================================================================
+# 16-bit against 32-bit (tools/cuda_bench/match.cpp)
+# ======================================================================
+#
+# cuda16_match --checkpoint 13x13-agz gen_0100 --games 400 --simulations
+# 800 --workers 48 --b-backend cuda --max-seconds 3300 --temperature-moves 0
+# --random-symmetry 1 --seed 1 (the run's arena settings: c_puct 1.5,
+# mcts_batch 8, komi 7.5, no noise, tree reuse), at nice 19 beside the live
+# run. Game i is seeded deriveSeed(1, i); A (cuda16) is Black in the even
+# games. New games stopped at 3,300 s, so 288 of 400 were played.
+#
+#   final: 288 games (A black 144, white 144): A scores 157.0 = 54.51% +- 5.75% (95%);
+#   A won 69 as black, 88 as white; 184.5 plies a game; 3688 s;
+#   evaluations A 20968225, B 20963738
+#
+# Running score: 48 games 52.1%, 144 games 53.5%, 193 games 55.4%, 242
+# games 55.4%, 288 games 54.5%. White won 163 of 288 (56.6%), the colour
+# imbalance of komi 7.5 on 13x13 at this strength, which the alternation
+# cancels.
+#
+# ======================================================================
+# A real self-play slice: the CPU side
+# ======================================================================
+#
+# The command: train --config
+# <19x19-agz config> --init-from gen_0007.azn --hosts <"local
+# cuda_workers=128"> --set backend=blas --set selfplay_engines=local/cuda16:1
+# --set arena_engines= --set selfplay_allocation=static --set
+# games_per_generation=128 --set max_moves=12 --set validation_loss=false
+# --set bn_calibrate=false --set train_steps=0 --set arena_every=0 --set
+# generations=1, under /usr/bin/time.
+#
+# shared GPU (the live run's pc/cuda beside it):
+#   selfplay engines: local/cuda16 128 97s 10.0k ev/s
+#   gen 1 | selfplay 128 games avg 11.9 plies 96.9s | ... | no arena
+#   gpu util mean 100% over 48 samples
+#   user 45.69 s, system 18.50 s, wall 96.35 s, cpu 66%
+# For comparison, the live pc/cuda process (selfplay --stream, 128
+# workers, 19x19 at ~6,600 evals/s) used ~0.27-0.37 of a core.
+#
+# idle GPU (the live run's training phase):
+#   selfplay engines: local/cuda16 128 36s 27.2k ev/s
+#   gen 1 | selfplay 128 games avg 11.9 plies 35.7s | ... | no arena
+#   gpu util mean 88% over 18 samples
+#   user 44.29 s, system 16.63 s, wall 37.02 s, cpu 164%
+#
+# ======================================================================
+# The default path: main against the branch
+# ======================================================================
+#
+# main c0dd29b and the branch (git archive, one AZGO_BUILD_ID) built on the
+# PC as naive, BLAS and CUDA builds.
+#   5x5 preset, 40 games, 64 simulations, 50 steps, arena 10 games at 48,
+#     calibration 10, bot 50; 2 generations with workers 0, resumed to 3
+#     with workers 3. naive: identical (16 files). blas: identical (16 files).
+#   9x9 preset with filters 96, resignation on, 8 games, 50 simulations, 20
+#     steps; 2 generations. naive: identical (13 files). blas: identical
+#     (13 files). (Not vacuous: naive's and blas's gen_0003 differ.)
+#   A 5x5 run with selfplay_engines = local/cuda:1 (the CUDA builds), 2
+#     generations: identical (14 files).
+#   selfplay --fingerprint --backend cuda, main and branch, byte for byte:
+#     cuda; AMD Ryzen 7 7700X 8-Core Processor; Ubuntu 24.04.5 LTS (Linux
+#     6.6.114.1-microsoft-standard-WSL2); NVIDIA GeForce RTX 4070 Ti SUPER
+#     sm_89, driver API 13.3, runtime 12.8, kernels 176be8be
+#   (the live 19x19 run's manifest records the same kernels 176be8be).
+# Files compared byte for byte; log.csv without selfplay_s, train_s and
+# arena_s; the engine manifests (timings) left out.
+#
+# ctest: PC build-cuda (branch a23ff1a, -DAZ_USE_CUDA=ON, idle GPU): 39 of
+# 40 pass, test_metal Skipped (also at e3143e5 on the shared GPU); test_cuda16 alone 59 s on the shared GPU.
+# Studio scratch BLAS and Metal builds (nice -n 10, -j6): every test passes,
+# test_cuda and test_cuda16 Skipped (and test_metal in the BLAS build).
+#
+# Mark Castelluccio, with assistance from Claude (Anthropic).
