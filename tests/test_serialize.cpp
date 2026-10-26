@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -139,7 +140,45 @@ static void test_write_file_atomically() {
     fs::remove_all(dir);
 }
 
+// Transfers larger than serialize_probe::ioChunk go in pieces (macOS refuses a
+// single write(2) or read(2) over INT_MAX bytes, which a 2+ GiB state.bin hit).
+static void test_large_transfers_go_in_pieces() {
+    const size_t saved = serialize_probe::ioChunk;
+    serialize_probe::ioChunk = 3;
+    const fs::path dir = fs::temp_directory_path() / "azgo_test_io_chunk";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const fs::path file = dir / "data.bin";
+    std::ostringstream os(std::ios::binary);
+    BinaryWriter w(os);
+    const std::string text = "seventeen bytes!!";
+    w.bytes(text.data(), text.size());
+    std::vector<float> xs = {1.5f, -2.25f, 3.0f, 0.0f, -0.0f};
+    w.floats(xs.data(), xs.size());
+    writeFileAtomically(file.string(), os.str());
+    assert(readFile(file) == os.str());
+    std::ifstream in(file, std::ios::binary);
+    BinaryReader r(in);
+    std::string back(text.size(), '\0');
+    r.bytes(back.data(), back.size());
+    assert(back == text);
+    std::vector<float> ys(xs.size());
+    r.floats(ys.data(), ys.size());
+    assert(std::memcmp(xs.data(), ys.data(), 4 * xs.size()) == 0);
+    bool threw = false;
+    try {
+        char extra[4];
+        r.bytes(extra, 4);   // past the end, across chunk boundaries
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    assert(threw);
+    serialize_probe::ioChunk = saved;
+    fs::remove_all(dir);
+}
+
 int main() {
+    test_large_transfers_go_in_pieces();
     test_round_trip_every_type();
     test_exact_byte_layout();
     test_reading_past_end_throws();

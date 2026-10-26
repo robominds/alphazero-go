@@ -31,12 +31,22 @@ uint32_t loadU32(const unsigned char* in) {
 
 } // namespace
 
+namespace serialize_probe {
+size_t ioChunk = size_t(1) << 30;   // 1 GiB, under INT_MAX
+}
+
 // ---------------------------------------------------------------- BinaryWriter
 
 BinaryWriter::BinaryWriter(std::ostream& os) : os_(os) {}
 
 void BinaryWriter::bytes(const void* p, size_t n) {
-    os_.write(static_cast<const char*>(p), static_cast<std::streamsize>(n));
+    const char* q = static_cast<const char*>(p);
+    while (n > 0) {
+        const size_t count = std::min(n, serialize_probe::ioChunk);
+        os_.write(q, static_cast<std::streamsize>(count));
+        q += count;
+        n -= count;
+    }
 }
 
 void BinaryWriter::u8(uint8_t v) { bytes(&v, 1); }
@@ -93,8 +103,14 @@ void BinaryWriter::floats(const float* p, size_t n) {
 BinaryReader::BinaryReader(std::istream& is) : is_(is) {}
 
 void BinaryReader::bytes(void* p, size_t n) {
-    is_.read(static_cast<char*>(p), static_cast<std::streamsize>(n));
-    if (static_cast<size_t>(is_.gcount()) != n) throw std::runtime_error("unexpected end of data");
+    char* q = static_cast<char*>(p);
+    while (n > 0) {
+        const size_t count = std::min(n, serialize_probe::ioChunk);
+        is_.read(q, static_cast<std::streamsize>(count));
+        if (static_cast<size_t>(is_.gcount()) != count) throw std::runtime_error("unexpected end of data");
+        q += count;
+        n -= count;
+    }
 }
 
 uint8_t BinaryReader::u8() {
@@ -191,7 +207,7 @@ void writeFileAtomically(const std::string& path, const std::string& contents) {
     const char* p = contents.data();
     size_t left = contents.size();
     while (left > 0) {
-        const ssize_t n = ::write(fd, p, left);
+        const ssize_t n = ::write(fd, p, std::min(left, serialize_probe::ioChunk));
         if (n < 0) {
             if (errno == EINTR) continue;
             fail("error writing " + tmp);

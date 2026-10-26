@@ -46,6 +46,15 @@ private:
     std::istream& is_;
 };
 
+// The largest single read or write of the file I/O here. macOS refuses a
+// write(2) or read(2) of more than INT_MAX bytes (EINVAL), and a run's
+// state.bin passes 2 GiB once the replay window holds a few million
+// positions, so larger transfers go in pieces of at most this many bytes.
+// Tests lower it to exercise the loops.
+namespace serialize_probe {
+extern size_t ioChunk;
+}
+
 // Writes to path + ".tmp", fsyncs it, renames over path (atomic replace), then
 // fsyncs the parent directory, so the result is durable across power loss
 // (the file is never empty or partial afterwards). On macOS the file sync uses
