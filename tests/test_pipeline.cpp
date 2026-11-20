@@ -4,7 +4,10 @@
 // First the coordinator with two phases at once: a self-play phase (static
 // or dynamic) on one thread and arena waves on another, sharing a fake
 // remote, give exactly what each gives alone; neither phase removes the
-// other's network from the machine; cancel() stops either.
+// other's network from the machine; cancel() stops either. Both phases
+// dynamic, their sessions at once on one fake remote that drops out and
+// comes back: each phase readmits it on its own probe, with its own
+// session files, and the results are the drop-free ones.
 //
 // Then the trainer: a pipelined run's commits hold the next generation's
 // games; self-play plays the best network of the last commit (the lag is
@@ -24,6 +27,8 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -293,6 +298,183 @@ static void test_cancel() {
     arena.join();
     distributed_probe::reset();
     assert(threw && std::chrono::steady_clock::now() - start < std::chrono::seconds(10));
+}
+
+// A log the test may read while the coordinator writes to it.
+class SharedLog : public std::streambuf {
+public:
+    std::string str() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return text_;
+    }
+    // Waits (at most a minute) until the log holds `part`.
+    void await(const std::string& part) {
+        for (int i = 0; i < 6000 && !contains(str(), part); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        assert(contains(str(), part));
+    }
+protected:
+    int overflow(int c) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (c != EOF) text_ += static_cast<char>(c);
+        return c;
+    }
+    std::streamsize xsputn(const char* s, std::streamsize n) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        text_.append(s, static_cast<size_t>(n));
+        return n;
+    }
+private:
+    std::mutex mutex_;
+    std::string text_;
+};
+
+// The session job files (their names) under some directories now.
+static std::set<std::string> jobFiles(const std::vector<std::string>& dirs) {
+    std::set<std::string> out;
+    for (const std::string& dir : dirs) {
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+            if (it->path().extension() == ".job") out.insert(it->path().filename().string());
+    }
+    return out;
+}
+
+// Both phases dynamic, pipelined, on one fake remote (its exe a symlink:
+// removed, the machine is unreachable). Self-play's session and the arena
+// wave's run at once, with their own files; the machine drops, each
+// session fails after a game and its engine retires. The arena waits on
+// probes every 0.05 s, self-play every 6 s: the machine comes back, the
+// arena readmits it and drops it again for a moment. Self-play is
+// readmitted only after that, on its own probe: the arena's readmission
+// cleared nothing of self-play's. Each phase's games are then played as
+// without the drop (every engine naive: one fingerprint).
+static void test_two_dynamic_phases() {
+    const Network a(tinyNet(), 61), b(tinyNet(), 62), c(tinyNet(), 63);
+    const std::vector<ArenaMatchSpec> wave = {
+        {ArenaPlayer::network(a), ArenaPlayer::network(b), 6, 701},
+        {ArenaPlayer::network(a), ArenaPlayer::bot(6), 4, 702},
+        {ArenaPlayer::network(a), ArenaPlayer::network(c), 4, 703},
+    };
+    const ArenaConfig acfg = tinyArena();
+    const SelfPlayConfig sp = tinySelfPlay();
+    Dir dir("two_dynamic");
+    Config cfg = twoPhaseConfig("dynamic");
+    cfg.arenaAllocation = "dynamic";
+    const std::string netPath = dir.file("selfplay.azn");
+    Network net(tinyNet(), 33);
+    saveNetwork(net, netPath);
+    const std::vector<GameRecord> expected = playSelfPlayGames(net, sp, cfg.seed, 4, 0, 8, EngineRun{"naive", 1});
+    const std::vector<MatchResult> expectedArena = playMatches(wave, acfg, 3, "naive", 64);
+
+    const std::string exe = dir.file("selfplay_fake");
+    auto restore = [&] { fs::create_symlink(AZGO_SELFPLAY_EXE, exe); };
+    auto drop = [&] { fs::remove(exe); };
+    restore();
+    const std::vector<std::string> dirs = {dir.file("run"), dir.file("remote")};
+    SharedLog buf;
+    std::ostream log(&buf);
+    distributed_probe::useInProcessTransport(true);   // sessions need no binary; probes find none
+    Coordinator coordinator(cfg, dir.file("run"),
+                            parseHostsText("fake exe=" + exe + " workdir=" + dir.file("remote") + "\n", "hosts"),
+                            &log);
+    coordinator.preflight();
+    // The first two sessions (one a phase) fail after a game. Local engines
+    // start late, so the remote has games when it fails and when it is
+    // back. Sessions open their streams 4 s after their job is written, and
+    // the arena starts 2 s after self-play's session: self-play retires
+    // (and reads its probe spacing) about 2 s before the arena does.
+    distributed_probe::failSession("fake/naive", 2, 1);
+    distributed_probe::delaySlice("local/naive", 16);
+    distributed_probe::delaySlice("fake/naive", 4);
+    distributed_probe::readmitSeconds(6);
+    std::vector<GameRecord> records;
+    std::vector<MatchResult> results;
+    std::exception_ptr selfplayError, arenaError;
+    std::thread selfplay([&] {
+        try {
+            records = coordinator.play(4, netPath, net, sp, 8);
+        } catch (...) {
+            selfplayError = std::current_exception();
+        }
+    });
+    assert(waitFor([&] { return jobFiles(dirs).count("g0004_s1_a1.job") > 0; }, 30));
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    coordinator.beginArena(3);
+    std::thread arena([&] {
+        try {
+            results = coordinator.playArena(wave, acfg);
+        } catch (...) {
+            arenaError = std::current_exception();
+        }
+    });
+    // Both sessions at once, before either has opened its stream.
+    const bool atOnce = waitFor([&] {
+        const std::set<std::string> jobs = jobFiles(dirs);
+        return jobs.count("g0004_s1_a1.job") > 0 && jobs.count("arena_g0003_w1_s1_a1.job") > 0;
+    }, 30);
+    drop();
+    const std::string selfplayRetired = "note: generation 4: fake/naive retired for this generation (fake unreachable)";
+    const std::string arenaRetired =
+        "note: generation 3 arena wave 1: fake/naive retired for this wave (fake unreachable)";
+    const std::string selfplayBack = "note: generation 4: fake/naive readmitted (machine answered again)";
+    const std::string arenaBack = "note: generation 3 arena wave 1: fake/naive readmitted (machine answered again)";
+    buf.await(selfplayRetired);
+    // Past self-play's reading of the spacing; the arena retires about 2 s later.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    distributed_probe::readmitSeconds(0.05);
+    buf.await(arenaRetired);
+    distributed_probe::delaySlice("fake/naive", 0);
+    restore();
+    buf.await(arenaBack);
+    drop();
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    const size_t mark = buf.str().size();
+    restore();
+    selfplay.join();
+    arena.join();
+    distributed_probe::reset();
+    if (selfplayError) std::rethrow_exception(selfplayError);
+    if (arenaError) std::rethrow_exception(arenaError);
+    assert(atOnce);
+
+    // The drop-free results.
+    assert(sameRecords(records, expected));
+    assert(results.size() == wave.size());
+    for (size_t i = 0; i < wave.size(); ++i) assert(sameResult(results[i], expectedArena[i]));
+    // The order of the notes: self-play retired, the arena readmitted while
+    // self-play still waited, self-play readmitted after the second return.
+    const std::string text = buf.str();
+    assert(text.find(selfplayRetired) < text.find(arenaBack));
+    assert(text.find(arenaBack) < mark);
+    assert(text.find(selfplayBack) != std::string::npos && text.find(selfplayBack) >= mark);
+    // Each phase's remote played after its readmission (its first session
+    // returned one game), all reports one fingerprint, every game once.
+    for (const std::vector<SliceReport>* reports : {&coordinator.reports(), &coordinator.arenaReports()}) {
+        assert(reports->size() == 2);
+        const SliceReport& r = (*reports)[1];
+        assert(r.engine == "fake/naive" && r.slice.count > 1);
+        assert(contains(r.note, "1 failed stream") && contains(r.note, "readmitted 1 time") &&
+               !contains(r.note, "retired") && !contains(r.note, "unreachable"));
+        int games = 0;
+        for (const SliceReport& e : *reports) {
+            assert(e.fingerprint == engineFingerprint("naive"));
+            games += e.slice.count;
+        }
+        assert(games == (reports == &coordinator.reports() ? 8 : 14));
+    }
+    // Their own session files: each phase's engine log in its own work
+    // directory, readmitted once, and no session's file left.
+    auto read = [](const std::string& path) {
+        std::ifstream in(path, std::ios::binary);
+        std::ostringstream ss;
+        ss << in.rdbuf();
+        return ss.str();
+    };
+    const std::string selfplayLog = read(dir.file("run/selfplay-work/gen_0004/fake_naive.log"));
+    const std::string arenaLog = read(dir.file("run/arena-work/gen_0003_w1/fake_naive.log"));
+    assert(contains(selfplayLog, "answered again; readmitted") && contains(arenaLog, "answered again; readmitted"));
+    assert(jobFiles(dirs).empty());
 }
 
 // ---- the trainer ----------------------------------------------------------------
@@ -957,6 +1139,7 @@ int main() {
     test_gpu_memory_checked_together();
     test_two_phases_at_once();
     test_cancel();
+    test_two_dynamic_phases();
     test_pipelined_run_files();
     test_lag_rule();
     test_switching();
