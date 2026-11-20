@@ -64,6 +64,9 @@ public:
     // The engine takes no more games. The games it holds stay with it until
     // the caller requeues them.
     void retire(int engine);
+    // The inverse of retire: the engine may take games again (its machine
+    // came back). std::logic_error in forced mode, or if it is not retired.
+    void readmit(int engine);
     // A new engine (the fallback engine, when every other engine retired);
     // returns its number. Not in forced mode.
     int addEngine(int concurrency);

@@ -92,6 +92,30 @@ static void test_requeue_and_retire() {
     assert(q.done() && q.playedBy(4) == fallback && q.playedBy(3) == 1);
 }
 
+// A retired engine whose machine came back takes games again; its
+// finished games and the queue's progress are untouched.
+static void test_readmit() {
+    GameQueue q(6, {2, 2});
+    assert(q.take(0, 0) == 0 && q.take(1, 0) == 1);
+    assert(throwsLogic([&] { q.readmit(1); }));   // not retired
+    q.finished(1, 1, 1.0);
+    q.retire(1);
+    assert(q.take(1, 1.0) == GameQueue::kNone);
+    assert(q.take(0, 1.0) == 2);
+    q.requeue(0, 0);
+    q.readmit(1);
+    assert(!q.retired(1));
+    assert(q.finishedBy(1) == 1 && q.finishedGames() == 1 && !q.done());
+    // Lowest queued index first: the requeued game 0.
+    assert(q.take(1, 2.0) == 0);
+    assert(throwsLogic([&] { q.readmit(1); }));   // no longer retired
+    q.finished(1, 0, 3.0);
+    assert(q.finishedBy(1) == 2 && q.finishedGames() == 2);
+    // Forced mode has no retirement, so none to undo.
+    GameQueue f({0, 1}, {1, 1});
+    assert(throwsLogic([&] { f.readmit(0); }));
+}
+
 // Forced assignment: each engine gets its own games, in index order, no
 // matter who asks first or when.
 static void test_forced_assignment() {
@@ -448,6 +472,7 @@ static void test_simulation() {
 int main() {
     test_handout_order_and_concurrency();
     test_requeue_and_retire();
+    test_readmit();
     test_forced_assignment();
     test_handout_rule();
     test_rule_never_stalls();

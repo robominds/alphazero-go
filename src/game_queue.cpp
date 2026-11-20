@@ -141,6 +141,14 @@ void GameQueue::retire(int engine) {
     at(engine).retired = true;
 }
 
+void GameQueue::readmit(int engine) {
+    if (forcedMode_)
+        throw std::logic_error("GameQueue: an engine of a forced assignment cannot be readmitted");
+    Engine& e = at(engine);
+    if (!e.retired) throw std::logic_error("GameQueue: only a retired engine can be readmitted");
+    e.retired = false;
+}
+
 bool GameQueue::retired(int engine) const { return at(engine).retired; }
 
 int GameQueue::inFlight(int engine) const { return static_cast<int>(at(engine).inFlight.size()); }
