@@ -154,6 +154,40 @@ std::vector<ArenaGameResult> playArenaGames(const std::vector<ArenaGameRange>& r
                                             const ArenaConfig& cfg, const EngineRun& run,
                                             SliceStats* stats = nullptr);
 
+// Where a queue-driven arena engine gets its games (wave indices) and leaves
+// its results: the coordinator's shared queue, or a stream's commands on a
+// remote. Called from the worker threads.
+class ArenaGameSource {
+public:
+    virtual ~ArenaGameSource() = default;
+    // The next wave index for a worker, blocking until there is one, or -1
+    // when the worker is done.
+    virtual int next() = 0;
+    // Game `index` ended: its result and the positions its searches
+    // evaluated. An exception stops the engine as a failed game does.
+    virtual void done(int index, ArenaGameResult result, long long evaluations) = 0;
+    // A worker failed: from now on next() must return -1 at once, and
+    // workers blocked in it must be woken.
+    virtual void stop() = 0;
+};
+
+// playArenaGames with its games from a source: run.workers threads (<= 0:
+// arenaWorkers(0, run.backend, the wave's games)), each looping
+// i = source.next(), play wave index i, source.done(i, ...). `wave` is the
+// whole wave as ranges in match-major order, each a full match (first = 0,
+// count >= 0, checked as playArenaGames checks a range); index i is game j
+// of the range it falls in, by cumulative counts, played exactly as
+// playArenaGames plays game j of that range. One set of evaluators per
+// distinct network for the whole call. A game's result depends only on
+// (range, j) and the backend's arithmetic, never on the worker, the order
+// or the time. The first exception of a worker (a game, done, an index
+// outside the wave, or SliceCancelled once run.cancel is set) stops the
+// others at their next evaluation, calls source.stop(), and is rethrown
+// after every worker has returned. stats: wall seconds, plies of the games
+// done and network evaluations.
+void playArenaQueue(const std::vector<ArenaGameRange>& wave, const ArenaConfig& cfg,
+                    const EngineRun& run, ArenaGameSource& source, SliceStats* stats = nullptr);
+
 // A match's result from its games: A's score summed in game order, wins,
 // losses, draws and distinct move sequences. playMatches reports exactly
 // this of the games playArenaGames plays.

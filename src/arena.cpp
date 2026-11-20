@@ -5,9 +5,12 @@
 #include <chrono>
 #include <cstddef>
 #include <cmath>
+#include <exception>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include "azgo/backend.hpp"
 #include "azgo/evaluator.hpp"
@@ -200,6 +203,30 @@ void checkMatch(const ArenaPlayer& a, const ArenaPlayer& b, const ArenaConfig& c
         throw std::invalid_argument("playMatch: games must be even and >= 2, got " + std::to_string(games));
 }
 
+// What a queue worker's network seats evaluate through: refuses to evaluate
+// once the call's cancel flag or its stop flag is raised, and otherwise
+// passes through unchanged, counting the positions of the game.
+class QueueEvaluator : public Evaluator {
+public:
+    QueueEvaluator(Evaluator& inner, const std::atomic<bool>* cancel, const std::atomic<bool>& stop,
+                   long long& count)
+        : inner_(inner), cancel_(cancel), stop_(stop), count_(count) {}
+    int boardSize() const override { return inner_.boardSize(); }
+    int history() const override { return inner_.history(); }
+    int maxBatch() const override { return inner_.maxBatch(); }
+    void evaluate(const float* input, int B, float* logits, float* values) override {
+        if ((cancel_ && cancel_->load(std::memory_order_relaxed)) || stop_.load(std::memory_order_relaxed))
+            throw SliceCancelled();
+        inner_.evaluate(input, B, logits, values);
+        count_ += B;
+    }
+private:
+    Evaluator& inner_;
+    const std::atomic<bool>* cancel_;
+    const std::atomic<bool>& stop_;
+    long long& count_;
+};
+
 // One game of one range: the pool's unit of work.
 struct GameTask {
     int range, game;   // game: its index in its match
@@ -328,6 +355,120 @@ std::vector<ArenaGameResult> playArenaGames(const std::vector<ArenaGameRange>& r
         stats->evaluations = evaluations;
     }
     return results;
+}
+
+void playArenaQueue(const std::vector<ArenaGameRange>& wave, const ArenaConfig& cfg,
+                    const EngineRun& run, ArenaGameSource& source, SliceStats* stats) {
+    const auto start = std::chrono::steady_clock::now();
+    for (const ArenaGameRange& r : wave) {
+        checkPlayers(r.a, r.b, cfg, run.inferenceBatch);
+        if (r.first != 0 || r.count < 0)
+            throw std::invalid_argument("playArenaQueue: a wave's range must be a whole match, got [" +
+                                        std::to_string(r.first) + ", +" + std::to_string(r.count) + ")");
+    }
+    const Network* first = nullptr;
+    for (const ArenaGameRange& r : wave)
+        for (const ArenaPlayer* p : {&r.a, &r.b})
+            if (p->net && !first) first = p->net;
+    for (const ArenaGameRange& r : wave)
+        for (const ArenaPlayer* p : {&r.a, &r.b})
+            if (p->net && p->net->config() != first->config())
+                throw std::invalid_argument("playMatch: networks have different architectures");
+
+    // As playArenaGames: the distinct networks and the largest request each
+    // one's seats make; wave index i starts range r at ends[r - 1].
+    std::vector<const Network*> nets;
+    std::vector<int> maxRequest;
+    std::vector<std::array<int, 2>> seatNet(wave.size(), {-1, -1});   // index into nets; -1 = bot
+    std::vector<std::array<MctsConfig, 2>> seatSearch(wave.size());
+    std::vector<long long> ends(wave.size(), 0);
+    long long total = 0;
+    for (size_t i = 0; i < wave.size(); ++i) {
+        total += wave[i].count;
+        ends[i] = total;
+        const ArenaPlayer* players[2] = {&wave[i].a, &wave[i].b};
+        for (int p = 0; p < 2; ++p) {
+            seatSearch[i][p] = arenaSearchConfig(*players[p], cfg);
+            if (!players[p]->net) continue;
+            auto it = std::find(nets.begin(), nets.end(), players[p]->net);
+            if (it == nets.end()) {
+                nets.push_back(players[p]->net);
+                maxRequest.push_back(0);
+                it = nets.end() - 1;
+            }
+            const size_t k = static_cast<size_t>(it - nets.begin());
+            seatNet[i][p] = static_cast<int>(k);
+            maxRequest[k] = std::max(maxRequest[k], seatSearch[i][p].batchSize);
+        }
+    }
+    long long evaluations = 0;
+    std::atomic<long long> positions{0};
+    std::exception_ptr firstError;
+    if (total > 0) {
+        const int workers = arenaWorkers(run.workers, run.backend, static_cast<int>(total));
+        // Declared before the games that point into them.
+        RoundEvaluators evaluators(nets, maxRequest, run.backend, workers, run.inferenceBatch);
+        const NetConfig shape = first->config();
+        std::atomic<bool> stop{false};
+        std::mutex errorMutex;
+        auto fail = [&] {
+            {
+                std::lock_guard<std::mutex> lock(errorMutex);
+                if (!firstError) firstError = std::current_exception();
+            }
+            stop = true;
+            source.stop();
+        };
+        auto work = [&](int w) {
+            try {
+                setThreadQos(run.qos);
+                while (!stop) {
+                    const int index = source.next();
+                    if (index < 0) break;
+                    if (index >= total)
+                        throw std::out_of_range("playArenaQueue: game " + std::to_string(index) +
+                                                " is outside the wave's " + std::to_string(total));
+                    const size_t r = static_cast<size_t>(
+                        std::upper_bound(ends.begin(), ends.end(), static_cast<long long>(index)) - ends.begin());
+                    const int game = index - static_cast<int>(ends[r] - wave[r].count);
+                    long long count = 0;
+                    Seat seats[2];
+                    for (int p = 0; p < 2; ++p) {
+                        Seat& seat = seats[p];
+                        seat.mcts = seatSearch[r][p];
+                        if (seatNet[r][p] >= 0) {
+                            Evaluator& shared = evaluators.get(static_cast<size_t>(seatNet[r][p]), w);
+                            seat.own = std::make_unique<QueueEvaluator>(shared, run.cancel, stop, count);
+                        } else {
+                            seat.own = std::make_unique<UniformEvaluator>(shape.boardSize, shape.history,
+                                                                          0.0f, seat.mcts.batchSize);
+                        }
+                        seat.evaluator = seat.own.get();
+                    }
+                    ArenaGameResult result =
+                        playArenaGame(seats[0], seats[1], cfg, shape.boardSize, wave[r].seed, game);
+                    positions += static_cast<long long>(result.moves.size());
+                    source.done(index, std::move(result), count);
+                }
+            } catch (...) {
+                fail();
+            }
+        };
+        std::vector<std::thread> threads;
+        try {
+            for (int w = 0; w < workers; ++w) threads.emplace_back(work, w);
+        } catch (...) {
+            fail();   // a thread could not start: stop the others, join them first
+        }
+        for (std::thread& t : threads) t.join();
+        evaluations = evaluators.evaluations();
+    }
+    if (stats) {
+        stats->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        stats->positions = positions;
+        stats->evaluations = evaluations;
+    }
+    if (firstError) std::rethrow_exception(firstError);
 }
 
 MatchResult matchResult(const std::vector<ArenaGameResult>& games) {

@@ -811,6 +811,93 @@ static void test_arena_games_stats_and_cancel() {
     assert(sameGames(playArenaGames(ranges, cfg, cancelled), games));
 }
 
+// A source that hands out the wave's indices in the order given and keeps
+// each game's result; throwOn >= 0 makes done() throw for that index.
+class ListSource : public ArenaGameSource {
+public:
+    ListSource(std::vector<int> order, size_t games, int throwOn = -1)
+        : order_(std::move(order)), results_(games), throwOn_(throwOn) {}
+    int next() override {
+        if (stopped_) return -1;
+        const size_t k = next_.fetch_add(1);
+        return k < order_.size() ? order_[k] : -1;
+    }
+    void done(int index, ArenaGameResult result, long long evaluations) override {
+        if (index == throwOn_) throw std::runtime_error("done failed");
+        results_[static_cast<size_t>(index)] = std::move(result);
+        evaluations_ += evaluations;
+        ++finished_;
+    }
+    void stop() override { stopped_ = true; }
+    std::vector<ArenaGameResult> results_;
+    std::atomic<long long> evaluations_{0};
+    std::atomic<int> finished_{0};
+    std::atomic<bool> stopped_{false};
+private:
+    std::vector<int> order_;
+    std::atomic<size_t> next_{0};
+    int throwOn_;
+};
+
+// playArenaQueue plays wave index i as game j of the range it falls in, so
+// whatever order a source hands the indices out in, and on any number of
+// workers, each result is what playArenaGames gives that game.
+static void test_arena_queue() {
+    Network a(tinyNet(), 11), b(tinyNet(), 22);
+    ArenaConfig cfg = tinyArena();
+    cfg.temperatureMoves = 2;
+    const std::vector<ArenaGameRange> wave = {
+        {ArenaPlayer::network(a), ArenaPlayer::network(b), 5, 0, 4},
+        {ArenaPlayer::network(a), ArenaPlayer::bot(6), 6, 0, 3},
+    };
+    const std::vector<ArenaGameResult> expected = playArenaGames(wave, cfg, EngineRun{"naive", 1, 256});
+    const int total = static_cast<int>(expected.size());
+    assert(total == 7);
+    std::vector<int> reversed;
+    for (int i = total - 1; i >= 0; --i) reversed.push_back(i);
+    for (int workers : {1, 3}) {
+        ListSource source(reversed, static_cast<size_t>(total));
+        SliceStats stats;
+        playArenaQueue(wave, cfg, EngineRun{"naive", workers, 256}, source, &stats);
+        assert(sameGames(source.results_, expected));
+        long long plies = 0;
+        for (const ArenaGameResult& g : source.results_) plies += static_cast<long long>(g.moves.size());
+        assert(source.finished_ == total && stats.positions == plies);
+        assert(stats.evaluations > 0 && stats.evaluations == source.evaluations_ && stats.seconds >= 0);
+    }
+    // A subset of the indices: only those games are played.
+    ListSource some({5, 1}, static_cast<size_t>(total));
+    playArenaQueue(wave, cfg, EngineRun{"naive", 2, 256}, some);
+    assert(some.finished_ == 2);
+    assert(some.results_[5].moves == expected[5].moves && some.results_[1].moves == expected[1].moves);
+
+    // A failing done() stops the source and is rethrown.
+    ListSource failing(reversed, static_cast<size_t>(total), 3);
+    bool threw = false;
+    try {
+        playArenaQueue(wave, cfg, EngineRun{"naive", 2, 256}, failing);
+    } catch (const std::runtime_error& e) {
+        threw = std::string(e.what()) == "done failed";
+    }
+    assert(threw && failing.stopped_);
+
+    // A wave is checked before any game: a range must be a whole match.
+    auto refuses = [&](const std::vector<ArenaGameRange>& w) {
+        ListSource none({}, 0);
+        try {
+            playArenaQueue(w, cfg, EngineRun{"naive", 1, 256}, none);
+        } catch (const std::invalid_argument&) {
+            return true;
+        }
+        return false;
+    };
+    assert(refuses({{ArenaPlayer::network(a), ArenaPlayer::network(b), 1, 1, 2}}));
+    assert(refuses({{ArenaPlayer::bot(4), ArenaPlayer::bot(4), 1, 0, 2}}));
+    // An empty wave plays nothing.
+    ListSource none({}, 0);
+    playArenaQueue({}, cfg, EngineRun{"naive", 1, 256}, none);
+}
+
 // Ranges are checked as playMatch checks a match, before any game, except
 // that a range may hold an odd number of games (colours alternate with the
 // game's index in its match, not in the range).
@@ -875,6 +962,7 @@ int main() {
     test_arena_games_slices_equal_whole();
     test_arena_games_stats_and_cancel();
     test_arena_games_refusals();
+    test_arena_queue();
     std::printf("test_arena: all tests passed\n");
     return 0;
 }
