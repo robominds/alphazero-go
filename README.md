@@ -608,8 +608,19 @@ $ ./build-metal/train --run RUN_DIR --resume --set selfplay_allocation=dynamic
 
 Generations before the switch are untouched; the next one is the first
 dynamic one, and `--set selfplay_allocation=static` switches back the same
-way. The arena stays static: `arena_engines` keeps its fixed slices,
-since a wave is a small share of a generation's time.
+way. The arena stays static unless `arena_allocation = dynamic`:
+`arena_engines` keeps its fixed slices, since a wave is a small share of a
+generation's time.
+
+Two keys, both tunable on resume, shape the arena's use of
+`arena_engines`. `arena_allocation` (`static`, the default, or `dynamic`)
+chooses how a wave's games are shared: `static` is the fixed slices, byte
+identical to a run from before the key existed except that its `config.cfg`
+gains the line `arena_allocation = static`; `dynamic` streams them from one
+queue as `selfplay_allocation = dynamic` does. `readmit_seconds` (default
+`300`, `0` turns it off) is how often, in seconds, a retired engine whose
+machine was seen unreachable is tried again; it likewise adds
+`readmit_seconds = 300` to a new run's `config.cfg`.
 
 ### The Core ML engines (16-bit, Neural Engine and GPU)
 

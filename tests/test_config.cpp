@@ -669,9 +669,10 @@ static void test_metal_backend_and_inference_batch() {
 static void test_config_selfplay_keys() {
     Config d;
     assert(d.selfplayEngines.empty() && d.selfplayFallback == "local");
-    // main's 50 keys, these two, arena_engines, selfplay_allocation, pipeline and arena_ladder.
+    // main's 50 keys, these two, arena_engines, selfplay_allocation, pipeline, arena_ladder,
+    // arena_allocation and readmit_seconds.
     const std::string text = configToString(d);
-    assert(std::count(text.begin(), text.end(), '\n') == 56);
+    assert(std::count(text.begin(), text.end(), '\n') == 58);
     assert(contains(text, "\ninference_batch = 256\nselfplay_engines = \n"
                           "selfplay_fallback = local\n"));
     // A config.cfg written before the keys existed gets the defaults.
@@ -744,6 +745,30 @@ static void test_config_selfplay_allocation() {
     assert(architectureDiff(d, e).empty() && resumeLockedDiff(d, e).empty());
 }
 
+// Streamed arena waves: arena_allocation (static | dynamic) and
+// readmit_seconds (0 = off), after arena_ladder. Both are tunable on resume.
+static void test_config_arena_allocation_readmit() {
+    Config d;
+    assert(d.arenaAllocation == "static" && d.readmitSeconds == 300);
+    assert(contains(configToString(d), "\narena_allocation = static\nreadmit_seconds = 300\n"));
+    // A config.cfg written before the keys existed gets the defaults.
+    const Config old = parseConfigText("filters = 96\n", "old.cfg");
+    assert(old.arenaAllocation == "static" && old.readmitSeconds == 300);
+    Config c = parseConfigText("arena_allocation = dynamic\nreadmit_seconds = 0\n", "t.cfg");
+    assert(c.arenaAllocation == "dynamic" && c.readmitSeconds == 0);
+    applyOverride(c, "readmit_seconds=60.5");
+    assert(c.readmitSeconds == 60.5);
+    assert(contains(configToString(c), "\narena_allocation = dynamic\nreadmit_seconds = 60.5\n"));
+    assert(configToString(parseConfigText(configToString(c), "rt")) == configToString(c));
+    assert(contains(errorOf("arena_allocation = foo"), "expected static|dynamic"));
+    assert(contains(errorOf("readmit_seconds = -1"), "readmit_seconds"));
+    assert(contains(errorOf("readmit_seconds = 86401"), "readmit_seconds"));
+    Config e;
+    e.arenaAllocation = "dynamic";
+    e.readmitSeconds = 0;
+    assert(architectureDiff(d, e).empty() && resumeLockedDiff(d, e).empty());
+}
+
 // Pipelined generations: pipeline (off | on), after backend. off, the
 // default, is the sequential loop; the key is tunable, so a running run
 // can switch at a commit.
@@ -808,7 +833,8 @@ static void test_config_arena_engines() {
 static void test_config_arena_ladder() {
     Config d;
     assert(d.arenaLadder);
-    assert(contains(configToString(d), "\ngating_threshold = 0.55\narena_ladder = on\nsgf_per_generation = "));
+    assert(contains(configToString(d), "\ngating_threshold = 0.55\narena_ladder = on\narena_allocation = static\n"
+                                      "readmit_seconds = 300\nsgf_per_generation = "));
     // A config.cfg written before the key existed gets the default.
     assert(parseConfigText("filters = 96\n", "old.cfg").arenaLadder);
     Config c = parseConfigText("gating = true\narena_ladder = off\n", "t.cfg");
@@ -838,6 +864,7 @@ int main() {
     test_defaults();
     test_config_selfplay_keys();
     test_config_selfplay_allocation();
+    test_config_arena_allocation_readmit();
     test_config_pipeline();
     test_config_arena_engines();
     test_config_arena_ladder();

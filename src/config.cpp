@@ -55,7 +55,8 @@ std::string parseU64(const std::string& v, uint64_t& out) {
 }
 
 // A finite number in the interval lo..hi; loOpen / hiOpen exclude the bound.
-std::string parseFloat(const std::string& v, double lo, double hi, float& out,
+template <typename T>
+std::string parseFloat(const std::string& v, double lo, double hi, T& out,
                        bool loOpen = false, bool hiOpen = false) {
     char range[96];
     std::snprintf(range, sizeof range, "%c%g, %g%c", loOpen ? '(' : '[', lo, hi,
@@ -68,7 +69,7 @@ std::string parseFloat(const std::string& v, double lo, double hi, float& out,
     // ERANGE catches "1e999"; isfinite catches "nan" and "inf".
     if (errno == ERANGE || *end != '\0' || !std::isfinite(x)) return reason;
     if (x < lo || x > hi || (loOpen && x == lo) || (hiOpen && x == hi)) return reason;
-    out = static_cast<float>(x);
+    out = static_cast<T>(x);
     return "";
 }
 
@@ -156,6 +157,16 @@ std::string formatFloat(float x) {
     return buf;
 }
 
+// The shortest "%.Ng" (N = 6..17) that reads back as exactly the same double.
+std::string formatDouble(double x) {
+    char buf[40];
+    for (int digits = 6; digits <= 17; ++digits) {
+        std::snprintf(buf, sizeof buf, "%.*g", digits, x);
+        if (std::strtod(buf, nullptr) == x) break;
+    }
+    return buf;
+}
+
 // Table helpers, instantiated per field so each table line stays short.
 template <int Config::*Field, long long Lo, long long Hi>
 std::string intKey(Config& c, const std::string& v) { return parseInt(v, Lo, Hi, c.*Field); }
@@ -163,6 +174,8 @@ template <int Config::*Field>
 std::string printInt(const Config& c) { return std::to_string(c.*Field); }
 template <float Config::*Field>
 std::string printFloat(const Config& c) { return formatFloat(c.*Field); }
+template <double Config::*Field>
+std::string printDouble(const Config& c) { return formatDouble(c.*Field); }
 
 struct KeyEntry {
     const char* key;
@@ -347,6 +360,16 @@ const KeyEntry kKeys[] = {
          return "";
      },
      [](const Config& c) { return std::string(c.arenaLadder ? "on" : "off"); }},
+    {"arena_allocation", false,
+     [](Config& c, const std::string& v) -> std::string {
+         if (v != "static" && v != "dynamic") return "expected static|dynamic, got " + quoted(v);
+         c.arenaAllocation = v;
+         return "";
+     },
+     [](const Config& c) { return c.arenaAllocation; }},
+    {"readmit_seconds", false,
+     [](Config& c, const std::string& v) { return parseFloat(v, 0, 86400, c.readmitSeconds); },
+     printDouble<&Config::readmitSeconds>},
     // output
     {"sgf_per_generation", false, intKey<&Config::sgfPerGeneration, 0, 1000>,
      printInt<&Config::sgfPerGeneration>},

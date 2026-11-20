@@ -144,6 +144,13 @@ struct Config {
     // Zero's evaluator played it. off needs gating (checkConsistency).
     // Tunable on resume.
     bool arenaLadder = true;
+    // How arena_engines share a wave's games: "static" cuts them into one
+    // fixed slice per engine; "dynamic" streams them from one queue, as
+    // selfplay_allocation does for self-play.
+    std::string arenaAllocation = "static";
+    // Seconds between attempts to readmit a retired engine whose machine
+    // was seen unreachable and has come back; 0 turns readmission off.
+    double readmitSeconds = 300;
     // output
     int sgfPerGeneration = 2;
 
