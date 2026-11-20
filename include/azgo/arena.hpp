@@ -167,7 +167,8 @@ public:
     // evaluated. An exception stops the engine as a failed game does.
     virtual void done(int index, ArenaGameResult result, long long evaluations) = 0;
     // A worker failed: from now on next() must return -1 at once, and
-    // workers blocked in it must be woken.
+    // workers blocked in it must be woken. It may be called more than once
+    // (once per aborted worker), so it must be idempotent.
     virtual void stop() = 0;
 };
 

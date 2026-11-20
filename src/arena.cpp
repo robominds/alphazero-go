@@ -227,6 +227,77 @@ private:
     long long& count_;
 };
 
+// What a set of ranges needs before any game: every network of the set
+// (one shape, since a worker's workspace serves them all), the distinct
+// networks in order of first appearance, the largest request each one's
+// seats make, and each range's seats: the index into nets (-1 = bot) and
+// the search settings.
+struct RangePlan {
+    const Network* first = nullptr;
+    std::vector<const Network*> nets;
+    std::vector<int> maxRequest;
+    std::vector<std::array<int, 2>> seatNet;
+    std::vector<std::array<MctsConfig, 2>> seatSearch;
+};
+
+// Checks each range's players as playMatch does, then `checkRange(range)`
+// (the caller's own test of first and count), then the networks' shapes.
+template <class CheckRange>
+RangePlan planRanges(const std::vector<ArenaGameRange>& ranges, const ArenaConfig& cfg, int inferenceBatch,
+                     CheckRange checkRange) {
+    RangePlan plan;
+    for (const ArenaGameRange& r : ranges) {
+        checkPlayers(r.a, r.b, cfg, inferenceBatch);
+        checkRange(r);
+    }
+    for (const ArenaGameRange& r : ranges)
+        for (const ArenaPlayer* p : {&r.a, &r.b})
+            if (p->net && !plan.first) plan.first = p->net;
+    for (const ArenaGameRange& r : ranges)
+        for (const ArenaPlayer* p : {&r.a, &r.b})
+            if (p->net && p->net->config() != plan.first->config())
+                throw std::invalid_argument("playMatch: networks have different architectures");
+
+    plan.seatNet.assign(ranges.size(), {-1, -1});
+    plan.seatSearch.resize(ranges.size());
+    for (size_t i = 0; i < ranges.size(); ++i) {
+        const ArenaPlayer* players[2] = {&ranges[i].a, &ranges[i].b};
+        for (int p = 0; p < 2; ++p) {
+            plan.seatSearch[i][p] = arenaSearchConfig(*players[p], cfg);
+            if (!players[p]->net) continue;
+            auto it = std::find(plan.nets.begin(), plan.nets.end(), players[p]->net);
+            if (it == plan.nets.end()) {
+                plan.nets.push_back(players[p]->net);
+                plan.maxRequest.push_back(0);
+                it = plan.nets.end() - 1;
+            }
+            const size_t k = static_cast<size_t>(it - plan.nets.begin());
+            plan.seatNet[i][p] = static_cast<int>(k);
+            plan.maxRequest[k] = std::max(plan.maxRequest[k], plan.seatSearch[i][p].batchSize);
+        }
+    }
+    return plan;
+}
+
+// Seat p of range i for a worker. A network seat searches with
+// wrap(its shared evaluator): a wrapper it owns, or null to use the shared
+// one as is. A bot needs no network: the board size and history come from
+// the round's networks.
+template <class Wrap>
+void fillSeat(Seat& seat, const RangePlan& plan, size_t i, int p, RoundEvaluators& evaluators, int worker,
+              Wrap wrap) {
+    seat.mcts = plan.seatSearch[i][p];
+    if (plan.seatNet[i][p] >= 0) {
+        Evaluator& shared = evaluators.get(static_cast<size_t>(plan.seatNet[i][p]), worker);
+        seat.own = wrap(shared);
+        seat.evaluator = seat.own ? seat.own.get() : &shared;
+    } else {
+        const NetConfig shape = plan.first->config();
+        seat.own = std::make_unique<UniformEvaluator>(shape.boardSize, shape.history, 0.0f, seat.mcts.batchSize);
+        seat.evaluator = seat.own.get();
+    }
+}
+
 // One game of one range: the pool's unit of work.
 struct GameTask {
     int range, game;   // game: its index in its match
@@ -249,44 +320,11 @@ std::vector<ArenaGameResult> playArenaGames(const std::vector<ArenaGameRange>& r
                                             const ArenaConfig& cfg, const EngineRun& run,
                                             SliceStats* stats) {
     const auto start = std::chrono::steady_clock::now();
-    for (const ArenaGameRange& r : ranges) {
-        checkPlayers(r.a, r.b, cfg, run.inferenceBatch);
+    const RangePlan plan = planRanges(ranges, cfg, run.inferenceBatch, [](const ArenaGameRange& r) {
         if (r.first < 0 || r.count < 0)
             throw std::invalid_argument("playArenaGames: bad game range [" + std::to_string(r.first) +
                                         ", +" + std::to_string(r.count) + ")");
-    }
-    // Every network of the set: one shape, since a worker's workspace serves them all.
-    const Network* first = nullptr;
-    for (const ArenaGameRange& r : ranges)
-        for (const ArenaPlayer* p : {&r.a, &r.b})
-            if (p->net && !first) first = p->net;
-    for (const ArenaGameRange& r : ranges)
-        for (const ArenaPlayer* p : {&r.a, &r.b})
-            if (p->net && p->net->config() != first->config())
-                throw std::invalid_argument("playMatch: networks have different architectures");
-
-    // The distinct networks, in order of first appearance, and the largest
-    // request each one's seats make.
-    std::vector<const Network*> nets;
-    std::vector<int> maxRequest;
-    std::vector<std::array<int, 2>> seatNet(ranges.size(), {-1, -1});   // index into nets; -1 = bot
-    std::vector<std::array<MctsConfig, 2>> seatSearch(ranges.size());
-    for (size_t i = 0; i < ranges.size(); ++i) {
-        const ArenaPlayer* players[2] = {&ranges[i].a, &ranges[i].b};
-        for (int p = 0; p < 2; ++p) {
-            seatSearch[i][p] = arenaSearchConfig(*players[p], cfg);
-            if (!players[p]->net) continue;
-            auto it = std::find(nets.begin(), nets.end(), players[p]->net);
-            if (it == nets.end()) {
-                nets.push_back(players[p]->net);
-                maxRequest.push_back(0);
-                it = nets.end() - 1;
-            }
-            const size_t k = static_cast<size_t>(it - nets.begin());
-            seatNet[i][p] = static_cast<int>(k);
-            maxRequest[k] = std::max(maxRequest[k], seatSearch[i][p].batchSize);
-        }
-    }
+    });
 
     // The games, round-robin across ranges (the first game of every range,
     // then the second, ...), so every match is under way from the start.
@@ -311,8 +349,8 @@ std::vector<ArenaGameResult> playArenaGames(const std::vector<ArenaGameRange>& r
         const int count = static_cast<int>(tasks.size());
         const int threads = arenaWorkers(run.workers, run.backend, count);
         // Declared before the games that point into them.
-        RoundEvaluators evaluators(nets, maxRequest, run.backend, threads, run.inferenceBatch);
-        const NetConfig shape = first->config();
+        RoundEvaluators evaluators(plan.nets, plan.maxRequest, run.backend, threads, run.inferenceBatch);
+        const NetConfig shape = plan.first->config();
         // Each worker is one thread for the whole pool: it sets its QoS
         // class once, before its first game.
         std::vector<char> qosSet(static_cast<size_t>(threads), 0);
@@ -324,25 +362,12 @@ std::vector<ArenaGameResult> playArenaGames(const std::vector<ArenaGameRange>& r
             const GameTask& task = tasks[static_cast<size_t>(t)];
             const size_t i = static_cast<size_t>(task.range);
             Seat seats[2];
-            for (int p = 0; p < 2; ++p) {
-                Seat& seat = seats[p];
-                seat.mcts = seatSearch[i][p];
-                if (seatNet[i][p] >= 0) {
-                    Evaluator& shared = evaluators.get(static_cast<size_t>(seatNet[i][p]), worker);
-                    if (run.cancel) {
-                        seat.own = std::make_unique<CancellableEvaluator>(shared, *run.cancel);
-                        seat.evaluator = seat.own.get();
-                    } else {
-                        seat.evaluator = &shared;
-                    }
-                } else {
-                    // A bot needs no network: the board size and history come
-                    // from the round's networks.
-                    seat.own = std::make_unique<UniformEvaluator>(shape.boardSize, shape.history, 0.0f,
-                                                                  seat.mcts.batchSize);
-                    seat.evaluator = seat.own.get();
-                }
-            }
+            for (int p = 0; p < 2; ++p)
+                fillSeat(seats[p], plan, i, p, evaluators, worker,
+                         [&](Evaluator& shared) -> std::unique_ptr<Evaluator> {
+                             if (!run.cancel) return nullptr;
+                             return std::make_unique<CancellableEvaluator>(shared, *run.cancel);
+                         });
             const size_t at = offset[i] + static_cast<size_t>(task.game - ranges[i].first);
             results[at] = playArenaGame(seats[0], seats[1], cfg, shape.boardSize, ranges[i].seed, task.game);
         });
@@ -360,46 +385,17 @@ std::vector<ArenaGameResult> playArenaGames(const std::vector<ArenaGameRange>& r
 void playArenaQueue(const std::vector<ArenaGameRange>& wave, const ArenaConfig& cfg,
                     const EngineRun& run, ArenaGameSource& source, SliceStats* stats) {
     const auto start = std::chrono::steady_clock::now();
-    for (const ArenaGameRange& r : wave) {
-        checkPlayers(r.a, r.b, cfg, run.inferenceBatch);
+    const RangePlan plan = planRanges(wave, cfg, run.inferenceBatch, [](const ArenaGameRange& r) {
         if (r.first != 0 || r.count < 0)
             throw std::invalid_argument("playArenaQueue: a wave's range must be a whole match, got [" +
                                         std::to_string(r.first) + ", +" + std::to_string(r.count) + ")");
-    }
-    const Network* first = nullptr;
-    for (const ArenaGameRange& r : wave)
-        for (const ArenaPlayer* p : {&r.a, &r.b})
-            if (p->net && !first) first = p->net;
-    for (const ArenaGameRange& r : wave)
-        for (const ArenaPlayer* p : {&r.a, &r.b})
-            if (p->net && p->net->config() != first->config())
-                throw std::invalid_argument("playMatch: networks have different architectures");
-
-    // As playArenaGames: the distinct networks and the largest request each
-    // one's seats make; wave index i starts range r at ends[r - 1].
-    std::vector<const Network*> nets;
-    std::vector<int> maxRequest;
-    std::vector<std::array<int, 2>> seatNet(wave.size(), {-1, -1});   // index into nets; -1 = bot
-    std::vector<std::array<MctsConfig, 2>> seatSearch(wave.size());
+    });
+    // Wave index i is in the first range whose cumulative end is past it.
     std::vector<long long> ends(wave.size(), 0);
     long long total = 0;
     for (size_t i = 0; i < wave.size(); ++i) {
         total += wave[i].count;
         ends[i] = total;
-        const ArenaPlayer* players[2] = {&wave[i].a, &wave[i].b};
-        for (int p = 0; p < 2; ++p) {
-            seatSearch[i][p] = arenaSearchConfig(*players[p], cfg);
-            if (!players[p]->net) continue;
-            auto it = std::find(nets.begin(), nets.end(), players[p]->net);
-            if (it == nets.end()) {
-                nets.push_back(players[p]->net);
-                maxRequest.push_back(0);
-                it = nets.end() - 1;
-            }
-            const size_t k = static_cast<size_t>(it - nets.begin());
-            seatNet[i][p] = static_cast<int>(k);
-            maxRequest[k] = std::max(maxRequest[k], seatSearch[i][p].batchSize);
-        }
     }
     long long evaluations = 0;
     std::atomic<long long> positions{0};
@@ -407,8 +403,8 @@ void playArenaQueue(const std::vector<ArenaGameRange>& wave, const ArenaConfig& 
     if (total > 0) {
         const int workers = arenaWorkers(run.workers, run.backend, static_cast<int>(total));
         // Declared before the games that point into them.
-        RoundEvaluators evaluators(nets, maxRequest, run.backend, workers, run.inferenceBatch);
-        const NetConfig shape = first->config();
+        RoundEvaluators evaluators(plan.nets, plan.maxRequest, run.backend, workers, run.inferenceBatch);
+        const NetConfig shape = plan.first->config();
         std::atomic<bool> stop{false};
         std::mutex errorMutex;
         auto fail = [&] {
@@ -433,18 +429,11 @@ void playArenaQueue(const std::vector<ArenaGameRange>& wave, const ArenaConfig& 
                     const int game = index - static_cast<int>(ends[r] - wave[r].count);
                     long long count = 0;
                     Seat seats[2];
-                    for (int p = 0; p < 2; ++p) {
-                        Seat& seat = seats[p];
-                        seat.mcts = seatSearch[r][p];
-                        if (seatNet[r][p] >= 0) {
-                            Evaluator& shared = evaluators.get(static_cast<size_t>(seatNet[r][p]), w);
-                            seat.own = std::make_unique<QueueEvaluator>(shared, run.cancel, stop, count);
-                        } else {
-                            seat.own = std::make_unique<UniformEvaluator>(shape.boardSize, shape.history,
-                                                                          0.0f, seat.mcts.batchSize);
-                        }
-                        seat.evaluator = seat.own.get();
-                    }
+                    for (int p = 0; p < 2; ++p)
+                        fillSeat(seats[p], plan, r, p, evaluators, w,
+                                 [&](Evaluator& shared) -> std::unique_ptr<Evaluator> {
+                                     return std::make_unique<QueueEvaluator>(shared, run.cancel, stop, count);
+                                 });
                     ArenaGameResult result =
                         playArenaGame(seats[0], seats[1], cfg, shape.boardSize, wave[r].seed, game);
                     positions += static_cast<long long>(result.moves.size());
