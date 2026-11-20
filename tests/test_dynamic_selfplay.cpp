@@ -30,6 +30,7 @@
 #include "azgo/engines.hpp"
 #include "azgo/network.hpp"
 #include "azgo/selfplay_slice.hpp"
+#include "azgo/selfplay_stream.hpp"
 
 using namespace azgo;
 
@@ -289,6 +290,45 @@ static void test_silent_stream() {
     distributed_probe::reset();
 }
 
+// A remote whose stream answers a self-play job with an arena game frame
+// (a well-formed frame of the wrong kind): each session fails on it, before
+// any checker sees it, and the engine retires; the local engine, starting
+// late so the sessions have games, plays every game.
+static void test_unexpected_frame() {
+    Fixture f("unexpected");
+    const std::string frame = (f.dir / "arena.frame").string();
+    {
+        std::ofstream out(frame, std::ios::binary);
+        ArenaGameResult game;
+        game.scoreA = 1;
+        game.moves = {12, 25, 25};
+        out << streamArenaGameFrame(0, game, 0.5, 10);
+    }
+    const std::string script = (f.dir / "arena.sh").string();
+    {
+        std::ofstream out(script);
+        out << "#!/bin/sh\n"
+               "for a in \"$@\"; do [ \"$a\" = --stream ] && { cat '"
+            << frame << "'; exec sleep 60; }; done\n"
+               "exec '"
+            << AZGO_SELFPLAY_EXE << "' \"$@\"\n";
+    }
+    std::filesystem::permissions(script, std::filesystem::perms::owner_all);
+    applyOverride(f.cfg, "selfplay_engines=local/naive:1, odd/naive:1");
+    distributed_probe::delaySlice("local/naive", 0.5);
+    std::ostringstream log;
+    Coordinator c(f.cfg, f.runDir(),
+                  parseHostsText("odd exe=" + script + " workdir=" + (f.dir / "remote_odd").string() + "\n", "h"),
+                  &log);
+    c.preflight();
+    assert(sameRecords(f.play(c, 1), f.whole(1)));
+    assert(c.reports()[0].slice.count == 12 && c.reports()[1].slice.count == 0);
+    assert(contains(c.reports()[1].note, "2 failed streams") &&
+           contains(c.reports()[1].note, "retired: odd: stream: an unexpected 'A' frame"));
+    assert(contains(log.str(), "odd/naive's stream failed (odd: stream: an unexpected 'A' frame)"));
+    distributed_probe::reset();
+}
+
 // A forced assignment is played as given, whoever is faster.
 static void test_forced_assignment() {
     Fixture f("forced");
@@ -339,6 +379,7 @@ int main() {
     test_remote_only();
     test_failures();
     test_silent_stream();
+    test_unexpected_frame();
     test_forced_assignment();
     test_games_manifest();
     std::printf("test_dynamic_selfplay: OK\n");

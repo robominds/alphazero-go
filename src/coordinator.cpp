@@ -1054,8 +1054,8 @@ struct Coordinator::DynamicPhase {
     // Local engine k's workers, run.workers of them, playing the games a
     // QueueSource hands out.
     std::function<void(size_t k, const EngineRun& run, SliceStats* stats)> playLocal;
-    // A game frame of remote engine k's session: checked with `check`, then
-    // given to streamedBack under the mutex.
+    // A game frame of remote engine k's session: checked with `check`
+    // (outside the mutex), then given to streamedBack.
     std::function<void(size_t k, StreamChecker& check, const std::string& payload)> streamGame;
 
     std::vector<Engine> engines;   // the queue's engines, in order; the last is the fallback
@@ -1135,11 +1135,12 @@ struct Coordinator::DynamicPhase {
         wake.notify_all();
     }
 
-    // Under the mutex: game i of remote engine k's session, as its checker
-    // read it. Refused unless the session holds it; then counted, and back.
+    // Game i of remote engine k's session, as its checker read it (takes the
+    // mutex). Refused unless the session holds it; then counted, and back.
     template <class Record>
     void streamedBack(size_t k, int i, Record record, long long positions, long long evaluations,
                       std::vector<Record>& records) {
+        std::lock_guard<std::mutex> lock(mutex);
         const std::vector<int> held = queue->held(static_cast<int>(k));
         if (!std::binary_search(held.begin(), held.end(), i))
             throw SliceError("stream: game " + std::to_string(i) + " was not asked of this session");
@@ -1494,6 +1495,9 @@ struct Coordinator::DynamicPhase {
     // the reports of the engines that played, in queue order; throws the
     // first failure by engine order, SliceCancelled once cancel() was called.
     std::vector<SliceReport> run() {
+        if (!playLocal || !streamGame) throw std::logic_error("DynamicPhase: a kind without playLocal or streamGame");
+        if (anyRemote() && (jobBytes.empty() || networks.empty()))
+            throw std::logic_error("DynamicPhase: a remote engine but no job or networks");
         std::map<std::string, std::set<std::string>> keep;
         for (size_t k = 0; k < listed; ++k) {
             Engine& e = engines[k];
@@ -1641,7 +1645,6 @@ std::vector<GameRecord> Coordinator::playDynamic(int g, const std::string& netwo
     p.streamGame = [&](size_t k, StreamChecker& check, const std::string& payload) {
         StreamGame game = check.game(payload);
         const long long positions = game.record.positions();
-        std::lock_guard<std::mutex> lock(p.mutex);
         p.streamedBack(k, game.index, std::move(game.record), positions, game.evaluations, records);
     };
     std::vector<SliceReport> reports = p.run();
