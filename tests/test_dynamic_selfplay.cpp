@@ -321,7 +321,10 @@ static void test_unexpected_frame() {
                   parseHostsText("odd exe=" + script + " workdir=" + (f.dir / "remote_odd").string() + "\n", "h"),
                   &log);
     c.preflight();
+    const auto start = std::chrono::steady_clock::now();
     assert(sameRecords(f.play(c, 1), f.whole(1)));
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    assert(seconds < 30);   // each session stopped, not the 60 s its process would sleep
     assert(c.reports()[0].slice.count == 12 && c.reports()[1].slice.count == 0);
     assert(contains(c.reports()[1].note, "2 failed streams") &&
            contains(c.reports()[1].note, "retired: odd: stream: an unexpected 'A' frame"));
@@ -373,6 +376,32 @@ static void test_games_manifest() {
     assert(contains(rows.str(), "\n1,,7,pc/cuda,pc/cuda,\"cuda; x\","));
 }
 
+// Preflight's fingerprint-change note compares with an engine's last row
+// in a manifest where it played: a row of no games (an engine not tried,
+// or retired before its hello) has no fingerprint and is no change.
+static void test_fingerprint_note_skips_unplayed_rows() {
+    Fixture f("fingerprint_rows");
+    applyOverride(f.cfg, "selfplay_engines=local/naive:1");
+    SliceReport played, unplayed;
+    played.dynamic = unplayed.dynamic = true;
+    played.planned = played.engine = unplayed.planned = unplayed.engine = "local/naive";
+    played.slice.count = 12;
+    played.fingerprint = engineFingerprint("naive");
+    writeManifest(f.runDir(), 1, {played});
+    writeManifest(f.runDir(), 2, {unplayed});   // count 0, fingerprint ""
+    std::ostringstream same;
+    Coordinator c(f.cfg, f.runDir(), HostsFile{}, &same);
+    c.preflight();
+    assert(!contains(same.str(), "the fingerprint of"));
+    // A row of games with another fingerprint is a change.
+    played.fingerprint = "naive; another machine";
+    writeManifest(f.runDir(), 2, {played, unplayed});
+    std::ostringstream changed;
+    Coordinator d(f.cfg, f.runDir(), HostsFile{}, &changed);
+    d.preflight();
+    assert(contains(changed.str(), "note: the fingerprint of local/naive changed from \"naive; another machine\""));
+}
+
 int main() {
     test_local_engines();
     test_fake_remote();
@@ -382,6 +411,7 @@ int main() {
     test_unexpected_frame();
     test_forced_assignment();
     test_games_manifest();
+    test_fingerprint_note_skips_unplayed_rows();
     std::printf("test_dynamic_selfplay: OK\n");
     return 0;
 }

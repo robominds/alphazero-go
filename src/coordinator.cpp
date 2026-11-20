@@ -192,8 +192,10 @@ std::vector<std::string> csvFields(const std::string& row) {
 }
 
 // Each engine's fingerprint in a manifest's last row where it played: the
-// self-play manifest's (11 fields, engine and fingerprint at 4 and 5) or the
-// arena's (12 fields, at 5 and 6).
+// self-play manifest's (11 fields, count, engine and fingerprint at 2, 4
+// and 5) or the arena's (12 fields, at 3, 5 and 6). A row of no games (an
+// engine not tried, or retired before its hello) has no fingerprint and is
+// skipped.
 std::map<std::string, std::string> lastFingerprints(const std::string& path, size_t fields,
                                                     size_t engine) {
     std::map<std::string, std::string> out;
@@ -202,7 +204,8 @@ std::map<std::string, std::string> lastFingerprints(const std::string& path, siz
     std::getline(in, line);   // the header
     while (std::getline(in, line)) {
         const std::vector<std::string> f = csvFields(line);
-        if (f.size() == fields) out[f[engine]] = f[engine + 1];
+        if (f.size() != fields || f[engine + 1].empty() || f[engine - 2] == "0") continue;
+        out[f[engine]] = f[engine + 1];
     }
     return out;
 }
