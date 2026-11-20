@@ -663,7 +663,7 @@ static void test_phase_end_not_delayed() {
     distributed_probe::failSession("fake/naive", 1, 1);
     distributed_probe::delaySlice("local/naive", 1);
     distributed_probe::readmitSeconds(0.05);
-    distributed_probe::slowProbe("fake/naive", 5);
+    distributed_probe::slowProbe("fake/naive", 10);
     f.drop("fake");
     FileWatcher watch({f.runDir(), (f.dir / "remote_fake").string()});
     std::thread back([&] {
@@ -674,9 +674,9 @@ static void test_phase_end_not_delayed() {
     assert(sameRecords(f.play(c, 1), f.whole(1)));
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     back.join();
-    assert(seconds < 4);   // not the 5 s of the probe
+    assert(seconds < 8);   // not the 10 s of the probe
     // Past the probe's answer: still no session of a later attempt.
-    std::this_thread::sleep_for(std::chrono::duration<double>(std::max(0.0, 7 - seconds)));
+    std::this_thread::sleep_for(std::chrono::duration<double>(std::max(0.0, 12 - seconds)));
     watch.stop();
     assert(watch.any("_s1_a1.job") && !watch.any("_s1_a2.job"));
     assert(!contains(buf.str(), "readmitted"));

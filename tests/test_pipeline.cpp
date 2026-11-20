@@ -344,7 +344,7 @@ static std::set<std::string> jobFiles(const std::vector<std::string>& dirs) {
 // removed, the machine is unreachable). Self-play's session and the arena
 // wave's run at once, with their own files; the machine drops, each
 // session fails after a game and its engine retires. The arena waits on
-// probes every 0.05 s, self-play every 6 s: the machine comes back, the
+// probes every 0.05 s, self-play every 10 s: the machine comes back, the
 // arena readmits it and drops it again for a moment. Self-play is
 // readmitted only after that, on its own probe: the arena's readmission
 // cleared nothing of self-play's. Each phase's games are then played as
@@ -381,13 +381,16 @@ static void test_two_dynamic_phases() {
     coordinator.preflight();
     // The first two sessions (one a phase) fail after a game. Local engines
     // start late, so the remote has games when it fails and when it is
-    // back. Sessions open their streams 4 s after their job is written, and
-    // the arena starts 2 s after self-play's session: self-play retires
-    // (and reads its probe spacing) about 2 s before the arena does.
+    // back. Sessions open their streams 5 s after their job is written, and
+    // the arena starts 3 s after self-play's session: self-play retires
+    // (and reads its probe spacing) about 3 s before the arena does. The
+    // margins are seconds wide, for a loaded machine: self-play's probe
+    // comes about 7 s after the arena's readmission, and the local engines
+    // start about 7 s after self-play's.
     distributed_probe::failSession("fake/naive", 2, 1);
-    distributed_probe::delaySlice("local/naive", 16);
-    distributed_probe::delaySlice("fake/naive", 4);
-    distributed_probe::readmitSeconds(6);
+    distributed_probe::delaySlice("local/naive", 22);
+    distributed_probe::delaySlice("fake/naive", 5);
+    distributed_probe::readmitSeconds(10);
     std::vector<GameRecord> records;
     std::vector<MatchResult> results;
     std::exception_ptr selfplayError, arenaError;
@@ -399,7 +402,7 @@ static void test_two_dynamic_phases() {
         }
     });
     assert(waitFor([&] { return jobFiles(dirs).count("g0004_s1_a1.job") > 0; }, 30));
-    std::this_thread::sleep_for(std::chrono::seconds(2));
+    std::this_thread::sleep_for(std::chrono::seconds(3));
     coordinator.beginArena(3);
     std::thread arena([&] {
         try {
@@ -420,7 +423,7 @@ static void test_two_dynamic_phases() {
     const std::string selfplayBack = "note: generation 4: fake/naive readmitted (machine answered again)";
     const std::string arenaBack = "note: generation 3 arena wave 1: fake/naive readmitted (machine answered again)";
     buf.await(selfplayRetired);
-    // Past self-play's reading of the spacing; the arena retires about 2 s later.
+    // Past self-play's reading of the spacing; the arena retires about 3 s later.
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
     distributed_probe::readmitSeconds(0.05);
     buf.await(arenaRetired);
