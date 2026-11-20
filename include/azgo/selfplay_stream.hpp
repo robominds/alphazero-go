@@ -9,7 +9,11 @@
 // the games in flight.
 //
 // The job is a self-play job file (azgo/selfplay_slice.hpp) whose range
-// [first, first + count) is the set of indices the process may be asked for.
+// [first, first + count) is the set of indices the process may be asked for,
+// or an arena job file (azgo/arena_slice.hpp) for a streamed arena wave: its
+// ranges are full matches (first = 0), numbered match-major as the wave is,
+// and the indices are [0, games). The process plays them with
+// playArenaQueue, the same way, and answers with arena frames.
 //
 // Commands (coordinator -> stdin), one per line:
 //   play <index>   start game <index> (in the job's range, never twice)
@@ -22,8 +26,11 @@
 //   AZSH hello (first): u64 job hash, str build ID, str engine fingerprint
 //   AZSG game: i32 index, the result file's record layout, f64 seconds,
 //        u64 evaluations (the game's own)
+//   AZSA arena game (an arena job's, in place of AZSG): i32 wave index,
+//        u32 n, n x i32 moves, f64 scoreA, f64 seconds, u64 evaluations
 //   AZSE end (after `end`): f64 seconds, u64 positions, u64 evaluations
 // The coordinator verifies every game as a result file's (the same replay).
+// An end frame's positions are the plies played for an arena job.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #pragma once
@@ -31,6 +38,7 @@
 #include <ostream>
 #include <set>
 #include <string>
+#include "azgo/arena_slice.hpp"
 #include "azgo/selfplay.hpp"
 #include "azgo/selfplay_slice.hpp"
 
@@ -51,13 +59,21 @@ struct StreamGame {
     long long evaluations = 0;
 };
 
+struct StreamArenaGame {
+    int index = 0;
+    ArenaGameResult result;
+    double seconds = 0;
+    long long evaluations = 0;
+};
+
 // Whole frames, checksum included.
 std::string streamHelloFrame(const StreamHello& hello);
 std::string streamGameFrame(int index, const GameRecord& record, double seconds, long long evaluations);
+std::string streamArenaGameFrame(int index, const ArenaGameResult& result, double seconds, long long evaluations);
 std::string streamEndFrame(const SliceStats& stats);
 
 // Cuts a byte stream into frames. feed() appends bytes; next() returns the
-// next whole frame's kind ('H', 'G' or 'E') and payload, or false when the
+// next whole frame's kind ('H', 'G', 'A' or 'E') and payload, or false when the
 // bytes so far end inside a frame. SliceError for an unknown magic, a
 // length above kMaxStreamFrame or a checksum that does not match.
 class StreamFrames {
@@ -77,24 +93,35 @@ private:
 //          returned; a record that does not verify (verifySelfPlayRecord);
 //          trailing bytes;
 //   end:   before the hello; positions other than the games' total.
+// An arena job (isArenaJob) is checked the same way with arenaGame() for
+// game(): an index outside [0, job.games()) or already returned, a game that
+// fails verifyArenaGame (game j of the match its index falls in), trailing
+// bytes; positions are the games' plies. game() on an arena job and
+// arenaGame() on a self-play job are refused, and so is an arena job whose
+// ranges do not start at game 0.
 class StreamChecker {
 public:
     StreamChecker(const std::string& jobBytes, const std::string& expectedBuild);
     StreamHello hello(const std::string& payload);
     StreamGame game(const std::string& payload);
+    StreamArenaGame arenaGame(const std::string& payload);
     SliceStats end(const std::string& payload);
-    const SelfPlayJob& job() const { return job_; }
+    bool arena() const { return arena_; }
+    const SelfPlayJob& job() const { return job_; }   // a self-play job's
+    const ArenaJob& arenaJob() const { return arenaJob_; }
 private:
     std::string jobBytes_, expectedBuild_;
+    bool arena_ = false;
     SelfPlayJob job_;
+    ArenaJob arenaJob_;
     bool helloSeen_ = false;
     std::set<int> returned_;
     long long positions_ = 0;
 };
 
 // What `selfplay --stream` does: loads and checks the job and its network
-// as runSliceJob does, writes the hello to outFd, then plays the games the
-// commands on inFd ask for on `workers` threads (at least 1) of `backend`
+// (networks, for an arena job) as runSliceJob or runArenaJob does, writes
+// the hello to outFd, then plays the games the commands on inFd ask for on `workers` threads (at least 1) of `backend`
 // (inferenceBatch <= 0: the job's), writing each game's frame as it ends.
 // After `end` and the last game, the end frame; returns 0. Returns 1 with
 // the reason on `err`, promptly, on a bad job, a bad command, end of file

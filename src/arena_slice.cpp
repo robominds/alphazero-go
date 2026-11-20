@@ -58,6 +58,8 @@ ArenaJobPlayer readPlayer(BinaryReader& r) {
     return p;
 }
 
+} // namespace
+
 // The checks of readArenaResult that replay one game: game `index` of its
 // match (A Black when even), on the job's board, komi and move cap.
 void verifyArenaGame(const ArenaJob& job, int index, const ArenaGameResult& g, const std::string& game) {
@@ -77,8 +79,6 @@ void verifyArenaGame(const ArenaJob& job, int index, const ArenaGameResult& g, c
         throw SliceError(game + "score " + std::to_string(g.scoreA) + " for A, the replayed board gives " +
                          std::to_string(score));
 }
-
-} // namespace
 
 int ArenaJob::games() const {
     int total = 0;
@@ -303,46 +303,61 @@ ArenaSliceResult readArenaResult(const std::string& path, const std::string& job
     return result;
 }
 
+namespace slice_files {
+
+std::vector<ArenaGameRange> LoadedArenaJob::ranges() const {
+    auto player = [&](const ArenaJobPlayer& p) {
+        ArenaPlayer out;
+        out.net = p.network >= 0 ? nets[static_cast<size_t>(p.network)].get() : nullptr;
+        out.simulations = p.simulations;
+        out.randomSymmetry = p.randomSymmetry;
+        out.cPuct = p.cPuct;
+        out.mctsBatch = p.mctsBatch;
+        return out;
+    };
+    std::vector<ArenaGameRange> out;
+    for (const ArenaJobRange& r : job.ranges) out.push_back({player(r.a), player(r.b), r.seed, r.first, r.count});
+    return out;
+}
+
+LoadedArenaJob loadArenaJob(const std::string& jobPath) {
+    std::ifstream in(jobPath, std::ios::binary);
+    if (!in) throw SliceError(jobPath + ": cannot read the job");
+    LoadedArenaJob out;
+    out.bytes.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    out.job = parseArenaJob(out.bytes);
+    if (out.job.buildId != buildId())
+        throw SliceError("build ID mismatch: the job comes from " + out.job.buildId + ", this binary is " +
+                         buildId() + " (sync the machines)");
+    // Every network the ranges name, each checked against its hash.
+    for (const ArenaJobNetwork& file : out.job.networks) {
+        const std::string netPath = (std::filesystem::path(jobPath).parent_path() / file.file).string();
+        if (!std::filesystem::exists(netPath)) throw SliceError(netPath + ": network missing");
+        if (fileHash(netPath) != file.hash)
+            throw SliceError(netPath + ": its hash differs from the job's network hash");
+        out.nets.push_back(std::make_unique<Network>(loadNetwork(netPath)));
+        if (out.nets.back()->config().boardSize != out.job.boardSize)
+            throw SliceError(netPath + " is not a " + std::to_string(out.job.boardSize) + "x" +
+                             std::to_string(out.job.boardSize) + " network");
+    }
+    return out;
+}
+
+} // namespace slice_files
+
 int runArenaJob(const std::string& jobPath, const std::string& outPath, const std::string& backend,
                 int workers, int inferenceBatch, std::ostream& err) {
     try {
-        std::ifstream in(jobPath, std::ios::binary);
-        if (!in) throw SliceError(jobPath + ": cannot read the job");
-        const std::string jobBytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        const ArenaJob job = parseArenaJob(jobBytes);
-        if (job.buildId != buildId())
-            throw SliceError("build ID mismatch: the job comes from " + job.buildId + ", this binary is " +
-                             buildId() + " (sync the machines)");
+        const slice_files::LoadedArenaJob loaded = slice_files::loadArenaJob(jobPath);
+        const ArenaJob& job = loaded.job;
         checkBackendAvailable(backend);
-        // Every network the ranges name, each checked against its hash.
-        std::vector<std::unique_ptr<Network>> nets;
-        for (const ArenaJobNetwork& file : job.networks) {
-            const std::string netPath = (std::filesystem::path(jobPath).parent_path() / file.file).string();
-            if (!std::filesystem::exists(netPath)) throw SliceError(netPath + ": network missing");
-            if (fileHash(netPath) != file.hash)
-                throw SliceError(netPath + ": its hash differs from the job's network hash");
-            nets.push_back(std::make_unique<Network>(loadNetwork(netPath)));
-            if (nets.back()->config().boardSize != job.boardSize)
-                throw SliceError(netPath + " is not a " + std::to_string(job.boardSize) + "x" +
-                                 std::to_string(job.boardSize) + " network");
-        }
-        auto player = [&](const ArenaJobPlayer& p) {
-            ArenaPlayer out;
-            out.net = p.network >= 0 ? nets[static_cast<size_t>(p.network)].get() : nullptr;
-            out.simulations = p.simulations;
-            out.randomSymmetry = p.randomSymmetry;
-            out.cPuct = p.cPuct;
-            out.mctsBatch = p.mctsBatch;
-            return out;
-        };
-        std::vector<ArenaGameRange> ranges;
-        for (const ArenaJobRange& r : job.ranges) ranges.push_back({player(r.a), player(r.b), r.seed, r.first, r.count});
+        const std::vector<ArenaGameRange> ranges = loaded.ranges();
         EngineRun run;
         run.backend = backend;
         run.workers = sliceWorkers(backend, workers, std::max(1, job.games()), resolveWorkers(0));
         run.inferenceBatch = inferenceBatch > 0 ? inferenceBatch : job.inferenceBatch;
         ArenaSliceResult result;
-        result.jobHash = fnv1a64(jobBytes);
+        result.jobHash = fnv1a64(loaded.bytes);
         result.buildId = buildId();
         result.fingerprint = engineFingerprint(backend);
         // playArenaGames refuses what playMatch refuses (players, shapes, batches).

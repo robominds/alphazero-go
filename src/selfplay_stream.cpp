@@ -9,6 +9,7 @@
 #include <cstring>
 #include <deque>
 #include <exception>
+#include <fstream>
 #include <map>
 #include <mutex>
 #include <poll.h>
@@ -29,6 +30,7 @@ namespace {
 
 const char kHello[4] = {'A', 'Z', 'S', 'H'};
 const char kGame[4] = {'A', 'Z', 'S', 'G'};
+const char kArenaGame[4] = {'A', 'Z', 'S', 'A'};
 const char kEnd[4] = {'A', 'Z', 'S', 'E'};
 
 // magic, u32 length, payload, u64 FNV-1a of all of it.
@@ -68,6 +70,17 @@ std::string streamGameFrame(int index, const GameRecord& record, double seconds,
                  }));
 }
 
+std::string streamArenaGameFrame(int index, const ArenaGameResult& result, double seconds, long long evaluations) {
+    return frame(kArenaGame, payloadOf([&](BinaryWriter& w) {
+                     w.i32(index);
+                     w.u32(static_cast<uint32_t>(result.moves.size()));
+                     for (int m : result.moves) w.i32(m);
+                     w.f64(result.scoreA);
+                     w.f64(seconds);
+                     w.u64(static_cast<uint64_t>(evaluations));
+                 }));
+}
+
 std::string streamEndFrame(const SliceStats& stats) {
     return frame(kEnd, payloadOf([&](BinaryWriter& w) {
                      w.f64(stats.seconds);
@@ -80,6 +93,7 @@ bool StreamFrames::next(char& kind, std::string& payload) {
     if (buffer_.size() < 8) return false;
     if (buffer_.compare(0, 4, kHello, 4) == 0) kind = 'H';
     else if (buffer_.compare(0, 4, kGame, 4) == 0) kind = 'G';
+    else if (buffer_.compare(0, 4, kArenaGame, 4) == 0) kind = 'A';
     else if (buffer_.compare(0, 4, kEnd, 4) == 0) kind = 'E';
     else throw SliceError("stream: not a frame (wrong magic)");
     const uint64_t length = slice_files::storedUint(buffer_, 4, 4);
@@ -96,8 +110,28 @@ bool StreamFrames::next(char& kind, std::string& payload) {
     return true;
 }
 
+namespace {
+
+// A stream job's ranges are full matches: the wave's indices are the
+// matches' games from game 0 (playArenaQueue's numbering).
+void requireFullMatches(const ArenaJob& job) {
+    for (size_t k = 0; k < job.ranges.size(); ++k)
+        if (job.ranges[k].first != 0)
+            throw SliceError("arena stream job: range " + std::to_string(k) + " starts at game " +
+                             std::to_string(job.ranges[k].first) + " (a stream plays full matches)");
+}
+
+} // namespace
+
 StreamChecker::StreamChecker(const std::string& jobBytes, const std::string& expectedBuild)
-    : jobBytes_(jobBytes), expectedBuild_(expectedBuild), job_(parseJob(jobBytes)) {}
+    : jobBytes_(jobBytes), expectedBuild_(expectedBuild), arena_(isArenaJob(jobBytes)) {
+    if (arena_) {
+        arenaJob_ = parseArenaJob(jobBytes);
+        requireFullMatches(arenaJob_);
+    } else {
+        job_ = parseJob(jobBytes);
+    }
+}
 
 namespace {
 
@@ -139,6 +173,7 @@ StreamHello StreamChecker::hello(const std::string& payload) {
 }
 
 StreamGame StreamChecker::game(const std::string& payload) {
+    if (arena_) throw SliceError("stream: a self-play game on an arena job");
     if (!helloSeen_) throw SliceError("stream: a game before the hello");
     StreamGame g = readPayload(payload, "game", [&](BinaryReader& r) {
         StreamGame out;
@@ -164,6 +199,44 @@ StreamGame StreamChecker::game(const std::string& payload) {
     return g;
 }
 
+StreamArenaGame StreamChecker::arenaGame(const std::string& payload) {
+    if (!arena_) throw SliceError("stream: an arena game on a self-play job");
+    if (!helloSeen_) throw SliceError("stream: a game before the hello");
+    StreamArenaGame g = readPayload(payload, "arena game", [&](BinaryReader& r) {
+        StreamArenaGame out;
+        out.index = r.i32();
+        if (out.index < 0 || out.index >= arenaJob_.games())
+            throw SliceError("index " + std::to_string(out.index) + " is outside the job's games [0, " +
+                             std::to_string(arenaJob_.games()) + ")");
+        if (returned_.count(out.index))
+            throw SliceError("game " + std::to_string(out.index) + " returned twice");
+        const uint32_t n = r.u32();
+        if (n > static_cast<uint32_t>(arenaJob_.cfg.maxMoves))
+            throw SliceError("game " + std::to_string(out.index) + ": " + std::to_string(n) +
+                             " moves, more than max_moves");
+        out.result.moves.resize(n);
+        for (int& m : out.result.moves) m = r.i32();
+        out.result.scoreA = r.f64();
+        out.seconds = r.f64();
+        out.evaluations = static_cast<long long>(r.u64());
+        return out;
+    });
+    // The index falls in a range by cumulative counts; its game there is the
+    // match's game j (A is Black when j is even).
+    int j = g.index, k = 0;
+    while (j >= arenaJob_.ranges[static_cast<size_t>(k)].count) j -= arenaJob_.ranges[static_cast<size_t>(k++)].count;
+    try {
+        verifyArenaGame(arenaJob_, j, g.result,
+                        "game " + std::to_string(g.index) + " (range " + std::to_string(k) + " game " +
+                            std::to_string(j) + "): ");
+    } catch (const SliceError& e) {
+        throw SliceError(std::string("stream arena game: ") + e.what());
+    }
+    returned_.insert(g.index);
+    positions_ += static_cast<long long>(g.result.moves.size());
+    return g;
+}
+
 SliceStats StreamChecker::end(const std::string& payload) {
     if (!helloSeen_) throw SliceError("stream: the end before the hello");
     SliceStats stats = readPayload(payload, "end", [](BinaryReader& r) {
@@ -183,12 +256,14 @@ SliceStats StreamChecker::end(const std::string& payload) {
 
 namespace {
 
-// The games the commands on inFd ask for, for playSelfPlayQueue; each
-// finished game written to outFd as a frame.
-class CommandSource : public GameSource {
+// The games the commands on inFd ask for, as a GameSource or an
+// ArenaGameSource (`Source`) hands them to the queue: indices [first, first
+// + count), each asked for once. A finished game is written to outFd as a
+// frame by the subclass's done(), through finished() and write().
+template <class Source>
+class CommandSource : public Source {
 public:
-    CommandSource(const SelfPlayJob& job, int inFd, int outFd) : job_(job), in_(inFd), out_(outFd) {}
-
+    CommandSource(int first, int count, int inFd, int outFd) : first_(first), count_(count), in_(inFd), out_(outFd) {}
     // The reader thread: commands until `end`, end of file or a bad line.
     void readCommands() {
         std::string line;
@@ -226,22 +301,23 @@ public:
         return index;
     }
 
-    void done(int index, GameRecord record, long long evaluations) override {
-        double seconds = 0;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started_[index]).count();
-            started_.erase(index);
-        }
-        const std::string bytes = streamGameFrame(index, record, seconds, evaluations);
-        std::lock_guard<std::mutex> lock(writeMutex_);
-        if (!writeAll(out_, bytes)) throw SliceError("cannot write a game to stdout (the coordinator is gone)");
-    }
-
     void stop() override {
         std::lock_guard<std::mutex> lock(mutex_);
         stopped_ = true;
         wake_.notify_all();
+    }
+
+    // The seconds since next() gave out `index`.
+    double finished(int index) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const double seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - started_[index]).count();
+        started_.erase(index);
+        return seconds;
+    }
+    void write(const std::string& bytes) {
+        std::lock_guard<std::mutex> lock(writeMutex_);
+        if (!writeAll(out_, bytes)) throw SliceError("cannot write a game to stdout (the coordinator is gone)");
     }
 
     void quit() { quit_ = true; }
@@ -268,7 +344,7 @@ private:
             return false;
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        if (index < job_.first || index >= job_.first + job_.count || given_.count(index)) {
+        if (index < first_ || index >= first_ + count_ || given_.count(index)) {
             failLocked("game " + std::to_string(index) + " is outside the job or was asked for twice");
             return false;
         }
@@ -288,8 +364,7 @@ private:
         wake_.notify_all();
     }
 
-    const SelfPlayJob& job_;
-    const int in_, out_;
+    const int first_, count_, in_, out_;
     std::mutex mutex_, writeMutex_;
     std::condition_variable wake_;
     std::deque<int> ready_;
@@ -300,42 +375,93 @@ private:
     std::atomic<bool> quit_{false}, abort_{false};
 };
 
+class SelfPlayCommands : public CommandSource<GameSource> {
+public:
+    SelfPlayCommands(const SelfPlayJob& job, int inFd, int outFd)
+        : CommandSource(job.first, job.count, inFd, outFd) {}
+    void done(int index, GameRecord record, long long evaluations) override {
+        write(streamGameFrame(index, record, finished(index), evaluations));
+    }
+};
+
+class ArenaCommands : public CommandSource<ArenaGameSource> {
+public:
+    ArenaCommands(const ArenaJob& job, int inFd, int outFd) : CommandSource(0, job.games(), inFd, outFd) {}
+    void done(int index, ArenaGameResult result, long long evaluations) override {
+        write(streamArenaGameFrame(index, result, finished(index), evaluations));
+    }
+};
+
+// The part of a stream both kinds share: the hello, the command reader
+// beside `play` (the queue over the source on `run`), the end frame. A
+// broken command stream wins over the engine's own error, as the queue
+// stops for it.
+template <class Commands, class Play>
+void serveStream(const StreamHello& hello, Commands& source, EngineRun run, int outFd, Play play) {
+    if (!writeAll(outFd, streamHelloFrame(hello)))
+        throw SliceError("cannot write to stdout (the coordinator is gone)");
+    std::thread reader([&] { source.readCommands(); });
+    run.cancel = &source.abort();
+    SliceStats stats;
+    std::exception_ptr error;
+    try {
+        play(run, stats);
+    } catch (...) {
+        error = std::current_exception();
+    }
+    source.quit();
+    reader.join();
+    std::string why;
+    if (source.broken(why)) throw SliceError(why);
+    if (error) std::rethrow_exception(error);
+    if (!writeAll(outFd, streamEndFrame(stats)))
+        throw SliceError("cannot write to stdout (the coordinator is gone)");
+}
+
+bool arenaJobFile(const std::string& jobPath) {
+    char magic[4] = {0, 0, 0, 0};
+    std::ifstream in(jobPath, std::ios::binary);
+    in.read(magic, 4);
+    return isArenaJob(std::string(magic, 4));
+}
+
 } // namespace
 
 int runStreamJob(const std::string& jobPath, const std::string& backend, int workers, int inferenceBatch,
                  int inFd, int outFd, std::ostream& err) {
     try {
+        EngineRun run;
+        run.backend = backend;
+        if (arenaJobFile(jobPath)) {
+            const slice_files::LoadedArenaJob loaded = slice_files::loadArenaJob(jobPath);
+            checkBackendAvailable(backend);
+            const ArenaJob& job = loaded.job;
+            requireFullMatches(job);
+            const std::vector<ArenaGameRange> wave = loaded.ranges();
+            StreamHello hello{fnv1a64(loaded.bytes), buildId(), engineFingerprint(backend)};
+            ArenaCommands source(job, inFd, outFd);
+            run.workers = sliceWorkers(backend, workers, std::max(1, job.games()), resolveWorkers(0));
+            run.inferenceBatch = inferenceBatch > 0 ? inferenceBatch : job.inferenceBatch;
+            serveStream(hello, source, run, outFd, [&](const EngineRun& r, SliceStats& stats) {
+                // playArenaQueue refuses what playMatch refuses, as runArenaJob reports it.
+                try {
+                    playArenaQueue(wave, job.cfg, r, source, &stats);
+                } catch (const std::invalid_argument& e) {
+                    throw SliceError(std::string("arena job: ") + e.what());
+                }
+            });
+            return 0;
+        }
         const slice_files::LoadedSliceJob loaded = slice_files::loadSliceJob(jobPath);
         checkBackendAvailable(backend);
         const SelfPlayJob& job = loaded.job;
-        StreamHello hello;
-        hello.jobHash = fnv1a64(loaded.bytes);
-        hello.buildId = buildId();
-        hello.fingerprint = engineFingerprint(backend);
-        if (!writeAll(outFd, streamHelloFrame(hello)))
-            throw SliceError("cannot write to stdout (the coordinator is gone)");
-
-        CommandSource source(job, inFd, outFd);
-        std::thread reader([&] { source.readCommands(); });
-        EngineRun run;
-        run.backend = backend;
+        StreamHello hello{fnv1a64(loaded.bytes), buildId(), engineFingerprint(backend)};
+        SelfPlayCommands source(job, inFd, outFd);
         run.workers = sliceWorkers(backend, workers, std::max(1, job.count), resolveWorkers(0));
         run.inferenceBatch = inferenceBatch > 0 ? inferenceBatch : job.inferenceBatch;
-        run.cancel = &source.abort();
-        SliceStats stats;
-        std::exception_ptr error;
-        try {
-            playSelfPlayQueue(*loaded.net, job.sp, job.seed, job.generation, run, source, &stats);
-        } catch (...) {
-            error = std::current_exception();
-        }
-        source.quit();
-        reader.join();
-        std::string why;
-        if (source.broken(why)) throw SliceError(why);
-        if (error) std::rethrow_exception(error);
-        if (!writeAll(outFd, streamEndFrame(stats)))
-            throw SliceError("cannot write to stdout (the coordinator is gone)");
+        serveStream(hello, source, run, outFd, [&](const EngineRun& r, SliceStats& stats) {
+            playSelfPlayQueue(*loaded.net, job.sp, job.seed, job.generation, r, source, &stats);
+        });
         return 0;
     } catch (const std::exception& e) {
         err << "selfplay: " << e.what() << "\n";

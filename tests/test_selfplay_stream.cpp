@@ -1,8 +1,8 @@
-// Self-play streams (azgo/selfplay_stream.hpp): the frames a `selfplay
+// Self-play and arena streams (azgo/selfplay_stream.hpp): the frames a `selfplay
 // --stream` process answers with, the checks the coordinator makes of
 // them, and the process's side played in this process on pipes: commands
-// in, a game per frame out, each game the one playSelfPlayGames gives;
-// end of file or a bad command stops it.
+// in, a game per frame out, each game the one playSelfPlayGames (or, for an
+// arena job, playArenaGames) gives; end of file or a bad command stops it.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #include <atomic>
@@ -20,6 +20,7 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+#include "azgo/arena_slice.hpp"
 #include "azgo/build_info.hpp"
 #include "azgo/checkpoint.hpp"
 #include "azgo/coordinator.hpp"
@@ -462,6 +463,276 @@ static void test_write_all_without_sigpipe() {
     close(fds[1]);
 }
 
+// ---- arena streams ------------------------------------------------------------------
+
+static bool sameArenaGame(const ArenaGameResult& x, const ArenaGameResult& y) {
+    return std::memcmp(&x.scoreA, &y.scoreA, sizeof(double)) == 0 && x.moves == y.moves;
+}
+
+// An arena stream job: three full matches (first = 0) of 3, 2 and 3 games,
+// a vs b, a vs a bot with overrides, and b vs a with random symmetry, in
+// its own directory with its two networks.
+struct ArenaStreamWork {
+    std::filesystem::path dir;
+    std::string jobPath, jobBytes;
+    ArenaJob job;
+    std::unique_ptr<Network> a, b;
+    explicit ArenaStreamWork(const std::string& name, int simulations = 8)
+        : dir(std::filesystem::temp_directory_path() /
+              ("azgo_test_stream_arena_" + std::to_string(getpid()) + "_" + name)) {
+        std::filesystem::remove_all(dir);
+        std::filesystem::create_directories(dir);
+        a = std::make_unique<Network>(streamNet(), 41);
+        b = std::make_unique<Network>(streamNet(), 42);
+        saveNetwork(*a, (dir / "net_a.azn").string());
+        saveNetwork(*b, (dir / "net_b.azn").string());
+        job.boardSize = 5;
+        job.cfg.simulations = simulations;
+        job.cfg.mctsBatch = 4;
+        job.cfg.cPuct = 1.25f;
+        job.cfg.temperatureMoves = 2;
+        job.cfg.komi = 7.5f;
+        job.cfg.maxMoves = 50;
+        job.networks = {{"net_a.azn", fileHash((dir / "net_a.azn").string())},
+                        {"net_b.azn", fileHash((dir / "net_b.azn").string())}};
+        ArenaJobPlayer pa{0}, pb{1}, bot{-1, 6}, special{0, 12, false, 2.0f, 2}, symmetric{1, 0, true};
+        job.ranges = {{pa, pb, 501, 0, 3}, {special, bot, 502, 0, 2}, {symmetric, pa, 503, 0, 3}};
+        job.buildId = buildId();
+        job.inferenceBatch = 64;
+        write();
+    }
+    void write() {
+        jobBytes = serializeArenaJob(job);
+        jobPath = (dir / "arena_g0002_w1_s_a1.job").string();
+        std::ofstream(jobPath, std::ios::binary | std::ios::trunc) << jobBytes;
+    }
+    std::vector<ArenaGameRange> ranges() const {
+        auto player = [&](const ArenaJobPlayer& p) {
+            ArenaPlayer out;
+            out.net = p.network == 0 ? a.get() : p.network == 1 ? b.get() : nullptr;
+            out.simulations = p.simulations;
+            out.randomSymmetry = p.randomSymmetry;
+            out.cPuct = p.cPuct;
+            out.mctsBatch = p.mctsBatch;
+            return out;
+        };
+        std::vector<ArenaGameRange> out;
+        for (const ArenaJobRange& r : job.ranges) out.push_back({player(r.a), player(r.b), r.seed, r.first, r.count});
+        return out;
+    }
+    ~ArenaStreamWork() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
+
+static void test_arena_frames_round_trip() {
+    ArenaStreamWork work("frames");
+    const std::vector<ArenaGameResult> games =
+        playArenaGames(work.ranges(), work.job.cfg, EngineRun{"naive", 1, 64});
+    assert(games.size() == 8);
+    StreamHello hello{fnv1a64(work.jobBytes), buildId(), "naive; test cpu"};
+    SliceStats stats;
+    stats.seconds = 1.5;
+    stats.evaluations = 1234;
+    std::string bytes = streamHelloFrame(hello);
+    for (int i : {5, 0, 7}) {
+        bytes += streamArenaGameFrame(i, games[static_cast<size_t>(i)], 0.25 * i, 100 + i);
+        stats.positions += static_cast<long long>(games[static_cast<size_t>(i)].moves.size());
+    }
+    bytes += streamEndFrame(stats);
+    assert(bytes.compare(0, 4, "AZSH") == 0);
+    for (bool byteByByte : {false, true}) {
+        StreamFrames frames;
+        StreamChecker check(work.jobBytes, buildId());
+        assert(check.arena() && check.arenaJob().games() == 8);
+        std::string kinds;
+        auto drain = [&] {
+            char kind;
+            std::string payload;
+            while (frames.next(kind, payload)) {
+                kinds += kind;
+                if (kind == 'H') check.hello(payload);
+                else if (kind == 'A') {
+                    const StreamArenaGame g = check.arenaGame(payload);
+                    assert(sameArenaGame(g.result, games[static_cast<size_t>(g.index)]));
+                    assert(g.seconds == 0.25 * g.index && g.evaluations == 100 + g.index);
+                } else {
+                    const SliceStats s = check.end(payload);
+                    assert(s.positions == stats.positions && s.evaluations == 1234);
+                }
+            }
+        };
+        if (byteByByte) {
+            for (char c : bytes) {
+                frames.feed(&c, 1);
+                drain();
+            }
+        } else {
+            frames.feed(bytes.data(), bytes.size());
+            drain();
+        }
+        assert(kinds == "HAAAE" && frames.buffered() == 0);
+    }
+    // The frame's magic.
+    const std::string one = streamArenaGameFrame(0, games[0], 0, 1);
+    assert(one.compare(0, 4, "AZSA") == 0);
+    // A self-play job's checker is not an arena checker.
+    StreamWork sp("arena_frames_sp");
+    StreamChecker spCheck(sp.jobBytes, buildId());
+    assert(!spCheck.arena());
+}
+
+static void test_arena_checker_refusals() {
+    ArenaStreamWork work("checker");
+    const std::vector<ArenaGameResult> games =
+        playArenaGames(work.ranges(), work.job.cfg, EngineRun{"naive", 1, 64});
+    auto payloadOf = [](const std::string& frame) { return frame.substr(8, frame.size() - 16); };
+    const StreamHello good{fnv1a64(work.jobBytes), buildId(), "naive; test cpu"};
+    const std::string hello = payloadOf(streamHelloFrame(good));
+    const std::string game0 = payloadOf(streamArenaGameFrame(0, games[0], 0, 1));
+    {
+        StreamChecker c(work.jobBytes, buildId());
+        assert(contains(sliceError([&] { c.arenaGame(game0); }), "before the hello"));
+        c.hello(hello);
+        assert(contains(sliceError([&] { c.arenaGame(payloadOf(streamArenaGameFrame(8, games[0], 0, 1))); }),
+                        "outside"));
+        assert(contains(sliceError([&] { c.arenaGame(payloadOf(streamArenaGameFrame(-1, games[0], 0, 1))); }),
+                        "outside"));
+        // A game that does not replay: a move changed, then a score flipped.
+        ArenaGameResult bad = games[1];
+        bad.moves[0] = (bad.moves[0] + 1) % 25;
+        assert(contains(sliceError([&] { c.arenaGame(payloadOf(streamArenaGameFrame(1, bad, 0, 1))); }),
+                        "stream arena game"));
+        bad = games[1];
+        bad.scoreA = 1 - bad.scoreA;
+        assert(contains(sliceError([&] { c.arenaGame(payloadOf(streamArenaGameFrame(1, bad, 0, 1))); }), "score"));
+        assert(contains(sliceError([&] { c.arenaGame(game0 + "x"); }), "trailing bytes"));
+        c.arenaGame(game0);
+        assert(contains(sliceError([&] { c.arenaGame(game0); }), "returned twice"));
+        // A self-play frame kind is refused on an arena job.
+        assert(contains(sliceError([&] { c.game(game0); }), "arena"));
+        SliceStats wrong;
+        wrong.positions = static_cast<long long>(games[0].moves.size()) + 1;
+        assert(contains(sliceError([&] { c.end(payloadOf(streamEndFrame(wrong))); }), "positions"));
+        wrong.positions = static_cast<long long>(games[0].moves.size());
+        c.end(payloadOf(streamEndFrame(wrong)));
+    }
+    {
+        // A self-play checker refuses an arena game; an arena checker, a self-play one.
+        StreamWork sp("arena_checker_sp");
+        StreamChecker c(sp.jobBytes, buildId());
+        c.hello(payloadOf(streamHelloFrame({fnv1a64(sp.jobBytes), buildId(), "naive; test cpu"})));
+        assert(contains(sliceError([&] { c.arenaGame(game0); }), "self-play"));
+        const GameRecord rec = playSelfPlayGames(sp.net(), sp.job.sp, sp.job.seed, sp.job.generation, 0, 1,
+                                                 EngineRun{"naive", 1})[0];
+        StreamChecker a(work.jobBytes, buildId());
+        a.hello(hello);
+        assert(contains(sliceError([&] { a.game(payloadOf(streamGameFrame(0, rec, 0, 1))); }), "arena"));
+    }
+    {
+        // A stream job's ranges are full matches.
+        ArenaStreamWork late("checker_late");
+        late.job.ranges[0].first = 1;
+        late.write();
+        assert(contains(sliceError([&] { StreamChecker c(late.jobBytes, buildId()); }), "full match"));
+    }
+}
+
+// An arena job over the in-process pipes: out-of-order play lines, then end.
+// The games are the ones playArenaGames plays.
+static void test_run_arena_stream_in_process() {
+    ArenaStreamWork work("inproc");
+    const std::vector<ArenaGameResult> whole =
+        playArenaGames(work.ranges(), work.job.cfg, EngineRun{"naive", 1, 64});
+    for (int workers : {1, 3}) {
+        InProcessStream s(work.jobPath, workers);
+        StreamChecker check(work.jobBytes, buildId());
+        char kind;
+        std::string payload;
+        assert(s.frame(kind, payload) && kind == 'H');
+        assert(check.hello(payload).fingerprint == engineFingerprint("naive"));
+        const std::vector<int> ask = {6, 1, 3, 0, 7, 4};
+        for (int i : {6, 1}) assert(s.send("play " + std::to_string(i) + "\n"));
+        size_t asked = 2;
+        std::map<int, ArenaGameResult> got;
+        while (got.size() < ask.size()) {
+            assert(s.frame(kind, payload) && kind == 'A');
+            StreamArenaGame g = check.arenaGame(payload);
+            assert(g.evaluations > 0 && g.seconds >= 0);
+            got[g.index] = std::move(g.result);
+            if (asked < ask.size()) assert(s.send("play " + std::to_string(ask[asked++]) + "\n"));
+        }
+        assert(s.send("end\n"));
+        assert(s.frame(kind, payload) && kind == 'E');
+        assert(check.end(payload).evaluations > 0);
+        assert(!s.frame(kind, payload));
+        assert(s.join() == 0);
+        for (const auto& [i, r] : got) assert(sameArenaGame(r, whole[static_cast<size_t>(i)]));
+    }
+    {
+        // An index outside the job's games, and one asked twice, stop it.
+        for (const std::string& bad : {std::string("play 8\n"), std::string("play 2\nplay 2\n")}) {
+            InProcessStream s(work.jobPath, 2);
+            assert(s.send(bad));
+            assert(s.join() == 1);
+            assert(contains(s.err.str(), "selfplay: "));
+        }
+        // A stream job whose ranges do not start at 0 is refused.
+        ArenaStreamWork late("inproc_late");
+        late.job.ranges[1].first = 2;
+        late.write();
+        InProcessStream s(late.jobPath, 1);
+        char kind;
+        std::string payload;
+        assert(!s.frame(kind, payload));
+        assert(s.join() == 1 && contains(s.err.str(), "full match"));
+    }
+}
+
+// The real selfplay binary streams an arena job.
+static void test_run_arena_stream_child() {
+    ArenaStreamWork work("child");
+    const std::vector<ArenaGameResult> whole =
+        playArenaGames(work.ranges(), work.job.cfg, EngineRun{"naive", 1, 64});
+    MachineSettings m;
+    m.alias = "fake";
+    m.exe = AZGO_SELFPLAY_EXE;
+    m.workdir = work.dir.string();
+    std::unique_ptr<Transport> t = makeTransport(m);
+    std::unique_ptr<StreamChannel> c = t->openStream(
+        {"--stream", "--job", work.jobPath, "--backend", "naive", "--workers", "2"}, (work.dir / "stream.log").string());
+    StreamFrames frames;
+    StreamChecker check(work.jobBytes, buildId());
+    auto frame = [&](char& kind, std::string& payload) {
+        for (;;) {
+            if (frames.next(kind, payload)) return true;
+            char buf[4096];
+            const long n = c->receive(buf, sizeof buf, 30.0);
+            assert(n != -1);
+            if (n == 0) return false;
+            frames.feed(buf, static_cast<size_t>(n));
+        }
+    };
+    char kind;
+    std::string payload;
+    assert(frame(kind, payload) && kind == 'H');
+    check.hello(payload);
+    assert(c->send("play 7\nplay 0\nplay 4\nplay 2\n"));
+    std::map<int, ArenaGameResult> got;
+    while (got.size() < 4) {
+        assert(frame(kind, payload) && kind == 'A');
+        StreamArenaGame g = check.arenaGame(payload);
+        got[g.index] = std::move(g.result);
+    }
+    assert(c->send("end\n"));
+    assert(frame(kind, payload) && kind == 'E');
+    check.end(payload);
+    assert(!frame(kind, payload));
+    assert(c->wait().exitCode == 0);
+    for (const auto& [i, r] : got) assert(sameArenaGame(r, whole[static_cast<size_t>(i)]));
+}
+
 int main() {
     test_frames_round_trip();
     test_frame_refusals();
@@ -471,6 +742,10 @@ int main() {
     test_write_all_without_sigpipe();
     test_child_process();
     test_transports_stream();
+    test_arena_frames_round_trip();
+    test_arena_checker_refusals();
+    test_run_arena_stream_in_process();
+    test_run_arena_stream_child();
     std::printf("test_selfplay_stream: OK\n");
     return 0;
 }

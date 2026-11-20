@@ -8,6 +8,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
+#include "azgo/arena_slice.hpp"
 #include "azgo/serialize.hpp"
 #include "azgo/selfplay_slice.hpp"
 
@@ -64,5 +66,16 @@ struct LoadedSliceJob {
     std::unique_ptr<Network> net;
 };
 LoadedSliceJob loadSliceJob(const std::string& jobPath);
+
+// An arena job file and its networks, checked as runArenaJob checks them
+// (build ID, each network's hash and board size).
+struct LoadedArenaJob {
+    std::string bytes;
+    ArenaJob job;
+    std::vector<std::unique_ptr<Network>> nets;
+    // The job's ranges with the loaded networks (valid while this lives).
+    std::vector<ArenaGameRange> ranges() const;
+};
+LoadedArenaJob loadArenaJob(const std::string& jobPath);
 
 } // namespace azgo::slice_files

@@ -74,6 +74,12 @@ ArenaJob parseArenaJob(const std::string& bytes);
 // Whether a job file's bytes are an arena job (its magic), not self-play's.
 bool isArenaJob(const std::string& bytes);
 
+// The checks of readArenaResult that replay one game: game `index` of its
+// match (A Black when even), on the job's board, komi and move cap. `game`
+// prefixes the refusal (SliceError). The streamed arena checks its games
+// with it too.
+void verifyArenaGame(const ArenaJob& job, int index, const ArenaGameResult& g, const std::string& game);
+
 // A slice's answer: the job it answers (its hash), the build and engine
 // fingerprint that played it, its games in the job's order (range by range,
 // game by game), and the statistics (positions: the plies played).
