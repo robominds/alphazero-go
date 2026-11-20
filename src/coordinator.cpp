@@ -535,48 +535,22 @@ void Coordinator::preflight() {
                                   "give each alias its own workdir");
         }
     for (const std::string& alias : remotes) {
-        const MachineSettings m = hosts_.settings(alias);
-        // Outside the run directory: preflight writes nothing there.
-        const std::string logName =
-            "azgo_preflight_" + std::to_string(getpid()) + "_" + alias + ".log";
-        const std::string log = (std::filesystem::temp_directory_path() / logName).string();
-        std::filesystem::remove(log);
-        const std::unique_ptr<Transport> t = transportFor(m, log);
-        const ProcessResult version = t->run({"--version"}, log, kPreflightTimeout);
-        std::string id = buildLine(log);
-        std::filesystem::remove(log);
-        if (version.exitCode != 0 || id.empty()) {
-            unreachable(alias, version.exitCode != 0 ? describe(version)
-                                                     : "no build ID in its --version");
-            continue;
-        }
-        if (!probeRemoteBuild().empty()) id = probeRemoteBuild();
-        if (id != buildId())
-            throw ConfigError(keyFor(alias) + ": " + alias + " runs build " + id +
-                              " but this coordinator is build " + buildId() +
-                              "; bring it to this commit with tools/cluster_sync.sh");
-        remoteBuilds_[alias] = id;
+        // Its engines not measured yet, each once (an engine may be in both lists).
+        std::vector<EngineSpec> unmeasured;
         for (const EngineSpec& e : all) {
             if (e.machine != alias || fingerprints_.count(e.name())) continue;
-            const ProcessResult r =
-                t->run({"--fingerprint", "--backend", e.backend}, log, kPreflightTimeout);
-            const std::string line = lastLine(log);
-            std::filesystem::remove(log);
-            if (r.exitCode == 1)   // selfplay ran and refused: the backend cannot run there
-                throw ConfigError(keyFor(alias) + ": " + e.name() + ": " + alias +
-                                  " cannot run backend " + e.backend + " (" + line + ")");
-            if (r.exitCode != 0 || line.empty()) {
-                unreachable(alias, describe(r));
-                break;
-            }
-            bool printable = line.size() <= 1024;
-            for (char c : line) printable = printable && static_cast<unsigned char>(c) >= 0x20;
-            if (!printable) {
-                unreachable(alias, "an unprintable fingerprint");
-                break;
-            }
-            fingerprints_[e.name()] = line;
+            bool seen = false;
+            for (const EngineSpec& u : unmeasured) seen = seen || u.name() == e.name();
+            if (!seen) unmeasured.push_back(e);
         }
+        const MachineCheck check = checkMachine(alias, unmeasured, nullptr);
+        if (check.ok) continue;
+        if (check.refused) throw ConfigError(keyFor(alias) + ": " + check.why);
+        if (!check.build.empty() && check.build != buildId())
+            throw ConfigError(keyFor(alias) + ": " + alias + " runs build " + check.build +
+                              " but this coordinator is build " + buildId() +
+                              "; bring it to this commit with tools/cluster_sync.sh");
+        unreachable(alias, check.why);
     }
 
     // The engine lines, and a note for an engine whose arithmetic changed
@@ -605,6 +579,66 @@ void Coordinator::preflight() {
             }
         }
     }
+}
+
+Coordinator::MachineCheck Coordinator::checkMachine(const std::string& alias, const EngineSpec& e) {
+    return checkMachine(alias, {e}, nullptr);
+}
+
+Coordinator::MachineCheck Coordinator::checkMachine(const std::string& alias, const std::vector<EngineSpec>& engines,
+                                                    const std::atomic<bool>* cancel) {
+    MachineCheck check;
+    const MachineSettings m = hosts_.settings(alias);
+    // Outside the run directory: a check writes nothing there. Unique to
+    // this check, as two engines of one machine may be checked at once.
+    static std::atomic<unsigned long> counter{0};
+    const std::string logName = "azgo_preflight_" + std::to_string(getpid()) + "_" + std::to_string(++counter) +
+                                "_" + alias + ".log";
+    const std::string log = (std::filesystem::temp_directory_path() / logName).string();
+    std::filesystem::remove(log);
+    const std::unique_ptr<Transport> t = transportFor(m, log);
+    const ProcessResult version = t->run({"--version"}, log, kPreflightTimeout, cancel);
+    std::string id = buildLine(log);
+    std::filesystem::remove(log);
+    if (version.exitCode != 0 || id.empty()) {
+        check.why = version.exitCode != 0 ? describe(version) : "no build ID in its --version";
+        return check;
+    }
+    if (!probeRemoteBuild().empty()) id = probeRemoteBuild();
+    check.build = id;
+    if (id != buildId()) {
+        check.why = alias + " runs build " + id;
+        return check;
+    }
+    {
+        std::lock_guard<std::mutex> lock(fingerprintsMutex_);
+        remoteBuilds_[alias] = id;
+    }
+    for (const EngineSpec& e : engines) {
+        const ProcessResult r = t->run({"--fingerprint", "--backend", e.backend}, log, kPreflightTimeout, cancel);
+        const std::string line = lastLine(log);
+        std::filesystem::remove(log);
+        if (r.exitCode == 1) {   // selfplay ran and refused: the backend cannot run there
+            check.refused = true;
+            check.why = e.name() + ": " + alias + " cannot run backend " + e.backend + " (" + line + ")";
+            return check;
+        }
+        if (r.exitCode != 0 || line.empty()) {
+            check.why = describe(r);
+            return check;
+        }
+        bool printable = line.size() <= 1024;
+        for (char c : line) printable = printable && static_cast<unsigned char>(c) >= 0x20;
+        if (!printable) {
+            check.why = "an unprintable fingerprint";
+            return check;
+        }
+        std::lock_guard<std::mutex> lock(fingerprintsMutex_);
+        fingerprints_[e.name()] = line;
+        check.fingerprint = line;
+    }
+    check.ok = true;
+    return check;
 }
 
 std::vector<std::string> Coordinator::prepareMachine(

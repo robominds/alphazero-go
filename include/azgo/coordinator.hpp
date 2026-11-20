@@ -315,6 +315,27 @@ private:
     // The key that lists a remote machine, for messages.
     std::string keyFor(const std::string& alias) const;
     void unreachable(const std::string& alias, const std::string& why);
+    // What checkMachine found: ok, or why not. A machine that answered has
+    // its build (another build than buildId(): why is "<alias> runs build
+    // <id>"); refused: it runs this build but refused an engine's backend
+    // (why is "<engine>: <alias> cannot run backend B (<its message>)").
+    // Anything else means the machine did not answer as it should.
+    struct MachineCheck {
+        bool ok = false;
+        std::string why, build, fingerprint;
+        bool refused = false;
+    };
+    // The remote part of preflight, for one machine: `selfplay --version`
+    // there must report buildId(), then `selfplay --fingerprint --backend B`
+    // must succeed for e's backend. It never throws ConfigError; the build
+    // and the fingerprint (fingerprint: the engine's) go to remoteBuilds_
+    // and fingerprints_ under fingerprintsMutex_. Preflight checks a
+    // machine's engines in one go (one --version, then each engine's
+    // fingerprint, the first failure ending it), and a readmission probe
+    // (DynamicPhase) one engine, its commands cancelled once `cancel` is set.
+    MachineCheck checkMachine(const std::string& alias, const EngineSpec& e);
+    MachineCheck checkMachine(const std::string& alias, const std::vector<EngineSpec>& engines,
+                              const std::atomic<bool>* cancel);
     // The two kinds of phase, which may run at once (pipeline = on).
     enum PhaseKind { kSelfPlayPhase = 0, kArenaPhase = 1 };
     // Runs a phase's slices at once, one thread each, and returns their
@@ -363,7 +384,7 @@ private:
     std::ostream* log_;
     std::mutex fingerprintsMutex_;
     std::map<std::string, std::string> fingerprints_;   // engine name -> fingerprint (under its mutex)
-    std::map<std::string, std::string> remoteBuilds_;   // alias -> its full build ID
+    std::map<std::string, std::string> remoteBuilds_;   // alias -> its full build ID (under the same mutex)
     std::set<std::string> unreachable_;                 // aliases preflight could not reach
     // What the coordinator knows of a remote machine. An entry is made by
     // the first phase that meets the machine (startPhaseOn) and lives as long
