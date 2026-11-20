@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -24,6 +25,8 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <fcntl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 #include "azgo/build_info.hpp"
@@ -455,12 +458,52 @@ static int count(const std::string& s, const std::string& part) {
     return n;
 }
 
+// A process that runs for 20 s with `word` in its command line, as a
+// session's selfplay holds its job's path there; in a process group of
+// its own (with its sleep), its output nowhere.
+static pid_t holding(const std::string& word) {
+    const pid_t pid = fork();
+    if (pid == 0) {
+        setpgid(0, 0);
+        const int null = open("/dev/null", O_WRONLY);
+        dup2(null, 1);
+        dup2(null, 2);
+        execl("/bin/sh", "sh", "-c", "sleep 20; :", word.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+    assert(pid > 0);
+    return pid;
+}
+
+// Whether `pid` (a child of holding) was killed by a signal; waits for it,
+// then stops what is left of its group.
+static bool killed(pid_t pid) {
+    int status = 0;
+    const bool signalled = waitpid(pid, &status, 0) == pid && WIFSIGNALED(status);
+    kill(-pid, SIGKILL);
+    return signalled;
+}
+
+// Whether `pid` (a child of holding) still runs; then its group is stopped
+// and it is waited for.
+static bool alive(pid_t pid) {
+    int status = 0;
+    const bool running = waitpid(pid, &status, WNOHANG) == 0;
+    kill(-pid, SIGKILL);
+    waitpid(pid, &status, 0);
+    return running;
+}
+
 // A remote whose session drops after a game, its machine gone (the session
 // plays in process, so it needs no binary; the probe after the failure
 // finds none): the engine retires and waits; once the machine is back it is
 // readmitted, plays games again in a session of the next attempt, and every
 // game is played once, as one engine plays them. The local engine starts
 // late, so the remote has games when it fails and when it comes back.
+// What a session that failed with its machine gone may leave there (its
+// selfplay, its job file; a link that went and came back) is removed
+// before the new session, and nothing of another engine's, generation's
+// or phase's session.
 static void test_readmit_selfplay() {
     Fixture f("readmit");
     applyOverride(f.cfg, "selfplay_engines=local/naive:1, fake/naive:2");
@@ -474,14 +517,29 @@ static void test_readmit_selfplay() {
     distributed_probe::readmitSeconds(0.05);
     f.drop("fake");
     FileWatcher watch({f.runDir(), (f.dir / "remote_fake").string()});
+    std::string remote;   // the run's directory on the machine
+    const std::vector<std::string> others = {"g0001_s11_a1.job", "g0002_s1_a1.job", "arena_g0001_w1_s1_a1.job"};
+    pid_t stale = -1;
+    std::vector<pid_t> decoys;
     std::thread back([&] {
         buf.await("fake/naive retired for this generation (fake unreachable)");
+        for (const auto& entry : std::filesystem::directory_iterator(f.dir / "remote_fake"))
+            if (entry.is_directory()) remote = entry.path().string();
+        stale = holding(remote + "/g0001_s1_a1.job");
+        std::ofstream(remote + "/g0001_s1_a1.job").put('x');
+        for (const std::string& other : others) {
+            decoys.push_back(holding(remote + "/" + other));
+            std::ofstream(remote + "/" + other).put('x');
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
         f.restore("fake");
     });
     const std::vector<GameRecord> records = f.play(c, 1);
     back.join();
     watch.stop();
+    assert(!remote.empty() && killed(stale) && !std::filesystem::exists(remote + "/g0001_s1_a1.job"));
+    for (size_t i = 0; i < others.size(); ++i)
+        assert(alive(decoys[i]) && std::filesystem::exists(remote + "/" + others[i]));
     assert(sameRecords(records, f.whole(1)));
     checkBookkeeping(c, 12);
     const SliceReport& r = c.reports()[1];
@@ -491,16 +549,24 @@ static void test_readmit_selfplay() {
     // The retirement's reason went with it.
     assert(contains(r.note, "1 failed stream") && contains(r.note, "readmitted 1 time") &&
            !contains(r.note, "retired") && !contains(r.note, "unreachable"));
+    assert(!contains(buf.str(), "fingerprint changed"));   // the same machine, the same arithmetic
     assert(watch.any("_s1_a2.job") || watch.any("_s1_a3.job"));
     distributed_probe::reset();
 }
 
 // A machine down at preflight and at the phase's start (not tried): it is
 // probed, checked (its build and fingerprint recorded then), readmitted,
-// and plays, here as a separate process through the link.
+// and plays, here as a separate process through the link. Its fingerprint
+// then is compared with the manifest's, as preflight would have.
 static void test_readmit_not_tried() {
     Fixture f("readmit_not_tried");
     applyOverride(f.cfg, "selfplay_engines=local/naive:1, fake/naive:2");
+    SliceReport before;
+    before.dynamic = true;
+    before.planned = before.engine = "fake/naive";
+    before.slice.count = 5;
+    before.fingerprint = "naive; before";
+    writeManifest(f.runDir(), 1, {before});
     SharedLog buf;
     std::ostream log(&buf);
     const HostsFile hosts = parseHostsText(f.fake("fake"), "h");
@@ -524,6 +590,9 @@ static void test_readmit_not_tried() {
     const SliceReport& r = c.reports()[1];
     assert(r.engine == "fake/naive" && r.slice.count > 0 && r.fingerprint == engineFingerprint("naive"));
     assert(contains(buf.str(), "fake/naive readmitted (machine answered again)"));
+    assert(!contains(buf.str(), "note: the fingerprint of"));   // not measured at preflight
+    assert(contains(buf.str(), "note: generation 1: fake/naive's fingerprint changed: naive; before -> " +
+                                   engineFingerprint("naive") + " after 0 games\n"));
     assert(contains(r.note, "readmitted 1 time"));
     assert(watch.any("_s1_a1.job"));
     distributed_probe::reset();

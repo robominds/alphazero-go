@@ -1374,12 +1374,14 @@ struct Coordinator::DynamicPhase {
                 auto it = c.fingerprints_.find(e.spec.name());
                 if (it != c.fingerprints_.end()) recorded = it->second;
             }
+            if (recorded.empty()) recorded = manifestFingerprint(e.spec.name());
             if (!awaitMachine(k, fingerprint)) return;
             {
                 std::lock_guard<std::mutex> lock(state.mutex);
                 state.down[kind] = false;
                 state.suspect = false;
             }
+            clearEarlierSessions(k, log);
             std::string previous;
             int played;
             {
@@ -1402,6 +1404,49 @@ struct Coordinator::DynamicPhase {
                      std::to_string(played) + " game" + (played == 1 ? "" : "s"));
             gone = false;
             if (twoSessions()) return;
+        }
+    }
+
+    // The engine's fingerprint in the last manifest row where it played (this
+    // phase's manifest first, then the other's), as preflight compares it:
+    // the fingerprint to compare with on readmission for an engine
+    // preflight never measured (its machine down then). "" if none.
+    std::string manifestFingerprint(const std::string& engine) const {
+        const std::map<std::string, std::string> recorded[2] = {
+            lastFingerprints(manifestPath(c.runDir_), 11, 4),
+            lastFingerprints(arenaManifestPath(c.runDir_), 12, 5)};
+        const size_t own = kind == kSelfPlayPhase ? 0 : 1;
+        for (size_t m : {own, 1 - own}) {
+            auto it = recorded[m].find(engine);
+            if (it != recorded[m].end()) return it->second;
+        }
+        return "";
+    }
+
+    // Before a readmitted engine k's first session: its earlier sessions'
+    // processes stopped and their job files removed on its machine. A
+    // session that failed with its machine unreachable could not do so
+    // itself, so its selfplay may still run there (a link that went and
+    // came back) and compete with the new one. The pattern holds the
+    // engine's own number and this phase's session base, so it reaches no
+    // other engine's or phase's session, and no session of this engine is
+    // running yet. Best effort: a failure goes to the engine's log.
+    void clearEarlierSessions(size_t k, const std::string& log) {
+        const Engine& e = engines[k];
+        try {
+            const std::unique_ptr<Transport> t = c.transportFor(e.machine, log);
+            t->setCommandTimeout(kCleanupTimeout);
+            const std::string dir = c.remoteDir(e.machine);
+            char prefix[64];
+            std::snprintf(prefix, sizeof prefix, "%s_s%zu_a", sessionBase.c_str(), k);
+            t->killJob(c.runId_ + "/" + prefix);
+            std::vector<std::string> jobs;
+            for (int attempt = 1; attempt <= e.attempts; ++attempt)
+                jobs.push_back(dir + "/" + prefix + std::to_string(attempt) + ".job");
+            t->remove(jobs);
+        } catch (const std::exception& ex) {
+            std::ofstream out(log, std::ios::app | std::ios::binary);
+            out << "azgo: stream: cannot clear the earlier sessions: " << ex.what() << "\n";
         }
     }
 
@@ -1470,6 +1515,9 @@ struct Coordinator::DynamicPhase {
                     } catch (const std::exception& ex) {
                         p->check = MachineCheck();
                         p->check.why = ex.what();
+                    } catch (...) {   // nothing may leave a thread: it would end the run
+                        p->check = MachineCheck();
+                        p->check.why = "the probe failed";
                     }
                     p->finished = true;
                 });
@@ -1504,6 +1552,18 @@ struct Coordinator::DynamicPhase {
     // are gone.
     void session(size_t k, int attempt) {
         Engine& e = engines[k];
+        // After a readmission every game may be back by the time the session
+        // would start (the readmission's notes, the clearing of the earlier
+        // sessions and the machine's preparation take time): then it does
+        // not start. A phase's first sessions and their retries start as
+        // they always have, their hello recording the engine's fingerprint
+        // and build even when every game is back.
+        auto nothingLeft = [&] {
+            if (e.readmissions == 0) return false;
+            std::lock_guard<std::mutex> lock(mutex);
+            return queue->done();
+        };
+        if (nothingLeft()) return;
         const MachineSettings& m = e.machine;
         const std::string log = logPath(e);
         const std::unique_ptr<Transport> t = c.transportFor(m, log);
@@ -1528,10 +1588,11 @@ struct Coordinator::DynamicPhase {
         std::unique_ptr<StreamChannel> channel;
         std::vector<std::string> remoteNets;
         try {
-            if (stop) throw SliceCancelled();
+            if (stop || c.cancel_) throw SliceCancelled();
             remoteNets = c.prepareMachine(e.spec.machine, *t, networks);
+            if (nothingLeft()) return;   // no job written yet: nothing to remove
             writeFileAtomically(localJob, jobBytes);
-            if (stop) throw SliceCancelled();
+            if (stop || c.cancel_) throw SliceCancelled();
             t->upload(localJob, remoteJob);
             std::vector<std::string> args = {"--stream", "--job", remoteJob, "--backend", e.spec.backend,
                                              "--workers", std::to_string(e.concurrency)};
