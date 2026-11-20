@@ -422,6 +422,13 @@ failed and the probe then found the machine gone. A fingerprint that differs fro
 row for that engine (a macOS update on a mini) prints a note: from here
 on, that engine's games differ in their last bits from before.
 
+> Amended 2026-11-19 by `2026-11-19-streamed-arena-and-readmission-design.md`:
+> in a dynamic phase (dynamic self-play or a dynamic arena wave) a
+> machine found unreachable no longer stays down for the rest of the
+> phase. Its engine is probed every `readmit_seconds` (default 300) and
+> readmitted once the machine answers with this build. Static phases
+> keep the behaviour above.
+
 ### Each generation
 
 1. `assignGames` gives the slices.

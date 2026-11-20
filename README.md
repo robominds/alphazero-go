@@ -469,8 +469,9 @@ arena_engines = local/metal:16, mini1/metal:3, mini2/metal:3, pc/cuda:46
 
 It takes weights only: a wave holds 40, 80 or 160 games, so a fixed count
 would mean a different share in each. A wave's games are numbered match by
-match, and each engine plays a contiguous slice of them. Game j of a match
-keeps its seed and its colours whoever plays it, and the coordinator
+match, and each engine plays a contiguous slice of them (with the default
+`arena_allocation = static`; see Dynamic arena waves below). Game j of a
+match keeps its seed and its colours whoever plays it, and the coordinator
 replays every remote game to check its moves and score before it counts.
 The gating decision, promotions and ratings are taken on the coordinator
 from the merged results, so they do not depend on which slice finished
@@ -534,12 +535,14 @@ parse or verify, or the stream is silent too long), its games in flight
 go back to the queue and are played by every engine still running; the
 games it already returned are kept. The stream is retried once. Then,
 with `selfplay_fallback = local`, the engine retires for the rest of the
-generation (the next generation tries the machine again), and with
-`stop` the generation ends uncommitted. The fallback engine (the first
-`local/...` item, or `local/<backend>` when the list has none) joins the
-queue only when every listed engine has retired. The hosts file's `timeout` means, in dynamic
-mode, the longest silence of a stream that has games in flight, not a
-slice's total time.
+generation (the next generation tries the machine again), unless its
+machine was found unreachable: then it waits to be readmitted when the
+machine answers again (see Readmission below). With `stop` the
+generation ends uncommitted. The fallback engine (the first `local/...`
+item, or `local/<backend>` when the list has none) joins the queue only
+when every listed engine has retired. The hosts file's `timeout` means,
+in dynamic mode, the longest silence of a stream that has games in
+flight, not a slice's total time.
 
 **The manifests.** `selfplay-engines.csv` keeps its header and has one
 row per engine and generation, with an empty `first` column, the games
@@ -566,10 +569,10 @@ decided while the generation runs, and that depends on timing.
 - With engines of one arithmetic (equal fingerprints and build), the
   assignment cannot change a bit, so the run is identical to a static one
   and to the default path.
-- A generation redone after an interruption, or resumed, may assign its
-  games differently, so with engines of different arithmetics its last
-  bits may differ from the interrupted attempt's. Committed generations
-  are never touched.
+- A generation redone after an interruption, or resumed, or one in which
+  a machine was readmitted, may assign its games differently, so with
+  engines of different arithmetics its last bits may differ from an
+  uninterrupted run's. Committed generations are never touched.
 - `static` remains for experiments that must be reproducible from the
   config alone.
 
@@ -636,16 +639,17 @@ engine's default concurrency, as for dynamic self-play. Failures follow
 self-play's rules: a failed session's games in flight go back to the
 queue, and the session is retried once. After that the engine retires for
 the rest of the wave (`note: generation 12 arena wave 1: pc/cuda retired
-for this wave (...)`), and the next wave tries it again. With every listed
-engine retired the fallback engine joins; with `selfplay_fallback = stop`
-the wave throws. Waves stay sequential, since the promotion wave depends on
-the first. The merge, `matchResult` and the gating decision are as for
-static waves.
+for this wave (...)`), and the next wave tries it again; if its machine
+was found unreachable, it is readmitted within the wave once the machine
+answers (see Readmission below). With every listed engine retired the
+fallback engine joins; with `selfplay_fallback = stop` the wave throws.
+Waves stay sequential, since the promotion wave depends on the first. The
+merge, `matchResult` and the gating decision are as for static waves.
 
 A dynamic wave's rows in `arena-engines.csv` are one per engine, with an
 empty `first`, the games it played as `count`, and a `note` for failed
-sessions and retirement. A new file, `arena-games.csv`, records which engine
-played each game, one row per game:
+sessions, readmissions and retirement. A new file, `arena-games.csv`,
+records which engine played each game, one row per game:
 
 ```
 generation,wave,game,engine
@@ -657,11 +661,62 @@ generation,wave,game,engine
 A resume drops its rows of uncommitted generations, as it does the other
 manifests'. The progress line names the generation and wave: `arena engines
 (gen 12, wave 1): local/metal 40 610s 3.1k ev/s | pc/cuda 120 605s 9.8k`.
-With engines of one arithmetic a dynamic wave gives exactly a static
-wave's results. With mixed arithmetic, a wave's games are exact given the
-assignment in `arena-games.csv`, but a redone or resumed wave may assign
-them differently, so its last bits, and rarely a gating decision near the
-threshold, can differ.
+
+**What stays exact in the arena.** Dynamic waves take dynamic self-play's
+determinism contract. Mark accepted this on 2026-11-19: exact
+reproducibility of the gating match does not matter to him.
+
+- With engines of one arithmetic (equal fingerprints and build) a dynamic
+  wave gives exactly a static wave's results.
+- With mixed arithmetic, a wave's games are exact given the assignment in
+  `arena-games.csv`.
+- A rerun, a resume or a readmission may assign the games differently, so
+  with mixed arithmetic a wave's last bits, and rarely a gating decision
+  near the threshold, can differ from an uninterrupted run's.
+- Static waves (the default) keep their contract unchanged.
+
+**Readmission**
+([design](docs/superpowers/specs/2026-11-19-streamed-arena-and-readmission-design.md)).
+Machines drop out in the middle of a phase (a Thunderbolt link, a WSL
+restart) and come back an hour later. In a dynamic phase (dynamic
+self-play or a dynamic arena wave), a remote engine whose machine was
+found unreachable waits instead of sitting out the phase. That is an
+engine retired after a failed session and a probe that found its machine
+gone, or one not tried because its machine was down when the phase
+started. Every `readmit_seconds` (default 300) its machine is probed, on a
+thread of its own. When it answers, `selfplay --version` there must report
+this build and `selfplay --fingerprint` must accept the engine's backend.
+Then the engine is readmitted:
+
+```
+note: generation 12: pc/cuda readmitted (machine answered again); it plays games again
+```
+
+It gets a new session with the next attempt number (`_a3`, `_a4`, ... in
+its file names) and the same two attempts as at a phase's start, and it
+waits again if its machine goes away again. The details:
+
+- A machine back with another build is not readmitted. One note says so
+  (`... not readmitted: its machine runs build B, this run C`) until a
+  probe finds otherwise; rebuild it with `tools/cluster_sync.sh`.
+- A changed fingerprint (an OS update across a reboot) is accepted, with a
+  note of the old and new fingerprints and the games the engine had played
+  (`pc/cuda's fingerprint changed: F1 -> F2 after 14 games`). The
+  manifest row keeps the last session's fingerprint.
+- An engine retired after two failed sessions while its machine still
+  answered (a crash loop, a silent stream, a refused network) stays retired
+  for the phase: probing would readmit it at once and repeat the failure.
+- Probes stop as soon as every game of the phase is back or the run stops,
+  and a slow probe never holds up the phase's end.
+- The fallback engine, if every listed engine had retired and it joined,
+  stays; it only competes for games.
+- With `pipeline = on`, self-play and an arena wave that share a machine
+  each readmit it on their own probes: one phase's readmission clears
+  nothing of the other's.
+- The engine's manifest note adds `readmitted N time(s)`.
+
+`readmit_seconds = 0` turns readmission off. Static phases are unchanged:
+a machine that drops out of one falls back for the rest of the phase.
 
 ### The Core ML engines (16-bit, Neural Engine and GPU)
 
@@ -2008,6 +2063,9 @@ python3 tools/plot_elo.py "9×9 before the pass fix=docs/results/passbug/9x9-mai
 - [`docs/superpowers/specs/2026-10-23-dynamic-selfplay-design.md`](docs/superpowers/specs/2026-10-23-dynamic-selfplay-design.md)
   and [`docs/superpowers/plans/2026-10-23-dynamic-selfplay.md`](docs/superpowers/plans/2026-10-23-dynamic-selfplay.md)
   — dynamic allocation: one queue per generation, the handout rule, self-play streams and the recorded assignment.
+- [`docs/superpowers/specs/2026-11-19-streamed-arena-and-readmission-design.md`](docs/superpowers/specs/2026-11-19-streamed-arena-and-readmission-design.md)
+  and [`docs/superpowers/plans/2026-11-19-streamed-arena-and-readmission.md`](docs/superpowers/plans/2026-11-19-streamed-arena-and-readmission.md)
+  — dynamic arena waves from one streamed queue, and readmission of machines that come back mid-phase.
 
 `python3 tools/check_citations.py` checks that every `file:line` citation
 in both explainers still points at the quoted definition.

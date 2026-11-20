@@ -48,6 +48,12 @@ self-play: more than half of a generation. A promotion adds a second wave of
   for byte. Mark accepted that a game's moves may differ in the last bits
   depending on its engine, as self-play's do; the manifest records which
   engine played which games.
+
+  > Amended 2026-11-19 by `2026-11-19-streamed-arena-and-readmission-design.md`:
+  > static stays the default, and `arena_allocation = dynamic` streams a
+  > wave's games from one queue instead. A dynamic wave is exact given its
+  > recorded assignment (`arena-games.csv`), not from the config alone.
+
 - **Default unchanged.** With the new key empty a run plays its arena
   through today's code: byte-identical results, `state.bin`, rating files
   and logs (`config.cfg` gains one line, as with every key before).
@@ -66,6 +72,11 @@ self-play: more than half of a generation. A promotion adds a second wave of
 - Distributing `train --rerate` or the `arena` app (see "Who uses it").
 - Equality of a game's bits across engines with different fingerprints.
 - Dynamic load balancing (rejected for self-play; the same reasons hold).
+
+  > Amended 2026-11-19 by `2026-11-19-streamed-arena-and-readmission-design.md`:
+  > self-play gained it as an opt-in (`2026-10-23-dynamic-selfplay-design.md`),
+  > and the arena now does too (`arena_allocation = dynamic`), since a
+  > 19×19 gating wave takes about as long as a generation's self-play.
 
 ## Terms
 

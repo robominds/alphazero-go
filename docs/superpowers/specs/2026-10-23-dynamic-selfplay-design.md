@@ -79,6 +79,11 @@ was spent waiting (12% in generation 2). Three causes:
   last bits. The manifest makes the run reproducible; the config alone
   does not (see "Determinism contract").
 - **Dynamic arena waves** (see "The arena stays static").
+
+  > Amended 2026-11-19 by `2026-11-19-streamed-arena-and-readmission-design.md`:
+  > dynamic arena waves are built, as an opt-in (`arena_allocation =
+  > dynamic`).
+
 - **Moving a game that has started.** A game runs to its end on the
   engine that started it, unless that engine fails.
 - **Automatic tuning of concurrency.** How many games an engine keeps in
@@ -391,6 +396,14 @@ dynamic`:
 to the same engines.
 
 ## The arena stays static
+
+> Amended 2026-11-19 by `2026-11-19-streamed-arena-and-readmission-design.md`:
+> at 19×19 with 20×256 networks a gating wave takes about as long as a
+> generation's self-play, not minutes, and its static slices came out
+> badly unbalanced. `arena_allocation = dynamic` now streams a wave's
+> games from one queue, through this spec's queue and session code with
+> an arena kind of job, frame and checker. Static stays the default;
+> dynamic waves take this spec's determinism contract.
 
 Arena waves keep `assignGames` slices. A wave is 40–80 games played in
 minutes rather than hours, about 10% of a generation; its matches must be
