@@ -392,7 +392,7 @@ private:
     // merged by index; reports and assignment() say who played what.
     std::vector<GameRecord> playDynamic(int g, const std::string& networkPath, const Network& net,
                                         const SelfPlayConfig& sp, int games);
-    struct DynamicPhase;   // its state, in coordinator.cpp
+    struct DynamicPhase;   // its state and machinery, any kind of phase, in coordinator.cpp
     int arenaGeneration_ = 0, arenaWave_ = 0;
     std::vector<SliceReport> arenaReports_;
 };
