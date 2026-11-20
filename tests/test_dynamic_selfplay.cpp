@@ -10,6 +10,7 @@
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstdio>
@@ -17,10 +18,12 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 #include "azgo/build_info.hpp"
@@ -86,10 +89,18 @@ struct Fixture {
     }
     std::string runDir() const { return (dir / "run").string(); }
     // A hosts file line for a fake remote: no ssh, so the subprocess
-    // transport runs the real selfplay binary.
+    // transport runs the real selfplay binary, through a link of the
+    // alias's own: without the link the machine is unreachable (drop), and
+    // with it again it is back (restore).
     std::string fake(const std::string& alias, const std::string& extra = "") const {
-        return alias + " exe=" + AZGO_SELFPLAY_EXE + " workdir=" + (dir / ("remote_" + alias)).string() + " " +
-               extra + "\n";
+        restore(alias);
+        return alias + " exe=" + exe(alias) + " workdir=" + (dir / ("remote_" + alias)).string() + " " + extra +
+               "\n";
+    }
+    std::string exe(const std::string& alias) const { return (dir / ("selfplay_" + alias)).string(); }
+    void drop(const std::string& alias) const { std::filesystem::remove(exe(alias)); }
+    void restore(const std::string& alias) const {
+        if (!std::filesystem::is_symlink(exe(alias))) std::filesystem::create_symlink(AZGO_SELFPLAY_EXE, exe(alias));
     }
     std::vector<GameRecord> whole(int g) const {
         return playSelfPlayGames(loadNetwork(netPath), sp, cfg.seed, g, 0, cfg.gamesPerGeneration,
@@ -376,6 +387,305 @@ static void test_games_manifest() {
     assert(contains(rows.str(), "\n1,,7,pc/cuda,pc/cuda,\"cuda; x\","));
 }
 
+// ---- readmission ----------------------------------------------------------------
+
+// A log the test may read while the coordinator writes to it.
+class SharedLog : public std::streambuf {
+public:
+    std::string str() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return text_;
+    }
+    // Waits (at most a minute) until the log holds `part`.
+    void await(const std::string& part) {
+        for (int i = 0; i < 6000 && !contains(str(), part); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        assert(contains(str(), part));
+    }
+protected:
+    int overflow(int c) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (c != EOF) text_ += static_cast<char>(c);
+        return c;
+    }
+    std::streamsize xsputn(const char* s, std::streamsize n) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        text_.append(s, static_cast<size_t>(n));
+        return n;
+    }
+private:
+    std::mutex mutex_;
+    std::string text_;
+};
+
+// Every file name seen under some directories while it runs, as
+// "<parent directory>/<file>": a session's files live only while it does.
+struct FileWatcher {
+    std::set<std::string> seen;
+    std::atomic<bool> done{false};
+    std::thread thread;
+    explicit FileWatcher(std::vector<std::string> dirs) {
+        thread = std::thread([this, dirs] {
+            while (!done) {
+                for (const std::string& dir : dirs) {
+                    std::error_code ec;
+                    for (std::filesystem::recursive_directory_iterator it(dir, ec), end; !ec && it != end;
+                         it.increment(ec))
+                        seen.insert(it->path().parent_path().filename().string() + "/" +
+                                    it->path().filename().string());
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        });
+    }
+    void stop() {
+        done = true;
+        thread.join();
+    }
+    bool any(const std::string& part) const {
+        for (const std::string& name : seen)
+            if (contains(name, part)) return true;
+        return false;
+    }
+};
+
+static int count(const std::string& s, const std::string& part) {
+    int n = 0;
+    for (size_t at = s.find(part); at != std::string::npos; at = s.find(part, at + 1)) ++n;
+    return n;
+}
+
+// A remote whose session drops after a game, its machine gone (the session
+// plays in process, so it needs no binary; the probe after the failure
+// finds none): the engine retires and waits; once the machine is back it is
+// readmitted, plays games again in a session of the next attempt, and every
+// game is played once, as one engine plays them. The local engine starts
+// late, so the remote has games when it fails and when it comes back.
+static void test_readmit_selfplay() {
+    Fixture f("readmit");
+    applyOverride(f.cfg, "selfplay_engines=local/naive:1, fake/naive:2");
+    distributed_probe::useInProcessTransport(true);
+    SharedLog buf;
+    std::ostream log(&buf);
+    Coordinator c(f.cfg, f.runDir(), parseHostsText(f.fake("fake"), "h"), &log);
+    c.preflight();
+    distributed_probe::failSession("fake/naive", 1, 1);
+    distributed_probe::delaySlice("local/naive", 3);
+    distributed_probe::readmitSeconds(0.05);
+    f.drop("fake");
+    FileWatcher watch({f.runDir(), (f.dir / "remote_fake").string()});
+    std::thread back([&] {
+        buf.await("fake/naive retired for this generation (fake unreachable)");
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        f.restore("fake");
+    });
+    const std::vector<GameRecord> records = f.play(c, 1);
+    back.join();
+    watch.stop();
+    assert(sameRecords(records, f.whole(1)));
+    checkBookkeeping(c, 12);
+    const SliceReport& r = c.reports()[1];
+    assert(r.engine == "fake/naive" && r.slice.count > 1);
+    assert(contains(buf.str(),
+                    "note: generation 1: fake/naive readmitted (machine answered again); it plays games again"));
+    assert(contains(r.note, "1 failed stream") && contains(r.note, "readmitted 1 time") &&
+           !contains(r.note, "retired"));
+    assert(watch.any("_s1_a2.job") || watch.any("_s1_a3.job"));
+    distributed_probe::reset();
+}
+
+// A machine down at preflight and at the phase's start (not tried): it is
+// probed, checked (its build and fingerprint recorded then), readmitted,
+// and plays, here as a separate process through the link.
+static void test_readmit_not_tried() {
+    Fixture f("readmit_not_tried");
+    applyOverride(f.cfg, "selfplay_engines=local/naive:1, fake/naive:2");
+    SharedLog buf;
+    std::ostream log(&buf);
+    const HostsFile hosts = parseHostsText(f.fake("fake"), "h");
+    f.drop("fake");
+    Coordinator c(f.cfg, f.runDir(), hosts, &log);
+    c.preflight();
+    assert(contains(buf.str(), "warning: fake unreachable ("));
+    distributed_probe::delaySlice("local/naive", 3);
+    distributed_probe::readmitSeconds(0.05);
+    FileWatcher watch({f.runDir(), (f.dir / "remote_fake").string()});
+    std::thread back([&] {
+        buf.await("fake/naive retired for this generation (fake unreachable)");
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        f.restore("fake");
+    });
+    const std::vector<GameRecord> records = f.play(c, 1);
+    back.join();
+    watch.stop();
+    assert(sameRecords(records, f.whole(1)));
+    checkBookkeeping(c, 12);
+    const SliceReport& r = c.reports()[1];
+    assert(r.engine == "fake/naive" && r.slice.count > 0 && r.fingerprint == engineFingerprint("naive"));
+    assert(contains(buf.str(), "fake/naive readmitted (machine answered again)"));
+    assert(contains(r.note, "readmitted 1 time"));
+    assert(watch.any("_s1_a1.job"));
+    distributed_probe::reset();
+}
+
+// Two failed sessions while the machine still answers: retired for the
+// generation, never probed, never readmitted.
+static void test_retired_while_reachable_stays_retired() {
+    Fixture f("readmit_reachable");
+    applyOverride(f.cfg, "selfplay_engines=local/naive:1, fake/naive:2");
+    distributed_probe::useInProcessTransport(true);
+    SharedLog buf;
+    std::ostream log(&buf);
+    Coordinator c(f.cfg, f.runDir(), parseHostsText(f.fake("fake"), "h"), &log);
+    c.preflight();
+    distributed_probe::failSession("fake/naive", 2, 1);
+    distributed_probe::delaySlice("local/naive", 1.5);
+    distributed_probe::readmitSeconds(0.05);
+    assert(sameRecords(f.play(c, 1), f.whole(1)));
+    checkBookkeeping(c, 12);
+    assert(contains(c.reports()[1].note, "2 failed streams") && contains(c.reports()[1].note, "retired"));
+    assert(contains(buf.str(), "fake/naive retired for this generation") && !contains(buf.str(), "readmitted"));
+    distributed_probe::reset();
+}
+
+// A machine back with another build: one note, however many probes find
+// it so, no readmission, and the generation completes.
+static void test_readmit_wrong_build() {
+    Fixture f("readmit_build");
+    applyOverride(f.cfg, "selfplay_engines=local/naive:1, fake/naive:2");
+    distributed_probe::useInProcessTransport(true);
+    SharedLog buf;
+    std::ostream log(&buf);
+    Coordinator c(f.cfg, f.runDir(), parseHostsText(f.fake("fake"), "h"), &log);
+    c.preflight();
+    distributed_probe::failSession("fake/naive", 1, 1);
+    distributed_probe::delaySlice("local/naive", 1.5);
+    distributed_probe::readmitSeconds(0.05);
+    f.drop("fake");
+    std::thread back([&] {
+        buf.await("fake/naive retired for this generation (fake unreachable)");
+        distributed_probe::setRemoteBuildId("other");
+        f.restore("fake");
+    });
+    assert(sameRecords(f.play(c, 1), f.whole(1)));
+    back.join();
+    checkBookkeeping(c, 12);
+    assert(count(buf.str(), "not readmitted") == 1);
+    assert(contains(buf.str(), "note: generation 1: fake/naive not readmitted: its machine runs build other, "
+                               "this run " + buildId() + "\n"));
+    assert(!contains(buf.str(), "readmitted (machine answered again)"));
+    assert(contains(c.reports()[1].note, "retired"));
+    distributed_probe::reset();
+}
+
+// A probe that takes long (an ssh to a machine that hangs) does not hold
+// the phase up: the generation ends with its last game, the probe is left
+// to finish by itself, and no session starts after every game is back,
+// though the machine is back by the time the probe answers.
+static void test_phase_end_not_delayed() {
+    Fixture f("readmit_slow_probe");
+    applyOverride(f.cfg, "selfplay_engines=local/naive:1, fake/naive:2");
+    distributed_probe::useInProcessTransport(true);
+    SharedLog buf;
+    std::ostream log(&buf);
+    Coordinator c(f.cfg, f.runDir(), parseHostsText(f.fake("fake"), "h"), &log);
+    c.preflight();
+    distributed_probe::failSession("fake/naive", 1, 1);
+    distributed_probe::delaySlice("local/naive", 1);
+    distributed_probe::readmitSeconds(0.05);
+    distributed_probe::slowProbe("fake/naive", 5);
+    f.drop("fake");
+    FileWatcher watch({f.runDir(), (f.dir / "remote_fake").string()});
+    std::thread back([&] {
+        buf.await("fake/naive retired for this generation (fake unreachable)");
+        f.restore("fake");
+    });
+    const auto start = std::chrono::steady_clock::now();
+    assert(sameRecords(f.play(c, 1), f.whole(1)));
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    back.join();
+    assert(seconds < 4);   // not the 5 s of the probe
+    // Past the probe's answer: still no session of a later attempt.
+    std::this_thread::sleep_for(std::chrono::duration<double>(std::max(0.0, 7 - seconds)));
+    watch.stop();
+    assert(watch.any("_s1_a1.job") && !watch.any("_s1_a2.job"));
+    assert(!contains(buf.str(), "readmitted"));
+    checkBookkeeping(c, 12);
+    distributed_probe::reset();
+}
+
+// readmit_seconds = 0: a dropped engine stays retired, its machine back or not.
+static void test_readmit_off() {
+    Fixture f("readmit_off");
+    applyOverride(f.cfg, "selfplay_engines=local/naive:1, fake/naive:2");
+    f.cfg.readmitSeconds = 0;
+    distributed_probe::useInProcessTransport(true);
+    SharedLog buf;
+    std::ostream log(&buf);
+    Coordinator c(f.cfg, f.runDir(), parseHostsText(f.fake("fake"), "h"), &log);
+    c.preflight();
+    distributed_probe::failSession("fake/naive", 1, 1);
+    distributed_probe::delaySlice("local/naive", 1.5);
+    distributed_probe::readmitSeconds(0.05);   // the spacing only: 0 still turns it off
+    f.drop("fake");
+    std::thread back([&] {
+        buf.await("fake/naive retired for this generation (fake unreachable)");
+        f.restore("fake");
+    });
+    assert(sameRecords(f.play(c, 1), f.whole(1)));
+    back.join();
+    checkBookkeeping(c, 12);
+    assert(contains(c.reports()[1].note, "retired") && !contains(buf.str(), "readmitted"));
+    distributed_probe::reset();
+}
+
+// A machine back with another fingerprint (an OS update across a reboot):
+// readmitted, with a note of the old and the new one and of the games
+// played before the change. The fake remote's binary is a script that, as
+// it starts a stream, removes itself (the machine goes, its process stays),
+// and that once `updated` exists answers --fingerprint otherwise.
+static void test_readmit_fingerprint_change() {
+    Fixture f("readmit_fingerprint");
+    const std::string flag = (f.dir / "updated").string();
+    const std::string script = (f.dir / "selfplay_fake").string();
+    auto writeScript = [&] {
+        std::ofstream out(script);
+        out << "#!/bin/sh\n"
+               "[ \"$1\" = --fingerprint ] && [ -e '"
+            << flag << "' ] && { echo 'naive; updated'; exit 0; }\n"
+               "for a in \"$@\"; do [ \"$a\" = --stream ] && rm -f '"
+            << script << "'; done\n"
+               "exec '"
+            << AZGO_SELFPLAY_EXE << "' \"$@\"\n";
+        out.close();
+        std::filesystem::permissions(script, std::filesystem::perms::owner_all);
+    };
+    writeScript();
+    applyOverride(f.cfg, "selfplay_engines=local/naive:1, fake/naive:2");
+    SharedLog buf;
+    std::ostream log(&buf);
+    Coordinator c(f.cfg, f.runDir(),
+                  parseHostsText("fake exe=" + script + " workdir=" + (f.dir / "remote_fake").string() + "\n", "h"),
+                  &log);
+    c.preflight();
+    distributed_probe::failSession("fake/naive", 1, 1);
+    distributed_probe::delaySlice("local/naive", 3);
+    distributed_probe::readmitSeconds(0.05);
+    std::thread back([&] {
+        buf.await("fake/naive retired for this generation (fake unreachable)");
+        std::ofstream(flag).put('x');
+        writeScript();
+    });
+    const std::vector<GameRecord> records = f.play(c, 1);
+    back.join();
+    assert(sameRecords(records, f.whole(1)));
+    assert(contains(buf.str(), "note: generation 1: fake/naive's fingerprint changed: " + engineFingerprint("naive") +
+                                   " -> naive; updated after 1 games\n"));
+    assert(contains(buf.str(), "fake/naive readmitted (machine answered again)"));
+    assert(contains(c.reports()[1].note, "readmitted 1 time"));
+    distributed_probe::reset();
+}
+
 // Preflight's fingerprint-change note compares with an engine's last row
 // in a manifest where it played: a row of no games (an engine not tried,
 // or retired before its hello) has no fingerprint and is no change.
@@ -412,6 +722,13 @@ int main() {
     test_forced_assignment();
     test_games_manifest();
     test_fingerprint_note_skips_unplayed_rows();
+    test_readmit_selfplay();
+    test_readmit_not_tried();
+    test_retired_while_reachable_stays_retired();
+    test_readmit_wrong_build();
+    test_phase_end_not_delayed();
+    test_readmit_off();
+    test_readmit_fingerprint_change();
     std::printf("test_dynamic_selfplay: OK\n");
     return 0;
 }

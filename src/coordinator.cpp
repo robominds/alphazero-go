@@ -248,6 +248,8 @@ std::map<std::string, ProbeSession> gSessionFailures;
 std::map<int, std::vector<std::string>> gForced;   // generation -> engine of each game
 constexpr double kEndTimeout = 120;   // a session's longest wait after `end`
 double gEndTimeout = kEndTimeout;
+double gReadmitSeconds = -1;              // < 0: the config's readmit_seconds
+std::map<std::string, double> gSlowProbes;
 
 enum class ProbeFailure { None, Exit, Timeout, Corrupt };
 
@@ -291,6 +293,16 @@ double probeEndTimeout() {
     std::lock_guard<std::mutex> lock(gProbeMutex);
     return gEndTimeout;
 }
+// The spacing of readmission probes when readmission is on (readmit_seconds > 0).
+double probeReadmitSeconds(double configured) {
+    std::lock_guard<std::mutex> lock(gProbeMutex);
+    return gReadmitSeconds >= 0 ? gReadmitSeconds : configured;
+}
+double probeSlowProbe(const std::string& engine) {
+    std::lock_guard<std::mutex> lock(gProbeMutex);
+    auto it = gSlowProbes.find(engine);
+    return it == gSlowProbes.end() ? 0.0 : it->second;
+}
 std::vector<std::string> probeForced(int g) {
     std::lock_guard<std::mutex> lock(gProbeMutex);
     auto it = gForced.find(g);
@@ -307,6 +319,11 @@ Coordinator::Coordinator(const Config& cfg, const std::string& runDir, HostsFile
 }
 
 Coordinator::~Coordinator() {
+    {
+        std::lock_guard<std::mutex> lock(probesMutex_);
+        for (std::thread& probe : probes_)
+            if (probe.joinable()) probe.join();
+    }
     for (const auto& [alias, state] : machines_) {
         std::set<std::string> files = state->uploaded;
         files.insert(state->forgotten.begin(), state->forgotten.end());
@@ -1065,6 +1082,7 @@ std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath,
 // depends on time.
 struct Coordinator::DynamicPhase {
     static constexpr double kDynamicPoll = 0.5;
+    static constexpr double kProbePoll = 0.05;   // a waiting engine looking for its probe's answer
 
     struct Engine {
         EngineSpec spec;
@@ -1074,6 +1092,7 @@ struct Coordinator::DynamicPhase {
         SliceReport report;
         double first = -1, last = 0;   // first handout, last game back (phase seconds)
         int failedSessions = 0, requeued = 0;
+        int attempts = 0, readmissions = 0;   // sessions started (their attempt numbers), times readmitted
         std::string why;               // the last failure
         bool retired = false;
         std::exception_ptr error;
@@ -1106,6 +1125,7 @@ struct Coordinator::DynamicPhase {
     std::atomic<bool> failed{false};   // a session failed: the phase keeps its logs
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
     bool fallbackJoined = false;
+    bool forcedMode = false;   // a forced assignment: no engine retires, none is readmitted
 
     // The engines: every item of `list` with a share, in list order; their
     // default concurrency follows the share. Then the fallback engine,
@@ -1144,6 +1164,7 @@ struct Coordinator::DynamicPhase {
                 engineOf.push_back(static_cast<int>(k));
             }
             queue = std::make_unique<GameQueue>(engineOf, concurrency);
+            forcedMode = true;
         } else {
             queue = std::make_unique<GameQueue>(games, concurrency);
         }
@@ -1257,7 +1278,8 @@ struct Coordinator::DynamicPhase {
         e.report.stats.evaluations = stats.evaluations;
     }
 
-    // ---- a remote engine: sessions, retried once, then retired ----
+    // ---- a remote engine: sessions, retried once, then retired; readmitted
+    // once its machine, found unreachable, answers again ----
     void runRemote(size_t k) {
         Engine& e = engines[k];
         const std::string log = logPath(e);
@@ -1274,22 +1296,19 @@ struct Coordinator::DynamicPhase {
             std::ofstream out(log, std::ios::app | std::ios::binary);
             out << "azgo: " << text << "\n";
         };
-        bool down, suspect;
-        {
-            std::lock_guard<std::mutex> lock(state.mutex);
-            down = state.down[kind];
-            suspect = state.suspect;
-        }
         std::string reason;
-        if (down || (suspect && !checkReachable())) {
-            reason = e.spec.machine + " unreachable";
-            logLine("stream: " + reason + "; not tried");
-            failed = true;
-        } else {
-            for (int attempt = 1; attempt <= 2; ++attempt) {
+        // Whether the machine was found unreachable: only then does a
+        // retired engine wait to be readmitted.
+        bool gone = false;
+        // Two sessions, the next attempt numbers: true once one ended well
+        // (or every game is back), false after two failures or a failure
+        // after which the machine did not answer.
+        auto twoSessions = [&] {
+            for (int tries = 0; tries < 2; ++tries) {
+                const int attempt = ++e.attempts;
                 try {
                     session(k, attempt);
-                    return;
+                    return true;
                 } catch (const SliceCancelled&) {
                     throw;
                 } catch (const std::exception& ex) {
@@ -1301,7 +1320,7 @@ struct Coordinator::DynamicPhase {
                         std::lock_guard<std::mutex> lock(mutex);
                         // Every game is back and verified: what failed was
                         // only the stream's ending, which changes nothing.
-                        if (queue->done()) return;
+                        if (queue->done()) return true;
                         ++e.failedSessions;
                         e.why = reason;
                         requeued = e.requeued;
@@ -1311,25 +1330,160 @@ struct Coordinator::DynamicPhase {
                     if (stop) throw SliceCancelled();
                     if (!checkReachable()) {
                         reason = e.spec.machine + " unreachable";
-                        break;
+                        gone = true;
+                        return false;
                     }
                 }
             }
-        }
-        if (c.cfg_.selfplayFallback == "stop")
-            throw SliceError(e.spec.name() + " failed twice (" + reason + "); selfplay_fallback = stop");
-        // selfplay_fallback = local: the engine sits out the rest of the
-        // phase; the other engines play its games.
+            return false;
+        };
+        bool down, suspect;
         {
-            std::lock_guard<std::mutex> lock(mutex);
-            queue->retire(static_cast<int>(k));
-            e.retired = true;
-            e.why = reason;
-            wake.notify_all();
+            std::lock_guard<std::mutex> lock(state.mutex);
+            down = state.down[kind];
+            suspect = state.suspect;
         }
-        note(e.spec.name() + " retired for this " + scope + " (" + reason +
-             "); the other engines play its games; from here on results differ in the last bits from a "
-             "run without the failure");
+        if (down || (suspect && !checkReachable())) {
+            reason = e.spec.machine + " unreachable";
+            logLine("stream: " + reason + "; not tried");
+            failed = true;
+            gone = true;
+        } else if (twoSessions()) {
+            return;
+        }
+        for (;;) {
+            if (c.cfg_.selfplayFallback == "stop")
+                throw SliceError(e.spec.name() + " failed twice (" + reason + "); selfplay_fallback = stop");
+            // selfplay_fallback = local: the engine sits out the rest of the
+            // phase, or until its machine is back; the other engines play
+            // its games.
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                queue->retire(static_cast<int>(k));
+                e.retired = true;
+                e.why = reason;
+                wake.notify_all();
+            }
+            note(e.spec.name() + " retired for this " + scope + " (" + reason +
+                 "); the other engines play its games; from here on results differ in the last bits from a "
+                 "run without the failure");
+            if (!gone || c.cfg_.readmitSeconds <= 0 || forcedMode) return;
+            std::string recorded, fingerprint;   // the engine's fingerprint before, and its machine's now
+            {
+                std::lock_guard<std::mutex> lock(c.fingerprintsMutex_);
+                auto it = c.fingerprints_.find(e.spec.name());
+                if (it != c.fingerprints_.end()) recorded = it->second;
+            }
+            if (!awaitMachine(k, fingerprint)) return;
+            {
+                std::lock_guard<std::mutex> lock(state.mutex);
+                state.down[kind] = false;
+                state.suspect = false;
+            }
+            std::string previous;
+            int played;
+            {
+                std::lock_guard<std::mutex> lock(mutex);
+                // The phase may have ended while the probe ran: no session
+                // starts once every game is back.
+                if (queue->done() || stop) return;
+                if (queue->retired(static_cast<int>(k))) queue->readmit(static_cast<int>(k));
+                e.retired = false;
+                ++e.readmissions;
+                previous = e.report.fingerprint.empty() ? recorded : e.report.fingerprint;
+                played = queue->finishedBy(static_cast<int>(k));
+                wake.notify_all();
+            }
+            logLine("stream: " + e.spec.machine + " answered again; readmitted");
+            note(e.spec.name() + " readmitted (machine answered again); it plays games again");
+            if (!previous.empty() && previous != fingerprint)
+                note(e.spec.name() + "'s fingerprint changed: " + previous + " -> " + fingerprint + " after " +
+                     std::to_string(played) + " games");
+            gone = false;
+            if (twoSessions()) return;
+        }
+    }
+
+    // A readmission probe of a waiting engine's machine, on a thread of its
+    // own so that the phase never waits for one: reachable(), then
+    // checkMachine. The thread shares this with the engine. When the phase
+    // ends first, the engine sets `abandoned` (the probe's commands are
+    // cancelled, its answer goes nowhere) and hands the thread to the
+    // coordinator, whose destructor joins it; the thread touches only the
+    // coordinator, never the phase.
+    struct Probe {
+        std::atomic<bool> finished{false}, abandoned{false};
+        bool up = false;
+        MachineCheck check;
+    };
+
+    // Engine k, retired with its machine found unreachable, waits for the
+    // machine: a probe every readmit_seconds. True once the machine answers
+    // with this build and runs the engine's backend (its fingerprint now in
+    // `fingerprint`); false as soon as the phase is over (every game back, a
+    // failure, or cancel()), even with a probe outstanding. A machine that
+    // answers but cannot have the engine back (another build, or its
+    // backend refused) is noted once, until a probe finds otherwise.
+    bool awaitMachine(size_t k, std::string& fingerprint) {
+        const Engine& e = engines[k];
+        const double spacing = probeReadmitSeconds(c.cfg_.readmitSeconds);
+        const double slow = probeSlowProbe(e.spec.name());
+        std::shared_ptr<Probe> probe;
+        std::thread prober;
+        std::string noted;   // the refusal noted last
+        double next = now() + spacing;
+        std::unique_lock<std::mutex> lock(mutex);
+        while (!queue->done() && !stop && !c.cancel_) {
+            if (probe && probe->finished) {
+                lock.unlock();
+                prober.join();
+                const bool up = probe->up;
+                const MachineCheck check = probe->check;
+                probe.reset();
+                if (up && check.ok) {
+                    fingerprint = check.fingerprint;
+                    return true;
+                }
+                std::string refusal;
+                if (up && check.refused) {
+                    const std::string own = e.spec.name() + ": ";
+                    refusal = check.why.rfind(own, 0) == 0 ? check.why.substr(own.size()) : check.why;
+                } else if (up && !check.build.empty() && check.build != buildId()) {
+                    refusal = "its machine runs build " + check.build + ", this run " + buildId();
+                }
+                if (!refusal.empty() && refusal != noted) note(e.spec.name() + " not readmitted: " + refusal);
+                noted = refusal;
+                next = now() + spacing;
+                lock.lock();
+                continue;
+            }
+            if (!probe && now() >= next) {
+                auto p = std::make_shared<Probe>();
+                Coordinator* coordinator = &c;
+                prober = std::thread([p, coordinator, slow, spec = e.spec, machine = e.machine] {
+                    try {
+                        if (slow > 0) std::this_thread::sleep_for(std::chrono::duration<double>(slow));
+                        if (!p->abandoned) p->up = coordinator->transportFor(machine, "")->reachable();
+                        if (p->up && !p->abandoned)
+                            p->check = coordinator->checkMachine(spec.machine, {spec}, &p->abandoned);
+                    } catch (const std::exception& ex) {
+                        p->check = MachineCheck();
+                        p->check.why = ex.what();
+                    }
+                    p->finished = true;
+                });
+                probe = p;
+            }
+            const double wait = probe ? kProbePoll : std::min(kDynamicPoll, std::max(0.0, next - now()));
+            wake.wait_for(lock, std::chrono::duration<double>(wait));
+        }
+        lock.unlock();
+        if (probe) {
+            probe->abandoned = true;
+            std::lock_guard<std::mutex> probes(c.probesMutex_);
+            c.probes_.push_back(std::move(prober));
+        }
+        return false;
     }
 
     // One session of remote engine k: start to `end`, or a SliceError after
@@ -1631,6 +1785,9 @@ struct Coordinator::DynamicPhase {
             if (e.failedSessions > 0)
                 note = std::to_string(e.failedSessions) + " failed stream" + (e.failedSessions > 1 ? "s" : "") +
                        ", " + std::to_string(e.requeued) + " games requeued";
+            if (e.readmissions > 0)
+                note += std::string(note.empty() ? "" : "; ") + "readmitted " + std::to_string(e.readmissions) +
+                        " time" + (e.readmissions > 1 ? "s" : "");
             if (e.retired) note += std::string(note.empty() ? "" : "; ") + "retired";
             if (!note.empty()) note += ": " + e.why;
             if (k == listed) note = "fallback: every engine retired";
@@ -2447,9 +2604,19 @@ void endTimeout(double seconds) {
     std::lock_guard<std::mutex> lock(gProbeMutex);
     gEndTimeout = seconds;
 }
+void readmitSeconds(double seconds) {
+    std::lock_guard<std::mutex> lock(gProbeMutex);
+    gReadmitSeconds = seconds;
+}
+void slowProbe(const std::string& engine, double seconds) {
+    std::lock_guard<std::mutex> lock(gProbeMutex);
+    gSlowProbes[engine] = seconds;
+}
 void reset() {
     std::lock_guard<std::mutex> lock(gProbeMutex);
     gFailures.clear();
+    gReadmitSeconds = -1;
+    gSlowProbes.clear();
     gSessionFailures.clear();
     gForced.clear();
     gEndTimeout = kEndTimeout;

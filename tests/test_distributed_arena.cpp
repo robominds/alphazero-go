@@ -4,7 +4,7 @@
 // coordinator playing an arena wave's slices on several engines, merged
 // back by game index into exactly the results playMatches gives; and the
 // same with arena_allocation = dynamic, a wave's games streamed from one
-// queue, with its failures, fallback and manifests.
+// queue, with its failures, fallback, readmission and manifests.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #include <algorithm>
@@ -19,6 +19,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -426,10 +427,15 @@ struct Dir {
 };
 
 // "fake" has no ssh: its slices run the selfplay binary here (subprocess
-// transport), or on the calling thread with the in-process probe.
+// transport), or on the calling thread with the in-process probe. Its exe
+// is a link in the directory: without it the machine is unreachable.
+static std::string fakeExe(const Dir& dir) { return dir.file("selfplay_fake"); }
+static void restoreFake(const Dir& dir) {
+    if (!fs::is_symlink(fakeExe(dir))) fs::create_symlink(AZGO_SELFPLAY_EXE, fakeExe(dir));
+}
 static HostsFile fakeHosts(const Dir& dir) {
-    return parseHostsText("fake exe=" + std::string(AZGO_SELFPLAY_EXE) + " workdir=" + dir.file("remote") + "\n",
-                          "hosts");
+    restoreFake(dir);
+    return parseHostsText("fake exe=" + fakeExe(dir) + " workdir=" + dir.file("remote") + "\n", "hosts");
 }
 
 static std::vector<std::string> filesIn(const std::string& dir) {
@@ -832,6 +838,76 @@ static void test_dynamic_arena_failures() {
     distributed_probe::reset();
 }
 
+// A log the test may read while the coordinator writes to it.
+class SharedLog : public std::streambuf {
+public:
+    std::string str() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return text_;
+    }
+    // Waits (at most a minute) until the log holds `part`.
+    void await(const std::string& part) {
+        for (int i = 0; i < 6000 && !contains(str(), part); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        assert(contains(str(), part));
+    }
+protected:
+    int overflow(int c) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (c != EOF) text_ += static_cast<char>(c);
+        return c;
+    }
+    std::streamsize xsputn(const char* s, std::streamsize n) override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        text_.append(s, static_cast<size_t>(n));
+        return n;
+    }
+private:
+    std::mutex mutex_;
+    std::string text_;
+};
+
+// A session that drops mid-wave, its machine gone: the engine retires for
+// the wave and waits; once the machine is back it is readmitted and plays
+// games again in a session of the next attempt. The results never change.
+static void test_readmit_arena() {
+    const Network a(tinyNet(), 61), b(tinyNet(), 62), c(tinyNet(), 63);
+    const ArenaConfig cfg = tinyArena();
+    const std::vector<ArenaMatchSpec> wave = roundWave(a, b, c);
+    Dir dir("dynamic_readmit");
+    SharedLog buf;
+    std::ostream log(&buf);
+    distributed_probe::useInProcessTransport(true);   // the session needs no binary; the probe finds none
+    Coordinator coordinator(dynamicConfig("local/naive:1, fake/naive:1"), dir.file("run"), fakeHosts(dir), &log);
+    coordinator.preflight();
+    coordinator.beginArena(3);
+    distributed_probe::failSession("fake/naive", 1, 1);
+    distributed_probe::delaySlice("local/naive", 3);
+    distributed_probe::readmitSeconds(0.05);
+    fs::remove(fakeExe(dir));
+    FileWatcher watch({dir.file("run"), dir.file("remote")});
+    std::thread back([&] {
+        buf.await("note: generation 3 arena wave 1: fake/naive retired for this wave (fake unreachable)");
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        restoreFake(dir);
+    });
+    const std::vector<MatchResult> results = coordinator.playArena(wave, cfg);
+    back.join();
+    watch.stop();
+    checkWave(coordinator, results, wave, cfg);
+    checkDynamicReports(coordinator, 0, 1, 14);
+    const SliceReport& r = coordinator.arenaReports()[1];
+    assert(r.engine == "fake/naive" && r.slice.count > 1);
+    assert(contains(r.note, "1 failed stream") && contains(r.note, "readmitted 1 time") &&
+           !contains(r.note, "retired"));
+    assert(contains(buf.str(), "note: generation 3 arena wave 1: fake/naive readmitted (machine answered again); "
+                               "it plays games again"));
+    bool later = false;
+    for (const std::string& name : watch.seen) later = later || contains(name, "arena_g0003_w1_s1_a2.job");
+    assert(later);
+    distributed_probe::reset();
+}
+
 static std::vector<std::string> lines(const std::string& text) {
     std::vector<std::string> out;
     std::istringstream in(text);
@@ -949,6 +1025,7 @@ int main() {
     test_dynamic_arena_equals_static();
     test_dynamic_arena_two_waves();
     test_dynamic_arena_failures();
+    test_readmit_arena();
     test_dynamic_arena_manifests();
     test_calibration_wave_dynamic();
     std::printf("test_distributed_arena: OK\n");

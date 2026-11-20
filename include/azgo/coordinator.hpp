@@ -36,6 +36,7 @@
 #include <set>
 #include <ostream>
 #include <string>
+#include <thread>
 #include <vector>
 #include "azgo/arena.hpp"
 #include "azgo/config.hpp"
@@ -279,8 +280,9 @@ public:
     // playDynamic's generation is: the same engines on one queue of its
     // games, each remote a selfplay --stream session of an arena job holding
     // the whole wave and every network of it; notes read "generation g arena
-    // wave w", an engine retires for the wave, the reports are dynamic, and
-    // writeArenaGamesManifest records who played each game.
+    // wave w", an engine retires for the wave (and is readmitted as in
+    // playDynamic), the reports are dynamic, and writeArenaGamesManifest
+    // records who played each game.
     std::vector<MatchResult> playArena(const std::vector<ArenaMatchSpec>& wave, const ArenaConfig& cfg);
     // The slices of every wave since beginArena, wave by wave, in list order.
     const std::vector<SliceReport>& arenaReports() const { return arenaReports_; }
@@ -328,8 +330,8 @@ private:
     // The remote part of preflight, for one machine: `selfplay --version`
     // there must report buildId(), then `selfplay --fingerprint --backend B`
     // must succeed for e's backend. It never throws ConfigError; the build
-    // and the fingerprint (fingerprint: the engine's) go to remoteBuilds_
-    // and fingerprints_ under fingerprintsMutex_. Preflight checks a
+    // and the fingerprint (MachineCheck::fingerprint: the last engine's) go
+    // to remoteBuilds_ and fingerprints_ under fingerprintsMutex_. Preflight checks a
     // machine's engines in one go (one --version, then each engine's
     // fingerprint, the first failure ending it), and a readmission probe
     // (DynamicPhase) one engine, its commands cancelled once `cancel` is set.
@@ -407,6 +409,10 @@ private:
     std::mutex machinesMutex_;
     std::map<std::string, std::unique_ptr<MachineState>> machines_;   // by alias
     std::mutex logMutex_;                               // slices' notes, from their threads
+    // Readmission probes (DynamicPhase) left running when their phase
+    // ended, each cancelled; the destructor joins them.
+    std::mutex probesMutex_;
+    std::vector<std::thread> probes_;
     std::atomic<bool> cancel_{false};                   // cancel(): every phase stops
     std::vector<SliceReport> reports_;
     std::vector<std::string> assignment_;
@@ -418,8 +424,14 @@ private:
     // verified. A failed session's games in flight go back to the queue; it
     // is retried once, then (selfplay_fallback = local) the engine retires
     // for the generation, or (stop) the generation throws. When every
-    // listed engine has retired, the fallback engine joins. Records are
-    // merged by index; reports and assignment() say who played what.
+    // listed engine has retired, the fallback engine joins (and stays).
+    // An engine retired because its machine was found unreachable (or not
+    // tried, its machine down at the start) waits: every readmit_seconds
+    // (0: never) its machine is probed, and once it answers with this build
+    // (checkMachine) the engine is readmitted (GameQueue::readmit) and gets
+    // two sessions again, the next attempt numbers; an engine retired while
+    // its machine answers stays retired. Records are merged by index;
+    // reports and assignment() say who played what.
     std::vector<GameRecord> playDynamic(int g, const std::string& networkPath, const Network& net,
                                         const SelfPlayConfig& sp, int games);
     struct DynamicPhase;   // its state and machinery, any kind of phase, in coordinator.cpp
@@ -466,6 +478,12 @@ void forceAssignment(int g, const std::vector<std::string>& engineOfGame);
 // Dynamic allocation: how long a session may take to end after `end`
 // (120 s outside tests).
 void endTimeout(double seconds);
+// Dynamic allocation: the spacing of readmission probes, in place of the
+// config's readmit_seconds (which still turns readmission off with 0).
+void readmitSeconds(double seconds);
+// Dynamic allocation: each readmission probe of the engine's machine (its
+// reachability, while the engine waits to be readmitted) takes this long.
+void slowProbe(const std::string& engine, double seconds);
 void reset();
 } // namespace distributed_probe
 
