@@ -609,8 +609,7 @@ $ ./build-metal/train --run RUN_DIR --resume --set selfplay_allocation=dynamic
 Generations before the switch are untouched; the next one is the first
 dynamic one, and `--set selfplay_allocation=static` switches back the same
 way. The arena stays static unless `arena_allocation = dynamic`:
-`arena_engines` keeps its fixed slices, since a wave is a small share of a
-generation's time.
+`arena_engines` keeps its fixed slices by default.
 
 Two keys, both tunable on resume, shape the arena's use of
 `arena_engines`. `arena_allocation` (`static`, the default, or `dynamic`)
@@ -621,6 +620,48 @@ queue as `selfplay_allocation = dynamic` does. `readmit_seconds` (default
 `300`, `0` turns it off) is how often, in seconds, a retired engine whose
 machine was seen unreachable is tried again; it likewise adds
 `readmit_seconds = 300` to a new run's `config.cfg`.
+
+**Dynamic arena waves**
+([design](docs/superpowers/specs/2026-11-19-streamed-arena-and-readmission-design.md)).
+With `arena_allocation = dynamic`, each wave (the calibrations, a
+generation's opponents, a promotion's games) is one queue of its games,
+numbered match by match as before. Local engines take games from it on
+their worker threads, with one evaluator set (one hub on a GPU) per network
+of the wave. Each remote engine runs one `selfplay --stream` session per
+wave. Its job holds every match of the wave and every network the wave
+uses, so a gating wave sends two networks once per machine. The session
+answers each game as an arena frame, which the coordinator replays and
+verifies as it does a result file's games. The weights set only each
+engine's default concurrency, as for dynamic self-play. Failures follow
+self-play's rules: a failed session's games in flight go back to the
+queue, and the session is retried once. After that the engine retires for
+the rest of the wave (`note: generation 12 arena wave 1: pc/cuda retired
+for this wave (...)`), and the next wave tries it again. With every listed
+engine retired the fallback engine joins; with `selfplay_fallback = stop`
+the wave throws. Waves stay sequential, since the promotion wave depends on
+the first. The merge, `matchResult` and the gating decision are as for
+static waves.
+
+A dynamic wave's rows in `arena-engines.csv` are one per engine, with an
+empty `first`, the games it played as `count`, and a `note` for failed
+sessions and retirement. A new file, `arena-games.csv`, records which engine
+played each game, one row per game:
+
+```
+generation,wave,game,engine
+12,1,0,local/metal
+12,1,1,pc/cuda
+...
+```
+
+A resume drops its rows of uncommitted generations, as it does the other
+manifests'. The progress line names the generation and wave: `arena engines
+(gen 12, wave 1): local/metal 40 610s 3.1k ev/s | pc/cuda 120 605s 9.8k`.
+With engines of one arithmetic a dynamic wave gives exactly a static
+wave's results. With mixed arithmetic, a wave's games are exact given the
+assignment in `arena-games.csv`, but a redone or resumed wave may assign
+them differently, so its last bits, and rarely a gating decision near the
+threshold, can differ.
 
 ### The Core ML engines (16-bit, Neural Engine and GPU)
 

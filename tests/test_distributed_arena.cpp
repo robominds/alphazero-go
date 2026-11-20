@@ -2,20 +2,27 @@
 // files and how a result is verified by replaying its games, the selfplay
 // app playing an arena job (in process and as the real binary), and the
 // coordinator playing an arena wave's slices on several engines, merged
-// back by game index into exactly the results playMatches gives.
+// back by game index into exactly the results playMatches gives; and the
+// same with arena_allocation = dynamic, a wave's games streamed from one
+// queue, with its failures, fallback and manifests.
 //
 // Mark Castelluccio, with assistance from Claude (Anthropic).
 #include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 #include "azgo/arena.hpp"
@@ -583,6 +590,352 @@ static void test_arena_manifest() {
     assert(enginesLine({r}) == "selfplay engines: local/metal 22 10s 2.0k ev/s");
 }
 
+// ---- dynamic waves (arena_allocation = dynamic) -------------------------------------
+
+static Config dynamicConfig(const std::string& engines) {
+    Config c = arenaRunConfig(engines);
+    c.arenaAllocation = "dynamic";
+    return c;
+}
+
+// A hosts file of fake remotes, one per alias, each with its own work directory.
+static HostsFile fakeHostsFor(const Dir& dir, const std::vector<std::string>& aliases) {
+    std::string text;
+    for (const std::string& alias : aliases)
+        text += alias + " exe=" + std::string(AZGO_SELFPLAY_EXE) + " workdir=" + dir.file("remote_" + alias) + "\n";
+    return parseHostsText(text, "hosts");
+}
+
+static int gamesOf(const std::vector<ArenaMatchSpec>& wave) {
+    int total = 0;
+    for (const ArenaMatchSpec& m : wave) total += m.games;
+    return total;
+}
+
+// A whole wave's games as one engine plays them, by wave index.
+static std::vector<ArenaGameResult> waveGames(const std::vector<ArenaMatchSpec>& wave, const ArenaConfig& cfg) {
+    EngineRun run;
+    run.backend = "naive";
+    run.workers = 2;
+    return playArenaGames(waveSlice(wave, 0, gamesOf(wave)), cfg, run);
+}
+
+// The wave just played, checked against one engine's play: each match's
+// result is playMatches', and each game the same moves and score.
+static void checkWave(const Coordinator& c, const std::vector<MatchResult>& got,
+                      const std::vector<ArenaMatchSpec>& wave, const ArenaConfig& cfg) {
+    const std::vector<MatchResult> expected = playMatches(wave, cfg, 3, "naive", 64);
+    assert(got.size() == expected.size());
+    for (size_t i = 0; i < got.size(); ++i) assert(sameResult(got[i], expected[i]));
+    assert(sameGames(c.arenaGames(), waveGames(wave, cfg)));
+}
+
+// A dynamic wave's reports, from `from` on: each of that wave, dynamic,
+// counting every game once; an engine that played says who it is.
+static void checkDynamicReports(const Coordinator& c, size_t from, int wave, int games) {
+    const std::vector<SliceReport>& reports = c.arenaReports();
+    assert(reports.size() > from);
+    int counted = 0;
+    for (size_t k = from; k < reports.size(); ++k) {
+        const SliceReport& r = reports[k];
+        assert(r.dynamic && r.wave == wave);
+        if (r.slice.count > 0)
+            assert(r.fingerprint == engineFingerprint("naive") && r.build == shortBuildId() &&
+                   r.stats.positions > 0 && r.stats.evaluations > 0);
+        counted += r.slice.count;
+    }
+    assert(counted == games);
+}
+
+// Every file name seen under some directories while it runs, as
+// "<parent directory>/<file>": a session's files live only while it does.
+struct FileWatcher {
+    std::set<std::string> seen;
+    std::atomic<bool> done{false};
+    std::thread thread;
+    explicit FileWatcher(std::vector<std::string> dirs) {
+        thread = std::thread([this, dirs] {
+            while (!done) {
+                for (const std::string& dir : dirs) {
+                    std::error_code ec;
+                    for (fs::recursive_directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec))
+                        seen.insert(it->path().parent_path().filename().string() + "/" +
+                                    it->path().filename().string());
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+        });
+    }
+    void stop() {
+        done = true;
+        thread.join();
+    }
+};
+
+// One fingerprint everywhere (naive here and on a fake remote, as a
+// process and in process): a dynamic gating wave and a ladder wave with a
+// bot give exactly playMatches' results and games, and the reports are
+// dynamic and count each game once. The remote keeps only the networks.
+// Each engine in turn starts late, so the other takes most games (a wave
+// this small is often all one engine's); the failure tests below merge
+// games of both.
+static void test_dynamic_arena_equals_static() {
+    const Network a(tinyNet(), 61), b(tinyNet(), 62), c(tinyNet(), 63);
+    ArenaConfig cfg = tinyArena();
+    cfg.maxMoves = 0;   // as a run's: resolved by each engine
+    const std::vector<std::vector<ArenaMatchSpec>> waves = {
+        {{ArenaPlayer::network(a), ArenaPlayer::network(b), 8, 801}},   // gating
+        roundWave(a, b, c),                                            // a ladder round
+    };
+    for (bool inProcess : {false, true})
+        for (const char* late : {"local/naive", "fake/naive"}) {
+            distributed_probe::reset();
+            distributed_probe::useInProcessTransport(inProcess);
+            distributed_probe::delaySlice(late, 0.3);
+            Dir dir("dynamic_equal");
+            Coordinator coordinator(dynamicConfig("local/naive:1, fake/naive:1"), dir.file("run"), fakeHosts(dir),
+                                    nullptr);
+            coordinator.preflight();
+            coordinator.beginArena(7);
+            for (size_t w = 0; w < waves.size(); ++w) {
+                const size_t from = coordinator.arenaReports().size();
+                checkWave(coordinator, coordinator.playArena(waves[w], cfg), waves[w], cfg);
+                checkDynamicReports(coordinator, from, static_cast<int>(w) + 1, gamesOf(waves[w]));
+                assert(coordinator.arenaReports().size() == from + 2);
+                assert(coordinator.arenaReports()[from].engine == "local/naive" &&
+                       coordinator.arenaReports()[from + 1].engine == "fake/naive");
+                for (size_t k = from; k < from + 2; ++k) assert(coordinator.arenaReports()[k].note.empty());
+            }
+            assert(!fs::exists(dir.file("run/arena-work")));
+            // Left on the remote: the networks of both waves (a, b, c), until the coordinator goes.
+            const std::vector<std::string> left = filesIn(dir.file("remote"));
+            for (const std::string& f : left) assert(f.rfind("net_", 0) == 0);
+            assert(left.size() == 3);
+        }
+    distributed_probe::reset();
+}
+
+// A first wave and then a promotion wave of one generation: each wave's
+// sessions have files of their own, named by generation and wave, here
+// and on the remote, and both waves play out with their own reports.
+static void test_dynamic_arena_two_waves() {
+    const Network a(tinyNet(), 61), b(tinyNet(), 62);
+    const ArenaConfig cfg = tinyArena();
+    const std::vector<ArenaMatchSpec> first = {{ArenaPlayer::network(a), ArenaPlayer::network(b), 6, 901},
+                                               {ArenaPlayer::network(a), ArenaPlayer::bot(6), 4, 902}};
+    const std::vector<ArenaMatchSpec> promotion = {{ArenaPlayer::network(a), ArenaPlayer::network(b), 8, 903}};
+    distributed_probe::useInProcessTransport(true);
+    distributed_probe::delaySlice("fake/naive", 0.3);   // its files stay a while before the stream starts
+    Dir dir("two_waves");
+    Coordinator coordinator(dynamicConfig("local/naive:1, fake/naive:1"), dir.file("run"), fakeHosts(dir), nullptr);
+    coordinator.preflight();
+    coordinator.beginArena(5);
+    FileWatcher watch({dir.file("run"), dir.file("remote")});
+    checkWave(coordinator, coordinator.playArena(first, cfg), first, cfg);
+    const size_t firstReports = coordinator.arenaReports().size();
+    checkWave(coordinator, coordinator.playArena(promotion, cfg), promotion, cfg);
+    watch.stop();
+    checkDynamicReports(coordinator, firstReports, 2, gamesOf(promotion));
+    for (size_t k = 0; k < firstReports; ++k) assert(coordinator.arenaReports()[k].wave == 1);
+    const std::string runId = runIdOf(dir.file("run"));
+    for (const std::string& name : {"gen_0005_w1/arena_g0005_w1_s1_a1.job", "gen_0005_w2/arena_g0005_w2_s1_a1.job",
+                                    "/arena_g0005_w1_s1_a1.job", "/arena_g0005_w2_s1_a1.job"})
+        assert(watch.seen.count(name[0] == '/' ? runId + name : name));
+    for (const std::string& name : watch.seen) assert(!contains(name, "/g0005_"));   // no self-play names
+    assert(!fs::exists(dir.file("run/arena-work")));
+    distributed_probe::reset();
+}
+
+// A session that fails gives its games in flight back and is retried;
+// two failures retire the engine for the wave (the next wave tries it
+// again); with every listed engine retired the fallback engine joins; with
+// selfplay_fallback = stop the wave throws. The results never change. The
+// local engine starts late, so the remote has games when it fails.
+static void test_dynamic_arena_failures() {
+    const Network a(tinyNet(), 61), b(tinyNet(), 62), c(tinyNet(), 63);
+    const ArenaConfig cfg = tinyArena();
+    const std::vector<ArenaMatchSpec> wave = roundWave(a, b, c);
+    auto failing = [](const std::string& engine, int times, int afterGames) {
+        distributed_probe::reset();
+        distributed_probe::useInProcessTransport(true);
+        distributed_probe::delaySlice("local/naive", 0.5);
+        if (times > 0) distributed_probe::failSession(engine, times, afterGames);
+    };
+    {
+        Dir dir("dynamic_retry");
+        std::ostringstream log;
+        Coordinator coordinator(dynamicConfig("local/naive:1, fake/naive:1"), dir.file("run"), fakeHosts(dir), &log);
+        coordinator.preflight();
+        coordinator.beginArena(3);
+        failing("fake/naive", 1, 1);
+        checkWave(coordinator, coordinator.playArena(wave, cfg), wave, cfg);
+        checkDynamicReports(coordinator, 0, 1, 14);
+        const SliceReport& r = coordinator.arenaReports()[1];
+        assert(r.engine == "fake/naive" && contains(r.note, "1 failed stream") && !contains(r.note, "retired"));
+        assert(contains(log.str(), "note: generation 3 arena wave 1: fake/naive's stream failed"));
+        // The failed session's log stays; the saved networks do not.
+        assert(fs::exists(dir.file("run/arena-work/gen_0003_w1/fake_naive.log")));
+        assert(!fs::exists(dir.file("run/arena-work/gen_0003_w1/networks")));
+    }
+    {
+        Dir dir("dynamic_retire");
+        std::ostringstream log;
+        Coordinator coordinator(dynamicConfig("local/naive:1, fake/naive:1"), dir.file("run"), fakeHosts(dir), &log);
+        coordinator.preflight();
+        coordinator.beginArena(3);
+        failing("fake/naive", 2, 1);
+        checkWave(coordinator, coordinator.playArena(wave, cfg), wave, cfg);
+        checkDynamicReports(coordinator, 0, 1, 14);
+        const SliceReport& r = coordinator.arenaReports()[1];
+        assert(contains(r.note, "2 failed streams") && contains(r.note, "retired"));
+        assert(contains(log.str(), "note: generation 3 arena wave 1: fake/naive retired for this wave ("));
+        // The machine answers: the next wave tries it again.
+        failing("", 0, 0);
+        checkWave(coordinator, coordinator.playArena({wave[0]}, cfg), {wave[0]}, cfg);
+        checkDynamicReports(coordinator, 2, 2, 6);
+        assert(coordinator.arenaReports()[3].engine == "fake/naive" && coordinator.arenaReports()[3].note.empty());
+    }
+    {
+        Dir dir("dynamic_fallback");
+        std::ostringstream log;
+        Coordinator coordinator(dynamicConfig("fa/naive:1, fb/naive:1"), dir.file("run"),
+                                fakeHostsFor(dir, {"fa", "fb"}), &log);
+        coordinator.preflight();
+        coordinator.beginArena(3);
+        failing("fa/naive", 2, 1);
+        distributed_probe::failSession("fb/naive", 2, 0);
+        checkWave(coordinator, coordinator.playArena(wave, cfg), wave, cfg);
+        checkDynamicReports(coordinator, 0, 1, 14);
+        const std::vector<SliceReport>& reports = coordinator.arenaReports();
+        assert(reports.size() == 3 && reports[2].engine == "local/naive" &&
+               reports[2].note == "fallback: every engine retired");
+        assert(contains(log.str(), "note: generation 3 arena wave 1: every engine retired; "
+                                   "local/naive plays the remaining games"));
+    }
+    {
+        Dir dir("dynamic_stop");
+        Config stop = dynamicConfig("local/naive:1, fake/naive:1");
+        stop.selfplayFallback = "stop";
+        Coordinator coordinator(stop, dir.file("run"), fakeHosts(dir), nullptr);
+        coordinator.preflight();
+        coordinator.beginArena(3);
+        failing("fake/naive", 2, 1);
+        std::string error;
+        try {
+            coordinator.playArena(wave, cfg);
+        } catch (const SliceError& e) {
+            error = e.what();
+        }
+        assert(contains(error, "fake/naive failed twice") && contains(error, "selfplay_fallback = stop"));
+        assert(coordinator.arenaReports().empty());
+    }
+    distributed_probe::reset();
+}
+
+static std::vector<std::string> lines(const std::string& text) {
+    std::vector<std::string> out;
+    std::istringstream in(text);
+    for (std::string line; std::getline(in, line);) out.push_back(line);
+    return out;
+}
+
+// arena-games.csv: one row per game of a dynamic wave, a wave written
+// again replaces its rows, and a prune drops generations g and later.
+// arena-engines.csv's dynamic rows leave `first` empty.
+static void test_dynamic_arena_manifests() {
+    {
+        Dir dir("games_manifest");
+        const std::string run = dir.path.string();
+        writeArenaGamesManifest(run, 4, 1, {"local/metal", "pc/cuda"});
+        writeArenaGamesManifest(run, 4, 2, {"pc/cuda"});
+        writeArenaGamesManifest(run, 4, 2, {"local/metal", "local/metal", "pc/cuda"});   // redone
+        writeArenaGamesManifest(run, 5, 1, {"pc/cuda"});
+        const std::string four = "generation,wave,game,engine\n4,1,0,local/metal\n4,1,1,pc/cuda\n"
+                                 "4,2,0,local/metal\n4,2,1,local/metal\n4,2,2,pc/cuda\n";
+        assert(readText(arenaGamesManifestPath(run)) == four + "5,1,0,pc/cuda\n");
+        pruneArenaGamesManifest(run, 5);
+        assert(readText(arenaGamesManifestPath(run)) == four);
+        pruneArenaGamesManifest(run, 4);
+        assert(readText(arenaGamesManifestPath(run)) == "generation,wave,game,engine\n");
+        assert(contains(arenaGamesManifestPath("x"), "arena-games.csv"));
+        SliceReport r;
+        r.dynamic = true;
+        r.wave = 2;
+        r.slice.count = 7;
+        r.planned = r.engine = "pc/cuda";
+        r.fingerprint = "cuda; x";
+        writeArenaManifest(run, 4, {r});
+        assert(contains(readText(arenaManifestPath(run)), "\n4,2,,7,pc/cuda,pc/cuda,\"cuda; x\","));
+    }
+    const Network a(tinyNet(), 61), b(tinyNet(), 62), c(tinyNet(), 63);
+    const ArenaConfig cfg = tinyArena();
+    const std::vector<ArenaMatchSpec> wave = roundWave(a, b, c);
+    distributed_probe::useInProcessTransport(true);
+    distributed_probe::delaySlice("local/naive", 0.3);
+    Dir dir("dynamic_manifests");
+    const std::string run = dir.file("run");
+    Coordinator coordinator(dynamicConfig("local/naive:1, fake/naive:1"), run, fakeHosts(dir), nullptr);
+    coordinator.preflight();
+    coordinator.beginArena(6);
+    coordinator.playArena(wave, cfg);
+    coordinator.playArena({wave[0]}, cfg);
+    writeArenaManifest(run, 6, coordinator.arenaReports());
+    // One row per engine and wave, `first` empty, the count its games.
+    const std::vector<std::string> rows = lines(readText(arenaManifestPath(run)));
+    const std::vector<SliceReport>& reports = coordinator.arenaReports();
+    assert(rows.size() == 1 + reports.size());
+    for (size_t k = 0; k < reports.size(); ++k) {
+        const SliceReport& r = reports[k];
+        const std::string start = "6," + std::to_string(r.wave) + ",," + std::to_string(r.slice.count) + "," +
+                                  r.engine + "," + r.engine + ",";
+        assert(rows[k + 1].rfind(start, 0) == 0);
+    }
+    // One row per game, in index order, each engine's as many as it played.
+    std::vector<std::string> games = lines(readText(arenaGamesManifestPath(run)));
+    assert(games.size() == 1 + 14 + 6 && games[0] == "generation,wave,game,engine");
+    std::map<std::string, int> byEngine;
+    for (size_t i = 0; i < 20; ++i) {
+        const bool second = i >= 14;
+        const std::string prefix = "6," + std::string(second ? "2," : "1,") + std::to_string(second ? i - 14 : i) + ",";
+        assert(games[i + 1].rfind(prefix, 0) == 0);
+        ++byEngine[(second ? "2 " : "1 ") + games[i + 1].substr(prefix.size())];
+    }
+    for (const SliceReport& r : reports) assert(byEngine[std::to_string(r.wave) + " " + r.engine] == r.slice.count);
+    // A later generation's rows, then the prune of a resume to generation 6.
+    const std::string sixth = readText(arenaGamesManifestPath(run));
+    coordinator.beginArena(7);
+    coordinator.playArena({wave[1]}, cfg);
+    games = lines(readText(arenaGamesManifestPath(run)));
+    assert(games.size() == 1 + 20 + 4 && games.back().rfind("7,1,3,", 0) == 0);
+    pruneArenaGamesManifest(run, 7);
+    assert(readText(arenaGamesManifestPath(run)) == sixth);
+    distributed_probe::reset();
+}
+
+// Generation 0's calibration wave: the first network and a reference
+// network against bots and each other, played dynamically, merges as one
+// engine's play.
+static void test_calibration_wave_dynamic() {
+    const Network first(tinyNet(), 70), reference(tinyNet(), 71);
+    const ArenaConfig cfg = tinyArena();
+    const std::vector<ArenaMatchSpec> wave = {
+        {ArenaPlayer::network(first), ArenaPlayer::bot(4), 4, 1001},
+        {ArenaPlayer::network(first), ArenaPlayer::bot(8), 4, 1002},
+        {ArenaPlayer::network(reference), ArenaPlayer::bot(4), 4, 1003},
+        {ArenaPlayer::network(reference), ArenaPlayer::network(first), 6, 1004},
+    };
+    distributed_probe::useInProcessTransport(true);
+    distributed_probe::delaySlice("local/naive", 0.3);
+    Dir dir("calibration");
+    Coordinator coordinator(dynamicConfig("local/naive:1, fake/naive:2"), dir.file("run"), fakeHosts(dir), nullptr);
+    coordinator.preflight();
+    coordinator.beginArena(0);
+    checkWave(coordinator, coordinator.playArena(wave, cfg), wave, cfg);
+    checkDynamicReports(coordinator, 0, 1, 18);
+    assert(lines(readText(arenaGamesManifestPath(dir.file("run")))).size() == 1 + 18);
+    distributed_probe::reset();
+}
+
 int main() {
     test_arena_job_round_trip();
     test_arena_result_round_trip();
@@ -593,6 +946,11 @@ int main() {
     test_play_arena_equals_play_matches();
     test_play_arena_failures();
     test_arena_manifest();
+    test_dynamic_arena_equals_static();
+    test_dynamic_arena_two_waves();
+    test_dynamic_arena_failures();
+    test_dynamic_arena_manifests();
+    test_calibration_wave_dynamic();
     std::printf("test_distributed_arena: OK\n");
     return 0;
 }

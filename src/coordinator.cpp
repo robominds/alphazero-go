@@ -41,6 +41,7 @@ const char* const kManifestHeader =
 const char* const kGamesManifestHeader = "generation,game,engine\n";
 const char* const kArenaManifestHeader =
     "generation,wave,first,count,planned,engine,fingerprint,build,seconds,positions,evaluations,note\n";
+const char* const kArenaGamesManifestHeader = "generation,wave,game,engine\n";
 
 // A CSV field: quoted (with quotes doubled) when `always` or when it holds
 // a comma, a quote or a line break.
@@ -1017,7 +1018,8 @@ std::vector<GameRecord> Coordinator::play(int g, const std::string& networkPath,
 
 // ---- dynamic allocation -----------------------------------------------------------
 
-// One dynamic phase: a generation's self-play (playDynamic). The queue, the
+// One dynamic phase: a generation's self-play (playDynamic) or an arena
+// wave (playArena with arena_allocation = dynamic). The queue, the
 // engines and their threads, and the sessions are the same for every kind
 // of phase; what a kind plays, and how its games are kept, are its parts
 // below, set before run(). Everything shared is guarded by `mutex`; waiting
@@ -1045,10 +1047,10 @@ struct Coordinator::DynamicPhase {
     const int games;
 
     // ---- the kind's parts ----
-    std::string label;         // notes read "note: <label>: ...", e.g. "generation 3"
-    std::string scope;         // what a retired engine sits out: "generation"
-    std::string sessionBase;   // a session's files: <sessionBase>_s<engine>_a<attempt>.job, e.g. "g0003"
-    char gameFrame = 'G';      // the stream's game frame (StreamFrames)
+    std::string label;         // notes read "note: <label>: ...": "generation 3", "generation 3 arena wave 1"
+    std::string scope;         // what a retired engine sits out: "generation", "wave"
+    std::string sessionBase;   // a session's files: <sessionBase>_s<engine>_a<attempt>.job: "g0003", "arena_g0003_w1"
+    char gameFrame = 'G';      // the stream's game frame (StreamFrames): 'G', 'A'
     std::string workDir, jobBytes;   // jobBytes: every session's job, when an engine is remote
     std::vector<std::pair<std::string, uint64_t>> networks;   // every remote engine needs them: path, fileHash
     // Local engine k's workers, run.workers of them, playing the games a
@@ -1686,16 +1688,26 @@ std::vector<MatchResult> Coordinator::playArena(const std::vector<ArenaMatchSpec
         check.inferenceBatch = cfg_.inferenceBatch;
         playArenaGames(unplayed, cfg, check);
     }
-    const std::vector<Slice> assigned = assignGames(cfg_.arenaEngines, total);
-    const size_t n = assigned.size();
+    // Static: a slice per engine with a share. Dynamic: the same engines on
+    // one queue of the wave's games.
+    const bool dynamic = cfg_.arenaAllocation == "dynamic";
+    std::vector<Slice> assigned;
+    std::unique_ptr<DynamicPhase> phase;
+    bool anyRemote = false;
+    if (dynamic) {
+        phase = std::make_unique<DynamicPhase>(*this, kArenaPhase, total, cfg_.arenaEngines,
+                                               std::vector<std::string>{});
+        anyRemote = phase->anyRemote();
+    } else {
+        assigned = assignGames(cfg_.arenaEngines, total);
+        for (const Slice& s : assigned)
+            anyRemote = anyRemote ||
+                        !hosts_.settings(cfg_.arenaEngines[static_cast<size_t>(s.engine)].machine).local();
+    }
     char waveDir[48];
     std::snprintf(waveDir, sizeof waveDir, "gen_%04d_w%d", g, w);
     const std::string workDir = (std::filesystem::path(runDir_) / "arena-work" / waveDir).string();
     const std::string netDir = workDir + "/networks";
-    bool anyRemote = false;
-    for (const Slice& s : assigned)
-        anyRemote = anyRemote ||
-                    !hosts_.settings(cfg_.arenaEngines[static_cast<size_t>(s.engine)].machine).local();
     // The wave's networks, in order of first appearance, each saved from
     // memory (a reference network in play is fitted to the run's shape, so
     // it is not its file) when a remote engine plays: path and fileHash.
@@ -1726,24 +1738,14 @@ std::vector<MatchResult> Coordinator::playArena(const std::vector<ArenaMatchSpec
 
     ArenaConfig resolved = cfg;
     resolved.maxMoves = cfg.maxMoves > 0 ? cfg.maxMoves : defaultMaxMoves(cfg_.boardSize);
-    std::vector<std::vector<ArenaGameResult>> results(n);
-    std::vector<PhaseSlice> slices(n);
-    for (size_t k = 0; k < n; ++k) {
-        PhaseSlice& ps = slices[k];
-        ps.engine = cfg_.arenaEngines[static_cast<size_t>(assigned[k].engine)];
-        ps.slice = assigned[k];
-        const std::vector<ArenaGameRange> ranges = waveSlice(wave, assigned[k].first, assigned[k].count);
-        ps.playLocal = [&results, k, ranges, cfg](const EngineRun& run, SliceStats* stats) {
-            results[k] = playArenaGames(ranges, cfg, run, stats);
-        };
-        if (hosts_.settings(ps.engine.machine).local()) continue;
-        // The job: the slice's ranges, naming only the networks they use.
+    // A remote job of `ranges`, naming only the networks they use: `used`
+    // gets their indices into nets, in the job's order.
+    auto arenaJob = [&](const std::vector<ArenaGameRange>& ranges, std::vector<size_t>& used) {
         ArenaJob job;
         job.boardSize = cfg_.boardSize;
         job.cfg = resolved;
         job.buildId = buildId();
         job.inferenceBatch = cfg_.inferenceBatch;
-        std::vector<size_t> used;   // indices into nets, in the job's order
         auto seat = [&](const ArenaPlayer& p) {
             ArenaJobPlayer out;
             out.simulations = p.simulations;
@@ -1762,45 +1764,104 @@ std::vector<MatchResult> Coordinator::playArena(const std::vector<ArenaMatchSpec
             return out;
         };
         for (const ArenaGameRange& r : ranges) job.ranges.push_back({seat(r.a), seat(r.b), r.seed, r.first, r.count});
-        for (size_t i : used) {
-            job.networks.push_back({netFileName(files[i].second), files[i].second});
-            ps.remote.networks.push_back(files[i]);
-        }
-        char base[64];
-        std::snprintf(base, sizeof base, "arena_g%04d_w%d_%d", g, w, assigned[k].first);
-        ps.remote.base = base;
-        ps.remote.jobBytes = serializeArenaJob(job);
-        const std::string jobBytes = ps.remote.jobBytes;
-        ps.remote.accept = [&results, k, jobBytes](const std::string& path, SliceReport& report) {
-            ArenaSliceResult result = readArenaResult(path, jobBytes, buildId());
-            report.fingerprint = result.fingerprint;
-            report.build = shortOf(result.buildId);
-            report.stats = result.stats;
-            results[k] = std::move(result.games);
-        };
-    }
-    std::atomic<bool> failed{false};
-    std::vector<SliceReport> reports = runSlices(g, kArenaPhase, slices, cfg_.arenaEngines, workDir,
-                                                 "arena wave " + std::to_string(w) + " games", failed);
-
-    // Merge by wave index, each filled exactly once, then each match's
-    // result from its games in index order.
+        for (size_t i : used) job.networks.push_back({netFileName(files[i].second), files[i].second});
+        return job;
+    };
     std::vector<ArenaGameResult> games(static_cast<size_t>(total));
-    std::vector<char> filled(static_cast<size_t>(total), 0);
-    for (size_t k = 0; k < n; ++k) {
-        if (results[k].size() != static_cast<size_t>(assigned[k].count))
-            throw std::logic_error("arena slice of " + reports[k].engine +
-                                   " returned the wrong number of games");
-        for (int j = 0; j < assigned[k].count; ++j) {
-            const size_t i = static_cast<size_t>(assigned[k].first + j);
-            if (i >= games.size() || filled[i])
-                throw std::logic_error("arena game " + std::to_string(i) + " assigned twice or out of range");
-            filled[i] = 1;
-            games[i] = std::move(results[k][static_cast<size_t>(j)]);
+    std::vector<SliceReport> reports;
+    bool failedAttempts = false;   // the wave keeps its logs
+    if (dynamic) {
+        // The wave as a dynamic phase: every session's job is the whole
+        // wave (each match a full range) with every network of the wave.
+        DynamicPhase& p = *phase;
+        p.label = "generation " + std::to_string(g) + " arena wave " + std::to_string(w);
+        p.scope = "wave";
+        char base[48];
+        std::snprintf(base, sizeof base, "arena_g%04d_w%d", g, w);
+        p.sessionBase = base;
+        p.gameFrame = 'A';
+        p.workDir = workDir;
+        const std::vector<ArenaGameRange> ranges = waveSlice(wave, 0, total);
+        if (anyRemote) {
+            std::vector<size_t> used;
+            p.jobBytes = serializeArenaJob(arenaJob(ranges, used));
+            for (size_t i : used) p.networks.push_back(files[i]);
         }
+        p.playLocal = [&](size_t k, const EngineRun& run, SliceStats* stats) {
+            DynamicPhase::QueueSource<ArenaGameSource, ArenaGameResult> source(p, k, games);
+            playArenaQueue(ranges, cfg, run, source, stats);
+        };
+        p.streamGame = [&](size_t k, StreamChecker& check, const std::string& payload) {
+            StreamArenaGame game = check.arenaGame(payload);
+            const long long positions = static_cast<long long>(game.result.moves.size());
+            p.streamedBack(k, game.index, std::move(game.result), positions, game.evaluations, games);
+        };
+        reports = p.run();
+        // Each game was kept by wave index once (the queue and each
+        // session's checker refuse it twice); who played it goes to
+        // arena-games.csv.
+        std::vector<std::string> engineOfGame(static_cast<size_t>(total));
+        for (int i = 0; i < total; ++i) {
+            const int k = p.queue->playedBy(i);
+            if (k < 0) throw std::logic_error("arena game " + std::to_string(i) + " was not played");
+            engineOfGame[static_cast<size_t>(i)] = p.engines[static_cast<size_t>(k)].spec.name();
+        }
+        std::filesystem::create_directories(runDir_);
+        writeArenaGamesManifest(runDir_, g, w, engineOfGame);
+        failedAttempts = p.failed;
+    } else {
+        const size_t n = assigned.size();
+        std::vector<std::vector<ArenaGameResult>> results(n);
+        std::vector<PhaseSlice> slices(n);
+        for (size_t k = 0; k < n; ++k) {
+            PhaseSlice& ps = slices[k];
+            ps.engine = cfg_.arenaEngines[static_cast<size_t>(assigned[k].engine)];
+            ps.slice = assigned[k];
+            const std::vector<ArenaGameRange> ranges = waveSlice(wave, assigned[k].first, assigned[k].count);
+            ps.playLocal = [&results, k, ranges, cfg](const EngineRun& run, SliceStats* stats) {
+                results[k] = playArenaGames(ranges, cfg, run, stats);
+            };
+            if (hosts_.settings(ps.engine.machine).local()) continue;
+            // The job: the slice's ranges, naming only the networks they use.
+            std::vector<size_t> used;
+            const ArenaJob job = arenaJob(ranges, used);
+            for (size_t i : used) ps.remote.networks.push_back(files[i]);
+            char base[64];
+            std::snprintf(base, sizeof base, "arena_g%04d_w%d_%d", g, w, assigned[k].first);
+            ps.remote.base = base;
+            ps.remote.jobBytes = serializeArenaJob(job);
+            const std::string jobBytes = ps.remote.jobBytes;
+            ps.remote.accept = [&results, k, jobBytes](const std::string& path, SliceReport& report) {
+                ArenaSliceResult result = readArenaResult(path, jobBytes, buildId());
+                report.fingerprint = result.fingerprint;
+                report.build = shortOf(result.buildId);
+                report.stats = result.stats;
+                results[k] = std::move(result.games);
+            };
+        }
+        std::atomic<bool> failed{false};
+        reports = runSlices(g, kArenaPhase, slices, cfg_.arenaEngines, workDir,
+                            "arena wave " + std::to_string(w) + " games", failed);
+        failedAttempts = failed;
+
+        // Merge by wave index, each filled exactly once.
+        std::vector<char> filled(static_cast<size_t>(total), 0);
+        for (size_t k = 0; k < n; ++k) {
+            if (results[k].size() != static_cast<size_t>(assigned[k].count))
+                throw std::logic_error("arena slice of " + reports[k].engine +
+                                       " returned the wrong number of games");
+            for (int j = 0; j < assigned[k].count; ++j) {
+                const size_t i = static_cast<size_t>(assigned[k].first + j);
+                if (i >= games.size() || filled[i])
+                    throw std::logic_error("arena game " + std::to_string(i) + " assigned twice or out of range");
+                filled[i] = 1;
+                games[i] = std::move(results[k][static_cast<size_t>(j)]);
+            }
+        }
+        for (size_t i = 0; i < filled.size(); ++i)
+            if (!filled[i]) throw std::logic_error("arena game " + std::to_string(i) + " was not played");
     }
-    for (size_t i = 0; i < filled.size(); ++i)
-        if (!filled[i]) throw std::logic_error("arena game " + std::to_string(i) + " was not played");
+    // Each match's result from its games in index order.
     std::vector<MatchResult> out;
     size_t at = 0;
     for (const ArenaMatchSpec& m : wave) {
@@ -1808,10 +1869,11 @@ std::vector<MatchResult> Coordinator::playArena(const std::vector<ArenaMatchSpec
         out.push_back(matchResult(std::vector<ArenaGameResult>(from, from + m.games)));
         at += static_cast<size_t>(m.games);
     }
+    arenaGames_ = std::move(games);
     if (anyRemote) {
         std::error_code ec;
         std::filesystem::remove_all(netDir, ec);
-        finishWorkDir(workDir, failed);
+        finishWorkDir(workDir, failedAttempts);
         // arena-work itself, once its last wave directory is gone.
         if (std::filesystem::is_empty(std::filesystem::path(workDir).parent_path(), ec))
             std::filesystem::remove(std::filesystem::path(workDir).parent_path(), ec);
@@ -2205,8 +2267,10 @@ std::string arenaManifestPath(const std::string& runDir) {
 namespace {
 
 // A manifest's header and its rows of generations before g; *dropped
-// counts the others.
-std::string manifestBefore(const std::string& path, const char* header, int g, int* dropped = nullptr) {
+// counts the others. With wave > 0 (a manifest whose second column is the
+// wave), generation g's rows of earlier waves stay too.
+std::string manifestBefore(const std::string& path, const char* header, int g, int* dropped = nullptr,
+                           int wave = 0) {
     std::string out = header;
     std::ifstream in(path, std::ios::binary);
     if (in) {
@@ -2216,7 +2280,11 @@ std::string manifestBefore(const std::string& path, const char* header, int g, i
             if (line.empty()) continue;
             // Earlier generations stay; g and later (a redone or abandoned
             // generation) go.
-            if (std::atoi(line.c_str()) < g) out += line + "\n";
+            const int generation = std::atoi(line.c_str());
+            const size_t comma = line.find(',');
+            const bool earlierWave = wave > 0 && generation == g && comma != std::string::npos &&
+                                     std::atoi(line.c_str() + comma + 1) < wave;
+            if (generation < g || earlierWave) out += line + "\n";
             else if (dropped) ++*dropped;
         }
     }
@@ -2273,11 +2341,29 @@ void pruneGamesManifest(const std::string& runDir, int g) {
     pruneManifestFile(gamesManifestPath(runDir), kGamesManifestHeader, g);
 }
 
+std::string arenaGamesManifestPath(const std::string& runDir) {
+    return (std::filesystem::path(runDir) / "arena-games.csv").string();
+}
+
+void writeArenaGamesManifest(const std::string& runDir, int g, int wave,
+                             const std::vector<std::string>& engineOfGame) {
+    std::string out = manifestBefore(arenaGamesManifestPath(runDir), kArenaGamesManifestHeader, g, nullptr, wave);
+    for (size_t i = 0; i < engineOfGame.size(); ++i)
+        out += std::to_string(g) + "," + std::to_string(wave) + "," + std::to_string(i) + "," +
+               csvField(engineOfGame[i]) + "\n";
+    writeFileAtomically(arenaGamesManifestPath(runDir), out);
+}
+
+void pruneArenaGamesManifest(const std::string& runDir, int g) {
+    pruneManifestFile(arenaGamesManifestPath(runDir), kArenaGamesManifestHeader, g);
+}
+
 void writeArenaManifest(const std::string& runDir, int g, const std::vector<SliceReport>& reports) {
     std::string out = manifestBefore(arenaManifestPath(runDir), kArenaManifestHeader, g);
     for (const SliceReport& r : reports)
-        out += std::to_string(g) + "," + std::to_string(r.wave) + "," + std::to_string(r.slice.first) + "," +
-               std::to_string(r.slice.count) + "," + reportColumns(r) + "\n";
+        out += std::to_string(g) + "," + std::to_string(r.wave) + "," +
+               (r.dynamic ? std::string() : std::to_string(r.slice.first)) + "," + std::to_string(r.slice.count) +
+               "," + reportColumns(r) + "\n";
     writeFileAtomically(arenaManifestPath(runDir), out);
 }
 

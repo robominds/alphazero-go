@@ -461,13 +461,17 @@ std::string describeEngines(const std::vector<EngineSpec>& list, const Config& c
     return printEngineList(list);
 }
 
-// One "arena engines: ..." line per wave of the arena's reports.
-void printArenaEngines(std::ostream& log, const std::vector<SliceReport>& reports) {
+// One "arena engines: ..." line per wave of generation g's arena reports;
+// a dynamic wave's reads "arena engines (gen g, wave w): ...".
+void printArenaEngines(std::ostream& log, int g, const std::vector<SliceReport>& reports) {
     for (size_t k = 0; k < reports.size();) {
         std::vector<SliceReport> wave;
-        for (const int w = reports[k].wave; k < reports.size() && reports[k].wave == w; ++k)
-            wave.push_back(reports[k]);
-        log << enginesLine(wave, "arena engines") << "\n";
+        const int w = reports[k].wave;
+        for (; k < reports.size() && reports[k].wave == w; ++k) wave.push_back(reports[k]);
+        const std::string label = wave.front().dynamic ? "arena engines (gen " + std::to_string(g) + ", wave " +
+                                                             std::to_string(w) + ")"
+                                                       : "arena engines";
+        log << enginesLine(wave, label) << "\n";
     }
 }
 
@@ -592,7 +596,7 @@ std::unique_ptr<Trainer> Trainer::startNew(const Config& cfg, const std::string&
     // Who played the calibration games, as generation 0's rows.
     if (arenaEngines && !coordinator->arenaReports().empty()) {
         writeArenaManifest(runDir, 0, coordinator->arenaReports());
-        if (log) printArenaEngines(*log, coordinator->arenaReports());
+        if (log) printArenaEngines(*log, 0, coordinator->arenaReports());
     }
     // state.bin last: until it exists the directory is not a run, so a crash
     // anywhere above leaves something startNew can simply redo.
@@ -743,6 +747,7 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
     pruneManifest(runDir, selfPlayAfter);
     pruneGamesManifest(runDir, selfPlayAfter);
     pruneArenaManifest(runDir, state.generation + 1);
+    pruneArenaGamesManifest(runDir, state.generation + 1);
 
     std::unique_ptr<Trainer> trainer(new Trainer(cfg, runDir, std::move(net), std::move(state)));
     trainer->referenceNets_ = std::move(referenceNets.networks);
@@ -1201,7 +1206,7 @@ GenerationStats Trainer::runSequential() {
 
     if (log_) {
         if (selfplayEngines) *log_ << enginesLine(coordinator_->reports()) << "\n";
-        if (arenaEngines) printArenaEngines(*log_, coordinator_->arenaReports());
+        if (arenaEngines) printArenaEngines(*log_, g, coordinator_->arenaReports());
         printGenerationLine(stats, outcome);
     }
     return stats;
@@ -1401,7 +1406,7 @@ GenerationStats Trainer::runPipelined() {
         if (selfplayEngines)
             *log_ << enginesLine(coordinator_->reports(), "selfplay engines (gen " + std::to_string(g + 1) + ")")
                   << "\n";
-        if (arenaEngines) printArenaEngines(*log_, coordinator_->arenaReports());
+        if (arenaEngines) printArenaEngines(*log_, g, coordinator_->arenaReports());
         printGenerationLine(stats, outcome);
         // e.g. "pipeline: gen 13 self-play by network 11, 400 games 15402.6s, beside gen 12's training and
         // arena 8045.7s; generation 12 took 15403.1s"

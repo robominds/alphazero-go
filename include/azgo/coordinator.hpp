@@ -58,7 +58,8 @@ struct SliceReport {
     SliceStats stats;
     int wave = 0;   // arena slices only
     // Dynamic allocation: one report per engine, slice.count the games it
-    // played (which ones: Coordinator::assignment()), slice.first unused.
+    // played (which ones: Coordinator::assignment(), or arena-games.csv for
+    // an arena wave), slice.first unused.
     bool dynamic = false;
 };
 
@@ -274,9 +275,17 @@ public:
     // order), which is exactly what playMatches gives when every engine
     // computes the same bits. Failures as play()'s; the fallback engine is
     // the first local/... item of arena_engines, else local/<backend>.
+    // With arena_allocation = dynamic the wave is one dynamic phase, as
+    // playDynamic's generation is: the same engines on one queue of its
+    // games, each remote a selfplay --stream session of an arena job holding
+    // the whole wave and every network of it; notes read "generation g arena
+    // wave w", an engine retires for the wave, the reports are dynamic, and
+    // writeArenaGamesManifest records who played each game.
     std::vector<MatchResult> playArena(const std::vector<ArenaMatchSpec>& wave, const ArenaConfig& cfg);
     // The slices of every wave since beginArena, wave by wave, in list order.
     const std::vector<SliceReport>& arenaReports() const { return arenaReports_; }
+    // The last wave's games, by wave index, as merged.
+    const std::vector<ArenaGameResult>& arenaGames() const { return arenaGames_; }
 
     void setLog(std::ostream* log) { log_ = log; }
 
@@ -395,6 +404,7 @@ private:
     struct DynamicPhase;   // its state and machinery, any kind of phase, in coordinator.cpp
     int arenaGeneration_ = 0, arenaWave_ = 0;
     std::vector<SliceReport> arenaReports_;
+    std::vector<ArenaGameResult> arenaGames_;
 };
 
 // The most networks an arena wave can hold, so the most hubs it runs at once
@@ -474,11 +484,26 @@ std::string arenaManifestPath(const std::string& runDir);
 // Rewrites the arena manifest atomically, as writeManifest the self-play
 // one: its rows of generations before g, then one row per report:
 //   generation,wave,first,count,planned,engine,fingerprint,build,seconds,positions,evaluations,note
-// first and count are wave indices (a wave's games numbered match-major).
+// first and count are wave indices (a wave's games numbered match-major);
+// a dynamic wave's rows leave first empty, as writeManifest's do.
 void writeArenaManifest(const std::string& runDir, int g, const std::vector<SliceReport>& reports);
 
 // Drops the arena manifest's rows of generations g and later, as pruneManifest.
 void pruneArenaManifest(const std::string& runDir, int g);
+
+// runDir/arena-games.csv: which engine played each game of a wave, written
+// with arena_allocation = dynamic.
+std::string arenaGamesManifestPath(const std::string& runDir);
+
+// Rewrites it atomically: its rows before generation g's wave `wave`, then
+// one row per game of that wave, in index order:
+//   generation,wave,game,engine
+// A wave written again replaces its rows (and any of later waves).
+void writeArenaGamesManifest(const std::string& runDir, int g, int wave,
+                             const std::vector<std::string>& engineOfGame);
+
+// Drops its rows of generations g and later, as pruneManifest.
+void pruneArenaGamesManifest(const std::string& runDir, int g);
 
 // "selfplay engines: local/metal 52 1512s 3.5k ev/s | local/blas 12 1490s 0.9k": each
 // slice's engine, games, wall time and network evaluations per second, after

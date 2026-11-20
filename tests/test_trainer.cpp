@@ -2499,6 +2499,39 @@ static void test_arena_engines_switch_and_prune() {
     assert(manifestRows(both) == 4 && arenaRows(both).size() == 3);   // calibration, generations 1 and 2
 }
 
+// arena_allocation = dynamic, the same arithmetic everywhere: the default
+// run byte for byte. Each wave's engines get one dynamic row (no `first`)
+// and arena-games.csv one row per game; the progress lines name generation
+// and wave; a resume drops what a crash left of an uncommitted generation.
+static void test_dynamic_arena_engines() {
+    TempDir refs("arena_dyn_refs"), plain("arena_dyn_default"), dir("arena_dyn");
+    const Config base = roundsConfig(refs, "naive");
+    startQuiet(base, plain)->runUntil(3);
+    Config c = withArenaEngines(base, "local/naive:1, fake/naive:1");
+    c.arenaAllocation = "dynamic";
+    TrainerOptions opts;
+    opts.hostsFile = fakeHosts(dir);
+    std::ostringstream startup, progress;
+    std::unique_ptr<Trainer> t = Trainer::startNew(c, dir.str(), {}, &startup, opts);
+    t->setLog(&progress);
+    t->runUntil(3);
+    assert(runFingerprint(dir, 3) == runFingerprint(plain, 3));
+    int games = 0;
+    for (const std::vector<std::string>& row : arenaRows(dir)) {
+        assert(row[2].empty() && row[5] == row[4]);
+        games += std::stoi(row[3]);
+    }
+    const std::vector<std::string> perGame = splitLines(readFile(dir.file("arena-games.csv")));
+    assert(perGame[0] == "generation,wave,game,engine" && static_cast<int>(perGame.size()) == 1 + games);
+    assert(perGame[1].rfind("0,1,0,", 0) == 0 && perGame.back().rfind("3,", 0) == 0);
+    assert(startup.str().find("arena engines (gen 0, wave 1): local/naive ") != std::string::npos);
+    assert(progress.str().find("arena engines (gen 1, wave 1): local/naive ") < progress.str().find("gen 1 |"));
+    const std::string committed = readFile(dir.file("arena-games.csv"));
+    writeFile(dir.file("arena-games.csv"), committed + "4,1,0,local/naive\n");
+    resumeEngines(dir, {}, opts.hostsFile);
+    assert(readFile(dir.file("arena-games.csv")) == committed);
+}
+
 // Preflight covers the arena's machines too, before anything is written,
 // and its messages name arena_engines. Re-rating plays every game here
 // whatever arena_engines says.
@@ -3060,6 +3093,7 @@ int main() {
     test_arena_engines_equal_default();
     test_arena_engines_resume_is_byte_identical();
     test_arena_engines_switch_and_prune();
+    test_dynamic_arena_engines();
     test_arena_engines_preflight_and_rerate();
     test_arena_failures();
     test_single_local_engine_equals_default();

@@ -134,7 +134,8 @@ public:
     // does; with pending games (a pipelined commit), a note naming the
     // changed self-play keys, which apply a generation later. Drops the
     // manifests' rows of uncommitted generations (pruneManifest,
-    // pruneArenaManifest), keeping the self-play rows of pending games.
+    // pruneArenaManifest, pruneArenaGamesManifest), keeping the self-play
+    // rows of pending games.
     static std::unique_ptr<Trainer> resume(const std::string& runDir,
                                            const std::vector<std::string>& overrides,
                                            std::ostream* log = &std::cout,
