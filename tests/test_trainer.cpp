@@ -2530,6 +2530,17 @@ static void test_dynamic_arena_engines() {
     writeFile(dir.file("arena-games.csv"), committed + "4,1,0,local/naive\n");
     resumeEngines(dir, {}, opts.hostsFile);
     assert(readFile(dir.file("arena-games.csv")) == committed);
+    // Switching at a resume is noted, as for self-play, and only then.
+    std::ostringstream off, same, on;
+    resumeEngines(dir, {"arena_allocation=static"}, opts.hostsFile, &off);
+    assert(off.str().find("note: arena allocation changed from dynamic to static; from here on each engine plays "
+                          "a fixed slice of every arena wave\n") != std::string::npos);
+    resumeEngines(dir, {}, opts.hostsFile, &same);
+    assert(same.str().find("note: arena allocation") == std::string::npos);
+    resumeEngines(dir, {"arena_allocation=dynamic"}, opts.hostsFile, &on);
+    assert(on.str().find("note: arena allocation changed from static to dynamic; from here on which engine plays "
+                         "which arena game depends on timing\n(recorded in arena-games.csv)\n") !=
+           std::string::npos);
 }
 
 // Preflight covers the arena's machines too, before anything is written,
@@ -2724,7 +2735,8 @@ static void test_dynamic_switch_at_resume() {
     TempDir bare("dynamic_bare");
     startQuiet(tinyConfig(), bare)->runUntil(1);
     std::ostringstream quiet;
-    resumeEngines(bare, {"selfplay_allocation=dynamic"}, bare.file("none"), &quiet)->runUntil(2);
+    resumeEngines(bare, {"selfplay_allocation=dynamic", "arena_allocation=dynamic"}, bare.file("none"), &quiet)
+        ->runUntil(2);
     assert(quiet.str().find("note:") == std::string::npos && !fs::exists(bare.file("selfplay-games.csv")));
 }
 

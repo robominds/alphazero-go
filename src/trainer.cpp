@@ -694,6 +694,14 @@ std::unique_ptr<Trainer> Trainer::resume(const std::string& runDir,
                      ? "; from here on which engine plays which game depends on timing\n(recorded in "
                        "selfplay-games.csv)\n"
                      : "; from here on each engine plays a fixed slice of every generation\n");
+    // Likewise for the arena's waves.
+    if (log && saved.arenaAllocation != cfg.arenaAllocation && !cfg.arenaEngines.empty())
+        *log << "note: arena allocation changed from " << saved.arenaAllocation << " to "
+             << cfg.arenaAllocation
+             << (cfg.arenaAllocation == "dynamic"
+                     ? "; from here on which engine plays which arena game depends on timing\n(recorded in "
+                       "arena-games.csv)\n"
+                     : "; from here on each engine plays a fixed slice of every arena wave\n");
     if (log && printEngineList(saved.arenaEngines) != printEngineList(cfg.arenaEngines))
         *log << "note: arena engines changed from " << describeEngines(saved.arenaEngines, saved) << " to "
              << describeEngines(cfg.arenaEngines, cfg) << "; from here on arena results differ in the\n"
