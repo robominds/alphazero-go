@@ -899,7 +899,7 @@ static void test_readmit_arena() {
     const SliceReport& r = coordinator.arenaReports()[1];
     assert(r.engine == "fake/naive" && r.slice.count > 1);
     assert(contains(r.note, "1 failed stream") && contains(r.note, "readmitted 1 time") &&
-           !contains(r.note, "retired"));
+           !contains(r.note, "retired") && !contains(r.note, "unreachable"));
     assert(contains(buf.str(), "note: generation 3 arena wave 1: fake/naive readmitted (machine answered again); "
                                "it plays games again"));
     bool later = false;

@@ -321,8 +321,8 @@ Coordinator::Coordinator(const Config& cfg, const std::string& runDir, HostsFile
 Coordinator::~Coordinator() {
     {
         std::lock_guard<std::mutex> lock(probesMutex_);
-        for (std::thread& probe : probes_)
-            if (probe.joinable()) probe.join();
+        for (auto& probe : probes_)
+            if (probe.first.joinable()) probe.first.join();
     }
     for (const auto& [alias, state] : machines_) {
         std::set<std::string> files = state->uploaded;
@@ -1386,9 +1386,10 @@ struct Coordinator::DynamicPhase {
                 std::lock_guard<std::mutex> lock(mutex);
                 // The phase may have ended while the probe ran: no session
                 // starts once every game is back.
-                if (queue->done() || stop) return;
+                if (queue->done() || stop || c.cancel_) return;
                 if (queue->retired(static_cast<int>(k))) queue->readmit(static_cast<int>(k));
                 e.retired = false;
+                e.why.clear();   // the report keeps a retirement's reason only while it lasts
                 ++e.readmissions;
                 previous = e.report.fingerprint.empty() ? recorded : e.report.fingerprint;
                 played = queue->finishedBy(static_cast<int>(k));
@@ -1398,7 +1399,7 @@ struct Coordinator::DynamicPhase {
             note(e.spec.name() + " readmitted (machine answered again); it plays games again");
             if (!previous.empty() && previous != fingerprint)
                 note(e.spec.name() + "'s fingerprint changed: " + previous + " -> " + fingerprint + " after " +
-                     std::to_string(played) + " games");
+                     std::to_string(played) + " game" + (played == 1 ? "" : "s"));
             gone = false;
             if (twoSessions()) return;
         }
@@ -1409,8 +1410,8 @@ struct Coordinator::DynamicPhase {
     // checkMachine. The thread shares this with the engine. When the phase
     // ends first, the engine sets `abandoned` (the probe's commands are
     // cancelled, its answer goes nowhere) and hands the thread to the
-    // coordinator, whose destructor joins it; the thread touches only the
-    // coordinator, never the phase.
+    // coordinator, which joins it once done (or in its destructor); the
+    // thread touches only the coordinator, never the phase.
     struct Probe {
         std::atomic<bool> finished{false}, abandoned{false};
         bool up = false;
@@ -1481,7 +1482,19 @@ struct Coordinator::DynamicPhase {
         if (probe) {
             probe->abandoned = true;
             std::lock_guard<std::mutex> probes(c.probesMutex_);
-            c.probes_.push_back(std::move(prober));
+            // Those left earlier and done since are joined, so a long run
+            // does not gather them.
+            auto& left = c.probes_;
+            for (auto it = left.begin(); it != left.end();) {
+                if (!*it->second) {
+                    ++it;
+                    continue;
+                }
+                it->first.join();
+                it = left.erase(it);
+            }
+            left.emplace_back(std::move(prober),
+                              std::shared_ptr<const std::atomic<bool>>(probe, &probe->finished));
         }
         return false;
     }
@@ -1789,7 +1802,7 @@ struct Coordinator::DynamicPhase {
                 note += std::string(note.empty() ? "" : "; ") + "readmitted " + std::to_string(e.readmissions) +
                         " time" + (e.readmissions > 1 ? "s" : "");
             if (e.retired) note += std::string(note.empty() ? "" : "; ") + "retired";
-            if (!note.empty()) note += ": " + e.why;
+            if (!note.empty() && !e.why.empty()) note += ": " + e.why;
             if (k == listed) note = "fallback: every engine retired";
             e.report.note = note;
             reports.push_back(e.report);

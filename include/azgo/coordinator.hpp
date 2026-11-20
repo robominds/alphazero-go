@@ -331,10 +331,11 @@ private:
     // there must report buildId(), then `selfplay --fingerprint --backend B`
     // must succeed for e's backend. It never throws ConfigError; the build
     // and the fingerprint (MachineCheck::fingerprint: the last engine's) go
-    // to remoteBuilds_ and fingerprints_ under fingerprintsMutex_. Preflight checks a
-    // machine's engines in one go (one --version, then each engine's
-    // fingerprint, the first failure ending it), and a readmission probe
-    // (DynamicPhase) one engine, its commands cancelled once `cancel` is set.
+    // to remoteBuilds_ and fingerprints_ under fingerprintsMutex_.
+    // Preflight checks a machine's engines in one go (one --version, then
+    // each engine's fingerprint, the first failure ending it), and a
+    // readmission probe (DynamicPhase) one engine, its commands cancelled
+    // once `cancel` is set.
     MachineCheck checkMachine(const std::string& alias, const EngineSpec& e);
     MachineCheck checkMachine(const std::string& alias, const std::vector<EngineSpec>& engines,
                               const std::atomic<bool>* cancel);
@@ -410,9 +411,10 @@ private:
     std::map<std::string, std::unique_ptr<MachineState>> machines_;   // by alias
     std::mutex logMutex_;                               // slices' notes, from their threads
     // Readmission probes (DynamicPhase) left running when their phase
-    // ended, each cancelled; the destructor joins them.
+    // ended, each cancelled, with the flag it sets once done: those done are
+    // joined when another is left, the rest by the destructor.
     std::mutex probesMutex_;
-    std::vector<std::thread> probes_;
+    std::vector<std::pair<std::thread, std::shared_ptr<const std::atomic<bool>>>> probes_;
     std::atomic<bool> cancel_{false};                   // cancel(): every phase stops
     std::vector<SliceReport> reports_;
     std::vector<std::string> assignment_;

@@ -488,8 +488,9 @@ static void test_readmit_selfplay() {
     assert(r.engine == "fake/naive" && r.slice.count > 1);
     assert(contains(buf.str(),
                     "note: generation 1: fake/naive readmitted (machine answered again); it plays games again"));
+    // The retirement's reason went with it.
     assert(contains(r.note, "1 failed stream") && contains(r.note, "readmitted 1 time") &&
-           !contains(r.note, "retired"));
+           !contains(r.note, "retired") && !contains(r.note, "unreachable"));
     assert(watch.any("_s1_a2.job") || watch.any("_s1_a3.job"));
     distributed_probe::reset();
 }
@@ -559,7 +560,7 @@ static void test_readmit_wrong_build() {
     Coordinator c(f.cfg, f.runDir(), parseHostsText(f.fake("fake"), "h"), &log);
     c.preflight();
     distributed_probe::failSession("fake/naive", 1, 1);
-    distributed_probe::delaySlice("local/naive", 1.5);
+    distributed_probe::delaySlice("local/naive", 3);
     distributed_probe::readmitSeconds(0.05);
     f.drop("fake");
     std::thread back([&] {
@@ -680,7 +681,7 @@ static void test_readmit_fingerprint_change() {
     back.join();
     assert(sameRecords(records, f.whole(1)));
     assert(contains(buf.str(), "note: generation 1: fake/naive's fingerprint changed: " + engineFingerprint("naive") +
-                                   " -> naive; updated after 1 games\n"));
+                                   " -> naive; updated after 1 game\n"));
     assert(contains(buf.str(), "fake/naive readmitted (machine answered again)"));
     assert(contains(c.reports()[1].note, "readmitted 1 time"));
     distributed_probe::reset();
