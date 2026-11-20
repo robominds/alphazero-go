@@ -622,7 +622,10 @@ gains the line `arena_allocation = static`; `dynamic` streams them from one
 queue as `selfplay_allocation = dynamic` does. `readmit_seconds` (default
 `300`, `0` turns it off) is how often, in seconds, a retired engine whose
 machine was seen unreachable is tried again; it likewise adds
-`readmit_seconds = 300` to a new run's `config.cfg`.
+`readmit_seconds = 300` to a new run's `config.cfg`. Once a run has been
+resumed with this build, its `config.cfg` holds both keys, which an older
+binary refuses as unknown: rolling back means deleting those two lines
+from the run's `config.cfg` first.
 
 **Dynamic arena waves**
 ([design](docs/superpowers/specs/2026-11-19-streamed-arena-and-readmission-design.md)).
@@ -692,9 +695,12 @@ Then the engine is readmitted:
 note: generation 12: pc/cuda readmitted (machine answered again); it plays games again
 ```
 
-It gets a new session with the next attempt number (`_a3`, `_a4`, ... in
-its file names) and the same two attempts as at a phase's start, and it
-waits again if its machine goes away again. The details:
+It gets a new session with the next attempt number in its file names (for
+example `_a2` after one failed session) and the same two attempts as at a
+phase's start, and it waits again if its machine goes away again. Before
+that session starts, any process or job file the engine's earlier sessions
+of the phase left on the machine (a link that went and came back) is
+removed. The details:
 
 - A machine back with another build is not readmitted. One note says so
   (`... not readmitted: its machine runs build B, this run C`) until a

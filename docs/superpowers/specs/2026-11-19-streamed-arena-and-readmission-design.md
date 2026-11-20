@@ -221,8 +221,11 @@ dynamic self-play's. Exact reproducibility of the gating match does
   - `GameQueue` gets a new operation, `readmit(k)`, the inverse of
     `retire`: engine k may take games again. It is refused in forced mode,
     as `retire` is.
-  - A new session starts with the next attempt number (a3, a4, ...; file
-    names carry it).
+  - Any process or job file of the engine's earlier sessions in the phase
+    is removed from the machine first, best effort: a session that failed
+    with the machine unreachable could not remove them itself.
+  - A new session starts with the next attempt number (for example a2
+    after one failed session; file names carry it).
   - A note is written: "X readmitted (machine answered again); it plays
     games again".
   - Each readmission gets the same two attempts as a phase start, then goes
@@ -307,6 +310,11 @@ The steps below are for after the code is merged and Mark approves.
 4. Resume with the new binary and `--set arena_allocation=dynamic`. Keep
    `readmit_seconds` at its default.
 5. Check the first dynamic wave's `arena-engines.csv` and notes.
+
+Rolling back to an older binary means deleting the `arena_allocation` and
+`readmit_seconds` lines from the run's `config.cfg` first: once the run
+has resumed with the new binary, `config.cfg` carries both, and an older
+binary refuses them as unknown keys.
 
 ## Left to the builder
 
